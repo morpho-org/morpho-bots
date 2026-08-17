@@ -33,13 +33,17 @@ const { min } = MathLib
  * utilization bounds via the AdaptiveCurveIRM inverse, deallocates from markets below range,
  * allocates into markets above range. Allocations may exceed deallocations by up to the vault's
  * idle balance; excess deallocations park in idle unless `allowIdleReallocation` is off, in which
- * case they are clamped to the allocation total. Assumes every market uses the AdaptiveCurveIRM.
- * Allocations respect the market, adapter-level, and collateral-level caps.
+ * case they are clamped to the allocation total.
+ *
+ * Only markets on the canonical AdaptiveCurveIRM participate — the inversion is meaningless without
+ * a real `rateAtTarget`, so a foreign-IRM market is excluded from both legs rather than misread
+ * (see `isAdaptiveCurve` on the market data). Allocations respect the market, adapter-level, and
+ * collateral-level caps.
  */
 export const createApyRangeStrategy = (config: ApyRangeConfig): Strategy => {
   return vaultData => {
     const vault = vaultData.vaultAddress
-    const marketsData = vaultData.marketsData
+    const marketsData = vaultData.marketsData.filter(marketData => marketData.isAdaptiveCurve)
 
     let totalAmountToDeallocate = 0n
     let totalAmountToAllocate = 0n

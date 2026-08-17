@@ -1,9 +1,8 @@
-import type { Logger } from '@repo/bot-kit'
+import type { Logger, SimulateResult } from '@repo/bot-kit'
 import type { Address, Hex } from 'viem'
 
 import { tryCatch } from '@repo/utils'
 
-import type { SimulateResult } from '../simulate'
 import type { Reallocation, Strategy } from '../strategies'
 import type { VaultV2Data } from '../vault-data'
 
@@ -63,6 +62,16 @@ const processVault = async (
   }
 
   const vaultData = await deps.fetchVault(vault, deps.chainHead)
+
+  // Surfaced because `apy-range` excludes these outright — the curve inversion it relies on needs a
+  // real AdaptiveCurveIRM `rateAtTarget` (`equalize-utilizations` keeps them).
+  const foreignIrmMarkets = vaultData.marketsData
+    .filter(marketData => !marketData.isAdaptiveCurve)
+    .map(marketData => marketData.id)
+  if (foreignIrmMarkets.length > 0) {
+    deps.logger.debug('market.non_adaptive_curve', { vault, markets: foreignIrmMarkets })
+  }
+
   const reallocation = deps.strategy(vaultData)
   if (!reallocation) return
   counters.reallocations_found++

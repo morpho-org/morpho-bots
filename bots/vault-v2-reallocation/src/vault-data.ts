@@ -4,12 +4,13 @@ import type { Address, Client, Hex } from 'viem'
 import {
   AccrualVaultV2MorphoMarketV1Adapter,
   AccrualVaultV2MorphoMarketV1AdapterV2,
+  getChainAddresses,
   SharesMath,
   VaultV2MorphoMarketV1Adapter
 } from '@morpho-org/blue-sdk'
 import { fetchAccrualVaultV2, vaultV2Abi } from '@morpho-org/blue-sdk-viem'
-import { getAddress } from 'viem'
-import { readContract } from 'viem/actions'
+import { getAddress, isAddressEqual } from 'viem'
+import { getBlock, readContract } from 'viem/actions'
 
 import { InvalidVaultError } from './invalid-vault.error'
 
@@ -42,12 +43,18 @@ export type VaultV2MarketData = {
   vaultAssets: bigint
   /** AdaptiveCurveIRM `rateAtTarget` after accrual; 0 for markets not on that IRM. */
   rateAtTarget: bigint
+  /**
+   * Whether this market runs the chain's canonical AdaptiveCurveIRM. Only then is `rateAtTarget`
+   * meaningful, so only then may APY↔utilization inversion be applied — see
+   * {@link isAdaptiveCurveMarket}.
+   */
+  isAdaptiveCurve: boolean
 }
 
 export type VaultV2Data = {
   vaultAddress: Address
   adapterAddress: Address
-  /** The vault's total assets, interest accrued to now. */
+  /** The vault's total assets, interest accrued to the pinned block's timestamp. */
   totalAssets: bigint
   /** The vault's un-allocated asset balance (deallocate parks here; allocate draws from here). */
   idleAssets: bigint
@@ -57,6 +64,16 @@ export type VaultV2Data = {
   collateralCaps: Record<Address, CapState>
   marketsData: VaultV2MarketData[]
 }
+
+/**
+ * A market qualifies only if it runs the chain's canonical AdaptiveCurveIRM **and** reports a
+ * non-zero `rateAtTarget`. The second half is belt-and-suspenders: `AdaptiveCurveIrmLib`'s inverse
+ * returns WAD for every rate when `rateAtTarget` is 0, which would silently read as "far below
+ * range" and drain the adapter's whole position out of the market on valid, simulation-passing
+ * calldata.
+ */
+const isAdaptiveCurveMarket = (irm: Address, rateAtTarget: bigint, chainId: number): boolean =>
+  rateAtTarget > 0n && isAddressEqual(irm, getChainAddresses(chainId).adaptiveCurveIrm)
 
 type MarketAdapter = AccrualVaultV2MorphoMarketV1Adapter | AccrualVaultV2MorphoMarketV1AdapterV2
 
@@ -70,14 +87,14 @@ type AdapterMarket = {
 // Both Morpho Blue market adapter generations take the same abi-encoded market params in
 // allocate/deallocate and derive identical cap ids; they differ only in how the SDK models their
 // positions (AccrualPosition list vs supplyShares per market id). Normalize to one shape.
-const normalizeAdapterMarkets = (adapter: MarketAdapter, now: bigint): AdapterMarket[] => {
+const normalizeAdapterMarkets = (adapter: MarketAdapter, timestamp: bigint): AdapterMarket[] => {
   if (adapter instanceof AccrualVaultV2MorphoMarketV1Adapter) {
     return adapter.marketParamsList.map(params => {
       const position = adapter.positions.find(candidate => candidate.marketId === params.id)
       if (position === undefined) {
         throw new InvalidVaultError(`adapter position missing for market ${params.id}`)
       }
-      const accrued = position.accrueInterest(now)
+      const accrued = position.accrueInterest(timestamp)
       return {
         params,
         state: accrued.market,
@@ -87,7 +104,7 @@ const normalizeAdapterMarkets = (adapter: MarketAdapter, now: bigint): AdapterMa
     })
   }
   return adapter.markets.map(market => {
-    const accrued = market.accrueInterest(now)
+    const accrued = market.accrueInterest(timestamp)
     return {
       params: accrued.params,
       state: accrued,
@@ -164,8 +181,10 @@ export const fetchVaultV2Data = async (
   const adapter = marketAdapters[0]!
   const adapterAddress = getAddress(adapter.address)
 
-  const now = BigInt(Math.floor(Date.now() / 1000))
-  const adapterMarkets = normalizeAdapterMarkets(adapter, now)
+  // Accrue to the pinned block's timestamp, not wall clock, so the snapshot is coherent and
+  // reproducible against the pinned reads.
+  const { timestamp } = await getBlock(client, { blockNumber })
+  const adapterMarkets = normalizeAdapterMarkets(adapter, timestamp)
   const collateralTokens = [
     ...new Set(adapterMarkets.map(({ params }) => getAddress(params.collateralToken)))
   ]
@@ -207,7 +226,8 @@ export const fetchVaultV2Data = async (
             },
             cap,
             vaultAssets,
-            rateAtTarget
+            rateAtTarget,
+            isAdaptiveCurve: isAdaptiveCurveMarket(params.irm, rateAtTarget, chainId)
           }
         }
       )
@@ -217,7 +237,7 @@ export const fetchVaultV2Data = async (
   return {
     vaultAddress: vault,
     adapterAddress,
-    totalAssets: vaultV2.accrueInterest(now).vault._totalAssets,
+    totalAssets: vaultV2.accrueInterest(timestamp).vault._totalAssets,
     idleAssets: vaultV2.assetBalance,
     adapterCap,
     collateralCaps: Object.fromEntries(collateralCapList.map(({ token, cap }) => [token, cap])),

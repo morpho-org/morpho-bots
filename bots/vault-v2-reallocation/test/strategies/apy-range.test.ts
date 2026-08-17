@@ -194,6 +194,26 @@ describe('createApyRangeStrategy', () => {
     })
   })
 
+  describe('foreign-IRM exclusion', () => {
+    it('excludes non-AdaptiveCurve markets from both legs', () => {
+      const strategy = makeStrategy()
+      // Would look "far below range" if the degenerate inversion were applied.
+      const foreignMarket = makeMarket({
+        utilization: apyToUtilization(0.5, RATE_AT_TARGET),
+        vaultAssets: parseUnits('50000', 6),
+        rateAtTarget: 0n,
+        isAdaptiveCurve: false
+      })
+      const hotMarket = makeMarket({
+        utilization: apyToUtilization(12, RATE_AT_TARGET),
+        vaultAssets: parseUnits('10000', 6),
+        rateAtTarget: RATE_AT_TARGET
+      })
+      // The foreign market is the only deallocation candidate — excluding it means no plan at all.
+      expect(strategy(makeVaultData([foreignMarket, hotMarket]))).toBeUndefined()
+    })
+  })
+
   describe('cap enforcement', () => {
     it('clamps allocations to the market cap headroom measured against allocation(id)', () => {
       const strategy = makeStrategy()

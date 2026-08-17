@@ -13,7 +13,8 @@ import {
   DEFAULT_MAX_DATA_BYTES,
   DEFAULT_MAX_GAS_LIMIT,
   initialFees,
-  railwayContext
+  railwayContext,
+  simulateCall
 } from '@repo/bot-kit'
 import { ensureError, tryCatch } from '@repo/utils'
 import { getAbiItem, toFunctionSelector } from 'viem'
@@ -23,7 +24,6 @@ import { loadConfig } from './config'
 import { encodeReallocation } from './encode'
 import { InvalidVaultError } from './invalid-vault.error'
 import { runTick } from './runner/tick'
-import { simulateReallocate } from './simulate'
 import { createStrategy } from './strategies'
 import { revertReason } from './tx-error'
 import { fetchVaultV2Data } from './vault-data'
@@ -107,7 +107,9 @@ async function main() {
   })
 
   // The allocator role is probed non-fatally: a pending grant must not crash-loop the bot; the tick
-  // re-checks and resumes on its own.
+  // re-checks and resumes on its own. Unlike MetaMorpho V1's onlyAllocatorRole, VaultV2.allocate
+  // requires isAllocator[msg.sender] strictly — curator/owner do NOT implicitly qualify, so the
+  // check is deliberately narrower than the V1 bot's.
   const isAllocator = (vault: Address) =>
     readContract(client, {
       address: vault,
@@ -165,7 +167,9 @@ async function main() {
       strategy,
       encodeReallocation: (vaultData, reallocation) =>
         encodeReallocation(vaultData.adapterAddress, reallocation),
-      simulate: (vault, data) => simulateReallocate(client, { vault, eoa, data }),
+      // Byte-for-byte what gets broadcast. A revert here — role revoked, cap exceeded, insufficient
+      // idle, market no longer enabled — means do not send; the tick gates on `ok` only.
+      simulate: (vault, data) => simulateCall(client, { eoa, to: vault, data }),
       submit: async ({ vault, data, blockNumber }) => {
         const fees = initialFees(await signer.getBaseFee(), config.maxFeeWei)
         await queue.submit({

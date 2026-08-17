@@ -49,6 +49,7 @@ export const makeMarket = (opts: {
   cap?: Partial<CapState>
   rateAtTarget: bigint
   params?: InputMarketParams
+  isAdaptiveCurve?: boolean
 }): VaultV2MarketData => {
   const totalSupplyAssets = parseUnits('100000', 6)
   const totalBorrowAssets = MathLib.wMulDown(totalSupplyAssets, opts.utilization)
@@ -66,7 +67,8 @@ export const makeMarket = (opts: {
     // divergence override `cap.allocation` explicitly.
     cap: { ...UNLIMITED_CAP, allocation: opts.vaultAssets, ...opts.cap },
     vaultAssets: opts.vaultAssets,
-    rateAtTarget: opts.rateAtTarget
+    rateAtTarget: opts.rateAtTarget,
+    isAdaptiveCurve: opts.isAdaptiveCurve ?? true
   }
 }
 

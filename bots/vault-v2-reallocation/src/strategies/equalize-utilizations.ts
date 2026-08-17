@@ -19,7 +19,7 @@ type EqualizeUtilizationsConfig = {
   minUtilizationDeltaBips: (vault: Address) => number
 }
 
-const { min, wDivDown } = MathLib
+const { min, WAD, wDivDown } = MathLib
 
 /**
  * Converges every market toward the vault-wide average utilization
@@ -45,7 +45,9 @@ export const createEqualizeUtilizationsStrategy = (
     // Nothing supplied or nothing borrowed anywhere — every market already sits at the (degenerate)
     // target, and the per-market target math below would divide by zero.
     if (totalSupply === 0n || totalBorrow === 0n) return undefined
-    const targetUtilization = wDivDown(totalBorrow, totalSupply)
+    // Aggregate utilization exceeds 100% in bad-debt states; sizing deallocations toward a >100%
+    // target asks for more than the markets hold, so every resulting plan reverts.
+    const targetUtilization = min(wDivDown(totalBorrow, totalSupply), WAD)
 
     let totalAmountToDeallocate = 0n
     let totalAmountToAllocate = 0n

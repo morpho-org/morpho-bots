@@ -58,6 +58,27 @@ describe('createEqualizeUtilizationsStrategy', () => {
     ).toBeUndefined()
   })
 
+  it('clamps the target utilization at 100% in bad-debt states', () => {
+    const strategy = makeStrategy()
+    // Aggregate borrow > aggregate supply: unclamped, the target would exceed WAD and deallocation
+    // sizing would ask for more than the markets hold.
+    const badDebtMarket = makeMarket({
+      utilization: (150n * WAD) / 100n,
+      vaultAssets: parseUnits('10000', 6),
+      rateAtTarget: RATE_AT_TARGET
+    })
+    const coldMarket = makeMarket({
+      utilization: (10n * WAD) / 100n,
+      vaultAssets: parseUnits('20000', 6),
+      rateAtTarget: RATE_AT_TARGET
+    })
+    const result = strategy(makeVaultData([badDebtMarket, coldMarket]))
+    if (result) {
+      const deallocation = result.deallocations[0]
+      expect(deallocation?.assets ?? 0n).toBeLessThanOrEqual(coldMarket.vaultAssets)
+    }
+  })
+
   it('returns undefined when nothing is borrowed anywhere', () => {
     const strategy = makeStrategy()
     const market = makeMarket({
