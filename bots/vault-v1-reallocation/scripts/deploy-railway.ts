@@ -1,5 +1,5 @@
 /**
- * Reproducible, idempotent deployment of the multi-chain blue-reallocation system to a Railway
+ * Reproducible, idempotent deployment of the multi-chain vault-v1-reallocation system to a Railway
  * project: one `bot-<chainId>` runner per chain (see CHAINS below). All data comes over RPC, so
  * there is no Postgres or indexer service to provision.
  *
@@ -20,7 +20,7 @@
  *   - BETTERSTACK_HEARTBEAT_URL_<chainId> (optional)
  *
  *   RAILWAY_PROJECT_ID=… RPC_URL_1=… VAULT_WHITELIST_1=0x… REALLOCATOR_PRIVATE_KEY=0x… \
- *     pnpm --filter @morpho-org/blue-reallocation run deploy:railway
+ *     pnpm --filter @morpho-org/vault-v1-reallocation run deploy:railway
  *
  * The build context MUST be the repo root so the pnpm workspace (packages/*) resolves — the script
  * runs `railway up` with cwd set to the repo root (mirrors the Dockerfile header + compose context).
@@ -39,8 +39,8 @@ import { fileURLToPath } from 'node:url'
 
 const PROJECT_ID = required(process.env, 'RAILWAY_PROJECT_ID')
 const ENVIRONMENT = process.env.RAILWAY_ENVIRONMENT?.trim() || 'production'
-const DOCKERFILE_PATH = 'bots/blue-reallocation/Dockerfile'
-// Repo root is three levels up from this file (scripts → blue-reallocation → bots → repo root).
+const DOCKERFILE_PATH = 'bots/vault-v1-reallocation/Dockerfile'
+// Repo root is three levels up from this file (scripts → vault-v1-reallocation → bots → repo root).
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..')
 
 type Env = Record<string, string | undefined>

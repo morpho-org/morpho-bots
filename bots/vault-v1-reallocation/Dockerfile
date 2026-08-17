@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-# Image for the blue-reallocation bot. The build context MUST be the repo root so the workspace
+# Image for the vault-v1-reallocation bot. The build context MUST be the repo root so the workspace
 # packages (packages/*) resolve — docker-compose.yml sets `context: ../..` and the Railway deploy
 # runs `railway up` from the repo root. All data comes over RPC, so there is no indexer/database
 # sidecar to build. Node only: pnpm installs, esbuild bundles, node runs.
@@ -28,5 +28,5 @@ RUN pnpm install --frozen-lockfile
 # starts a plain `node` with no runtime transform.
 RUN pnpm -r --if-present run build
 
-WORKDIR /repo/bots/blue-reallocation
+WORKDIR /repo/bots/vault-v1-reallocation
 CMD ["node", "dist/src/index.js"]

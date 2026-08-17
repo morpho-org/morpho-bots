@@ -34,7 +34,7 @@ async function main() {
   // Global wide-log context stamped onto every line: the bot identity + chain, plus whichever
   // RAILWAY_* identity vars this deployment exposes.
   const logger = createLogger(config.logLevel, {
-    context: { bot: 'blue-reallocation', chainId: config.chainId, ...railwayContext() }
+    context: { bot: 'vault-v1-reallocation', chainId: config.chainId, ...railwayContext() }
   })
 
   // Signed-send path: a plain wallet client + local nonce cursor (separate from the read client).

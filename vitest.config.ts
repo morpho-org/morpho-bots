@@ -16,7 +16,7 @@ export default defineConfig({
       'packages/observability',
       'packages/offers',
       'bots/blue-liquidation',
-      'bots/blue-reallocation',
+      'bots/vault-v1-reallocation',
       'bots/midnight-liquidation',
       'bots/midnight-crossed-books',
       'bots/quoter-bot'

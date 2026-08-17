@@ -1,4 +1,4 @@
-# Runs the per-chain blue-reallocation bots. All data comes over RPC, so there is no indexer or
+# Runs the per-chain vault-v1-reallocation bots. All data comes over RPC, so there is no indexer or
 # database to run. The bots' build context is the repo root so the pnpm workspace (packages/*)
 # resolves — see Dockerfile. Set the chainId-suffixed RPCs/whitelists (RPC_URL_1, VAULT_WHITELIST_1,
 # …) and a REALLOCATOR_PRIVATE_KEY holding the allocator role on every whitelisted vault.
@@ -6,7 +6,7 @@ services:
   bot-mainnet:
     build:
       context: ../..
-      dockerfile: bots/blue-reallocation/Dockerfile
+      dockerfile: bots/vault-v1-reallocation/Dockerfile
     environment:
       CHAIN_ID: '1'
       RPC_URL: ${RPC_URL_1:?set RPC_URL_1}
@@ -28,7 +28,7 @@ services:
   bot-base:
     build:
       context: ../..
-      dockerfile: bots/blue-reallocation/Dockerfile
+      dockerfile: bots/vault-v1-reallocation/Dockerfile
     environment:
       CHAIN_ID: '8453'
       RPC_URL: ${RPC_URL_8453:?set RPC_URL_8453}

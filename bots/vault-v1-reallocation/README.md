@@ -1,4 +1,4 @@
-# blue-reallocation
+# vault-v1-reallocation
 
 Reallocates liquidity between the Morpho Blue markets of whitelisted MetaMorpho (Vault V1) vaults,
 migrated from the standalone
@@ -83,15 +83,15 @@ The tables ship empty; changing policy is a reviewed PR + redeploy.
 ## Running
 
 ```sh
-pnpm --filter @morpho-org/blue-reallocation run build
+pnpm --filter @morpho-org/vault-v1-reallocation run build
 CHAIN_ID=8453 RPC_URL=… REALLOCATOR_PRIVATE_KEY=0x… VAULT_WHITELIST=0x… \
-  pnpm --filter @morpho-org/blue-reallocation run start
+  pnpm --filter @morpho-org/vault-v1-reallocation run start
 ```
 
 Or via compose (one service per chain, both defaulting to `DRY_RUN=true`):
 
 ```sh
-cd bots/blue-reallocation && docker compose up --build
+cd bots/vault-v1-reallocation && docker compose up --build
 ```
 
 ### Ramp-up (recommended)
@@ -104,12 +104,12 @@ submits. Review a few passes' plans, then flip `DRY_RUN=false`.
 
 ```sh
 RAILWAY_PROJECT_ID=… RPC_URL_1=… VAULT_WHITELIST_1=0x… REALLOCATOR_PRIVATE_KEY=0x… \
-  pnpm --filter @morpho-org/blue-reallocation run deploy:railway
+  pnpm --filter @morpho-org/vault-v1-reallocation run deploy:railway
 ```
 
 Provisions one `bot-<chainId>` service per chain (new services start in dry-run). CI re-ships
 already-provisioned services with `DEPLOY_ONLY=1` on merge to main (staging) and via the
-`release-blue-reallocation` PR label (production).
+`release-vault-v1-reallocation` PR label (production).
 
 ## Observability
 
@@ -123,7 +123,7 @@ shipping and heartbeat are opt-in via the env vars above.
 ## Testing
 
 ```sh
-pnpm vitest run --project blue-reallocation
+pnpm vitest run --project vault-v1-reallocation
 ```
 
 Pure unit tests cover both strategies (ported from the original repo), the IRM math, config
