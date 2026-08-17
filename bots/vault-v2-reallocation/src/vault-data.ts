@@ -1,8 +1,10 @@
-import type { InputMarketParams } from '@morpho-org/blue-sdk'
+import type { InputMarketParams, MarketParams } from '@morpho-org/blue-sdk'
 import type { Address, Client, Hex } from 'viem'
 
 import {
   AccrualVaultV2MorphoMarketV1Adapter,
+  AccrualVaultV2MorphoMarketV1AdapterV2,
+  SharesMath,
   VaultV2MorphoMarketV1Adapter
 } from '@morpho-org/blue-sdk'
 import { fetchAccrualVaultV2, vaultV2Abi } from '@morpho-org/blue-sdk-viem'
@@ -56,6 +58,50 @@ export type VaultV2Data = {
   marketsData: VaultV2MarketData[]
 }
 
+type MarketAdapter = AccrualVaultV2MorphoMarketV1Adapter | AccrualVaultV2MorphoMarketV1AdapterV2
+
+type AdapterMarket = {
+  params: MarketParams
+  state: MarketState
+  vaultAssets: bigint
+  rateAtTarget: bigint
+}
+
+// Both Morpho Blue market adapter generations take the same abi-encoded market params in
+// allocate/deallocate and derive identical cap ids; they differ only in how the SDK models their
+// positions (AccrualPosition list vs supplyShares per market id). Normalize to one shape.
+const normalizeAdapterMarkets = (adapter: MarketAdapter, now: bigint): AdapterMarket[] => {
+  if (adapter instanceof AccrualVaultV2MorphoMarketV1Adapter) {
+    return adapter.marketParamsList.map(params => {
+      const position = adapter.positions.find(candidate => candidate.marketId === params.id)
+      if (position === undefined) {
+        throw new InvalidVaultError(`adapter position missing for market ${params.id}`)
+      }
+      const accrued = position.accrueInterest(now)
+      return {
+        params,
+        state: accrued.market,
+        vaultAssets: accrued.supplyAssets,
+        rateAtTarget: accrued.market.rateAtTarget ?? 0n
+      }
+    })
+  }
+  return adapter.markets.map(market => {
+    const accrued = market.accrueInterest(now)
+    return {
+      params: accrued.params,
+      state: accrued,
+      vaultAssets: SharesMath.toAssets(
+        adapter.supplyShares[accrued.id] ?? 0n,
+        accrued.totalSupplyAssets,
+        accrued.totalSupplyShares,
+        'Down'
+      ),
+      rateAtTarget: accrued.rateAtTarget ?? 0n
+    }
+  })
+}
+
 const readCap = async (
   client: Client,
   vault: Address,
@@ -93,8 +139,9 @@ const readCap = async (
  * snapshot: the accrued vault tree via blue-sdk's `fetchAccrualVaultV2` (which also proves the
  * address is a factory-made VaultV2), plus the per-id cap/allocation reads the SDK fetcher does not
  * cover for a regular adapter (market ids, the adapter id, and each distinct collateral id).
- * Throws {@link InvalidVaultError} unless the vault has exactly one adapter and it is a
- * MorphoMarketV1 adapter. Throws on any failed read — the tick catches per vault.
+ * Throws {@link InvalidVaultError} unless the vault has exactly one adapter and it is a Morpho Blue
+ * market adapter (either adapter-contract generation). Throws on any failed read — the tick
+ * catches per vault.
  */
 export const fetchVaultV2Data = async (
   client: Client,
@@ -104,28 +151,27 @@ export const fetchVaultV2Data = async (
   const vaultV2 = await fetchAccrualVaultV2(vault, client, { chainId, blockNumber })
 
   const marketAdapters = vaultV2.accrualAdapters.filter(
-    (adapter): adapter is AccrualVaultV2MorphoMarketV1Adapter =>
-      adapter instanceof AccrualVaultV2MorphoMarketV1Adapter
+    (adapter): adapter is MarketAdapter =>
+      adapter instanceof AccrualVaultV2MorphoMarketV1Adapter ||
+      adapter instanceof AccrualVaultV2MorphoMarketV1AdapterV2
   )
   if (vaultV2.adapters.length !== 1 || marketAdapters.length !== 1) {
     throw new InvalidVaultError(
-      `vault ${vault} must have exactly one MorphoMarketV1 adapter; found ` +
-        `${vaultV2.adapters.length} adapter(s) of which ${marketAdapters.length} are MorphoMarketV1`
+      `vault ${vault} must have exactly one Morpho Blue market adapter; found ` +
+        `${vaultV2.adapters.length} adapter(s) of which ${marketAdapters.length} qualify`
     )
   }
   const adapter = marketAdapters[0]!
   const adapterAddress = getAddress(adapter.address)
 
   const now = BigInt(Math.floor(Date.now() / 1000))
-
-  const positionByMarketId = new Map(
-    adapter.positions.map(position => [position.marketId, position])
-  )
+  const adapterMarkets = normalizeAdapterMarkets(adapter, now)
   const collateralTokens = [
-    ...new Set(adapter.marketParamsList.map(params => getAddress(params.collateralToken)))
+    ...new Set(adapterMarkets.map(({ params }) => getAddress(params.collateralToken)))
   ]
 
   const [adapterCap, collateralCapList, marketsData] = await Promise.all([
+    // Both adapter generations derive identical "this"/"collateralToken"/"this/marketParams" ids.
     readCap(client, vault, VaultV2MorphoMarketV1Adapter.adapterId(adapterAddress), blockNumber),
     Promise.all(
       collateralTokens.map(async token => ({
@@ -139,37 +185,32 @@ export const fetchVaultV2Data = async (
       }))
     ),
     Promise.all(
-      adapter.marketParamsList.map(async (params): Promise<VaultV2MarketData> => {
-        const position = positionByMarketId.get(params.id)
-        if (position === undefined) {
-          throw new InvalidVaultError(
-            `vault ${vault} adapter position missing for market ${params.id}`
-          )
+      adapterMarkets.map(
+        async ({ params, state, vaultAssets, rateAtTarget }): Promise<VaultV2MarketData> => {
+          const capId = VaultV2MorphoMarketV1Adapter.marketParamsId(adapterAddress, params)
+          const cap = await readCap(client, vault, capId, blockNumber)
+          return {
+            id: params.id,
+            capId,
+            params: {
+              loanToken: params.loanToken,
+              collateralToken: params.collateralToken,
+              oracle: params.oracle,
+              irm: params.irm,
+              lltv: params.lltv
+            },
+            state: {
+              totalSupplyAssets: state.totalSupplyAssets,
+              totalSupplyShares: state.totalSupplyShares,
+              totalBorrowAssets: state.totalBorrowAssets,
+              totalBorrowShares: state.totalBorrowShares
+            },
+            cap,
+            vaultAssets,
+            rateAtTarget
+          }
         }
-        const capId = VaultV2MorphoMarketV1Adapter.marketParamsId(adapterAddress, params)
-        const cap = await readCap(client, vault, capId, blockNumber)
-        const accrued = position.accrueInterest(now)
-        return {
-          id: params.id,
-          capId,
-          params: {
-            loanToken: params.loanToken,
-            collateralToken: params.collateralToken,
-            oracle: params.oracle,
-            irm: params.irm,
-            lltv: params.lltv
-          },
-          state: {
-            totalSupplyAssets: accrued.market.totalSupplyAssets,
-            totalSupplyShares: accrued.market.totalSupplyShares,
-            totalBorrowAssets: accrued.market.totalBorrowAssets,
-            totalBorrowShares: accrued.market.totalBorrowShares
-          },
-          cap,
-          vaultAssets: accrued.supplyAssets,
-          rateAtTarget: accrued.market.rateAtTarget ?? 0n
-        }
-      })
+      )
     )
   ])
 

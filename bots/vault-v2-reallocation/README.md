@@ -48,9 +48,10 @@ adapter (see `@repo/bot-kit`'s `Policy.multicall`).
 
 Assumptions and posture:
 
-- **Exactly one MorphoMarketV1 adapter per vault** — startup and every fetch fail loud otherwise.
-  `forceDeallocate`, liquidity adapters, gates, MetaMorpho (VaultV1) adapters, and
-  `MorphoMarketV1AdapterV2` are out of scope.
+- **Exactly one Morpho Blue market adapter per vault** (either adapter-contract generation,
+  `MorphoMarketV1Adapter` or `MorphoMarketV1AdapterV2` — live vaults use the latter) — startup and
+  every fetch fail loud otherwise. `forceDeallocate`, liquidity adapters, gates, and MetaMorpho
+  (VaultV1) adapters are out of scope.
 - **AdaptiveCurveIRM only**: the `apy-range` math assumes every market uses the canonical
   AdaptiveCurveIRM.
 - **Relative-cap staleness**: relative headroom moves with `totalAssets` between read and mine;
