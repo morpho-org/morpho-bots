@@ -1,6 +1,6 @@
 import type { Address, Hex } from 'viem'
 
-export type ApyRangePercent = { min: number; max: number }
+type ApyRangePercent = { min: number; max: number }
 
 /** Global default borrow-APY range (percent) when no vault or market override matches. */
 export const DEFAULT_APY_RANGE: ApyRangePercent = { min: 3, max: 8 }

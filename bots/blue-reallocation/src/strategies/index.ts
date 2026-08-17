@@ -1,3 +1,5 @@
+import { assertNever } from '@repo/utils'
+
 import type { Config } from '../config'
 import type { Strategy } from './strategy'
 
@@ -36,5 +38,7 @@ export const createStrategy = (config: Config): Strategy => {
         minUtilizationDeltaBips: vault =>
           resolveMinUtilizationDeltaBips(config.chainId, vault, config.minUtilizationDeltaBips)
       })
+    default:
+      return assertNever(config.strategy)
   }
 }

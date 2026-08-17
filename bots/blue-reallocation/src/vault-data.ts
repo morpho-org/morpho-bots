@@ -91,7 +91,7 @@ export const fetchVaultData = async (
           totalBorrowAssets: accrued.totalBorrowAssets,
           totalBorrowShares: accrued.totalBorrowShares
         },
-        cap: BigInt(cap),
+        cap,
         vaultAssets: SharesMath.toAssets(
           position.supplyShares,
           accrued.totalSupplyAssets,

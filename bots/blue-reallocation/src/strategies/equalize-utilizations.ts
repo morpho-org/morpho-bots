@@ -7,7 +7,7 @@ import type { MarketAllocation, Strategy } from './strategy'
 
 import { getDepositableAmount, getUtilization, getWithdrawableAmount } from '../math'
 
-export type EqualizeUtilizationsConfig = {
+type EqualizeUtilizationsConfig = {
   capBufferPercent: number
   /** Firing threshold: at least one market's utilization must deviate from target by this (bips). */
   minUtilizationDeltaBips: (vault: Address) => number
@@ -33,7 +33,7 @@ export const createEqualizeUtilizationsStrategy = (
     const totalBorrow = marketsData.reduce((acc, m) => acc + m.state.totalBorrowAssets, 0n)
     // Nothing supplied or nothing borrowed anywhere — every market already sits at the (degenerate)
     // target, and the per-market target math below would divide by zero.
-    if (totalSupply === 0n || totalBorrow === 0n) return
+    if (totalSupply === 0n || totalBorrow === 0n) return undefined
     const targetUtilization = wDivDown(totalBorrow, totalSupply)
 
     let totalWithdrawableAmount = 0n
@@ -60,7 +60,7 @@ export const createEqualizeUtilizationsStrategy = (
     }
 
     const toReallocate = min(totalWithdrawableAmount, totalDepositableAmount)
-    if (toReallocate === 0n || !didExceedMinUtilizationDelta) return
+    if (toReallocate === 0n || !didExceedMinUtilizationDelta) return undefined
 
     let remainingWithdrawal = toReallocate
     let remainingDeposit = toReallocate

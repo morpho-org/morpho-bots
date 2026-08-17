@@ -21,7 +21,7 @@ export const resetMarketCounter = () => {
   marketCounter = 0
 }
 
-export const makeMarketParams = (overrides?: Partial<InputMarketParams>): InputMarketParams => {
+const makeMarketParams = (overrides?: Partial<InputMarketParams>): InputMarketParams => {
   marketCounter++
   return {
     loanToken: LOAN_TOKEN,

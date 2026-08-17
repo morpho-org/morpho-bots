@@ -69,7 +69,11 @@ const processVault = async (
 
   if (deps.dryRun) {
     counters.dry_runs++
-    deps.logger.info('reallocation.dry_run', { vault, legs: allocations.length, allocations: summary })
+    deps.logger.info('reallocation.dry_run', {
+      vault,
+      legs: allocations.length,
+      allocations: summary
+    })
     return
   }
 

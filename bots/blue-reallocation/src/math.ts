@@ -35,7 +35,10 @@ export const getWithdrawableAmount = (
   marketData: VaultMarketData,
   targetUtilization: bigint
 ): bigint =>
-  MathLib.min(getWithdrawalToUtilization(marketData.state, targetUtilization), marketData.vaultAssets)
+  MathLib.min(
+    getWithdrawalToUtilization(marketData.state, targetUtilization),
+    marketData.vaultAssets
+  )
 
 /**
  * Assets depositable into a market before its utilization would fall below `targetUtilization`,

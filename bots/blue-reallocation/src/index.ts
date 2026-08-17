@@ -98,7 +98,10 @@ async function main() {
     }
     const role = await tryCatch(isAllocator(vault))
     if (role.error || !role.data) {
-      logger.warn('allocator.missing_role', { vault, detail: 'grant the allocator role to the EOA' })
+      logger.warn('allocator.missing_role', {
+        vault,
+        detail: 'grant the allocator role to the EOA'
+      })
     }
   }
 

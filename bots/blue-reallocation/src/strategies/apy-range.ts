@@ -103,7 +103,7 @@ export const createApyRangeStrategy = (config: ApyRangeConfig): Strategy => {
     }
 
     const toReallocate = min(totalWithdrawableAmount, totalDepositableAmount)
-    if (toReallocate === 0n || !didExceedMinApyDelta) return
+    if (toReallocate === 0n || !didExceedMinApyDelta) return undefined
 
     let remainingWithdrawal = toReallocate
     let remainingDeposit = toReallocate

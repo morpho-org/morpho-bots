@@ -17,7 +17,7 @@ const CHAIN_MAP: Record<number, Chain> = {
 const LOG_LEVELS = ['debug', 'info', 'warn', 'error'] as const
 const PRIVATE_KEY_HEX_LENGTH = 66 // '0x' + 32 bytes
 
-export const STRATEGY_NAMES = ['apy-range', 'equalize-utilizations'] as const
+const STRATEGY_NAMES = ['apy-range', 'equalize-utilizations'] as const
 export type StrategyName = (typeof STRATEGY_NAMES)[number]
 
 const DEFAULT_MAX_FEE_GWEI = '300'
@@ -148,7 +148,9 @@ export const loadConfig = (
   const chain = chainMap[chainId]
   if (!chain) {
     const supported = Object.keys(chainMap).join(', ') || '(none configured)'
-    throw new InvalidConfigError(`Unsupported CHAIN_ID ${chainId}; supported chain ids: ${supported}`)
+    throw new InvalidConfigError(
+      `Unsupported CHAIN_ID ${chainId}; supported chain ids: ${supported}`
+    )
   }
 
   const rpcUrl = required(env, 'RPC_URL')

@@ -25,6 +25,14 @@ jobs:
       stage: staging
       ref: ${{ github.sha }}
 
+  blue-realloc:
+    uses: ./.github/workflows/deploy-bot.yml
+    secrets: inherit
+    with:
+      bot: blue-realloc
+      stage: staging
+      ref: ${{ github.sha }}
+
   midnight-liq:
     uses: ./.github/workflows/deploy-bot.yml
     secrets: inherit

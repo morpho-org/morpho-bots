@@ -61,12 +61,17 @@ describe('IRM curve inversion', () => {
   })
 
   it('round-trips utilization through the curve', () => {
-    for (const utilization of [parseUnits('0.5', 18), parseUnits('0.9', 18), parseUnits('0.95', 18)]) {
+    for (const utilization of [
+      parseUnits('0.5', 18),
+      parseUnits('0.9', 18),
+      parseUnits('0.95', 18)
+    ]) {
       const roundTripped = rateToUtilization(
         utilizationToRate(utilization, RATE_AT_TARGET),
         RATE_AT_TARGET
       )
-      const delta = roundTripped > utilization ? roundTripped - utilization : utilization - roundTripped
+      const delta =
+        roundTripped > utilization ? roundTripped - utilization : utilization - roundTripped
       expect(delta).toBeLessThan(parseUnits('0.000001', 18))
     }
   })
