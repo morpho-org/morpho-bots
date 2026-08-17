@@ -400,7 +400,8 @@ The bot computes the oracle-priced reference output for free (no extra API call)
 route more than `MAX_ROUTE_IMPACT_BPS` below it (`quote.route_quality_failed`). Quote failures (no
 route, timeout, rate-limited, API error) log `quote.failed`; once every ranked venue is exhausted the
 position is backed off — an exponential per-position cooldown that bounds API + RPC usage when many
-positions fail (the rate-limit defense). A successful submit clears the backoff.
+positions fail (the rate-limit defense). Only a successful **broadcast** clears the backoff; a submit
+that returned without sending accumulates it instead, so the delay actually grows.
 
 If no venue is enabled (bad-debt-only mode) or the collateral is on `EXCLUDE_COLLATERALS`, the tick
 logs `config.no_swap_path` and skips the candidate (no API call, no backoff). Pure bad-debt
@@ -430,14 +431,43 @@ On simulation success, `@repo/bot-kit`'s shared pending queue
 sends the transaction through the signer client and tracks it by nonce and `(marketId, borrower)`
 label.
 
-While a label is pending, later ticks skip that position. On each block the queue checks receipts,
+While a label is pending, later ticks skip that position and count `inflightSkipped` (that set also
+holds labels whose transaction settled within the last `SETTLED_COOLDOWN_BLOCKS`, so the counter can
+be non-zero while the queue is empty). On each block the queue checks receipts,
 logs confirmed or reverted transactions, and fee-bumps stuck transactions until either they confirm,
 hit the fee ceiling, or exhaust bump attempts.
 
 Queue state is in-memory. On restart, chain truth wins: the bot rediscovers live candidates and the
-signer nonce cursor starts from the pending chain nonce. If the initial raw broadcast fails after a
-nonce is claimed but before a hash is returned, the signer rolls the cursor back and the queue aborts
-that tick instead of counting a hashless transaction as submitted.
+signer nonce cursor starts from the pending chain nonce.
+
+`submit` reports whether a transaction actually went out, and `tick.end`'s `submitted` counts only
+real broadcasts. The queue has five exits:
+
+| outcome                        | logged event        | tick effect                                  |
+| ------------------------------ | ------------------- | -------------------------------------------- |
+| broadcast                      | `tx.sent`           | `submitted`, clears the position's backoff   |
+| send failed (no nonce claimed) | `tx.submit_failed`  | `notSent`, backs the position off + cools it |
+| send latched after an abort    | `tx.send_aborted`   | `notSent` only — a queue-wide refusal        |
+| nonce cursor unusable          | `nonce.sync_failed` | `notSent` only — a queue-wide refusal        |
+| nonce hole below the cursor    | `queue.nonce_hole`  | `notSent` only — a queue-wide refusal        |
+
+A queue-wide refusal rejects _every_ send that tick, so backing off the position that happened to be
+in hand would suppress healthy positions for several blocks after the latch itself cleared.
+
+If the initial raw broadcast fails after a nonce is claimed but before a hash is returned, the signer
+rolls the cursor back and the queue aborts that tick instead of counting a hashless transaction as
+submitted. The tick still emits `tick.end`, with `complete: false` — so partial counters can never be
+mistaken for a genuinely idle tick.
+
+### Why a liquidatable position may not be planned
+
+A position the chain reports liquidatable can still fail to size. The tick counts every such case as
+`planSkipped` and emits a sampled `plan.skipped` carrying the sizing inputs AND the derived numbers
+(`lif`, `effectiveDebt`, `cap`, `capEff`, `seizedAssets`), so the decision can be replayed from one
+log line. Reasons: `seize_rounds_to_zero` (dust — the largest in-cap seize floors to zero collateral),
+`nothing_to_seize` (the best slot is empty), and `cap_not_positive` (a negative RCF numerator, which
+should be impossible and therefore logs at `warn`). The diagnostic is sampled at most once per
+`PLAN_SKIP_SAMPLE_EVERY_BLOCKS`; the counter is exact on every tick.
 
 ## Important Operational Notes
 

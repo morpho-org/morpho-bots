@@ -50,3 +50,10 @@ export const LISTED_MARKETS_MAX_AGE_MS = 10 * 60_000
  * sizing never depends on the swap-quoting package.
  */
 export const BPS = 10_000n
+
+/**
+ * Block cadence bounding the per-position `plan.skipped` diagnostic (~5 min at ~2s Base blocks). An
+ * unsizable position recurs every tick, so one line per position per block would be ~21k
+ * lines/hour/bot — all repeating one fact. The `planSkipped` counter stays exact regardless.
+ */
+export const PLAN_SKIP_SAMPLE_EVERY_BLOCKS = 150n

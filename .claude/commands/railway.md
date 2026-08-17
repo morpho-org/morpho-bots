@@ -42,8 +42,11 @@ railway status                            # lists services + Online/offline
 ```
 
 `midnight-liquidation` services: `bot`, `rindexer`, `Postgres`. Healthy `bot` ticks each block:
-`event="block.new"` → `event="lens.read"` → `event="tick.end"` (`liquidatable=`/`submitted=`
-counters), plus one `event="daemon.start"` at boot. Trouble = `event="tick.error"` or `[ERROR]`;
+`event="block.new"` → `event="lens.read"` → `event="tick.end"`, plus one `event="daemon.start"` at
+boot. In `tick.end`, `submitted=` counts only real broadcasts and `notSent=` counts submits that sent
+nothing; `liquidatable=` is a market gauge, so `liquidatable>0` with `planSkipped=` equal to it means
+the bot sees positions it cannot size — grep `plan.skipped` for the reason and the sizing numbers.
+`complete=false` marks a tick that aborted part-way, so its counters are partial. Trouble = `event="tick.error"` or `[ERROR]`;
 for a reverting tx grep `tx.dropped` / `tx.replace_failed` / `tx.submit_failed`. Triage by event,
 not the raw line — error lines historically carried a multi-KB calldata dump that shippers truncate.
 

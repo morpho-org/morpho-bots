@@ -1,4 +1,11 @@
-import type { Backoff, CooldownStore, Logger, SimulateResult } from '@repo/bot-kit'
+import type {
+  Backoff,
+  BlockSampler,
+  CooldownStore,
+  Logger,
+  SimulateResult,
+  SubmitOutcome
+} from '@repo/bot-kit'
 import type { QuoteOutcome, SwapPlan } from '@repo/swaps'
 import type { Address } from 'viem'
 
@@ -6,24 +13,60 @@ import { assertNever, lensKey, tryCatch } from '@repo/utils'
 
 import type { BorrowerCandidate } from '../discovery/borrowers'
 import type { MarketParams } from '../market'
-import type { LiquidationPlan } from '../sizing/plan'
+import type { LiquidationPlan, PlanSkipReason } from '../sizing/plan'
 import type { LensInput, LensOut } from '../state/lens.sol'
 
 import { marketId } from '../market'
-import { plan } from '../sizing/plan'
+import { planWithReason } from '../sizing/plan'
 import { isLiquidatable, planInputFromLens } from './eligibility'
 
+/**
+ * Per-tick outcome tally, emitted as `tick.end`, ordered as the pipeline runs. For a tick that
+ * finished (`complete: true`) these identities hold, so a stage added without a counter breaks a sum
+ * instead of silently dropping a position:
+ *
+ *   pairs       >= liquidatable
+ *   liquidatable === inflightSkipped + planSkipped + planned
+ *   planned      === cooledDown + backoffSkipped + noSwapPath + quoteFailed + ok + reverted
+ *   ok           === submitted + notSent
+ *
+ * On `complete: false` the last is short by one: an aborting `submit` throws after `ok` was counted.
+ */
 type TickCounters = {
+  /** Lens inputs read this tick — the discovery universe. */
   pairs: number
+  /** Positions the chain says are liquidatable at this block. A market gauge, not a bot decision. */
   liquidatable: number
+  /**
+   * Skipped because a tx for this label is in flight. The queue's backpressure set also holds labels
+   * that SETTLED within `settledCooldownBlocks`, so this can be non-zero while the queue is empty.
+   */
+  inflightSkipped: number
+  /** Skipped because sizing produced no plan — see the `plan.skipped` event for the reason. */
+  planSkipped: number
   planned: number
+  cooledDown: number
+  backoffSkipped: number
   noSwapPath: number
   quoteFailed: number
-  backoffSkipped: number
-  cooledDown: number
   ok: number
   reverted: number
+  /** Broadcast: the queue reported a transaction actually went out. */
   submitted: number
+  /** The queue returned without broadcasting (a send failure, or a queue-wide refusal). */
+  notSent: number
+}
+
+/**
+ * `warn` marks a reason that should not happen — `no_debt`/`healthy` negate `isLiquidatable`, and a
+ * non-reverting zero oracle price is a market anomaly — so the line reads as a live assertion.
+ */
+const LEVEL_BY_REASON: Record<PlanSkipReason, 'info' | 'warn'> = {
+  no_debt: 'warn',
+  healthy: 'warn',
+  zero_price: 'warn',
+  no_collateral: 'info',
+  seize_rounds_to_zero: 'info'
 }
 
 /**
@@ -38,6 +81,10 @@ type TickCounters = {
  * Discovery failure is tolerated: a transient error is logged (`discover.error`) and the tick proceeds
  * with zero new candidates. The lens reads every candidate fresh on-chain, so discovery is a coverage
  * source, never a correctness dependency — API indexing lag is coverage latency only.
+ *
+ * Every exit from the per-position loop increments exactly one counter, and `tick.end` is emitted even
+ * when a position aborts the tick — with `complete: false`, so partial counters can never be mistaken
+ * for a genuinely idle tick.
  */
 export async function runTick(deps: {
   discover: () => Promise<BorrowerCandidate[]>
@@ -56,7 +103,12 @@ export async function runTick(deps: {
     plan: LiquidationPlan
     swapPlan: SwapPlan
   }) => Promise<SimulateResult>
-  /** Broadcasts a plan via the pending queue (builds the exec tx, derives fees, tracks the nonce). */
+  /**
+   * Broadcasts a plan via the pending queue (builds the exec tx, derives fees, tracks the nonce).
+   * Reports whether a transaction actually went out: ONLY `kind: 'sent'` may clear the position's
+   * backoff. Throws when a send fails after claiming a nonce — the tick aborts by design, so the
+   * signer's cursor rollback is not raced.
+   */
   submit: (args: {
     market: MarketParams
     borrower: Address
@@ -64,15 +116,20 @@ export async function runTick(deps: {
     swapPlan: SwapPlan
     blockNumber: bigint
     label: string
-  }) => Promise<void>
-  /** Per-position exponential backoff suppressing repeated quote/simulate failures (rate-limit defense). */
+  }) => Promise<SubmitOutcome>
+  /** Per-position exponential backoff suppressing repeated quote/simulate/send failures (rate-limit defense). */
   backoff: Backoff
   /**
    * Opt-in per-position cooldown, complementary to `backoff`: a fixed wall-clock window suppressing
-   * re-quoting a position whose last attempt produced no submittable tx. Disabled by default
+   * re-quoting a position whose last attempt produced no broadcast tx. Disabled by default
    * (`POSITION_LIQUIDATION_COOLDOWN_MS=0`), in which case `shouldSkip` is always false.
    */
   cooldown: CooldownStore
+  /**
+   * Bounds how often the per-position `plan.skipped` diagnostic is emitted. Asked at most once per
+   * tick, so every line in a burst shares one `chainHead` and reads as a single snapshot.
+   */
+  planSkipSampler: BlockSampler
   /** Labels (`${id}:${borrower}`) already in flight — skipped to avoid re-submitting each block. */
   inflightLabels: () => ReadonlySet<string>
   logger: Logger
@@ -86,6 +143,7 @@ export async function runTick(deps: {
     submit,
     backoff,
     cooldown,
+    planSkipSampler,
     inflightLabels,
     logger
   } = deps
@@ -103,101 +161,138 @@ export async function runTick(deps: {
 
   // 2. Read the lens fresh for the whole batch in one deployless eth_call.
   const lensOut = await readLens(pairs)
-  logger.info('lens.read', { pairs: pairs.length, returned: lensOut.size })
+  // `returned` always equals `pairs` (the batch lens maps every input row); `invalid` is the
+  // informative one — a row the lens zeroed (unknown market, reverting oracle) would otherwise be
+  // indistinguishable from a healthy position inside `pairs - liquidatable`.
+  let invalid = 0
+  for (const out of lensOut.values()) if (!out.valid) invalid += 1
+  logger.info('lens.read', { pairs: pairs.length, returned: lensOut.size, invalid })
 
   const counters: TickCounters = {
     pairs: pairs.length,
     liquidatable: 0,
+    inflightSkipped: 0,
+    planSkipped: 0,
     planned: 0,
+    cooledDown: 0,
+    backoffSkipped: 0,
     noSwapPath: 0,
     quoteFailed: 0,
-    backoffSkipped: 0,
-    cooledDown: 0,
     ok: 0,
     reverted: 0,
-    submitted: 0
+    submitted: 0,
+    notSent: 0
   }
 
   // 3. Compose liquidatability off-chain → plan → quote → simulate → submit. `inflight` is captured
   //    once; discovery yields distinct (market, borrower) pairs, so no label repeats within a tick.
   const inflight = inflightLabels()
-  for (const pair of pairs) {
-    const id = marketId(pair.params)
-    const label = lensKey(id, pair.borrower)
-    const out = lensOut.get(label)
-    if (!out || !isLiquidatable(out)) continue
-    counters.liquidatable += 1
+  // Claimed once per tick, so a tick emits the whole blocker set or none of it, all sharing one
+  // `chainHead`. A claim on a skip-free tick is undone by the `reset` in the epilogue below.
+  const explainSkips = planSkipSampler.claim(chainHead)
 
-    // Backpressure: a tx for this position is already pending — don't re-plan/simulate/submit it
-    // every block while it confirms.
-    if (inflight.has(label)) continue
+  // Emit counters even when a position aborts the tick (a hashless send after the nonce was claimed
+  // throws by design) — without `complete`, partial counters look exactly like an idle tick.
+  let complete = false
+  try {
+    for (const pair of pairs) {
+      const id = marketId(pair.params)
+      const label = lensKey(id, pair.borrower)
+      const out = lensOut.get(label)
+      if (!out || !isLiquidatable(out)) continue
+      counters.liquidatable += 1
 
-    const liquidationPlan = plan(planInputFromLens(out))
-    if (!liquidationPlan) continue
-    counters.planned += 1
-    logger.info('plan.built', {
-      marketId: id,
-      borrower: pair.borrower,
-      seizedAssets: liquidationPlan.seizedAssets
-    })
+      // Backpressure: don't re-plan/simulate/submit while a tx confirms. No log — the queue already
+      // narrates this label end to end (`tx.sent` → `tx.confirmed`/`tx.reverted`/`tx.dropped`).
+      if (inflight.has(label)) {
+        counters.inflightSkipped += 1
+        continue
+      }
 
-    // Opt-in cooldown (complementary to backoff): a position whose last attempt produced no
-    // submittable tx is skipped without re-quoting until its wall-clock window elapses. No-op when
-    // disabled (POSITION_LIQUIDATION_COOLDOWN_MS=0).
-    if (cooldown.shouldSkip(label)) {
-      counters.cooledDown += 1
-      logger.info('cooldown.skip', { marketId: id, borrower: pair.borrower })
-      continue
-    }
-    // Suppress positions that keep failing to quote/simulate — bounds API + RPC usage under a
-    // backlog, since executable quotes are spent only on positions not currently backed off.
-    if (backoff.shouldSkip(label, chainHead)) {
-      counters.backoffSkipped += 1
-      continue
-    }
-    const outcome = await quoteFor(liquidationPlan, out, label)
-    if (outcome.kind === 'no_config') {
-      counters.noSwapPath += 1
-      cooldown.mark(label)
-      logger.info('config.no_swap_path', { marketId: id, borrower: pair.borrower })
-      continue
-    }
-    if (outcome.kind === 'failed') {
-      counters.quoteFailed += 1
-      backoff.record(label, chainHead)
-      cooldown.mark(label)
-      continue
-    }
-    const swapPlan = outcome.plan
+      const planInput = planInputFromLens(out)
+      const planOutcome = planWithReason(planInput)
+      if (planOutcome.kind === 'skip') {
+        counters.planSkipped += 1
+        if (explainSkips) {
+          // Inputs AND derived trace, so sizing replays from this one line. `marketId`/`borrower`
+          // last, so a future `PlanInput` field can never shadow them.
+          logger[LEVEL_BY_REASON[planOutcome.reason]]('plan.skipped', {
+            ...planInput,
+            ...planOutcome.trace,
+            reason: planOutcome.reason,
+            marketId: id,
+            borrower: pair.borrower
+          })
+        }
+        continue
+      }
 
-    const result = await simulate({
-      market: out.params,
-      borrower: pair.borrower,
-      plan: liquidationPlan,
-      swapPlan
-    })
-    const fields = { marketId: id, borrower: pair.borrower }
-    switch (result.status) {
-      case 'ok':
-        counters.ok += 1
-        logger.info('simulate.ok', fields)
-        break
-      case 'revert':
-        counters.reverted += 1
-        // Back off: a sim revert (stale quote, transient unliquidatability, oracle drift) shouldn't
-        // re-quote + re-simulate this position every block.
+      const liquidationPlan = planOutcome.plan
+      counters.planned += 1
+      logger.info('plan.built', {
+        marketId: id,
+        borrower: pair.borrower,
+        seizedAssets: liquidationPlan.seizedAssets
+      })
+
+      // Opt-in cooldown (complementary to backoff): a position whose last attempt produced no
+      // broadcast tx is skipped without re-quoting until its wall-clock window elapses. No-op when
+      // disabled (POSITION_LIQUIDATION_COOLDOWN_MS=0).
+      if (cooldown.shouldSkip(label)) {
+        counters.cooledDown += 1
+        logger.info('cooldown.skip', { marketId: id, borrower: pair.borrower })
+        continue
+      }
+      // Suppress positions that keep failing to quote/simulate/send — bounds API + RPC usage under a
+      // backlog, since executable quotes are spent only on positions not currently backed off.
+      if (backoff.shouldSkip(label, chainHead)) {
+        counters.backoffSkipped += 1
+        continue
+      }
+      const quote = await quoteFor(liquidationPlan, out, label)
+      if (quote.kind === 'no_config') {
+        counters.noSwapPath += 1
+        cooldown.mark(label)
+        logger.info('config.no_swap_path', { marketId: id, borrower: pair.borrower })
+        continue
+      }
+      if (quote.kind === 'failed') {
+        counters.quoteFailed += 1
         backoff.record(label, chainHead)
         cooldown.mark(label)
-        logger.warn('simulate.revert', { ...fields, reason: result.reason })
-        break
-      default:
-        assertNever(result.status)
-    }
+        continue
+      }
+      const swapPlan = quote.plan
 
-    // ok-only gate: broadcast only a fully-simulated, swap-funded liquidation. Any revert — not
-    // liquidatable, swap slippage, repay shortfall — isn't a fundable plan, so skip it.
-    if (result.status === 'ok') {
-      await submit({
+      const result = await simulate({
+        market: out.params,
+        borrower: pair.borrower,
+        plan: liquidationPlan,
+        swapPlan
+      })
+      const fields = { marketId: id, borrower: pair.borrower }
+      switch (result.status) {
+        case 'ok':
+          counters.ok += 1
+          logger.info('simulate.ok', fields)
+          break
+        case 'revert':
+          counters.reverted += 1
+          // Back off: a sim revert (stale quote, transient unliquidatability, oracle drift) shouldn't
+          // re-quote + re-simulate this position every block.
+          backoff.record(label, chainHead)
+          cooldown.mark(label)
+          logger.warn('simulate.revert', { ...fields, reason: result.reason })
+          break
+        default:
+          assertNever(result.status)
+      }
+
+      // ok-only gate: broadcast only a fully-simulated, swap-funded liquidation. Any revert — not
+      // liquidatable, swap slippage, repay shortfall — isn't a fundable plan, so skip it.
+      if (result.status !== 'ok') continue
+
+      const sendOutcome = await submit({
         market: out.params,
         borrower: pair.borrower,
         plan: liquidationPlan,
@@ -205,11 +300,26 @@ export async function runTick(deps: {
         blockNumber: chainHead,
         label
       })
-      backoff.clear(label)
-      counters.submitted += 1
+      if (sendOutcome.kind === 'sent') {
+        backoff.clear(label)
+        counters.submitted += 1
+        continue
+      }
+      counters.notSent += 1
+      // Only a failure scoped to THIS position earns a backoff. A queue-scoped refusal rejects every
+      // send this tick, so backing off here would suppress positions that did nothing wrong, for 2,
+      // 4, 8… blocks after the latch itself cleared.
+      if (sendOutcome.scope === 'position') {
+        backoff.record(label, chainHead)
+        cooldown.mark(label)
+      }
     }
+    complete = true
+  } finally {
+    // Undo the eager claim when nothing was skipped, so the first skip after any quiet stretch is
+    // always explained (edge-triggering).
+    if (counters.planSkipped === 0) planSkipSampler.reset()
+    logger.info('tick.end', { ...counters, complete })
   }
-
-  logger.info('tick.end', { ...counters })
   return counters
 }
