@@ -15,8 +15,8 @@ describe('encodeReallocation', () => {
     const hotParams = makeMarketParams()
     const coldParams = makeMarketParams()
     const data = encodeReallocation(ADAPTER, {
-      allocations: [{ marketParams: hotParams, assets: parseUnits('123', 6) }],
-      deallocations: [{ marketParams: coldParams, assets: parseUnits('456', 6) }]
+      allocations: [{ marketId: '0x01', marketParams: hotParams, assets: parseUnits('123', 6) }],
+      deallocations: [{ marketId: '0x02', marketParams: coldParams, assets: parseUnits('456', 6) }]
     })
 
     const outer = decodeFunctionData({ abi: vaultV2Abi, data })
@@ -45,7 +45,7 @@ describe('encodeReallocation', () => {
     const params = makeMarketParams()
     const data = encodeReallocation(ADAPTER, {
       allocations: [],
-      deallocations: [{ marketParams: params, assets: 1n }]
+      deallocations: [{ marketId: '0x01', marketParams: params, assets: 1n }]
     })
     const outer = decodeFunctionData({ abi: vaultV2Abi, data })
     if (outer.functionName !== 'multicall') throw new Error('expected multicall')

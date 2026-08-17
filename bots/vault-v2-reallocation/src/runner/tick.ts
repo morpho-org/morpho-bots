@@ -11,6 +11,12 @@ export type TickDeps = {
   chainHead: bigint
   /** Live allocator-role check; a vault without the role is skipped (and resumes once granted). */
   isAllocator: (vault: Address) => Promise<boolean>
+  /**
+   * The adapter the signing policy was pinned to at startup. A curator swapping the adapter
+   * mid-run would otherwise surface as an opaque PolicyViolationError on every submit — the tick
+   * skips the vault with an actionable `adapter.changed` instead (restart to re-pin).
+   */
+  expectedAdapter: (vault: Address) => Address | undefined
   fetchVault: (vault: Address, blockNumber: bigint) => Promise<VaultV2Data>
   strategy: Strategy
   encodeReallocation: (vaultData: VaultV2Data, reallocation: Reallocation) => Hex
@@ -28,6 +34,7 @@ type TickCounters = {
   vaults: number
   skipped_inflight: number
   missing_role: number
+  adapter_changed: number
   reallocations_found: number
   sim_reverts: number
   dry_runs: number
@@ -38,12 +45,14 @@ type TickCounters = {
 const summarize = (reallocation: Reallocation) => [
   ...reallocation.deallocations.map(leg => ({
     action: 'deallocate',
+    marketId: leg.marketId,
     collateralToken: leg.marketParams.collateralToken,
     lltv: leg.marketParams.lltv,
     assets: leg.assets
   })),
   ...reallocation.allocations.map(leg => ({
     action: 'allocate',
+    marketId: leg.marketId,
     collateralToken: leg.marketParams.collateralToken,
     lltv: leg.marketParams.lltv,
     assets: leg.assets
@@ -62,6 +71,18 @@ const processVault = async (
   }
 
   const vaultData = await deps.fetchVault(vault, deps.chainHead)
+
+  const expectedAdapter = deps.expectedAdapter(vault)
+  if (expectedAdapter !== undefined && vaultData.adapterAddress !== expectedAdapter) {
+    counters.adapter_changed++
+    deps.logger.warn('adapter.changed', {
+      vault,
+      expected: expectedAdapter,
+      actual: vaultData.adapterAddress,
+      detail: 'restart the bot to re-pin the signing policy to the new adapter'
+    })
+    return
+  }
 
   // Surfaced because `apy-range` excludes these outright — the curve inversion it relies on needs a
   // real AdaptiveCurveIRM `rateAtTarget` (`equalize-utilizations` keeps them).
@@ -110,6 +131,7 @@ export const runTick = async (deps: TickDeps): Promise<void> => {
     vaults: deps.vaults.length,
     skipped_inflight: 0,
     missing_role: 0,
+    adapter_changed: 0,
     reallocations_found: 0,
     sim_reverts: 0,
     dry_runs: 0,

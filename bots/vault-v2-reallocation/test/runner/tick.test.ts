@@ -32,8 +32,10 @@ const someVaultData = (): VaultV2Data =>
   makeVaultData([makeMarket({ utilization: 0n, vaultAssets: 0n, rateAtTarget: RATE_AT_TARGET })])
 
 const someReallocation = (): Reallocation => ({
-  allocations: [{ marketParams: makeMarketParams(), assets: parseUnits('1', 6) }],
-  deallocations: [{ marketParams: makeMarketParams(), assets: parseUnits('1', 6) }]
+  allocations: [{ marketId: '0x01', marketParams: makeMarketParams(), assets: parseUnits('1', 6) }],
+  deallocations: [
+    { marketId: '0x02', marketParams: makeMarketParams(), assets: parseUnits('1', 6) }
+  ]
 })
 
 const makeDeps = (overrides: Partial<TickDeps> = {}) => {
@@ -42,6 +44,7 @@ const makeDeps = (overrides: Partial<TickDeps> = {}) => {
     vaults: [VAULT_A],
     chainHead: 100n,
     isAllocator: vi.fn(async () => true),
+    expectedAdapter: vi.fn(() => undefined),
     fetchVault: vi.fn(async () => someVaultData()),
     strategy: vi.fn(() => undefined),
     encodeReallocation: vi.fn(() => DATA),
@@ -112,6 +115,18 @@ describe('runTick', () => {
     expect(deps.isAllocator).not.toHaveBeenCalled()
     expect(deps.fetchVault).not.toHaveBeenCalled()
     expect(tickEnd(events)).toMatchObject({ skipped_inflight: 1 })
+  })
+
+  it('skips a vault whose adapter changed since the policy was pinned', async () => {
+    const OTHER_ADAPTER = getAddress(`0x${'cc'.repeat(20)}`)
+    const { deps, events } = makeDeps({
+      strategy: vi.fn(() => someReallocation()),
+      expectedAdapter: vi.fn(() => OTHER_ADAPTER)
+    })
+    await runTick(deps)
+    expect(deps.submit).not.toHaveBeenCalled()
+    expect(events.some(e => e.event === 'adapter.changed' && e.level === 'warn')).toBe(true)
+    expect(tickEnd(events)).toMatchObject({ adapter_changed: 1, submitted: 0 })
   })
 
   it('skips fetch/strategy/simulate while the allocator role is missing', async () => {

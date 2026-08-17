@@ -162,6 +162,7 @@ async function main() {
       vaults: config.vaultWhitelist,
       chainHead,
       isAllocator,
+      expectedAdapter: vault => adapterByVault[vault]?.[0],
       fetchVault: (vault, blockNumber) =>
         fetchVaultV2Data(client, vault, { chainId: config.chainId, blockNumber }),
       strategy,

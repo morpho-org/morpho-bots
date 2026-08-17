@@ -185,6 +185,18 @@ describe('evaluatePolicy multicall envelope', () => {
     ).toMatchObject({ ok: false, check: 'data' })
   })
 
+  it('rejects a first argument word with dirty upper bits', () => {
+    const allocateSelector = toFunctionSelector('function allocate(address, bytes, uint256)')
+    // A registered adapter smuggled inside a word whose top 12 bytes are non-zero.
+    const dirtyWord = `${'de'.repeat(12)}${ADAPTER_A.slice(2)}`
+    expect(
+      evaluatePolicy(
+        MULTICALL_POLICY,
+        mtx({ data: bundle([`${allocateSelector}${dirtyWord}${'00'.repeat(64)}`]) })
+      )
+    ).toMatchObject({ ok: false, check: 'data' })
+  })
+
   it('leaves policies without a multicall spec unchanged', () => {
     expect(evaluatePolicy(POLICY, tx())).toEqual({ ok: true })
   })

@@ -1,5 +1,6 @@
 import type { Address, Hex } from 'viem'
 
+import { tryCatch } from '@repo/utils'
 import { decodeAbiParameters, isAddress, isAddressEqual } from 'viem'
 
 /** The only Executor entrypoint the signer authorizes: exec_606BaXt(bytes[]). */
@@ -114,7 +115,9 @@ export function evaluatePolicy(policy: Policy, tx: PolicyTx): PolicyDecision {
     return deny('selector', `calldata must call configured selector ${selector}`)
   }
   if (policy.multicall) {
-    const reason = checkMulticall(policy.multicall, tx)
+    // A throw out of the deep check must never escape the PolicyDecision contract — default-deny.
+    const { data: reason, error } = tryCatch(() => checkMulticall(policy.multicall!, tx))
+    if (error) return deny('data', 'multicall authorization threw; denying')
     if (reason !== undefined) return deny('data', reason)
   }
   return { ok: true }

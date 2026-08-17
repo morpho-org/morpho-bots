@@ -2,11 +2,13 @@ import type { Address, Hex } from 'viem'
 
 import { MathLib } from '@morpho-org/blue-sdk'
 
+import type { VaultV2MarketData } from '../vault-data'
 import type { Reallocation, ReallocationAction, Strategy } from './strategy'
 
 import {
   apyToRate,
   createDepositPools,
+  creditPools,
   getDepositableAmount,
   getUtilization,
   getWithdrawableAmount,
@@ -28,6 +30,29 @@ export type ApyRangeConfig = {
 
 const { min } = MathLib
 
+/** Where a market's utilization sits relative to the utilization bounds its APY range implies. */
+const classifyMarket = (
+  config: ApyRangeConfig,
+  vault: Address,
+  marketData: VaultV2MarketData
+): { utilization: bigint; lowerBound: bigint; upperBound: bigint } => {
+  const apyRange = config.apyRange(vault, marketData.id)
+  return {
+    utilization: getUtilization(marketData.state),
+    lowerBound: rateToUtilization(apyToRate(apyRange.min), marketData.rateAtTarget),
+    upperBound: rateToUtilization(apyToRate(apyRange.max), marketData.rateAtTarget)
+  }
+}
+
+const apyDeltaBips = (from: bigint, to: bigint, rateAtTarget: bigint): number =>
+  Math.abs(
+    Number(
+      (rateToApy(utilizationToRate(to, rateAtTarget)) -
+        rateToApy(utilizationToRate(from, rateAtTarget))) /
+        1_000_000_000n
+    ) / 1e5
+  )
+
 /**
  * Keeps each market's borrow APY inside its configured range: converts the APY bounds to
  * utilization bounds via the AdaptiveCurveIRM inverse, deallocates from markets below range,
@@ -38,57 +63,49 @@ const { min } = MathLib
  * Only markets on the canonical AdaptiveCurveIRM participate — the inversion is meaningless without
  * a real `rateAtTarget`, so a foreign-IRM market is excluded from both legs rather than misread
  * (see `isAdaptiveCurve` on the market data). Allocations respect the market, adapter-level, and
- * collateral-level caps.
+ * collateral-level caps; capacity freed by this plan's own deallocations (executed first) counts.
  */
 export const createApyRangeStrategy = (config: ApyRangeConfig): Strategy => {
   return vaultData => {
     const vault = vaultData.vaultAddress
     const marketsData = vaultData.marketsData.filter(marketData => marketData.isAdaptiveCurve)
 
+    // True only if at least one market that actually CONTRIBUTES assets moves enough — a capped-out
+    // or empty market must not arm the trigger for a plan whose real legs are all sub-threshold.
+    let didExceedMinApyDelta = false
+
+    // Deallocations size first (the contract executes them first), crediting the freed capacity to
+    // the aggregate cap pools the allocation sizing then draws from. Both the sizing and leg passes
+    // walk markets in the same order with the same clamps, so the totals gathered here equal what
+    // the leg pass can actually emit.
     let totalAmountToDeallocate = 0n
-    let totalAmountToAllocate = 0n
-
-    let didExceedMinApyDelta = false // true if *at least one* market moves enough
-
-    // Both passes iterate markets in the same order with the same clamps, so the totals gathered
-    // here (pool-clamped) equal what the leg pass can actually emit.
     const sizingPools = createDepositPools(vaultData, config.capBufferPercent)
     for (const marketData of marketsData) {
-      const apyRange = config.apyRange(vault, marketData.id)
-      const upperUtilizationBound = rateToUtilization(
-        apyToRate(apyRange.max),
-        marketData.rateAtTarget
-      )
-      const lowerUtilizationBound = rateToUtilization(
-        apyToRate(apyRange.min),
-        marketData.rateAtTarget
-      )
-      const utilization = getUtilization(marketData.state)
-
-      if (utilization > upperUtilizationBound) {
-        totalAmountToAllocate += takeFromPools(
-          sizingPools,
-          marketData.params.collateralToken,
-          getDepositableAmount(
-            marketData,
-            vaultData.totalAssets,
-            upperUtilizationBound,
-            config.capBufferPercent
-          )
-        )
-        const apyDelta =
-          rateToApy(utilizationToRate(upperUtilizationBound, marketData.rateAtTarget)) -
-          rateToApy(utilizationToRate(utilization, marketData.rateAtTarget))
+      const { utilization, lowerBound } = classifyMarket(config, vault, marketData)
+      if (utilization >= lowerBound) continue
+      const contribution = getWithdrawableAmount(marketData, lowerBound)
+      totalAmountToDeallocate += contribution
+      creditPools(sizingPools, marketData.params.collateralToken, contribution)
+      if (contribution > 0n) {
         didExceedMinApyDelta ||=
-          Math.abs(Number(apyDelta / 1_000_000_000n) / 1e5) >
+          apyDeltaBips(utilization, lowerBound, marketData.rateAtTarget) >
           config.minApyDeltaBips(vault, marketData.id)
-      } else if (utilization < lowerUtilizationBound) {
-        totalAmountToDeallocate += getWithdrawableAmount(marketData, lowerUtilizationBound)
-        const apyDelta =
-          rateToApy(utilizationToRate(lowerUtilizationBound, marketData.rateAtTarget)) -
-          rateToApy(utilizationToRate(utilization, marketData.rateAtTarget))
+      }
+    }
+
+    let totalAmountToAllocate = 0n
+    for (const marketData of marketsData) {
+      const { utilization, upperBound } = classifyMarket(config, vault, marketData)
+      if (utilization <= upperBound) continue
+      const contribution = takeFromPools(
+        sizingPools,
+        marketData.params.collateralToken,
+        getDepositableAmount(marketData, vaultData.totalAssets, upperBound, config.capBufferPercent)
+      )
+      totalAmountToAllocate += contribution
+      if (contribution > 0n) {
         didExceedMinApyDelta ||=
-          Math.abs(Number(apyDelta / 1_000_000_000n) / 1e5) >
+          apyDeltaBips(utilization, upperBound, marketData.rateAtTarget) >
           config.minApyDeltaBips(vault, marketData.id)
       }
     }
@@ -113,44 +130,46 @@ export const createApyRangeStrategy = (config: ApyRangeConfig): Strategy => {
 
     const legPools = createDepositPools(vaultData, config.capBufferPercent)
     for (const marketData of marketsData) {
-      const apyRange = config.apyRange(vault, marketData.id)
-      const upperUtilizationBound = rateToUtilization(
-        apyToRate(apyRange.max),
-        marketData.rateAtTarget
+      if (remainingAmountToDeallocate === 0n) break
+      const { utilization, lowerBound } = classifyMarket(config, vault, marketData)
+      if (utilization >= lowerBound) continue
+      const toDeallocate = min(
+        getWithdrawableAmount(marketData, lowerBound),
+        remainingAmountToDeallocate
       )
-      const lowerUtilizationBound = rateToUtilization(
-        apyToRate(apyRange.min),
-        marketData.rateAtTarget
-      )
-      const utilization = getUtilization(marketData.state)
-
-      if (utilization > upperUtilizationBound) {
-        const desired = min(
-          getDepositableAmount(
-            marketData,
-            vaultData.totalAssets,
-            upperUtilizationBound,
-            config.capBufferPercent
-          ),
-          remainingAmountToAllocate
-        )
-        const toAllocate = takeFromPools(legPools, marketData.params.collateralToken, desired)
-        remainingAmountToAllocate -= toAllocate
-        if (toAllocate > 0n) {
-          allocations.push({ marketParams: marketData.params, assets: toAllocate })
-        }
-      } else if (utilization < lowerUtilizationBound) {
-        const toDeallocate = min(
-          getWithdrawableAmount(marketData, lowerUtilizationBound),
-          remainingAmountToDeallocate
-        )
-        remainingAmountToDeallocate -= toDeallocate
-        if (toDeallocate > 0n) {
-          deallocations.push({ marketParams: marketData.params, assets: toDeallocate })
-        }
+      remainingAmountToDeallocate -= toDeallocate
+      creditPools(legPools, marketData.params.collateralToken, toDeallocate)
+      if (toDeallocate > 0n) {
+        deallocations.push({
+          marketId: marketData.id,
+          marketParams: marketData.params,
+          assets: toDeallocate
+        })
       }
+    }
 
-      if (remainingAmountToDeallocate === 0n && remainingAmountToAllocate === 0n) break
+    for (const marketData of marketsData) {
+      if (remainingAmountToAllocate === 0n) break
+      const { utilization, upperBound } = classifyMarket(config, vault, marketData)
+      if (utilization <= upperBound) continue
+      const desired = min(
+        getDepositableAmount(
+          marketData,
+          vaultData.totalAssets,
+          upperBound,
+          config.capBufferPercent
+        ),
+        remainingAmountToAllocate
+      )
+      const toAllocate = takeFromPools(legPools, marketData.params.collateralToken, desired)
+      remainingAmountToAllocate -= toAllocate
+      if (toAllocate > 0n) {
+        allocations.push({
+          marketId: marketData.id,
+          marketParams: marketData.params,
+          assets: toAllocate
+        })
+      }
     }
 
     return { allocations, deallocations } satisfies Reallocation

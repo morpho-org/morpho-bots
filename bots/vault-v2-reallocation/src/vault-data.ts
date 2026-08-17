@@ -10,7 +10,7 @@ import {
 } from '@morpho-org/blue-sdk'
 import { fetchAccrualVaultV2, vaultV2Abi } from '@morpho-org/blue-sdk-viem'
 import { getAddress, isAddressEqual } from 'viem'
-import { getBlock, readContract } from 'viem/actions'
+import { getBlock, multicall } from 'viem/actions'
 
 import { InvalidVaultError } from './invalid-vault.error'
 
@@ -119,36 +119,33 @@ const normalizeAdapterMarkets = (adapter: MarketAdapter, timestamp: bigint): Ada
   })
 }
 
-const readCap = async (
+const CAP_FUNCTIONS = ['absoluteCap', 'relativeCap', 'allocation'] as const
+
+// One multicall for all ids' cap state — 3 × (markets + collaterals + 1) reads would otherwise be
+// individual eth_calls per tick.
+const readCaps = async (
   client: Client,
   vault: Address,
-  id: Hex,
+  ids: readonly Hex[],
   blockNumber: bigint
-): Promise<CapState> => {
-  const [absolute, relative, allocation] = await Promise.all([
-    readContract(client, {
-      address: vault,
-      abi: vaultV2Abi,
-      functionName: 'absoluteCap',
-      args: [id],
-      blockNumber
-    }),
-    readContract(client, {
-      address: vault,
-      abi: vaultV2Abi,
-      functionName: 'relativeCap',
-      args: [id],
-      blockNumber
-    }),
-    readContract(client, {
-      address: vault,
-      abi: vaultV2Abi,
-      functionName: 'allocation',
-      args: [id],
-      blockNumber
-    })
-  ])
-  return { absolute, relative, allocation }
+): Promise<CapState[]> => {
+  const results = await multicall(client, {
+    allowFailure: false,
+    blockNumber,
+    contracts: ids.flatMap(id =>
+      CAP_FUNCTIONS.map(functionName => ({
+        address: vault,
+        abi: vaultV2Abi,
+        functionName,
+        args: [id] as const
+      }))
+    )
+  })
+  return ids.map((_, i) => ({
+    absolute: results[i * CAP_FUNCTIONS.length] as bigint,
+    relative: results[i * CAP_FUNCTIONS.length + 1] as bigint,
+    allocation: results[i * CAP_FUNCTIONS.length + 2] as bigint
+  }))
 }
 
 /**
@@ -165,7 +162,12 @@ export const fetchVaultV2Data = async (
   vault: Address,
   { chainId, blockNumber }: { chainId: number; blockNumber: bigint }
 ): Promise<VaultV2Data> => {
-  const vaultV2 = await fetchAccrualVaultV2(vault, client, { chainId, blockNumber })
+  // Accrue to the pinned block's timestamp, not wall clock, so the snapshot is coherent and
+  // reproducible against the pinned reads.
+  const [{ timestamp }, vaultV2] = await Promise.all([
+    getBlock(client, { blockNumber }),
+    fetchAccrualVaultV2(vault, client, { chainId, blockNumber })
+  ])
 
   const marketAdapters = vaultV2.accrualAdapters.filter(
     (adapter): adapter is MarketAdapter =>
@@ -181,58 +183,54 @@ export const fetchVaultV2Data = async (
   const adapter = marketAdapters[0]!
   const adapterAddress = getAddress(adapter.address)
 
-  // Accrue to the pinned block's timestamp, not wall clock, so the snapshot is coherent and
-  // reproducible against the pinned reads.
-  const { timestamp } = await getBlock(client, { blockNumber })
   const adapterMarkets = normalizeAdapterMarkets(adapter, timestamp)
   const collateralTokens = [
     ...new Set(adapterMarkets.map(({ params }) => getAddress(params.collateralToken)))
   ]
 
-  const [adapterCap, collateralCapList, marketsData] = await Promise.all([
-    // Both adapter generations derive identical "this"/"collateralToken"/"this/marketParams" ids.
-    readCap(client, vault, VaultV2MorphoMarketV1Adapter.adapterId(adapterAddress), blockNumber),
-    Promise.all(
-      collateralTokens.map(async token => ({
-        token,
-        cap: await readCap(
-          client,
-          vault,
-          VaultV2MorphoMarketV1Adapter.collateralId(token),
-          blockNumber
-        )
-      }))
-    ),
-    Promise.all(
-      adapterMarkets.map(
-        async ({ params, state, vaultAssets, rateAtTarget }): Promise<VaultV2MarketData> => {
-          const capId = VaultV2MorphoMarketV1Adapter.marketParamsId(adapterAddress, params)
-          const cap = await readCap(client, vault, capId, blockNumber)
-          return {
-            id: params.id,
-            capId,
-            params: {
-              loanToken: params.loanToken,
-              collateralToken: params.collateralToken,
-              oracle: params.oracle,
-              irm: params.irm,
-              lltv: params.lltv
-            },
-            state: {
-              totalSupplyAssets: state.totalSupplyAssets,
-              totalSupplyShares: state.totalSupplyShares,
-              totalBorrowAssets: state.totalBorrowAssets,
-              totalBorrowShares: state.totalBorrowShares
-            },
-            cap,
-            vaultAssets,
-            rateAtTarget,
-            isAdaptiveCurve: isAdaptiveCurveMarket(params.irm, rateAtTarget, chainId)
-          }
-        }
-      )
-    )
-  ])
+  // Both adapter generations derive identical "this"/"collateralToken"/"this/marketParams" ids.
+  const marketCapIds = adapterMarkets.map(({ params }) =>
+    VaultV2MorphoMarketV1Adapter.marketParamsId(adapterAddress, params)
+  )
+  const caps = await readCaps(
+    client,
+    vault,
+    [
+      VaultV2MorphoMarketV1Adapter.adapterId(adapterAddress),
+      ...collateralTokens.map(token => VaultV2MorphoMarketV1Adapter.collateralId(token)),
+      ...marketCapIds
+    ],
+    blockNumber
+  )
+  const adapterCap = caps[0]!
+  const collateralCaps = Object.fromEntries(
+    collateralTokens.map((token, i) => [token, caps[1 + i]!])
+  )
+  const marketCaps = caps.slice(1 + collateralTokens.length)
+
+  const marketsData = adapterMarkets.map(
+    ({ params, state, vaultAssets, rateAtTarget }, i): VaultV2MarketData => ({
+      id: params.id,
+      capId: marketCapIds[i]!,
+      params: {
+        loanToken: params.loanToken,
+        collateralToken: params.collateralToken,
+        oracle: params.oracle,
+        irm: params.irm,
+        lltv: params.lltv
+      },
+      state: {
+        totalSupplyAssets: state.totalSupplyAssets,
+        totalSupplyShares: state.totalSupplyShares,
+        totalBorrowAssets: state.totalBorrowAssets,
+        totalBorrowShares: state.totalBorrowShares
+      },
+      cap: marketCaps[i]!,
+      vaultAssets,
+      rateAtTarget,
+      isAdaptiveCurve: isAdaptiveCurveMarket(params.irm, rateAtTarget, chainId)
+    })
+  )
 
   return {
     vaultAddress: vault,
@@ -240,7 +238,7 @@ export const fetchVaultV2Data = async (
     totalAssets: vaultV2.accrueInterest(timestamp).vault._totalAssets,
     idleAssets: vaultV2.assetBalance,
     adapterCap,
-    collateralCaps: Object.fromEntries(collateralCapList.map(({ token, cap }) => [token, cap])),
+    collateralCaps,
     marketsData
   }
 }

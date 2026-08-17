@@ -1,9 +1,12 @@
 import type { InputMarketParams } from '@morpho-org/blue-sdk'
+import type { Hex } from 'viem'
 
 import type { VaultV2Data } from '../vault-data'
 
 /** One delta leg: assets to allocate to (or deallocate from) the market with these params. */
 export type ReallocationAction = {
+  /** The Blue market id — carried for log correlation only; encoding uses `marketParams`. */
+  marketId: Hex
   marketParams: InputMarketParams
   assets: bigint
 }

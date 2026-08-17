@@ -24,8 +24,11 @@ default 10 min) throttles the actual reallocation passes. Each pass, per whiteli
    `absoluteCap`/`relativeCap`/`allocation` reads for every market id, the adapter id, and each
    collateral id. No Morpho API dependency.
 4. Run the strategy — a pure function of that snapshot, emitting **exact-amount deltas**
-   (`{allocations, deallocations}`); legs need not balance — the difference flows through the
-   vault's idle balance:
+   (`{allocations, deallocations}`). Legs need not balance: surplus deallocations park in the
+   vault's idle balance, and allocations may exceed deallocations by up to the idle balance.
+   Matching the original bot, a plan only fires when BOTH sides have at least one leg — pure idle
+   deployment (all markets above target, nothing to deallocate) does not fire; deploying fresh
+   idle is a deliberate follow-up decision, not an accident of this port:
    - **`equalize-utilizations`** (default; what production runs): converge every market to the
      vault-wide average utilization, `Σborrow / (Σsupply + idle)`. Fires only past
      `MIN_UTILIZATION_DELTA_BIPS`.
@@ -37,10 +40,12 @@ default 10 min) throttles the actual reallocation passes. Each pass, per whiteli
    (or log `reallocation.dry_run` when `DRY_RUN=true`).
 
 **All three cap levels are enforced in sizing** — per-market cap ids plus the adapter-level
-(`"this"`) and per-collateral cap ids, each measured against the on-chain `allocation(id)` the
-contract enforces (not accrued position assets), scaled by a 99.99% buffer so interest accrual
-between read and mined execution can't push a leg over cap. A binding aggregate cap shrinks the
-plan instead of producing a sim-revert loop.
+(`"this"`) and per-collateral cap ids. Headroom is measured from the ACCRUED position (each leg
+trues `allocation(id)` up to it before the contract's cap check; the aggregate pools add every
+market's accrual drift on top of the stored allocation), a relative cap of exactly WAD is honored
+as the contract's no-constraint sentinel, and capacity freed by the plan's own deallocations
+(executed first) is credited back. A 99.99% buffer absorbs accrual between read and mined
+execution. A binding aggregate cap shrinks the plan instead of producing a sim-revert loop.
 
 The signing policy is default-deny in depth: only value-0 `multicall(bytes[])` calls to whitelisted
 vaults are signed, and every inner call must be `allocate`/`deallocate` targeting that vault's own
@@ -52,6 +57,11 @@ Assumptions and posture:
   `MorphoMarketV1Adapter` or `MorphoMarketV1AdapterV2` — live vaults use the latter) — startup and
   every fetch fail loud otherwise. `forceDeallocate`, liquidity adapters, gates, and MetaMorpho
   (VaultV1) adapters are out of scope.
+- **The adapter's on-chain market list is the candidate set.** The original adapter generation
+  removes a market from its list when its allocation hits zero, so a fully-deallocated market
+  cannot be re-entered by this bot until some allocator supplies it again — size deallocations
+  accordingly (the strategies never fully exit a market on their own; only the vault-wide target
+  math can drive a position to zero).
 - **AdaptiveCurveIRM only**: the `apy-range` math assumes every market uses the canonical
   AdaptiveCurveIRM.
 - **Relative-cap staleness**: relative headroom moves with `totalAssets` between read and mine;

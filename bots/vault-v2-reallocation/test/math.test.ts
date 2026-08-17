@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 
 import {
   createDepositPools,
+  creditPools,
   getCapHeadroom,
   getDepositableAmount,
   getUtilization,
@@ -17,34 +18,41 @@ const WAD = 10n ** 18n
 describe('getCapHeadroom', () => {
   const totalAssets = parseUnits('100000', 6)
 
-  it('measures headroom against the on-chain allocation, not accrued assets', () => {
-    // allocation lags accrued position assets; headroom must use allocation.
+  it('measures headroom from the caller-provided basis', () => {
     const cap = {
       absolute: parseUnits('11000', 6),
       relative: WAD,
       allocation: parseUnits('10000', 6)
     }
-    const headroom = getCapHeadroom(cap, totalAssets, 100)
-    expect(headroom).toBe(parseUnits('1000', 6))
+    // The accrued position (basis) sits above the stored allocation — headroom shrinks with it,
+    // because allocate trues allocation up to the accrued position before the cap check.
+    expect(getCapHeadroom(cap, parseUnits('10500', 6), totalAssets, 100)).toBe(parseUnits('500', 6))
   })
 
-  it('applies the buffer to both cap legs and floors at zero', () => {
+  it('treats a WAD relative cap as no relative constraint, never a 100% ceiling', () => {
+    // The production shape: fully deployed vault, relativeCap = WAD, huge absolute cap. A binding
+    // 100%-of-totalAssets reading would return ~0 here and silently no-op the bot forever.
+    const cap = { absolute: parseUnits('1000000', 6), relative: WAD, allocation: totalAssets }
+    expect(getCapHeadroom(cap, totalAssets, totalAssets, 100)).toBe(parseUnits('900000', 6))
+  })
+
+  it('applies the buffer and floors at zero', () => {
     const cap = {
       absolute: parseUnits('10000', 6),
       relative: WAD,
       allocation: parseUnits('10000', 6)
     }
-    // Buffered absolute (99.99%) is below the allocation → zero headroom.
-    expect(getCapHeadroom(cap, totalAssets, 99.99)).toBe(0n)
+    // Buffered absolute (99.99%) is below the basis → zero headroom.
+    expect(getCapHeadroom(cap, parseUnits('10000', 6), totalAssets, 99.99)).toBe(0n)
   })
 
-  it('binds on the relative cap when it is the smaller ceiling', () => {
+  it('binds on a sub-WAD relative cap when it is the smaller ceiling', () => {
     const cap = {
       absolute: parseUnits('50000', 6),
       relative: parseUnits('0.1', 18), // 10% of totalAssets = 10k
       allocation: parseUnits('9000', 6)
     }
-    expect(getCapHeadroom(cap, totalAssets, 100)).toBe(parseUnits('1000', 6))
+    expect(getCapHeadroom(cap, parseUnits('9000', 6), totalAssets, 100)).toBe(parseUnits('1000', 6))
   })
 })
 
@@ -65,6 +73,20 @@ describe('getDepositableAmount / getWithdrawableAmount', () => {
       100
     )
     expect(depositable).toBe(parseUnits('100', 6))
+
+    // Accrual drift: the position accrued 40 past the stored allocation; allocate trues the
+    // allocation up before the cap check, so the drift eats into the headroom.
+    const drifted = {
+      ...market,
+      cap: { ...market.cap, allocation: vaultAssets - parseUnits('40', 6) }
+    }
+    expect(getDepositableAmount(drifted, parseUnits('100000', 6), (45n * WAD) / 100n, 100)).toBe(
+      parseUnits('100', 6)
+    )
+    const driftedAboveCapBase = { ...market, vaultAssets: vaultAssets + parseUnits('40', 6) }
+    expect(
+      getDepositableAmount(driftedAboveCapBase, parseUnits('100000', 6), (45n * WAD) / 100n, 100)
+    ).toBe(parseUnits('60', 6))
   })
 
   it('bounds withdrawals by the adapter position', () => {
@@ -74,6 +96,21 @@ describe('getDepositableAmount / getWithdrawableAmount', () => {
       rateAtTarget: RATE_AT_TARGET
     })
     expect(getWithdrawableAmount(market, (90n * WAD) / 100n)).toBe(market.vaultAssets)
+  })
+
+  it('sizes both directions to zero for a 0 target instead of dividing by zero', () => {
+    const market = makeMarket({
+      utilization: (45n * WAD) / 100n,
+      vaultAssets: parseUnits('10000', 6),
+      rateAtTarget: RATE_AT_TARGET
+    })
+    expect(getDepositableAmount(market, parseUnits('100000', 6), 0n, 100)).toBe(0n)
+    const emptyMarket = makeMarket({
+      utilization: 0n,
+      vaultAssets: parseUnits('10000', 6),
+      rateAtTarget: RATE_AT_TARGET
+    })
+    expect(getWithdrawableAmount(emptyMarket, 0n)).toBe(0n)
   })
 
   it('returns 0 utilization for an empty market instead of dividing by zero', () => {
@@ -117,6 +154,51 @@ describe('deposit pools', () => {
     // Both pools are now drained for this collateral.
     expect(takeFromPools(pools, collateral, parseUnits('500', 6))).toBe(0n)
     expect(pools.adapter).toBe(parseUnits('100', 6))
+  })
+
+  it("includes every market's accrual drift in the aggregate pool bases", () => {
+    const vaultAssets = parseUnits('10000', 6)
+    const market = makeMarket({
+      utilization: (50n * WAD) / 100n,
+      vaultAssets,
+      // Position accrued 100 past the stored market allocation.
+      cap: {
+        absolute: parseUnits('50000', 6),
+        relative: WAD,
+        allocation: vaultAssets - parseUnits('100', 6)
+      },
+      rateAtTarget: RATE_AT_TARGET
+    })
+    const vaultData = makeVaultData([market], {
+      adapterCap: {
+        absolute: parseUnits('10300', 6),
+        relative: WAD,
+        allocation: parseUnits('10000', 6)
+      }
+    })
+    const pools = createDepositPools(vaultData, 100)
+    // Adapter basis = stored 10000 + drift 100 → headroom 200 instead of 300.
+    expect(pools.adapter).toBe(parseUnits('200', 6))
+  })
+
+  it('credits deallocation legs back into both pools', () => {
+    const market = makeMarket({
+      utilization: (50n * WAD) / 100n,
+      vaultAssets: parseUnits('10000', 6),
+      rateAtTarget: RATE_AT_TARGET
+    })
+    const collateral = getAddress(market.params.collateralToken)
+    const vaultData = makeVaultData([market], {
+      adapterCap: {
+        absolute: parseUnits('10000', 6),
+        relative: WAD,
+        allocation: parseUnits('10000', 6)
+      }
+    })
+    const pools = createDepositPools(vaultData, 100)
+    expect(pools.adapter).toBe(0n)
+    creditPools(pools, collateral, parseUnits('700', 6))
+    expect(takeFromPools(pools, collateral, parseUnits('1000', 6))).toBe(parseUnits('700', 6))
   })
 
   it('treats an unknown collateral as having zero headroom', () => {

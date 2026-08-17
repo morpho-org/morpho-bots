@@ -194,6 +194,25 @@ describe('createApyRangeStrategy', () => {
     })
   })
 
+  describe('degenerate bounds', () => {
+    it('handles an APY range at/below the curve minimum (zero utilization bound) without throwing', () => {
+      // apyToRate(0.0001%) sits below the curve's minimum rate, so both bounds resolve to
+      // utilization 0 — every market reads "above range" with an unreachable 0 target.
+      const strategy = makeStrategy({ defaultApyRange: { min: 0.0001, max: 0.0002 } })
+      const hotMarket = makeMarket({
+        utilization: apyToUtilization(5, RATE_AT_TARGET),
+        vaultAssets: parseUnits('10000', 6),
+        rateAtTarget: RATE_AT_TARGET
+      })
+      const coldMarket = makeMarket({
+        utilization: apyToUtilization(0.5, RATE_AT_TARGET),
+        vaultAssets: parseUnits('20000', 6),
+        rateAtTarget: RATE_AT_TARGET
+      })
+      expect(strategy(makeVaultData([hotMarket, coldMarket]))).toBeUndefined()
+    })
+  })
+
   describe('foreign-IRM exclusion', () => {
     it('excludes non-AdaptiveCurve markets from both legs', () => {
       const strategy = makeStrategy()
@@ -282,7 +301,9 @@ describe('createApyRangeStrategy', () => {
       )
       expect(result).toBeDefined()
       const totalAllocated = result!.allocations.reduce((acc, l) => acc + l.assets, 0n)
-      expect(totalAllocated).toBeLessThanOrEqual(parseUnits('50', 6))
+      const totalDeallocated = result!.deallocations.reduce((acc, l) => acc + l.assets, 0n)
+      // The pool cap plus the capacity this plan's own deallocations free (they execute first).
+      expect(totalAllocated).toBeLessThanOrEqual(parseUnits('50', 6) + totalDeallocated)
       expect(totalAllocated).toBeGreaterThan(0n)
     })
   })

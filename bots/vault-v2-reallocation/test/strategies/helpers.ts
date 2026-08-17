@@ -50,8 +50,9 @@ export const makeMarket = (opts: {
   rateAtTarget: bigint
   params?: InputMarketParams
   isAdaptiveCurve?: boolean
+  supplyAssets?: bigint
 }): VaultV2MarketData => {
-  const totalSupplyAssets = parseUnits('100000', 6)
+  const totalSupplyAssets = opts.supplyAssets ?? parseUnits('100000', 6)
   const totalBorrowAssets = MathLib.wMulDown(totalSupplyAssets, opts.utilization)
   return {
     id: makeMarketId(),
