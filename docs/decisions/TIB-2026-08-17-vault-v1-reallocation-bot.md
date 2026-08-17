@@ -149,7 +149,9 @@ of a block-pinned snapshot — and it does not match the flat shape every other 
   is enforced in `vault-data.ts`, not merely assumed.
 - The bot's EOA satisfies MetaMorpho's `onlyAllocatorRole` — it is in the allocator set, or is the
   vault's curator or owner. A missing role is reported (`allocator.missing_role`) and the vault is
-  skipped, not retried into failure.
+  skipped, not retried into failure. This allocator-or-curator-or-owner widening is a Vault V1
+  semantic only: `VaultV2.allocate` requires strict `isAllocator[msg.sender]`, so the Vault V2 bot
+  keeps a narrow `isAllocator` gate.
 - **A market pinned at ~100% utilization reads as "APY too high" and therefore attracts deposits.**
   This is accepted behavior — the strategy is a policy function of borrow APY, and special-casing
   saturation would make the policy harder to reason about than the occasional deposit into a hot
