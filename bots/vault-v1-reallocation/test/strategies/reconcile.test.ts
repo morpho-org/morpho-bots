@@ -141,5 +141,26 @@ describe('createReconciler', () => {
       // Same shape with a contributing market clearing the threshold fires.
       expect(reconcileWith([hot.id])).toBeDefined()
     })
+
+    it('does not arm the gate from a clearing market the budget trims out entirely', () => {
+      const targetUtilization = (50n * WAD) / 100n
+      // hot1 alone can absorb 80k, so it consumes the whole budget in queue order and hot2 — the
+      // only market clearing the threshold — gets no leg at all.
+      const hot1 = market((90n * WAD) / 100n, 0n)
+      const hot2 = market((90n * WAD) / 100n, 0n)
+      const cold = market((25n * WAD) / 100n, parseUnits('50000', 6))
+      const cold2 = market((25n * WAD) / 100n, parseUnits('50000', 6))
+      const reconcileWith = (markets: (typeof cold)[]) =>
+        makeReconciler({ idle: 'ignore' }, marketData => ({
+          targetUtilization,
+          clearsMinDelta: marketData.id === hot2.id
+        }))(makeVaultData(markets))
+
+      expect(reconcileWith([hot1, hot2, cold])).toBeUndefined()
+      // Twice the budget reaches hot2, so its cleared threshold arms the plan.
+      const funded = reconcileWith([hot1, hot2, cold, cold2])
+      expect(funded).toBeDefined()
+      expect(funded!.map(leg => leg.marketParams)).toContainEqual(hot2.params)
+    })
   })
 })

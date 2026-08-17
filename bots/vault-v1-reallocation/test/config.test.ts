@@ -69,6 +69,7 @@ describe('loadConfig', () => {
     ['unknown strategy', { ...BASE_ENV, STRATEGY: 'yolo' }],
     ['interval not integer', { ...BASE_ENV, REALLOCATION_INTERVAL_MS: '5m' }],
     ['interval zero', { ...BASE_ENV, REALLOCATION_INTERVAL_MS: '0' }],
+    ['interval past 2^53', { ...BASE_ENV, REALLOCATION_INTERVAL_MS: '9'.repeat(400) }],
     ['bool malformed', { ...BASE_ENV, DRY_RUN: 'yes' }],
     ['fee malformed', { ...BASE_ENV, MAX_FEE_GWEI: '-1' }],
     ['log level unknown', { ...BASE_ENV, LOG_LEVEL: 'trace' }]

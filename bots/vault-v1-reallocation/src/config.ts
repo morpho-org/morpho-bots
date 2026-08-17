@@ -82,6 +82,11 @@ const intEnv = (
     throw new InvalidConfigError(`${name} must be a non-negative integer, got: ${env[name]}`)
   }
   const value = Number(raw)
+  // A digit string may still overflow to Infinity or lose precision past 2^53, which would silently
+  // distort the knob (e.g. an infinite interval freezes reallocation after the first pass).
+  if (!Number.isSafeInteger(value)) {
+    throw new InvalidConfigError(`${name} must be a safe integer, got: ${env[name]}`)
+  }
   if (bounds.min !== undefined && value < bounds.min) {
     throw new InvalidConfigError(`${name} must be >= ${bounds.min}, got: ${env[name]}`)
   }

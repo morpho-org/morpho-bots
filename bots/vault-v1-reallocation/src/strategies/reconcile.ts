@@ -36,15 +36,20 @@ type SizedMove = {
   marketData: VaultMarketData
   side: 'deposit' | 'withdraw'
   amount: bigint
+  clearsMinDelta: boolean
 }
 
 const { min } = MathLib
 
 /**
  * Turns a per-market target-utilization classifier into a {@link Strategy}: sizes each market's move
- * with the clamped Blue math, optionally nets the imbalance through the idle market, applies the
- * min-delta firing gate, trims both sides to the shared budget in withdraw-queue order, and emits the
- * `reallocate` legs (withdrawals first, the budget-exhausting deposit as `maxUint256`).
+ * with the clamped Blue math, optionally nets the imbalance through the idle market, trims both sides
+ * to the shared budget in withdraw-queue order, and emits the `reallocate` legs (withdrawals first,
+ * the budget-exhausting deposit as `maxUint256`).
+ *
+ * The min-delta firing gate is evaluated on the TRIMMED legs: a market whose move clears the
+ * threshold but whose take is entirely consumed by the budget cannot arm the plan, so a fired plan
+ * always contains at least one surviving leg worth its transaction. Idle legs never carry a verdict.
  *
  * This is the one place in the bot that builds legs; classifiers never size or clamp.
  */
@@ -56,7 +61,6 @@ export const createReconciler = (options: ReconcilerOptions): Strategy => {
     const moves: SizedMove[] = []
     let totalWithdrawableAmount = 0n
     let totalDepositableAmount = 0n
-    let didClearMinDelta = false // true if *at least one contributing* market moves enough
 
     for (const marketData of vaultData.marketsData) {
       if (isIdleMarket(marketData)) continue
@@ -75,10 +79,8 @@ export const createReconciler = (options: ReconcilerOptions): Strategy => {
       if (side === 'deposit') totalDepositableAmount += amount
       else totalWithdrawableAmount += amount
 
-      if (amount > 0n) {
-        didClearMinDelta ||= target.clearsMinDelta
-        moves.push({ marketData, side, amount })
-      }
+      if (amount > 0n)
+        moves.push({ marketData, side, amount, clearsMinDelta: target.clearsMinDelta })
     }
 
     let idleWithdrawal = 0n
@@ -104,19 +106,21 @@ export const createReconciler = (options: ReconcilerOptions): Strategy => {
     }
 
     const toReallocate = min(totalWithdrawableAmount, totalDepositableAmount)
-    if (toReallocate === 0n || !didClearMinDelta) return undefined
+    if (toReallocate === 0n) return undefined
 
     let remainingWithdrawal = toReallocate
     let remainingDeposit = toReallocate
+    let didClearMinDelta = false // true if *at least one surviving* leg moves enough
 
     const withdrawals: MarketAllocation[] = []
     const deposits: MarketAllocation[] = []
 
-    for (const { marketData, side, amount } of moves) {
+    for (const { marketData, side, amount, clearsMinDelta } of moves) {
       if (side === 'deposit') {
         const deposit = min(amount, remainingDeposit)
         if (deposit === 0n) continue
         remainingDeposit -= deposit
+        didClearMinDelta ||= clearsMinDelta
         deposits.push({
           marketParams: marketData.params,
           assets: remainingDeposit === 0n ? maxUint256 : marketData.vaultAssets + deposit
@@ -125,6 +129,7 @@ export const createReconciler = (options: ReconcilerOptions): Strategy => {
         const withdrawal = min(amount, remainingWithdrawal)
         if (withdrawal === 0n) continue
         remainingWithdrawal -= withdrawal
+        didClearMinDelta ||= clearsMinDelta
         withdrawals.push({
           marketParams: marketData.params,
           assets: marketData.vaultAssets - withdrawal
@@ -133,6 +138,8 @@ export const createReconciler = (options: ReconcilerOptions): Strategy => {
 
       if (remainingWithdrawal === 0n && remainingDeposit === 0n) break
     }
+
+    if (!didClearMinDelta) return undefined
 
     if (idleMarket) {
       if (idleWithdrawal > 0n) {
