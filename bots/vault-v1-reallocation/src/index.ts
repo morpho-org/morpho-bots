@@ -11,16 +11,16 @@ import {
   DEFAULT_MAX_DATA_BYTES,
   DEFAULT_MAX_GAS_LIMIT,
   initialFees,
-  railwayContext
+  railwayContext,
+  simulateCall
 } from '@repo/bot-kit'
 import { ensureError, tryCatch } from '@repo/utils'
-import { getAbiItem, toFunctionSelector } from 'viem'
+import { getAbiItem, isAddressEqual, toFunctionSelector } from 'viem'
 import { getBlockNumber, readContract } from 'viem/actions'
 
 import { loadConfig } from './config'
 import { InvalidVaultError } from './invalid-vault.error'
 import { runTick } from './runner/tick'
-import { simulateReallocate } from './simulate'
 import { createStrategy } from './strategies'
 import { revertReason } from './tx-error'
 import { fetchVaultData } from './vault-data'
@@ -68,17 +68,26 @@ async function main() {
 
   const client = createDeploylessClient(config)
 
+  // MetaMorpho's `onlyAllocatorRole` admits the allocator set plus the curator and the owner, so a
+  // curator- or owner-keyed EOA must not be gated out.
+  const hasAllocatorRole = async (vault: (typeof config.vaultWhitelist)[number]) => {
+    const [isAllocator, owner, curator] = await Promise.all([
+      readContract(client, {
+        address: vault,
+        abi: metaMorphoAbi,
+        functionName: 'isAllocator',
+        args: [eoa]
+      }),
+      readContract(client, { address: vault, abi: metaMorphoAbi, functionName: 'owner' }),
+      readContract(client, { address: vault, abi: metaMorphoAbi, functionName: 'curator' })
+    ])
+    return isAllocator || isAddressEqual(owner, eoa) || isAddressEqual(curator, eoa)
+  }
+
   // Startup vault validation: liveness (holds code) plus a V1-surface identity read — the signing
   // policy authorizes each whitelisted address as a tx target, so a non-MetaMorpho entry is fatal.
   // The allocator role is probed non-fatally: a pending grant must not crash-loop the bot; the tick
   // re-checks and resumes on its own.
-  const isAllocator = (vault: (typeof config.vaultWhitelist)[number]) =>
-    readContract(client, {
-      address: vault,
-      abi: metaMorphoAbi,
-      functionName: 'isAllocator',
-      args: [eoa]
-    })
   for (const vault of config.vaultWhitelist) {
     await assertContractDeployed(client, vault, 'VAULT_WHITELIST entry')
     const surface = await tryCatch(
@@ -96,7 +105,7 @@ async function main() {
         `VAULT_WHITELIST entry ${vault} does not answer the MetaMorpho V1 surface`
       )
     }
-    const role = await tryCatch(isAllocator(vault))
+    const role = await tryCatch(hasAllocatorRole(vault))
     if (role.error || !role.data) {
       logger.warn('allocator.missing_role', {
         vault,
@@ -139,12 +148,15 @@ async function main() {
     await runTick({
       vaults: config.vaultWhitelist,
       chainHead,
-      isAllocator,
+      hasAllocatorRole,
       fetchVault: (vault, blockNumber) =>
         fetchVaultData(client, vault, { chainId: config.chainId, blockNumber }),
       strategy,
       encodeReallocate: allocations => MetaMorphoAction.reallocate(allocations),
-      simulate: (vault, data) => simulateReallocate(client, { vault, eoa, data }),
+      // Byte-for-byte what gets broadcast. A revert here — role revoked, cap exceeded, inconsistent
+      // withdrawals/deposits, market removed from the queue — means do not send; the tick gates on
+      // `ok` only.
+      simulate: (vault, data) => simulateCall(client, { eoa, to: vault, data }),
       submit: async ({ vault, data, blockNumber }) => {
         const fees = initialFees(await signer.getBaseFee(), config.maxFeeWei)
         await queue.submit({

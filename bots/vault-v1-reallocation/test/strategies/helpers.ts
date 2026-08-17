@@ -43,6 +43,8 @@ export const makeMarket = (opts: {
   rateAtTarget: bigint
   id?: Hex
   params?: InputMarketParams
+  /** Defaults to true; set false to model a market on an IRM other than the AdaptiveCurveIRM. */
+  isAdaptiveCurve?: boolean
 }): VaultMarketData => {
   const totalSupplyAssets = parseUnits('100000', 6)
   const totalBorrowAssets = MathLib.wMulDown(totalSupplyAssets, opts.utilization)
@@ -57,7 +59,8 @@ export const makeMarket = (opts: {
     },
     cap: opts.cap,
     vaultAssets: opts.vaultAssets,
-    rateAtTarget: opts.rateAtTarget
+    rateAtTarget: opts.rateAtTarget,
+    isAdaptiveCurve: opts.isAdaptiveCurve ?? true
   }
 }
 
@@ -77,7 +80,8 @@ export const makeIdleMarket = (vaultAssets: bigint, cap?: bigint): VaultMarketDa
   },
   cap: cap ?? maxUint256,
   vaultAssets,
-  rateAtTarget: 0n
+  rateAtTarget: 0n,
+  isAdaptiveCurve: false
 })
 
 export const makeVaultData = (markets: VaultMarketData[], vault: Address = VAULT): VaultData => ({

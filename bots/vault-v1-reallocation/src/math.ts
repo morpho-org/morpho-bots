@@ -20,11 +20,15 @@ const getWithdrawalToUtilization = (state: MarketState, targetUtilization: bigin
     MathLib.WAD - MathLib.wDivDown(getUtilization(state), targetUtilization)
   )
 
+// A 0 target means "deposit until utilization reaches 0%", which no finite deposit achieves — and
+// `wDivDown(_, 0n)` would throw, erroring the whole vault every pass.
 const getDepositToUtilization = (state: MarketState, targetUtilization: bigint): bigint =>
-  MathLib.wMulDown(
-    state.totalSupplyAssets,
-    MathLib.wDivDown(getUtilization(state), targetUtilization) - MathLib.WAD
-  )
+  targetUtilization === 0n
+    ? 0n
+    : MathLib.wMulDown(
+        state.totalSupplyAssets,
+        MathLib.wDivDown(getUtilization(state), targetUtilization) - MathLib.WAD
+      )
 
 /**
  * Assets withdrawable from a market before its utilization would exceed `targetUtilization`,

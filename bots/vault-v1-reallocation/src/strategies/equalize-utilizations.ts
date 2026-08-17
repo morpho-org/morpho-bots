@@ -1,10 +1,11 @@
 import type { Address } from 'viem'
 
 import { MathLib } from '@morpho-org/blue-sdk'
-import { maxUint256, zeroAddress } from 'viem'
+import { maxUint256 } from 'viem'
 
 import type { MarketAllocation, Strategy } from './strategy'
 
+import { isIdleMarket } from '../market.utils'
 import { getDepositableAmount, getUtilization, getWithdrawableAmount } from '../math'
 
 type EqualizeUtilizationsConfig = {
@@ -13,28 +14,29 @@ type EqualizeUtilizationsConfig = {
   minUtilizationDeltaBips: (vault: Address) => number
 }
 
-const { min, wDivDown } = MathLib
+const { min, WAD, wDivDown } = MathLib
 
 /**
  * Converges every non-idle market toward the vault-wide average utilization
- * (`sum(totalBorrowAssets) / sum(totalSupplyAssets)`): withdraws from markets below it, deposits
- * into markets above it. The idle market is excluded entirely. Fires only when at least one
- * market's deviation exceeds the vault's min-delta threshold.
+ * (`sum(totalBorrowAssets) / sum(totalSupplyAssets)`, clamped at 100%): withdraws from markets below
+ * it, deposits into markets above it. The idle market is excluded entirely. Fires only when at least
+ * one market's deviation exceeds the vault's min-delta threshold. Utilization-only, so markets on any
+ * IRM participate.
  */
 export const createEqualizeUtilizationsStrategy = (
   config: EqualizeUtilizationsConfig
 ): Strategy => {
   return vaultData => {
-    const marketsData = vaultData.marketsData.filter(
-      marketData => marketData.params.collateralToken !== zeroAddress
-    )
+    const marketsData = vaultData.marketsData.filter(marketData => !isIdleMarket(marketData))
 
     const totalSupply = marketsData.reduce((acc, m) => acc + m.state.totalSupplyAssets, 0n)
     const totalBorrow = marketsData.reduce((acc, m) => acc + m.state.totalBorrowAssets, 0n)
     // Nothing supplied or nothing borrowed anywhere — every market already sits at the (degenerate)
     // target, and the per-market target math below would divide by zero.
     if (totalSupply === 0n || totalBorrow === 0n) return undefined
-    const targetUtilization = wDivDown(totalBorrow, totalSupply)
+    // Aggregate utilization exceeds 100% in bad-debt states; sizing withdrawals toward a >100% target
+    // asks for more than the markets hold, so every resulting plan reverts.
+    const targetUtilization = min(wDivDown(totalBorrow, totalSupply), WAD)
 
     let totalWithdrawableAmount = 0n
     let totalDepositableAmount = 0n
@@ -76,6 +78,7 @@ export const createEqualizeUtilizationsStrategy = (
           getDepositableAmount(marketData, targetUtilization, config.capBufferPercent),
           remainingDeposit
         )
+        if (deposit === 0n) continue
         remainingDeposit -= deposit
         deposits.push({
           marketParams: marketData.params,
@@ -86,6 +89,7 @@ export const createEqualizeUtilizationsStrategy = (
           getWithdrawableAmount(marketData, targetUtilization),
           remainingWithdrawal
         )
+        if (withdrawal === 0n) continue
         remainingWithdrawal -= withdrawal
         withdrawals.push({
           marketParams: marketData.params,

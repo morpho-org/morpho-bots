@@ -17,10 +17,13 @@ One long-running process per chain. A block watcher drives per-block queue maint
 default 10 min) throttles the actual reallocation passes. Each pass, per whitelisted vault:
 
 1. Skip if a reallocation tx for this vault is in flight or cooling down.
-2. Re-check the EOA's allocator role (`allocator.missing_role` + skip while absent — a pending
-   grant never crash-loops the bot, and a fresh grant is picked up without restart).
-3. Fetch a block-pinned snapshot over RPC (withdraw queue → per-market state/position/cap via
-   `@morpho-org/blue-sdk-viem`, interest accrued to now).
+2. Re-check that the EOA still satisfies `onlyAllocatorRole` (`allocator.missing_role` + skip while
+   absent — a pending grant never crash-loops the bot, and a fresh grant is picked up without
+   restart).
+3. Fetch a block-pinned snapshot in one deployless `fetchAccrualVault` query
+   (`@morpho-org/blue-sdk-viem`): the withdraw queue plus per-market state, position, and cap, with
+   interest accrued to the pinned block's own timestamp — never wall clock — so the snapshot is
+   reproducible.
 4. Run the strategy — a pure function of that snapshot:
    - **`apy-range`** (default): keep each market's borrow APY inside its configured range by
      inverting the AdaptiveCurveIRM curve; the idle market absorbs or supplies the imbalance
@@ -37,8 +40,12 @@ execution can't push a leg over cap. Withdrawals are listed first and the last d
 
 Assumptions and posture:
 
-- **AdaptiveCurveIRM only**: the `apy-range` math assumes every non-idle market uses the canonical
-  AdaptiveCurveIRM (its `rateAtTarget` drives the curve inversion).
+- **AdaptiveCurveIRM only, enforced**: the `apy-range` math needs a real `rateAtTarget` to invert the
+  curve, so markets not on the chain's canonical AdaptiveCurveIRM are excluded from both legs (logged
+  as `market.non_adaptive_curve`). `equalize-utilizations` is utilization-only and keeps them.
+- **A market pinned at ~100% utilization reads as "APY too high"** and therefore attracts deposits.
+  That is the intended direction (fresh supply is exactly what an exhausted market needs), so it is
+  documented rather than special-cased.
 - **The bot owns allocations between curator actions**: a plan is built, simulated, and submitted
   within a single pass (nothing unsent survives it), but a queued tx re-broadcasts the same
   calldata on fee bumps. The in-flight skip plus a settled cooldown bound how stale a mined
@@ -48,8 +55,10 @@ Assumptions and posture:
 
 ## Prerequisites
 
-- The EOA behind `REALLOCATOR_PRIVATE_KEY` must hold the **allocator role** (or curator/owner) on
-  every whitelisted vault. The bot only pays gas — reallocation moves vault funds, never the EOA's.
+- The EOA behind `REALLOCATOR_PRIVATE_KEY` must satisfy `onlyAllocatorRole` on every whitelisted
+  vault — i.e. be in the **allocator set**, or be the vault's **curator** or **owner**. All three are
+  accepted by the startup probe and the per-pass re-check. The bot only pays gas — reallocation moves
+  vault funds, never the EOA's.
 - An RPC endpoint per chain. Supported chains: mainnet (1), Base (8453) — extend `CHAIN_MAP` in
   [src/config.ts](./src/config.ts).
 
@@ -109,14 +118,15 @@ RAILWAY_PROJECT_ID=… RPC_URL_1=… VAULT_WHITELIST_1=0x… REALLOCATOR_PRIVATE
 
 Provisions one `bot-<chainId>` service per chain (new services start in dry-run). CI re-ships
 already-provisioned services with `DEPLOY_ONLY=1` on merge to main (staging) and via the
-`release-vault-v1-reallocation` PR label (production).
+`release-vault-v1-realloc` PR label (production).
 
 ## Observability
 
 Structured JSON-lines on stderr, one event per line, with `bot`/`chainId` (and Railway identity)
-stamped on every line. Key events: `startup`, `allocator.missing_role`, `reallocation.found`,
-`reallocation.sim_revert`, `reallocation.dry_run`, `vault.error`, per-pass `tick.end` counters
-(`vaults`, `reallocations_found`, `submitted`, `sim_reverts`, `missing_role`, `errors`,
+stamped on every line. Key events: `startup`, `allocator.missing_role`, `vault.inflight` (debug),
+`market.non_adaptive_curve` (debug), `reallocation.found`, `reallocation.sim_revert`,
+`reallocation.dry_run`, `vault.error`, per-pass `tick.end` counters (`vaults`, `skipped_inflight`,
+`missing_role`, `reallocations_found`, `sim_reverts`, `dry_runs`, `submitted`, `errors`,
 `duration_ms`), and the shared bot-kit `tx.*` / `signer.balance` / `block.new` events. BetterStack
 shipping and heartbeat are opt-in via the env vars above.
 

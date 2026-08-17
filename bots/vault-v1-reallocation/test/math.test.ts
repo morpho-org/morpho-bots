@@ -104,7 +104,8 @@ describe('sizing helpers', () => {
     },
     cap: parseUnits('100000', 6),
     vaultAssets: parseUnits('10000', 6),
-    rateAtTarget: RATE_AT_TARGET
+    rateAtTarget: RATE_AT_TARGET,
+    isAdaptiveCurve: true
   } as const
 
   it('bounds withdrawals by the vault position', () => {
@@ -122,5 +123,10 @@ describe('sizing helpers', () => {
   it('returns zero when the cap is already reached', () => {
     const atCap = { ...market, vaultAssets: market.cap }
     expect(getDepositableAmount(atCap, parseUnits('0.225', 18), 99.99)).toBe(0n)
+  })
+
+  it('returns zero depositable for a zero target instead of dividing by zero', () => {
+    // A configured max APY at or below the curve's minimum rate inverts to utilization 0.
+    expect(getDepositableAmount(market, 0n, 99.99)).toBe(0n)
   })
 })

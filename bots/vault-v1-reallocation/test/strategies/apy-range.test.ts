@@ -308,6 +308,93 @@ describe('createApyRangeStrategy', () => {
     })
   })
 
+  describe('non-AdaptiveCurve markets', () => {
+    // With rateAtTarget = 0 the curve inverse returns WAD for every rate, so both bounds collapse to
+    // WAD and the market reads as "far below range" — the strategy would withdraw the vault's entire
+    // position out of it on perfectly valid, simulation-passing calldata.
+    const foreignIrmMarket = () =>
+      makeMarket({
+        utilization: (50n * 10n ** 18n) / 100n,
+        vaultAssets: parseUnits('20000', 6),
+        cap: parseUnits('100000', 6),
+        rateAtTarget: 0n,
+        isAdaptiveCurve: false
+      })
+
+    it('never withdraws from a market that is not on the AdaptiveCurveIRM', () => {
+      const strategy = makeStrategy()
+      const foreign = foreignIrmMarket()
+      const depositMarket = makeMarket({
+        utilization: apyToUtilization(12, RATE_AT_TARGET),
+        vaultAssets: parseUnits('10000', 6),
+        cap: parseUnits('100000', 6),
+        rateAtTarget: RATE_AT_TARGET
+      })
+      const withdrawalMarket = makeMarket({
+        utilization: apyToUtilization(0.5, RATE_AT_TARGET),
+        vaultAssets: parseUnits('20000', 6),
+        cap: parseUnits('100000', 6),
+        rateAtTarget: RATE_AT_TARGET
+      })
+
+      const result = strategy(makeVaultData([foreign, depositMarket, withdrawalMarket]))
+
+      expect(result).toBeDefined()
+      expect(result!.map(r => r.marketParams)).not.toContainEqual(foreign.params)
+    })
+
+    it('does not let a non-AdaptiveCurve market trip the min-delta gate on its own', () => {
+      const strategy = makeStrategy()
+      const foreign = foreignIrmMarket()
+      const depositMarket = makeMarket({
+        utilization: apyToUtilization(12, RATE_AT_TARGET),
+        vaultAssets: parseUnits('10000', 6),
+        cap: parseUnits('100000', 6),
+        rateAtTarget: RATE_AT_TARGET
+      })
+      // Only counterpart is the foreign-IRM market: with it excluded there is nothing to withdraw.
+      expect(strategy(makeVaultData([foreign, depositMarket]))).toBeUndefined()
+    })
+  })
+
+  describe('idle market cap headroom', () => {
+    it('does not build a plan from negative idle headroom when the cap is below the allocation', () => {
+      const strategy = makeStrategy()
+      const withdrawalMarket = makeMarket({
+        utilization: apyToUtilization(0.5, RATE_AT_TARGET),
+        vaultAssets: parseUnits('20000', 6),
+        cap: parseUnits('100000', 6),
+        rateAtTarget: RATE_AT_TARGET
+      })
+      // A curator lowered the idle cap under the current allocation: `cap - vaultAssets` is negative.
+      const idleMarket = makeIdleMarket(parseUnits('50000', 6), parseUnits('10000', 6))
+
+      // The idle market is the only deposit target, and it has no headroom — so no plan at all,
+      // rather than a corrupt one-leg plan sized off a negative amount.
+      expect(strategy(makeVaultData([withdrawalMarket, idleMarket]))).toBeUndefined()
+    })
+
+    it('buffers the idle cap like every other deposit target', () => {
+      const strategy = makeStrategy()
+      const withdrawalMarket = makeMarket({
+        utilization: apyToUtilization(0.5, RATE_AT_TARGET),
+        vaultAssets: parseUnits('20000', 6),
+        cap: parseUnits('100000', 6),
+        rateAtTarget: RATE_AT_TARGET
+      })
+      const idleMarket = makeIdleMarket(0n, parseUnits('1000', 6))
+
+      const result = strategy(makeVaultData([withdrawalMarket, idleMarket]))
+
+      expect(result).toBeDefined()
+      const withdrawal = result!.find(r => r.marketParams === withdrawalMarket.params)!
+      // Bounded by 99.99% of the 1k idle cap, not the full 1k.
+      const moved = withdrawalMarket.vaultAssets - withdrawal.assets
+      expect(moved).toBeLessThan(parseUnits('1000', 6))
+      expect(moved).toBeGreaterThan(parseUnits('999', 6))
+    })
+  })
+
   describe('last deposit gets maxUint256', () => {
     it('assigns maxUint256 to the last deposit market', () => {
       const strategy = makeStrategy()

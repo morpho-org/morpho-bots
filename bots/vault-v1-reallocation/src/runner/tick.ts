@@ -1,17 +1,21 @@
-import type { Logger } from '@repo/bot-kit'
+import type { Logger, SimulateResult } from '@repo/bot-kit'
 import type { Address, Hex } from 'viem'
 
 import { tryCatch } from '@repo/utils'
 
-import type { SimulateResult } from '../simulate'
 import type { MarketAllocation, Strategy } from '../strategies'
 import type { VaultData } from '../vault-data'
+
+import { isIdleMarket } from '../market.utils'
 
 export type TickDeps = {
   vaults: Address[]
   chainHead: bigint
-  /** Live allocator-role check; a vault without the role is skipped (and resumes once granted). */
-  isAllocator: (vault: Address) => Promise<boolean>
+  /**
+   * Live `onlyAllocatorRole` check (allocator set, curator, or owner); a vault the EOA cannot
+   * reallocate is skipped, and resumes on its own once the role is granted.
+   */
+  hasAllocatorRole: (vault: Address) => Promise<boolean>
   fetchVault: (vault: Address, blockNumber: bigint) => Promise<VaultData>
   strategy: Strategy
   encodeReallocate: (allocations: MarketAllocation[]) => Hex
@@ -41,13 +45,23 @@ const processVault = async (
   vault: Address,
   counters: TickCounters
 ): Promise<void> => {
-  if (!(await deps.isAllocator(vault))) {
+  if (!(await deps.hasAllocatorRole(vault))) {
     counters.missing_role++
     deps.logger.warn('allocator.missing_role', { vault })
     return
   }
 
   const vaultData = await deps.fetchVault(vault, deps.chainHead)
+
+  // Surfaced because `apy-range` excludes these outright — the curve inversion it relies on needs a
+  // real AdaptiveCurveIRM `rateAtTarget` (`equalize-utilizations` keeps them).
+  const foreignIrmMarkets = vaultData.marketsData
+    .filter(marketData => !marketData.isAdaptiveCurve && !isIdleMarket(marketData))
+    .map(marketData => marketData.id)
+  if (foreignIrmMarkets.length > 0) {
+    deps.logger.debug('market.non_adaptive_curve', { vault, markets: foreignIrmMarkets })
+  }
+
   const allocations = deps.strategy(vaultData)
   if (!allocations) return
   counters.reallocations_found++

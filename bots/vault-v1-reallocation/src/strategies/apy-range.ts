@@ -1,15 +1,18 @@
 import type { Address, Hex } from 'viem'
 
 import { MathLib } from '@morpho-org/blue-sdk'
-import { maxUint256, zeroAddress } from 'viem'
+import { maxUint256 } from 'viem'
 
+import type { VaultMarketData } from '../vault-data'
 import type { MarketAllocation, Strategy } from './strategy'
 
+import { isIdleMarket } from '../market.utils'
 import {
   apyToRate,
   getDepositableAmount,
   getUtilization,
   getWithdrawableAmount,
+  percentToWad,
   rateToApy,
   rateToUtilization,
   utilizationToRate
@@ -27,59 +30,70 @@ export type ApyRangeConfig = {
 
 const { min } = MathLib
 
+/** Where a market's utilization sits relative to the utilization bounds its APY range implies. */
+const classifyMarket = (
+  config: ApyRangeConfig,
+  vault: Address,
+  marketData: VaultMarketData
+): { utilization: bigint; lowerBound: bigint; upperBound: bigint } => {
+  const apyRange = config.apyRange(vault, marketData.id)
+  return {
+    utilization: getUtilization(marketData.state),
+    lowerBound: rateToUtilization(apyToRate(apyRange.min), marketData.rateAtTarget),
+    upperBound: rateToUtilization(apyToRate(apyRange.max), marketData.rateAtTarget)
+  }
+}
+
+const apyDeltaBips = (from: bigint, to: bigint, rateAtTarget: bigint): number =>
+  Math.abs(
+    Number(
+      (rateToApy(utilizationToRate(to, rateAtTarget)) -
+        rateToApy(utilizationToRate(from, rateAtTarget))) /
+        1_000_000_000n
+    ) / 1e5
+  )
+
 /**
  * Keeps each non-idle market's borrow APY inside its configured range: converts the APY bounds to
  * utilization bounds via the AdaptiveCurveIRM inverse, withdraws from markets below range, deposits
- * into markets above range, and lets the idle market absorb or supply the imbalance. Assumes every
- * non-idle market uses the AdaptiveCurveIRM (its `rateAtTarget` drives the inversion).
+ * into markets above range, and lets the idle market absorb or supply the imbalance.
+ *
+ * Only markets on the canonical AdaptiveCurveIRM participate — the inversion is meaningless without
+ * a real `rateAtTarget`, so a foreign-IRM market is excluded from both legs rather than misread (see
+ * `isAdaptiveCurve` on {@link VaultMarketData}).
  */
 export const createApyRangeStrategy = (config: ApyRangeConfig): Strategy => {
   return vaultData => {
     const vault = vaultData.vaultAddress
-    const idleMarket = vaultData.marketsData.find(
-      marketData => marketData.params.collateralToken === zeroAddress
-    )
+    const idleMarket = vaultData.marketsData.find(isIdleMarket)
     const marketsData = vaultData.marketsData.filter(
-      marketData => marketData.params.collateralToken !== zeroAddress
+      marketData => !isIdleMarket(marketData) && marketData.isAdaptiveCurve
     )
 
     let totalWithdrawableAmount = 0n
     let totalDepositableAmount = 0n
 
-    let didExceedMinApyDelta = false // true if *at least one* market moves enough
+    let didExceedMinApyDelta = false // true if *at least one contributing* market moves enough
 
     for (const marketData of marketsData) {
-      const apyRange = config.apyRange(vault, marketData.id)
-      const upperUtilizationBound = rateToUtilization(
-        apyToRate(apyRange.max),
-        marketData.rateAtTarget
-      )
-      const lowerUtilizationBound = rateToUtilization(
-        apyToRate(apyRange.min),
-        marketData.rateAtTarget
-      )
-      const utilization = getUtilization(marketData.state)
+      const { utilization, lowerBound, upperBound } = classifyMarket(config, vault, marketData)
 
-      if (utilization > upperUtilizationBound) {
-        totalDepositableAmount += getDepositableAmount(
-          marketData,
-          upperUtilizationBound,
-          config.capBufferPercent
-        )
-        const apyDelta =
-          rateToApy(utilizationToRate(upperUtilizationBound, marketData.rateAtTarget)) -
-          rateToApy(utilizationToRate(utilization, marketData.rateAtTarget))
-        didExceedMinApyDelta ||=
-          Math.abs(Number(apyDelta / 1_000_000_000n) / 1e5) >
-          config.minApyDeltaBips(vault, marketData.id)
-      } else if (utilization < lowerUtilizationBound) {
-        totalWithdrawableAmount += getWithdrawableAmount(marketData, lowerUtilizationBound)
-        const apyDelta =
-          rateToApy(utilizationToRate(lowerUtilizationBound, marketData.rateAtTarget)) -
-          rateToApy(utilizationToRate(utilization, marketData.rateAtTarget))
-        didExceedMinApyDelta ||=
-          Math.abs(Number(apyDelta / 1_000_000_000n) / 1e5) >
-          config.minApyDeltaBips(vault, marketData.id)
+      if (utilization > upperBound) {
+        const depositable = getDepositableAmount(marketData, upperBound, config.capBufferPercent)
+        totalDepositableAmount += depositable
+        if (depositable > 0n) {
+          didExceedMinApyDelta ||=
+            apyDeltaBips(utilization, upperBound, marketData.rateAtTarget) >
+            config.minApyDeltaBips(vault, marketData.id)
+        }
+      } else if (utilization < lowerBound) {
+        const withdrawable = getWithdrawableAmount(marketData, lowerBound)
+        totalWithdrawableAmount += withdrawable
+        if (withdrawable > 0n) {
+          didExceedMinApyDelta ||=
+            apyDeltaBips(utilization, lowerBound, marketData.rateAtTarget) >
+            config.minApyDeltaBips(vault, marketData.id)
+        }
       }
     }
 
@@ -88,10 +102,16 @@ export const createApyRangeStrategy = (config: ApyRangeConfig): Strategy => {
 
     if (idleMarket) {
       if (totalWithdrawableAmount > totalDepositableAmount && config.allowIdleReallocation) {
-        idleDeposit = min(
-          totalWithdrawableAmount - totalDepositableAmount,
-          idleMarket.cap - idleMarket.vaultAssets
+        // Same clamped-headroom treatment every other deposit target gets: a curator can lower a cap
+        // below the current allocation, and an unclamped `cap - vaultAssets` would go negative and
+        // corrupt the plan.
+        const bufferedIdleCap = MathLib.wMulDown(
+          idleMarket.cap,
+          percentToWad(config.capBufferPercent)
         )
+        const idleHeadroom =
+          bufferedIdleCap > idleMarket.vaultAssets ? bufferedIdleCap - idleMarket.vaultAssets : 0n
+        idleDeposit = min(totalWithdrawableAmount - totalDepositableAmount, idleHeadroom)
         totalDepositableAmount += idleDeposit
       } else if (totalDepositableAmount > totalWithdrawableAmount) {
         idleWithdrawal = min(
@@ -112,20 +132,11 @@ export const createApyRangeStrategy = (config: ApyRangeConfig): Strategy => {
     const deposits: MarketAllocation[] = []
 
     for (const marketData of marketsData) {
-      const apyRange = config.apyRange(vault, marketData.id)
-      const upperUtilizationBound = rateToUtilization(
-        apyToRate(apyRange.max),
-        marketData.rateAtTarget
-      )
-      const lowerUtilizationBound = rateToUtilization(
-        apyToRate(apyRange.min),
-        marketData.rateAtTarget
-      )
-      const utilization = getUtilization(marketData.state)
+      const { utilization, lowerBound, upperBound } = classifyMarket(config, vault, marketData)
 
-      if (utilization > upperUtilizationBound) {
+      if (utilization > upperBound) {
         const deposit = min(
-          getDepositableAmount(marketData, upperUtilizationBound, config.capBufferPercent),
+          getDepositableAmount(marketData, upperBound, config.capBufferPercent),
           remainingDeposit
         )
         if (deposit === 0n) continue
@@ -134,11 +145,8 @@ export const createApyRangeStrategy = (config: ApyRangeConfig): Strategy => {
           marketParams: marketData.params,
           assets: remainingDeposit === 0n ? maxUint256 : marketData.vaultAssets + deposit
         })
-      } else if (utilization < lowerUtilizationBound) {
-        const withdrawal = min(
-          getWithdrawableAmount(marketData, lowerUtilizationBound),
-          remainingWithdrawal
-        )
+      } else if (utilization < lowerBound) {
+        const withdrawal = min(getWithdrawableAmount(marketData, lowerBound), remainingWithdrawal)
         if (withdrawal === 0n) continue
         remainingWithdrawal -= withdrawal
         withdrawals.push({
