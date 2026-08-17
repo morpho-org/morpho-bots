@@ -116,6 +116,59 @@ describe('createReconciler', () => {
     ).toBeUndefined()
   })
 
+  it('does not fire off a clearing market whose take is fully trimmed away', () => {
+    // hotA (clears) is behind hotB (does not clear) in market order — but the budget check happens
+    // per surviving leg: give hotA a leg the budget can't reach. Budget = deallocatable (tiny);
+    // hotB (first in order) consumes it entirely, so hotA's clearing move never survives.
+    const hotB = makeMarket({
+      utilization: (90n * WAD) / 100n,
+      vaultAssets: parseUnits('10000', 6),
+      rateAtTarget: RATE_AT_TARGET
+    })
+    const hotA = makeMarket({
+      utilization: (90n * WAD) / 100n,
+      vaultAssets: parseUnits('10000', 6),
+      rateAtTarget: RATE_AT_TARGET
+    })
+    const coldMarket = makeMarket({
+      utilization: (10n * WAD) / 100n,
+      vaultAssets: parseUnits('100', 6),
+      supplyAssets: parseUnits('1000', 6),
+      rateAtTarget: RATE_AT_TARGET
+    })
+    const classify: Classify = marketData => ({
+      targetUtilization: (50n * WAD) / 100n,
+      clearsMinDelta: marketData.id === hotA.id
+    })
+    expect(makeReconciler(classify)(makeVaultData([hotB, hotA, coldMarket]))).toBeUndefined()
+  })
+
+  it('fires when the clearing market survives trimming (positive control)', () => {
+    const hotA = makeMarket({
+      utilization: (90n * WAD) / 100n,
+      vaultAssets: parseUnits('10000', 6),
+      rateAtTarget: RATE_AT_TARGET
+    })
+    const hotB = makeMarket({
+      utilization: (90n * WAD) / 100n,
+      vaultAssets: parseUnits('10000', 6),
+      rateAtTarget: RATE_AT_TARGET
+    })
+    const coldMarket = makeMarket({
+      utilization: (10n * WAD) / 100n,
+      vaultAssets: parseUnits('100', 6),
+      supplyAssets: parseUnits('1000', 6),
+      rateAtTarget: RATE_AT_TARGET
+    })
+    const classify: Classify = marketData => ({
+      targetUtilization: (50n * WAD) / 100n,
+      clearsMinDelta: marketData.id === hotA.id
+    })
+    const result = makeReconciler(classify)(makeVaultData([hotA, hotB, coldMarket]))
+    expect(result).toBeDefined()
+    expect(result!.allocations.map(l => l.marketId)).toEqual([hotA.id])
+  })
+
   it('clamps deallocations to the allocation total when idle parking is off', () => {
     const hotMarket = makeMarket({
       utilization: (90n * WAD) / 100n,

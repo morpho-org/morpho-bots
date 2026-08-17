@@ -39,6 +39,7 @@ type SizedMove = {
   marketData: VaultV2MarketData
   side: 'allocate' | 'deallocate'
   amount: bigint
+  clearsMinDelta: boolean
 }
 
 const { min } = MathLib
@@ -52,8 +53,12 @@ const toLeg = ({ marketData }: SizedMove, assets: bigint): ReallocationAction =>
 /**
  * Turns a per-market target-utilization classifier into a {@link Strategy}: sizes each market's move
  * with the clamped Blue math and the three-level cap pools, nets the imbalance through the vault's
- * idle balance, applies the min-delta firing gate over contributing markets only, trims both sides
- * to the shared budget in market order, and emits the `{allocations, deallocations}` delta legs.
+ * idle balance, trims both sides to the shared budget in market order, and emits the
+ * `{allocations, deallocations}` delta legs.
+ *
+ * The min-delta firing gate is evaluated on the TRIMMED legs: a market whose move clears the
+ * threshold but whose take is entirely consumed by the budget or the cap pools cannot arm the
+ * plan, so a fired plan always contains at least one surviving leg worth its transaction.
  *
  * Deallocations resolve FIRST in both phases — the contract executes them first, so their amounts
  * credit the aggregate cap pools that allocation sizing then draws from; the emission phase re-runs
@@ -77,7 +82,6 @@ export const createReconciler = (options: ReconcilerOptions): Strategy => {
     const moves: SizedMove[] = []
     let totalAmountToDeallocate = 0n
     let totalAmountToAllocate = 0n
-    let didClearMinDelta = false // true if *at least one contributing* market moves enough
 
     const sizingPools = createDepositPools(vaultData, options.capBufferWad)
     for (const { marketData, target, utilization } of classified) {
@@ -86,8 +90,12 @@ export const createReconciler = (options: ReconcilerOptions): Strategy => {
       totalAmountToDeallocate += amount
       creditPools(sizingPools, marketData.params.collateralToken, amount)
       if (amount > 0n) {
-        didClearMinDelta ||= target.clearsMinDelta
-        moves.push({ marketData, side: 'deallocate', amount })
+        moves.push({
+          marketData,
+          side: 'deallocate',
+          amount,
+          clearsMinDelta: target.clearsMinDelta
+        })
       }
     }
     for (const { marketData, target, utilization } of classified) {
@@ -104,8 +112,7 @@ export const createReconciler = (options: ReconcilerOptions): Strategy => {
       )
       totalAmountToAllocate += amount
       if (amount > 0n) {
-        didClearMinDelta ||= target.clearsMinDelta
-        moves.push({ marketData, side: 'allocate', amount })
+        moves.push({ marketData, side: 'allocate', amount, clearsMinDelta: target.clearsMinDelta })
       }
     }
 
@@ -119,12 +126,11 @@ export const createReconciler = (options: ReconcilerOptions): Strategy => {
         min(totalAmountToAllocate - totalAmountToDeallocate, vaultData.idleAssets)
     }
 
-    if (min(totalAmountToDeallocate, totalAmountToAllocate) === 0n || !didClearMinDelta) {
-      return undefined
-    }
+    if (min(totalAmountToDeallocate, totalAmountToAllocate) === 0n) return undefined
 
     let remainingAmountToDeallocate = totalAmountToDeallocate
     let remainingAmountToAllocate = totalAmountToAllocate
+    let didClearMinDelta = false // true if *at least one surviving* leg moves enough
 
     const allocations: ReallocationAction[] = []
     const deallocations: ReallocationAction[] = []
@@ -136,7 +142,10 @@ export const createReconciler = (options: ReconcilerOptions): Strategy => {
       const toDeallocate = min(move.amount, remainingAmountToDeallocate)
       remainingAmountToDeallocate -= toDeallocate
       creditPools(legPools, move.marketData.params.collateralToken, toDeallocate)
-      if (toDeallocate > 0n) deallocations.push(toLeg(move, toDeallocate))
+      if (toDeallocate > 0n) {
+        didClearMinDelta ||= move.clearsMinDelta
+        deallocations.push(toLeg(move, toDeallocate))
+      }
     }
     for (const move of moves) {
       if (move.side !== 'allocate') continue
@@ -147,9 +156,13 @@ export const createReconciler = (options: ReconcilerOptions): Strategy => {
         min(move.amount, remainingAmountToAllocate)
       )
       remainingAmountToAllocate -= toAllocate
-      if (toAllocate > 0n) allocations.push(toLeg(move, toAllocate))
+      if (toAllocate > 0n) {
+        didClearMinDelta ||= move.clearsMinDelta
+        allocations.push(toLeg(move, toAllocate))
+      }
     }
 
+    if (!didClearMinDelta) return undefined
     return { allocations, deallocations } satisfies Reallocation
   }
 }
