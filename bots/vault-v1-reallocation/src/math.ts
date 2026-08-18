@@ -1,13 +1,22 @@
-import { AdaptiveCurveIrmLib, MathLib } from '@morpho-org/blue-sdk'
-import { parseUnits } from 'viem'
+import { AdaptiveCurveIrmLib, MathLib, SECONDS_PER_YEAR } from '@morpho-org/blue-sdk'
+import { wholePercentToWAD } from '@repo/utils'
 
 import type { MarketState, VaultMarketData } from './vault-data'
 
-const SECONDS_PER_YEAR = 60n * 60n * 24n * 365n
+const WAD_PER_BIP_SCALE = 1_000_000_000n
 
-/** Converts a human percentage (e.g. `4.25`) to its WAD-scaled fraction. */
-export const percentToWad = (percent: number): bigint => parseUnits(percent.toString(), 16)
+/**
+ * Deposit legs stop just short of each market's supply cap: the cap is scaled by this factor before
+ * computing headroom, absorbing interest accrual between read and mined execution (a deposit that
+ * lands exactly at cap would revert on any accrual).
+ */
+export const CAP_BUFFER_WAD = wholePercentToWAD(99.99)
 
+/** Converts a WAD-scaled fraction to (fractional, signed) bips. */
+export const wadToBips = (wad: bigint): number => Number(wad / WAD_PER_BIP_SCALE) / 1e5
+
+// `MarketUtils.getUtilization` returns MAX_UINT_256 when supply is 0 and borrow is not; sizing math
+// downstream needs the 0 guard instead.
 /** WAD-scaled `totalBorrowAssets / totalSupplyAssets`; 0 for an empty market. */
 export const getUtilization = (state: MarketState): bigint =>
   state.totalSupplyAssets === 0n
@@ -54,9 +63,10 @@ export const getDepositableAmount = (
   targetUtilization: bigint,
   capBufferWad: bigint
 ): bigint => {
-  const bufferedCap = MathLib.wMulDown(marketData.cap, capBufferWad)
-  const remainingCap =
-    bufferedCap > marketData.vaultAssets ? bufferedCap - marketData.vaultAssets : 0n
+  const remainingCap = MathLib.zeroFloorSub(
+    MathLib.wMulDown(marketData.cap, capBufferWad),
+    marketData.vaultAssets
+  )
   return MathLib.min(getDepositToUtilization(marketData.state, targetUtilization), remainingCap)
 }
 

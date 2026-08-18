@@ -2,7 +2,14 @@ import type { Address, Hex } from 'viem'
 
 import type { Strategy } from './strategy'
 
-import { apyToRate, getUtilization, rateToApy, rateToUtilization, utilizationToRate } from '../math'
+import {
+  apyToRate,
+  getUtilization,
+  rateToApy,
+  rateToUtilization,
+  utilizationToRate,
+  wadToBips
+} from '../math'
 import { createReconciler } from './reconcile'
 
 export type ApyRangeConfig = {
@@ -18,11 +25,10 @@ export type ApyRangeConfig = {
 
 const apyDeltaBips = (from: bigint, to: bigint, rateAtTarget: bigint): number =>
   Math.abs(
-    Number(
-      (rateToApy(utilizationToRate(to, rateAtTarget)) -
-        rateToApy(utilizationToRate(from, rateAtTarget))) /
-        1_000_000_000n
-    ) / 1e5
+    wadToBips(
+      rateToApy(utilizationToRate(to, rateAtTarget)) -
+        rateToApy(utilizationToRate(from, rateAtTarget))
+    )
   )
 
 /**
@@ -51,8 +57,9 @@ export const createApyRangeStrategy = (config: ApyRangeConfig): Strategy =>
         const lowerBound = rateToUtilization(apyToRate(apyRange.min), rateAtTarget)
         const upperBound = rateToUtilization(apyToRate(apyRange.max), rateAtTarget)
 
-        const bound =
-          utilization > upperBound ? upperBound : utilization < lowerBound ? lowerBound : undefined
+        let bound: bigint | undefined
+        if (utilization > upperBound) bound = upperBound
+        else if (utilization < lowerBound) bound = lowerBound
         if (bound === undefined) return undefined
 
         return {

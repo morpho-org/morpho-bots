@@ -1,23 +1,6 @@
 /**
- * Reproducible, idempotent deployment of the multi-chain vault-v1-reallocation system to a Railway
- * project: one `bot-<chainId>` runner per chain (see CHAINS below). All data comes over RPC, so
- * there is no Postgres or indexer service to provision.
- *
- * Runs anywhere with the `railway` CLI installed and authenticated. The target project is supplied
- * entirely via env vars — no project identifier is baked into this (open-source) file:
- *   - RAILWAY_PROJECT_ID (required) selects the project; RAILWAY_ENVIRONMENT defaults to `production`.
- *   - CI / unattended: set RAILWAY_TOKEN (a project token scoped to that project / environment).
- *   - Local: an interactive `railway login` session; the script links the project by id.
- *
- * Per-chain env vars are chainId-suffixed (endpoints/whitelists differ per chain):
- *   - RPC_URL_<chainId>              (required per chain)
- *   - VAULT_WHITELIST_<chainId>      (required per chain) — comma-separated MetaMorpho vaults
- *   - REALLOCATOR_PRIVATE_KEY_<chainId> (per chain) OR a shared REALLOCATOR_PRIVATE_KEY fallback;
- *     the EOA must hold the allocator role on every whitelisted vault
- *   - STRATEGY_<chainId>             (optional; defaults to apy-range)
- *   - DRY_RUN_<chainId>              (optional; defaults to true — flip to false once the logged
- *     reallocation.dry_run plans look right)
- *   - BETTERSTACK_HEARTBEAT_URL_<chainId> (optional)
+ * Idempotent deployment of the multi-chain vault-v1-reallocation system to a Railway project: one
+ * `bot-<chainId>` runner per chain (see CHAINS below). Per-chain inputs are chainId-suffixed.
  *
  *   RAILWAY_PROJECT_ID=… RPC_URL_1=… VAULT_WHITELIST_1=0x… REALLOCATOR_PRIVATE_KEY=0x… \
  *     pnpm --filter @morpho-org/vault-v1-reallocation run deploy:railway
@@ -25,13 +8,9 @@
  * The build context MUST be the repo root so the pnpm workspace (packages/*) resolves — the script
  * runs `railway up` with cwd set to the repo root (mirrors the Dockerfile header + compose context).
  *
- * Idempotent: existing services / variables are reused; each run redeploys every bot and
- * re-synchronizes STRATEGY / DRY_RUN / VAULT_WHITELIST from this run's inputs.
- *
- * Secret hygiene: secrets (per-chain RPC_URL, REALLOCATOR_PRIVATE_KEY) are piped to
- * `railway variable set --stdin` so their values never appear in argv; failures surface only the
- * variable key and the phase, with the raw CLI error retained as the thrown error's `cause`;
- * variable values are never logged.
+ * Secrets (per-chain RPC_URL, REALLOCATOR_PRIVATE_KEY) are piped to `railway variable set --stdin`
+ * so their values never appear in argv or in a failure message; with DEPLOY_ONLY=1 (how CI re-ships
+ * already-provisioned services) no variable is written at all, so CI needs no secret to redeploy.
  */
 import { delay, tryCatch } from '@repo/utils'
 import { $ } from 'execa'

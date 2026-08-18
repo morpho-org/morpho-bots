@@ -1,3 +1,4 @@
+import { wholePercentToWAD } from '@repo/utils'
 import { parseUnits } from 'viem'
 import { describe, expect, it } from 'vitest'
 
@@ -6,20 +7,29 @@ import {
   getDepositableAmount,
   getUtilization,
   getWithdrawableAmount,
-  percentToWad,
   rateToApy,
   rateToUtilization,
-  utilizationToRate
+  utilizationToRate,
+  wadToBips
 } from '../src/math'
 
 const WAD = 10n ** 18n
 const RATE_AT_TARGET = parseUnits('0.03', 18) / (365n * 24n * 60n * 60n)
 
-describe('percentToWad', () => {
-  it('scales percentages to WAD fractions', () => {
-    expect(percentToWad(100)).toBe(WAD)
-    expect(percentToWad(4.25)).toBe(parseUnits('0.0425', 18))
-    expect(percentToWad(99.99)).toBe(parseUnits('0.9999', 18))
+describe('wadToBips', () => {
+  it('scales WAD fractions to bips', () => {
+    expect(wadToBips(WAD)).toBe(10_000)
+    expect(wadToBips(WAD / 100n)).toBe(100)
+    expect(wadToBips(parseUnits('0.0025', 18))).toBe(25)
+  })
+
+  it('keeps the fractional part and the sign', () => {
+    expect(wadToBips(parseUnits('0.000125', 18))).toBe(1.25)
+    expect(wadToBips(-parseUnits('0.0025', 18))).toBe(-25)
+  })
+
+  it('truncates below its 1e-5 bip resolution', () => {
+    expect(wadToBips(999_999_999n)).toBe(0)
   })
 })
 
@@ -75,7 +85,7 @@ describe('IRM curve inversion', () => {
 
 describe('apy/rate conversions', () => {
   it('round-trips an APY through the per-second rate within tolerance', () => {
-    const apy = percentToWad(5)
+    const apy = wholePercentToWAD(5)
     const roundTripped = rateToApy(apyToRate(apy))
     const delta = roundTripped > apy ? roundTripped - apy : apy - roundTripped
     expect(delta).toBeLessThan(parseUnits('0.001', 18)) // < 0.1 percentage point
@@ -99,7 +109,8 @@ describe('sizing helpers', () => {
     cap: parseUnits('100000', 6),
     vaultAssets: parseUnits('10000', 6),
     rateAtTarget: RATE_AT_TARGET,
-    isAdaptiveCurve: true
+    isAdaptiveCurve: true,
+    isIdle: false
   } as const
 
   it('bounds withdrawals by the vault position', () => {
@@ -110,17 +121,21 @@ describe('sizing helpers', () => {
   it('bounds deposits by the buffered cap headroom', () => {
     // Target 22.5% (half of current): utilization math would allow a 100k deposit, but the
     // buffered cap (99.99% of 100k) minus the current 10k position leaves ~89,990.
-    const depositable = getDepositableAmount(market, parseUnits('0.225', 18), percentToWad(99.99))
+    const depositable = getDepositableAmount(
+      market,
+      parseUnits('0.225', 18),
+      wholePercentToWAD(99.99)
+    )
     expect(depositable).toBe(parseUnits('89990', 6))
   })
 
   it('returns zero when the cap is already reached', () => {
     const atCap = { ...market, vaultAssets: market.cap }
-    expect(getDepositableAmount(atCap, parseUnits('0.225', 18), percentToWad(99.99))).toBe(0n)
+    expect(getDepositableAmount(atCap, parseUnits('0.225', 18), wholePercentToWAD(99.99))).toBe(0n)
   })
 
   it('returns zero depositable for a zero target instead of dividing by zero', () => {
     // A configured max APY at or below the curve's minimum rate inverts to utilization 0.
-    expect(getDepositableAmount(market, 0n, percentToWad(99.99))).toBe(0n)
+    expect(getDepositableAmount(market, 0n, wholePercentToWAD(99.99))).toBe(0n)
   })
 })

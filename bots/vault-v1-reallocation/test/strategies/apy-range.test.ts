@@ -1,19 +1,14 @@
 import type { Hex } from 'viem'
 
+import { wholePercentToWAD } from '@repo/utils'
 import { maxUint256, parseUnits, zeroAddress } from 'viem'
-import { beforeEach, describe, expect, it } from 'vitest'
+import { describe, expect, it } from 'vitest'
 
 import type { ApyRangeConfig } from '../../src/strategies/apy-range'
 
-import { apyToRate, percentToWad, rateToUtilization } from '../../src/math'
+import { apyToRate, rateToUtilization } from '../../src/math'
 import { createApyRangeStrategy } from '../../src/strategies/apy-range'
-import {
-  makeIdleMarket,
-  makeMarket,
-  makeVaultData,
-  RATE_AT_TARGET,
-  resetMarketCounter
-} from './helpers'
+import { makeIdleMarket, makeMarket, makeVaultData, RATE_AT_TARGET } from './helpers'
 
 type ApyRangePercent = { min: number; max: number }
 
@@ -28,10 +23,10 @@ const makeStrategy = (
   const defaultApyRange = overrides.defaultApyRange ?? { min: 2, max: 8 }
   const config: ApyRangeConfig = {
     allowIdleReallocation: overrides.allowIdleReallocation ?? true,
-    capBufferWad: percentToWad(99.99),
+    capBufferWad: wholePercentToWAD(99.99),
     apyRange: (_vault, marketId) => {
       const range = overrides.marketApyRanges?.[marketId] ?? defaultApyRange
-      return { min: percentToWad(range.min), max: percentToWad(range.max) }
+      return { min: wholePercentToWAD(range.min), max: wholePercentToWAD(range.max) }
     },
     // No min delta threshold by default so tests are predictable.
     minApyDeltaBips: () => overrides.minApyDeltaBips ?? 0
@@ -41,13 +36,9 @@ const makeStrategy = (
 
 /** The utilization at which the market yields the given borrow APY. */
 const apyToUtilization = (apyPercent: number, rateAtTarget: bigint): bigint =>
-  rateToUtilization(apyToRate(percentToWad(apyPercent)), rateAtTarget)
+  rateToUtilization(apyToRate(wholePercentToWAD(apyPercent)), rateAtTarget)
 
 describe('createApyRangeStrategy', () => {
-  beforeEach(() => {
-    resetMarketCounter()
-  })
-
   describe('no reallocation needed', () => {
     it('returns undefined when all markets are within APY range', () => {
       const strategy = makeStrategy()

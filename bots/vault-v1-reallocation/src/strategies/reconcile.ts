@@ -1,18 +1,18 @@
 import { MathLib } from '@morpho-org/blue-sdk'
+import { wholePercentToWAD } from '@repo/utils'
 import { maxUint256 } from 'viem'
 
 import type { VaultData, VaultMarketData } from '../vault-data'
 import type { MarketAllocation, Strategy } from './strategy'
 
-import { isIdleMarket } from '../market.utils'
-import { getDepositableAmount, getUtilization, getWithdrawableAmount, percentToWad } from '../math'
+import { getDepositableAmount, getUtilization, getWithdrawableAmount } from '../math'
 
 // A target of exactly WAD sizes a withdrawal to the market's entire free liquidity (S − B), which
 // reverts the moment any interest accrues between snapshot and mining — and the AdaptiveCurve
 // inverse legitimately produces WAD bounds on cold markets (any requested rate ≥ 4·rateAtTarget).
 // Clamping keeps the exit-a-dead-market intent while leaving a realizable liquidity sliver; the
 // margin is deliberately looser than the 99.99% cap buffer since it absorbs borrow-side accrual.
-const MAX_TARGET_UTILIZATION = percentToWad(99.9)
+const MAX_TARGET_UTILIZATION = wholePercentToWAD(99.9)
 
 /** Where one market should sit, and whether getting it there is worth a transaction. */
 export type MarketTarget = {
@@ -63,14 +63,17 @@ const { min } = MathLib
 export const createReconciler = (options: ReconcilerOptions): Strategy => {
   return vaultData => {
     const classify = options.classifierFor(vaultData)
-    const idleMarket = options.idle === 'net' ? vaultData.marketsData.find(isIdleMarket) : undefined
+    const idleMarket =
+      options.idle === 'net'
+        ? vaultData.marketsData.find(marketData => marketData.isIdle)
+        : undefined
 
     const moves: SizedMove[] = []
     let totalWithdrawableAmount = 0n
     let totalDepositableAmount = 0n
 
     for (const marketData of vaultData.marketsData) {
-      if (isIdleMarket(marketData)) continue
+      if (marketData.isIdle) continue
       const target = classify(marketData)
       if (target === undefined) continue
       const targetUtilization = min(target.targetUtilization, MAX_TARGET_UTILIZATION)
@@ -99,9 +102,10 @@ export const createReconciler = (options: ReconcilerOptions): Strategy => {
         // Same clamped-headroom treatment every other deposit target gets: a curator can lower a cap
         // below the current allocation, and an unclamped `cap - vaultAssets` would go negative and
         // corrupt the plan.
-        const bufferedIdleCap = MathLib.wMulDown(idleMarket.cap, options.capBufferWad)
-        const idleHeadroom =
-          bufferedIdleCap > idleMarket.vaultAssets ? bufferedIdleCap - idleMarket.vaultAssets : 0n
+        const idleHeadroom = MathLib.zeroFloorSub(
+          MathLib.wMulDown(idleMarket.cap, options.capBufferWad),
+          idleMarket.vaultAssets
+        )
         idleDeposit = min(totalWithdrawableAmount - totalDepositableAmount, idleHeadroom)
         totalDepositableAmount += idleDeposit
       } else if (totalDepositableAmount > totalWithdrawableAmount) {

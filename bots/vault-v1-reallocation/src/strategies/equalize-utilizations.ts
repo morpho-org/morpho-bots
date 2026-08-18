@@ -4,8 +4,7 @@ import { MathLib } from '@morpho-org/blue-sdk'
 
 import type { Strategy } from './strategy'
 
-import { isIdleMarket } from '../market.utils'
-import { getUtilization } from '../math'
+import { getUtilization, wadToBips } from '../math'
 import { createReconciler } from './reconcile'
 
 type EqualizeUtilizationsConfig = {
@@ -29,7 +28,7 @@ export const createEqualizeUtilizationsStrategy = (config: EqualizeUtilizationsC
     capBufferWad: config.capBufferWad,
     idle: 'ignore',
     classifierFor: vaultData => {
-      const marketsData = vaultData.marketsData.filter(marketData => !isIdleMarket(marketData))
+      const marketsData = vaultData.marketsData.filter(marketData => !marketData.isIdle)
       const totalSupply = marketsData.reduce((acc, m) => acc + m.state.totalSupplyAssets, 0n)
       const totalBorrow = marketsData.reduce((acc, m) => acc + m.state.totalBorrowAssets, 0n)
       // Nothing supplied or nothing borrowed anywhere — every market already sits at the (degenerate)
@@ -44,9 +43,8 @@ export const createEqualizeUtilizationsStrategy = (config: EqualizeUtilizationsC
       return marketData => ({
         targetUtilization,
         clearsMinDelta:
-          Math.abs(
-            Number((getUtilization(marketData.state) - targetUtilization) / 1_000_000_000n) / 1e5
-          ) > minUtilizationDeltaBips
+          Math.abs(wadToBips(getUtilization(marketData.state) - targetUtilization)) >
+          minUtilizationDeltaBips
       })
     }
   })

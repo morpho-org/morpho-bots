@@ -1,20 +1,14 @@
+import { wholePercentToWAD } from '@repo/utils'
 import { maxUint256, parseUnits, zeroAddress } from 'viem'
-import { beforeEach, describe, expect, it } from 'vitest'
+import { describe, expect, it } from 'vitest'
 
 import type { Classify, ReconcilerOptions } from '../../src/strategies/reconcile'
 
-import { percentToWad } from '../../src/math'
 import { createReconciler } from '../../src/strategies/reconcile'
-import {
-  makeIdleMarket,
-  makeMarket,
-  makeVaultData,
-  RATE_AT_TARGET,
-  resetMarketCounter
-} from './helpers'
+import { makeIdleMarket, makeMarket, makeVaultData, RATE_AT_TARGET } from './helpers'
 
 const WAD = 10n ** 18n
-const CAP_BUFFER_WAD = percentToWad(99.99)
+const CAP_BUFFER_WAD = wholePercentToWAD(99.99)
 
 /** Every non-idle market targets `targetUtilization`, and every move clears the threshold. */
 const fixedTarget =
@@ -30,10 +24,6 @@ const market = (utilization: bigint, vaultAssets: bigint, cap = parseUnits('1000
   makeMarket({ utilization, vaultAssets, cap, rateAtTarget: RATE_AT_TARGET })
 
 describe('createReconciler', () => {
-  beforeEach(() => {
-    resetMarketCounter()
-  })
-
   describe("idle: 'net'", () => {
     it('parks the excess withdrawal in the idle market', () => {
       const reconcile = makeReconciler(

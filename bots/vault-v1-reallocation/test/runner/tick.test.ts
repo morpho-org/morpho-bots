@@ -8,7 +8,7 @@ import type { TickDeps } from '../../src/runner/tick'
 import type { VaultData } from '../../src/vault-data'
 
 import { runTick } from '../../src/runner/tick'
-import { makeMarket, makeVaultData, RATE_AT_TARGET } from '../strategies/helpers'
+import { makeMarket, makeVaultData, VAULT_CURATOR, VAULT_OWNER } from '../strategies/helpers'
 
 function spyLogger() {
   const events: { level: string; event: string; fields?: Record<string, unknown> }[] = []
@@ -27,15 +27,10 @@ const VAULT_A: Address = getAddress(`0x${'aa'.repeat(20)}`)
 const VAULT_B: Address = getAddress(`0x${'bb'.repeat(20)}`)
 const DATA = '0xdeadbeef' as const
 
+const EOA: Address = getAddress(`0x${'ee'.repeat(20)}`)
+
 const someVaultData = (): VaultData =>
-  makeVaultData([
-    makeMarket({
-      utilization: 0n,
-      vaultAssets: 0n,
-      cap: 0n,
-      rateAtTarget: RATE_AT_TARGET
-    })
-  ])
+  makeVaultData([makeMarket({ utilization: 0n, vaultAssets: 0n, cap: 0n })])
 
 const someAllocations = () => [
   {
@@ -55,12 +50,13 @@ const makeDeps = (overrides: Partial<TickDeps> = {}) => {
   const deps: TickDeps = {
     vaults: [VAULT_A],
     chainHead: 100n,
-    hasAllocatorRole: vi.fn(async () => true),
+    eoa: EOA,
+    isAllocator: vi.fn(async () => true),
     fetchVault: vi.fn(async () => someVaultData()),
     strategy: vi.fn(() => undefined),
     encodeReallocate: vi.fn(() => DATA),
     simulate: vi.fn(async () => ({ status: 'ok' as const })),
-    submit: vi.fn(async () => undefined),
+    submit: vi.fn(async () => true),
     dryRun: false,
     inflightLabels: () => new Set<string>(),
     revertReason: error => (error instanceof Error ? error.message : String(error)),
@@ -120,24 +116,80 @@ describe('runTick', () => {
     expect(tickEnd(events)).toMatchObject({ dry_runs: 1, submitted: 0 })
   })
 
+  it('does not count a submit that was not broadcast', async () => {
+    const { deps, events } = makeDeps({
+      strategy: vi.fn(() => someAllocations()),
+      submit: vi.fn(async () => false)
+    })
+    await runTick(deps)
+    expect(deps.submit).toHaveBeenCalled()
+    expect(tickEnd(events)).toMatchObject({ reallocations_found: 1, submitted: 0 })
+    expect(events).toContainEqual({
+      level: 'debug',
+      event: 'reallocation.not_broadcast',
+      fields: { vault: VAULT_A }
+    })
+  })
+
   it('skips a vault whose label is in flight', async () => {
     const { deps, events } = makeDeps({ inflightLabels: () => new Set([VAULT_A]) })
     await runTick(deps)
-    expect(deps.hasAllocatorRole).not.toHaveBeenCalled()
+    expect(deps.isAllocator).not.toHaveBeenCalled()
     expect(deps.fetchVault).not.toHaveBeenCalled()
     expect(tickEnd(events)).toMatchObject({ skipped_inflight: 1 })
   })
 
-  it('skips fetch/strategy/simulate while the allocator role is missing', async () => {
-    const { deps, events } = makeDeps({ hasAllocatorRole: vi.fn(async () => false) })
+  it('skips strategy/simulate while the allocator role is missing', async () => {
+    const { deps, events } = makeDeps({ isAllocator: vi.fn(async () => false) })
     await runTick(deps)
-    expect(deps.fetchVault).not.toHaveBeenCalled()
+    expect(deps.strategy).not.toHaveBeenCalled()
+    expect(deps.simulate).not.toHaveBeenCalled()
     expect(events).toContainEqual({
       level: 'warn',
       event: 'allocator.missing_role',
       fields: { vault: VAULT_A }
     })
     expect(tickEnd(events)).toMatchObject({ missing_role: 1 })
+  })
+
+  it.each([
+    ['owner', VAULT_OWNER],
+    ['curator', VAULT_CURATOR]
+  ])('accepts a %s-keyed EOA that is not in the allocator set', async (_role, eoa) => {
+    const { deps, events } = makeDeps({
+      eoa,
+      isAllocator: vi.fn(async () => false),
+      strategy: vi.fn(() => someAllocations())
+    })
+    await runTick(deps)
+    expect(deps.submit).toHaveBeenCalled()
+    expect(tickEnd(events)).toMatchObject({ missing_role: 0, submitted: 1 })
+  })
+
+  it('processes vaults concurrently and folds their counters', async () => {
+    let inFlight = 0
+    let maxInFlight = 0
+    const fetchVault = vi.fn(async () => {
+      maxInFlight = Math.max(maxInFlight, ++inFlight)
+      await Promise.resolve()
+      inFlight--
+      return someVaultData()
+    })
+    const { deps, events } = makeDeps({
+      vaults: [VAULT_A, VAULT_B],
+      fetchVault,
+      strategy: vi.fn(() => someAllocations())
+    })
+    await runTick(deps)
+    expect(maxInFlight).toBe(2)
+    expect(tickEnd(events)).toMatchObject({ vaults: 2, reallocations_found: 2, submitted: 2 })
+  })
+
+  it('reads the in-flight label set once per pass', async () => {
+    const inflightLabels = vi.fn(() => new Set<string>())
+    const { deps } = makeDeps({ vaults: [VAULT_A, VAULT_B], inflightLabels })
+    await runTick(deps)
+    expect(inflightLabels).toHaveBeenCalledTimes(1)
   })
 
   it('continues past a failing vault and reports vault.error', async () => {

@@ -31,6 +31,14 @@ describe('loadConfig', () => {
     expect(config.rpcUrlFallback).toBeUndefined()
   })
 
+  it('collapses case-variant duplicate whitelist entries', () => {
+    const config = loadConfig({
+      ...BASE_ENV,
+      VAULT_WHITELIST: `${VAULT_A},${VAULT_A.toLowerCase()},${VAULT_B},${VAULT_A.toUpperCase().replace('0X', '0x')}`
+    })
+    expect(config.vaultWhitelist).toEqual([VAULT_A, VAULT_B])
+  })
+
   it('honors explicit overrides', () => {
     const config = loadConfig({
       ...BASE_ENV,

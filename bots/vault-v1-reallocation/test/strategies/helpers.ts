@@ -17,10 +17,6 @@ export const RATE_AT_TARGET = parseUnits('0.03', 18) / (365n * 24n * 60n * 60n)
 
 let marketCounter = 0
 
-export const resetMarketCounter = () => {
-  marketCounter = 0
-}
-
 const makeMarketParams = (overrides?: Partial<InputMarketParams>): InputMarketParams => {
   marketCounter++
   return {
@@ -40,7 +36,8 @@ export const makeMarket = (opts: {
   utilization: bigint
   vaultAssets: bigint
   cap: bigint
-  rateAtTarget: bigint
+  /** Defaults to {@link RATE_AT_TARGET}; only the AdaptiveCurveIRM strategies read it. */
+  rateAtTarget?: bigint
   id?: Hex
   params?: InputMarketParams
   /** Defaults to true; set false to model a market on an IRM other than the AdaptiveCurveIRM. */
@@ -57,8 +54,9 @@ export const makeMarket = (opts: {
     },
     cap: opts.cap,
     vaultAssets: opts.vaultAssets,
-    rateAtTarget: opts.rateAtTarget,
-    isAdaptiveCurve: opts.isAdaptiveCurve ?? true
+    rateAtTarget: opts.rateAtTarget ?? RATE_AT_TARGET,
+    isAdaptiveCurve: opts.isAdaptiveCurve ?? true,
+    isIdle: false
   }
 }
 
@@ -77,10 +75,19 @@ export const makeIdleMarket = (vaultAssets: bigint, cap?: bigint): VaultMarketDa
   cap: cap ?? maxUint256,
   vaultAssets,
   rateAtTarget: 0n,
-  isAdaptiveCurve: false
+  isAdaptiveCurve: false,
+  isIdle: true
 })
+
+export const VAULT_OWNER = getAddress('0x0000000000000000000000000000000000000002')
+export const VAULT_CURATOR = getAddress('0x0000000000000000000000000000000000000003')
 
 export const makeVaultData = (markets: VaultMarketData[], vault: Address = VAULT): VaultData => ({
   vaultAddress: vault,
-  marketsData: markets
+  owner: VAULT_OWNER,
+  curator: VAULT_CURATOR,
+  marketsData: markets,
+  nonAdaptiveCurveMarketIds: markets
+    .filter(market => !market.isAdaptiveCurve && !market.isIdle)
+    .map(market => market.id)
 })

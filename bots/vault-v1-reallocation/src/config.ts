@@ -21,22 +21,12 @@ const STRATEGY_NAMES = ['apy-range', 'equalize-utilizations'] as const
 export type StrategyName = (typeof STRATEGY_NAMES)[number]
 
 const DEFAULT_MAX_FEE_GWEI = '300'
-// Reallocation cadence in wall-clock ms, gating the per-block tick. The old repo's
-// EXECUTION_INTERVAL was documented in seconds but consumed as minutes; naming the unit here
-// resolves that ambiguity by construction.
 const DEFAULT_REALLOCATION_INTERVAL_MS = 600_000
 // ApyRange fires only when some market's implied borrow-APY move exceeds this (bips).
 const DEFAULT_MIN_APY_DELTA_BIPS = 25
 // EqualizeUtilizations fires only when some market's utilization deviates from the vault-wide
 // target by more than this (bips).
 const DEFAULT_MIN_UTILIZATION_DELTA_BIPS = 250
-
-/**
- * Deposit legs stop just short of each market's supply cap: the cap is scaled by this percentage
- * before computing headroom, absorbing interest accrual between read and mined execution (a deposit
- * that lands exactly at cap would revert on any accrual).
- */
-export const CAP_BUFFER_PERCENT = 99.99
 
 type Env = Record<string, string | undefined>
 
@@ -107,8 +97,9 @@ const boolEnv = (env: Env, name: string, def: boolean): boolean => {
   return raw === 'true'
 }
 
-// Parses a required comma-separated list of addresses into checksummed `Address`es. Fails loud on
-// any malformed element and on an empty result — an empty whitelist would silently no-op every tick.
+// Parses a required comma-separated list of addresses into deduplicated, checksummed `Address`es.
+// Fails loud on any malformed element and on an empty result — an empty whitelist would silently
+// no-op every tick.
 const addressListEnv = (env: Env, name: string): Address[] => {
   const parts = required(env, name)
     .split(',')
@@ -123,7 +114,9 @@ const addressListEnv = (env: Env, name: string): Address[] => {
   if (addresses.length === 0) {
     throw new InvalidConfigError(`${name} must contain at least one address`)
   }
-  return addresses
+  // Checksumming first makes case-variant spellings of one address collapse here rather than
+  // processing the same vault twice per pass.
+  return [...new Set(addresses)]
 }
 
 const isLogLevel = (value: string): value is LogLevel =>

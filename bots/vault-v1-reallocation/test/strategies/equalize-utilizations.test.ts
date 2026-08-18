@@ -1,43 +1,30 @@
+import { wholePercentToWAD } from '@repo/utils'
 import { getAddress, maxUint256, parseUnits, zeroAddress } from 'viem'
-import { beforeEach, describe, expect, it } from 'vitest'
+import { describe, expect, it } from 'vitest'
 
-import { percentToWad } from '../../src/math'
 import { createEqualizeUtilizationsStrategy } from '../../src/strategies/equalize-utilizations'
-import {
-  makeIdleMarket,
-  makeMarket,
-  makeVaultData,
-  RATE_AT_TARGET,
-  resetMarketCounter,
-  VAULT
-} from './helpers'
+import { makeIdleMarket, makeMarket, makeVaultData, VAULT } from './helpers'
 
 const makeStrategy = (minUtilizationDeltaBips: (vault: `0x${string}`) => number = () => 0) =>
   createEqualizeUtilizationsStrategy({
-    capBufferWad: percentToWad(99.99),
+    capBufferWad: wholePercentToWAD(99.99),
     minUtilizationDeltaBips
   })
 
 const WAD = 10n ** 18n
 
 describe('createEqualizeUtilizationsStrategy', () => {
-  beforeEach(() => {
-    resetMarketCounter()
-  })
-
   it('withdraws from below-average and deposits into above-average markets', () => {
     const strategy = makeStrategy()
     const hotMarket = makeMarket({
       utilization: (95n * WAD) / 100n,
       vaultAssets: parseUnits('10000', 6),
-      cap: parseUnits('100000', 6),
-      rateAtTarget: RATE_AT_TARGET
+      cap: parseUnits('100000', 6)
     })
     const coldMarket = makeMarket({
       utilization: (10n * WAD) / 100n,
       vaultAssets: parseUnits('20000', 6),
-      cap: parseUnits('100000', 6),
-      rateAtTarget: RATE_AT_TARGET
+      cap: parseUnits('100000', 6)
     })
 
     const result = strategy(makeVaultData([hotMarket, coldMarket]))
@@ -57,14 +44,12 @@ describe('createEqualizeUtilizationsStrategy', () => {
     const hotMarket = makeMarket({
       utilization: (95n * WAD) / 100n,
       vaultAssets: parseUnits('10000', 6),
-      cap: parseUnits('100000', 6),
-      rateAtTarget: RATE_AT_TARGET
+      cap: parseUnits('100000', 6)
     })
     const coldMarket = makeMarket({
       utilization: (10n * WAD) / 100n,
       vaultAssets: parseUnits('20000', 6),
-      cap: parseUnits('100000', 6),
-      rateAtTarget: RATE_AT_TARGET
+      cap: parseUnits('100000', 6)
     })
     const idleMarket = makeIdleMarket(parseUnits('50000', 6))
 
@@ -80,14 +65,12 @@ describe('createEqualizeUtilizationsStrategy', () => {
     const market1 = makeMarket({
       utilization,
       vaultAssets: parseUnits('10000', 6),
-      cap: parseUnits('100000', 6),
-      rateAtTarget: RATE_AT_TARGET
+      cap: parseUnits('100000', 6)
     })
     const market2 = makeMarket({
       utilization,
       vaultAssets: parseUnits('10000', 6),
-      cap: parseUnits('100000', 6),
-      rateAtTarget: RATE_AT_TARGET
+      cap: parseUnits('100000', 6)
     })
     expect(strategy(makeVaultData([market1, market2]))).toBeUndefined()
   })
@@ -97,8 +80,7 @@ describe('createEqualizeUtilizationsStrategy', () => {
     const market = makeMarket({
       utilization: 0n,
       vaultAssets: parseUnits('10000', 6),
-      cap: parseUnits('100000', 6),
-      rateAtTarget: RATE_AT_TARGET
+      cap: parseUnits('100000', 6)
     })
     expect(strategy(makeVaultData([market]))).toBeUndefined()
   })
@@ -108,14 +90,12 @@ describe('createEqualizeUtilizationsStrategy', () => {
     const hotMarket = makeMarket({
       utilization: (95n * WAD) / 100n,
       vaultAssets: parseUnits('10000', 6),
-      cap: parseUnits('100000', 6),
-      rateAtTarget: RATE_AT_TARGET
+      cap: parseUnits('100000', 6)
     })
     const coldMarket = makeMarket({
       utilization: (10n * WAD) / 100n,
       vaultAssets: parseUnits('20000', 6),
-      cap: parseUnits('100000', 6),
-      rateAtTarget: RATE_AT_TARGET
+      cap: parseUnits('100000', 6)
     })
     expect(strategy(makeVaultData([hotMarket, coldMarket]))).toBeUndefined()
   })
@@ -128,20 +108,17 @@ describe('createEqualizeUtilizationsStrategy', () => {
     const hot1 = makeMarket({
       utilization: (95n * WAD) / 100n,
       vaultAssets: 0n,
-      cap: parseUnits('100000', 6),
-      rateAtTarget: RATE_AT_TARGET
+      cap: parseUnits('100000', 6)
     })
     const hot2 = makeMarket({
       utilization: (95n * WAD) / 100n,
       vaultAssets: 0n,
-      cap: parseUnits('100000', 6),
-      rateAtTarget: RATE_AT_TARGET
+      cap: parseUnits('100000', 6)
     })
     const cold = makeMarket({
       utilization: (10n * WAD) / 100n,
       vaultAssets: parseUnits('5000', 6),
-      cap: parseUnits('100000', 6),
-      rateAtTarget: RATE_AT_TARGET
+      cap: parseUnits('100000', 6)
     })
 
     const result = strategy(makeVaultData([hot1, hot2, cold]))
@@ -156,21 +133,18 @@ describe('createEqualizeUtilizationsStrategy', () => {
     const hot = makeMarket({
       utilization: (90n * WAD) / 100n,
       vaultAssets: parseUnits('10000', 6),
-      cap: parseUnits('100000', 6),
-      rateAtTarget: RATE_AT_TARGET
+      cap: parseUnits('100000', 6)
     })
     const cold = makeMarket({
       utilization: (30n * WAD) / 100n,
       vaultAssets: parseUnits('10000', 6),
-      cap: parseUnits('100000', 6),
-      rateAtTarget: RATE_AT_TARGET
+      cap: parseUnits('100000', 6)
     })
     // Aggregate utilization is (90 + 30 + 60) / 3 = 60%, so this market is exactly at target.
     const atTarget = makeMarket({
       utilization: (60n * WAD) / 100n,
       vaultAssets: parseUnits('10000', 6),
-      cap: parseUnits('100000', 6),
-      rateAtTarget: RATE_AT_TARGET
+      cap: parseUnits('100000', 6)
     })
 
     const result = strategy(makeVaultData([hot, cold, atTarget]))
@@ -186,14 +160,12 @@ describe('createEqualizeUtilizationsStrategy', () => {
     const overBorrowed = makeMarket({
       utilization: 2n * WAD,
       vaultAssets: 0n,
-      cap: parseUnits('100000', 6),
-      rateAtTarget: RATE_AT_TARGET
+      cap: parseUnits('100000', 6)
     })
     const under = makeMarket({
       utilization: (50n * WAD) / 100n,
       vaultAssets: parseUnits('100000', 6),
-      cap: parseUnits('100000', 6),
-      rateAtTarget: RATE_AT_TARGET
+      cap: parseUnits('100000', 6)
     })
 
     const result = strategy(makeVaultData([overBorrowed, under]))
@@ -216,26 +188,22 @@ describe('createEqualizeUtilizationsStrategy', () => {
       makeMarket({
         utilization: (95n * WAD) / 100n,
         vaultAssets,
-        cap: cappedHotCap,
-        rateAtTarget: RATE_AT_TARGET
+        cap: cappedHotCap
       }),
       makeMarket({
         utilization: (70n * WAD) / 100n,
         vaultAssets: 0n,
-        cap: parseUnits('100000', 6),
-        rateAtTarget: RATE_AT_TARGET
+        cap: parseUnits('100000', 6)
       }),
       makeMarket({
         utilization: (40n * WAD) / 100n,
         vaultAssets: parseUnits('20000', 6),
-        cap: parseUnits('100000', 6),
-        rateAtTarget: RATE_AT_TARGET
+        cap: parseUnits('100000', 6)
       }),
       makeMarket({
         utilization: (40n * WAD) / 100n,
         vaultAssets: parseUnits('20000', 6),
-        cap: parseUnits('100000', 6),
-        rateAtTarget: RATE_AT_TARGET
+        cap: parseUnits('100000', 6)
       })
     ]
     expect(strategy(makeVaultData(markets(vaultAssets)))).toBeUndefined()
@@ -253,14 +221,12 @@ describe('createEqualizeUtilizationsStrategy', () => {
     const hotMarket = makeMarket({
       utilization: (95n * WAD) / 100n,
       vaultAssets: parseUnits('10000', 6),
-      cap: parseUnits('100000', 6),
-      rateAtTarget: RATE_AT_TARGET
+      cap: parseUnits('100000', 6)
     })
     const coldMarket = makeMarket({
       utilization: (10n * WAD) / 100n,
       vaultAssets: parseUnits('20000', 6),
-      cap: parseUnits('100000', 6),
-      rateAtTarget: RATE_AT_TARGET
+      cap: parseUnits('100000', 6)
     })
     strategy(makeVaultData([hotMarket, coldMarket], other))
     expect(seen).toEqual([other])

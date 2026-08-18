@@ -27,11 +27,24 @@ export type VaultMarketData = {
    * {@link isAdaptiveCurveMarket}.
    */
   isAdaptiveCurve: boolean
+  /**
+   * The vault's idle market: the zero-collateral market MetaMorpho uses to park unallocated assets.
+   * It never borrows, so no rate strategy applies to it — it only ever absorbs or supplies a plan's
+   * imbalance.
+   */
+  isIdle: boolean
 }
 
 export type VaultData = {
   vaultAddress: Address
+  owner: Address
+  curator: Address
   marketsData: VaultMarketData[]
+  /**
+   * Ids of the non-idle markets excluded from `apy-range` for running a foreign IRM. Precomputed
+   * here rather than in the tick — the mapping above already walks every market.
+   */
+  nonAdaptiveCurveMarketIds: Hex[]
 }
 
 /**
@@ -45,11 +58,12 @@ const isAdaptiveCurveMarket = (irm: Address, rateAtTarget: bigint, chainId: numb
   rateAtTarget > 0n && isAddressEqual(irm, getChainAddresses(chainId).adaptiveCurveIrm)
 
 /**
- * Reads one vault's full reallocation input over RPC as a single deployless `fetchAccrualVault`
- * query: the withdraw queue plus, per market, the accrued Blue state, the vault's accrued position,
- * and the vault's supply cap. Every read — including the accrual timestamp, taken from the pinned
- * block rather than wall clock — is pinned to `blockNumber`, so the snapshot is coherent across
- * markets and reproducible. Throws on any failed read; the tick catches per vault.
+ * Reads one vault's full reallocation input over RPC via `fetchAccrualVault`: a vault-level query
+ * plus per-market reads (Blue state, the vault's position, the vault's supply cap), collapsed into a
+ * few round trips by the client's batched JSON-RPC transport. Every read — including the accrual
+ * timestamp, taken from the pinned block rather than wall clock — is pinned to `blockNumber`, so the
+ * snapshot is coherent across markets and reproducible. Throws on any failed read; the tick catches
+ * per vault.
  */
 export const fetchVaultData = async (
   client: Client,
@@ -82,9 +96,18 @@ export const fetchVaultData = async (
       cap: allocation.config.cap,
       vaultAssets: allocation.position.supplyAssets,
       rateAtTarget,
-      isAdaptiveCurve: isAdaptiveCurveMarket(market.params.irm, rateAtTarget, chainId)
+      isAdaptiveCurve: isAdaptiveCurveMarket(market.params.irm, rateAtTarget, chainId),
+      isIdle: market.isIdle
     }
   })
 
-  return { vaultAddress: vault, marketsData }
+  return {
+    vaultAddress: vault,
+    owner: accrued.owner,
+    curator: accrued.curator,
+    marketsData,
+    nonAdaptiveCurveMarketIds: marketsData
+      .filter(marketData => !marketData.isAdaptiveCurve && !marketData.isIdle)
+      .map(marketData => marketData.id)
+  }
 }
