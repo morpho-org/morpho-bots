@@ -1,10 +1,9 @@
-import { assertNever } from '@repo/utils'
+import { assertNever, wholePercentToWAD } from '@repo/utils'
 
 import type { Config } from '../config'
 import type { Strategy } from './strategy'
 
-import { CAP_BUFFER_PERCENT } from '../config'
-import { percentToWad } from '../math'
+import { CAP_BUFFER_WAD } from '../math'
 import {
   resolveApyRange,
   resolveMinApyDeltaBips,
@@ -24,17 +23,17 @@ export const createStrategy = (config: Config): Strategy => {
     case 'apy-range':
       return createApyRangeStrategy({
         allowIdleReallocation: config.allowIdleReallocation,
-        capBufferWad: percentToWad(CAP_BUFFER_PERCENT),
+        capBufferWad: CAP_BUFFER_WAD,
         apyRange: (vault, marketId) => {
           const range = resolveApyRange(config.chainId, vault, marketId)
-          return { min: percentToWad(range.min), max: percentToWad(range.max) }
+          return { min: wholePercentToWAD(range.min), max: wholePercentToWAD(range.max) }
         },
         minApyDeltaBips: (vault, marketId) =>
           resolveMinApyDeltaBips(config.chainId, vault, marketId, config.minApyDeltaBips)
       })
     case 'equalize-utilizations':
       return createEqualizeUtilizationsStrategy({
-        capBufferWad: percentToWad(CAP_BUFFER_PERCENT),
+        capBufferWad: CAP_BUFFER_WAD,
         minUtilizationDeltaBips: vault =>
           resolveMinUtilizationDeltaBips(config.chainId, vault, config.minUtilizationDeltaBips)
       })

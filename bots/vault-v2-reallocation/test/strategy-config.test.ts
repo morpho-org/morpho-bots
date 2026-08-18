@@ -72,3 +72,15 @@ describe('resolveMinUtilizationDeltaBips', () => {
     expect(resolveMinUtilizationDeltaBips(CHAIN_ID, VAULT, 250)).toBe(100)
   })
 })
+
+describe('table shape', () => {
+  it('every configured APY range has min < max', () => {
+    for (const table of [vaultApyRanges, marketApyRanges]) {
+      for (const perChain of Object.values(table)) {
+        for (const range of Object.values(perChain)) {
+          expect(range.min).toBeLessThan(range.max)
+        }
+      }
+    }
+  })
+})

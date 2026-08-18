@@ -21,6 +21,11 @@ describe('loadConfig', () => {
     expect(config.chain.id).toBe(8453)
     expect(config.vaultWhitelist).toEqual([VAULT_A, VAULT_B])
     expect(config.strategy).toBe('equalize-utilizations')
+    // Case-variant and exact duplicates collapse to one entry after checksumming.
+    expect(
+      loadConfig({ ...BASE_ENV, VAULT_WHITELIST: `${VAULT_A},${VAULT_A.toLowerCase()},${VAULT_A}` })
+        .vaultWhitelist
+    ).toEqual([VAULT_A])
     expect(config.reallocationIntervalMs).toBe(600_000)
     expect(config.minApyDeltaBips).toBe(25)
     expect(config.minUtilizationDeltaBips).toBe(250)

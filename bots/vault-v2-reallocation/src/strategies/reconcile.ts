@@ -1,4 +1,5 @@
 import { MathLib } from '@morpho-org/blue-sdk'
+import { wholePercentToWAD } from '@repo/utils'
 
 import type { VaultV2Data, VaultV2MarketData } from '../vault-data'
 import type { Reallocation, ReallocationAction, Strategy } from './strategy'
@@ -9,7 +10,6 @@ import {
   getDepositableAmount,
   getUtilization,
   getWithdrawableAmount,
-  percentToWad,
   takeFromPools
 } from '../math'
 
@@ -21,7 +21,7 @@ import {
  * bips left behind scale with the market's borrow, which is what accrues; deliberately looser than
  * the 99.99% cap buffer, whose sliver absorbs supply-side drift instead.
  */
-const MAX_TARGET_UTILIZATION = percentToWad(99.9)
+const MAX_TARGET_UTILIZATION = wholePercentToWAD(99.9)
 
 /** Where one market should sit, and whether getting it there is worth a transaction. */
 export type MarketTarget = {

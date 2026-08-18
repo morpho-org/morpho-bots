@@ -1,11 +1,11 @@
+import { wholePercentToWAD } from '@repo/utils'
 import { parseUnits } from 'viem'
-import { beforeEach, describe, expect, it } from 'vitest'
+import { describe, expect, it } from 'vitest'
 
 import type { Classify } from '../../src/strategies/reconcile'
 
-import { percentToWad } from '../../src/math'
 import { createReconciler } from '../../src/strategies/reconcile'
-import { makeMarket, makeVaultData, RATE_AT_TARGET, resetMarketCounter } from './helpers'
+import { makeMarket, makeVaultData, RATE_AT_TARGET } from './helpers'
 
 const WAD = 10n ** 18n
 
@@ -14,7 +14,7 @@ const makeReconciler = (
   overrides: Partial<{ allowIdleParking: boolean; capBufferWad: bigint }> = {}
 ) =>
   createReconciler({
-    capBufferWad: overrides.capBufferWad ?? percentToWad(99.99),
+    capBufferWad: overrides.capBufferWad ?? wholePercentToWAD(99.99),
     allowIdleParking: overrides.allowIdleParking ?? true,
     classifierFor: () => classify
   })
@@ -23,10 +23,6 @@ const makeReconciler = (
 const toHalf: Classify = () => ({ targetUtilization: (50n * WAD) / 100n, clearsMinDelta: true })
 
 describe('createReconciler', () => {
-  beforeEach(() => {
-    resetMarketCounter()
-  })
-
   it('clamps a WAD target so no leg drains a market to zero free liquidity', () => {
     // A decayed-rateAtTarget cold market can classify with lowerBound = WAD: unclamped, the
     // deallocation sizes to the market's ENTIRE free liquidity — exact to the snapshot and

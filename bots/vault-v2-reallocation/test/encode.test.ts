@@ -1,16 +1,12 @@
 import { marketParamsAbi } from '@morpho-org/blue-sdk'
 import { vaultV2Abi } from '@morpho-org/blue-sdk-viem'
 import { decodeAbiParameters, decodeFunctionData, getAddress, parseUnits } from 'viem'
-import { beforeEach, describe, expect, it } from 'vitest'
+import { describe, expect, it } from 'vitest'
 
 import { encodeReallocation } from '../src/encode'
-import { ADAPTER, makeMarketParams, resetMarketCounter } from './strategies/helpers'
+import { ADAPTER, makeMarketParams } from './strategies/helpers'
 
 describe('encodeReallocation', () => {
-  beforeEach(() => {
-    resetMarketCounter()
-  })
-
   it('encodes deallocate legs strictly before allocate legs with exact args', () => {
     const hotParams = makeMarketParams()
     const coldParams = makeMarketParams()

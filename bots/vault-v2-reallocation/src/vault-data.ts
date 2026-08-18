@@ -47,6 +47,8 @@ export type VaultV2MarketData = {
    * {@link isAdaptiveCurveMarket}.
    */
   isAdaptiveCurve: boolean
+  /** A zero-collateral Blue market never borrows, so no rate strategy applies to it. */
+  isIdle: boolean
 }
 
 export type VaultV2Data = {
@@ -61,6 +63,11 @@ export type VaultV2Data = {
   /** Collateral-level cap state per distinct collateral token (checksummed key). */
   collateralCaps: Record<Address, CapState>
   marketsData: VaultV2MarketData[]
+  /**
+   * Ids of the markets excluded from `apy-range` for running a foreign IRM. Precomputed here rather
+   * than in the tick — the mapping below already walks every market.
+   */
+  nonAdaptiveCurveMarketIds: Hex[]
 }
 
 /**
@@ -80,6 +87,7 @@ type AdapterMarket = {
   state: MarketState
   vaultAssets: bigint
   rateAtTarget: bigint
+  isIdle: boolean
 }
 
 // Both Morpho Blue market adapter generations take the same abi-encoded market params in
@@ -97,7 +105,8 @@ const normalizeAdapterMarkets = (adapter: MarketAdapter, timestamp: bigint): Ada
         params,
         state: accrued.market,
         vaultAssets: accrued.supplyAssets,
-        rateAtTarget: accrued.market.rateAtTarget ?? 0n
+        rateAtTarget: accrued.market.rateAtTarget ?? 0n,
+        isIdle: accrued.market.isIdle
       }
     })
   }
@@ -112,7 +121,8 @@ const normalizeAdapterMarkets = (adapter: MarketAdapter, timestamp: bigint): Ada
         accrued.totalSupplyShares,
         'Down'
       ),
-      rateAtTarget: accrued.rateAtTarget ?? 0n
+      rateAtTarget: accrued.rateAtTarget ?? 0n,
+      isIdle: accrued.isIdle
     }
   })
 }
@@ -207,7 +217,7 @@ export const fetchVaultV2Data = async (
   const marketCaps = caps.slice(1 + collateralTokens.length)
 
   const marketsData = adapterMarkets.map(
-    ({ params, state, vaultAssets, rateAtTarget }, i): VaultV2MarketData => ({
+    ({ params, state, vaultAssets, rateAtTarget, isIdle }, i): VaultV2MarketData => ({
       id: params.id,
       capId: marketCapIds[i]!,
       params: {
@@ -224,7 +234,8 @@ export const fetchVaultV2Data = async (
       cap: marketCaps[i]!,
       vaultAssets,
       rateAtTarget,
-      isAdaptiveCurve: isAdaptiveCurveMarket(params.irm, rateAtTarget, chainId)
+      isAdaptiveCurve: isAdaptiveCurveMarket(params.irm, rateAtTarget, chainId),
+      isIdle
     })
   )
 
@@ -235,6 +246,9 @@ export const fetchVaultV2Data = async (
     idleAssets: vaultV2.assetBalance,
     adapterCap,
     collateralCaps,
-    marketsData
+    marketsData,
+    nonAdaptiveCurveMarketIds: marketsData
+      .filter(marketData => !marketData.isAdaptiveCurve && !marketData.isIdle)
+      .map(marketData => marketData.id)
   }
 }

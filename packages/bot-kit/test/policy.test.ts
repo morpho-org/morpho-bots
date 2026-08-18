@@ -105,7 +105,7 @@ describe('evaluatePolicy multicall envelope', () => {
 
   const MULTICALL_POLICY: Policy = {
     chainId: 8453,
-    executor: [VAULT_A, VAULT_B],
+    targets: [VAULT_A, VAULT_B],
     maxFeePerGasWei: 300_000_000_000n,
     maxGasLimit: 15_000_000n,
     maxDataBytes: 65_536,
@@ -158,7 +158,7 @@ describe('evaluatePolicy multicall envelope', () => {
   it('rejects an outer target with no registered inner targets', () => {
     const policy: Policy = {
       ...MULTICALL_POLICY,
-      executor: getAddress(`0x${'cc'.repeat(20)}`)
+      targets: [getAddress(`0x${'cc'.repeat(20)}`)]
     }
     expect(evaluatePolicy(policy, mtx({ to: getAddress(`0x${'cc'.repeat(20)}`) }))).toMatchObject({
       ok: false,

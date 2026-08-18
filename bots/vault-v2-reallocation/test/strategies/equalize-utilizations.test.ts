@@ -1,27 +1,19 @@
+import { wholePercentToWAD } from '@repo/utils'
 import { getAddress, parseUnits } from 'viem'
-import { beforeEach, describe, expect, it } from 'vitest'
+import { describe, expect, it } from 'vitest'
 
-import { percentToWad } from '../../src/math'
 import { createEqualizeUtilizationsStrategy } from '../../src/strategies/equalize-utilizations'
-import {
-  makeMarket,
-  makeMarketParams,
-  makeVaultData,
-  RATE_AT_TARGET,
-  resetMarketCounter,
-  VAULT
-} from './helpers'
+import { makeMarket, makeMarketParams, makeVaultData, RATE_AT_TARGET, VAULT } from './helpers'
 
 const makeStrategy = (minUtilizationDeltaBips: (vault: `0x${string}`) => number = () => 0) =>
-  createEqualizeUtilizationsStrategy({ capBufferWad: percentToWad(99.99), minUtilizationDeltaBips })
+  createEqualizeUtilizationsStrategy({
+    capBufferWad: wholePercentToWAD(99.99),
+    minUtilizationDeltaBips
+  })
 
 const WAD = 10n ** 18n
 
 describe('createEqualizeUtilizationsStrategy', () => {
-  beforeEach(() => {
-    resetMarketCounter()
-  })
-
   it('deallocates from below-average and allocates into above-average markets (deltas)', () => {
     const strategy = makeStrategy()
     const hotMarket = makeMarket({

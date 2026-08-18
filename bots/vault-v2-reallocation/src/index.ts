@@ -16,16 +16,18 @@ import {
   railwayContext,
   simulateCall
 } from '@repo/bot-kit'
-import { ensureError, tryCatch } from '@repo/utils'
+import { ensureError } from '@repo/utils'
 import { getAbiItem, toFunctionSelector } from 'viem'
+import { privateKeyToAccount } from 'viem/accounts'
 import { getBlockNumber, readContract } from 'viem/actions'
 
 import { loadConfig } from './config'
 import { encodeReallocation } from './encode'
-import { InvalidVaultError } from './invalid-vault.error'
+import { createIntervalGate } from './interval-gate'
 import { runTick } from './runner/tick'
 import { createStrategy } from './strategies'
 import { revertReason } from './tx-error'
+import { checkVaults } from './vault-checks'
 import { fetchVaultV2Data } from './vault-data'
 
 // Blocks a vault stays in the queue's backpressure set AFTER its tx settles, suppressing an
@@ -34,41 +36,49 @@ const SETTLED_COOLDOWN_BLOCKS = 20n
 
 async function main() {
   const config = loadConfig()
-  // Global wide-log context stamped onto every line: the bot identity + chain, plus whichever
-  // RAILWAY_* identity vars this deployment exposes.
   const logger = createLogger(config.logLevel, {
     context: { bot: 'vault-v2-reallocation', chainId: config.chainId, ...railwayContext() }
   })
 
-  const client = createDeploylessClient(config)
+  // The fetch fans out per-market and per-cap-id reads, so the read transport batches them into a
+  // few JSON-RPC round trips.
+  const client = createDeploylessClient({
+    chain: config.chain,
+    rpcUrl: config.rpcUrl,
+    rpcUrlFallback: config.rpcUrlFallback,
+    batch: true
+  })
 
-  // Startup vault validation, which also gathers the adapter set the signing policy binds to:
-  // fetchVaultV2Data proves each whitelisted address is a factory-made VaultV2 with exactly one
-  // MorphoMarketV1 adapter (typed InvalidVaultError otherwise — fatal, since the policy authorizes
-  // the address as a tx target). isAdapter is a cheap cross-check that the vault recognizes it.
+  // The signer's policy needs the vault → adapter map the startup checks resolve, so the EOA is
+  // derived from the key directly here.
+  const eoa = privateKeyToAccount(config.reallocatorPrivateKey).address
   const startupBlock = await getBlockNumber(client)
-  const adapterByVault: Record<Address, readonly Address[]> = {}
-  for (const vault of config.vaultWhitelist) {
-    await assertContractDeployed(client, vault, 'VAULT_WHITELIST entry')
-    const vaultData = await fetchVaultV2Data(client, vault, {
-      chainId: config.chainId,
-      blockNumber: startupBlock
-    })
-    const recognized = await readContract(client, {
+  const isAllocator = (vault: Address) =>
+    readContract(client, {
       address: vault,
       abi: vaultV2Abi,
-      functionName: 'isAdapter',
-      args: [vaultData.adapterAddress]
+      functionName: 'isAllocator',
+      args: [eoa]
     })
-    if (!recognized) {
-      throw new InvalidVaultError(
-        `vault ${vault} does not recognize adapter ${vaultData.adapterAddress}`
-      )
-    }
-    adapterByVault[vault] = [vaultData.adapterAddress]
-  }
 
-  // Signed-send path: a plain wallet client + local nonce cursor (separate from the read client).
+  const adapterByVault = await checkVaults(
+    config.vaultWhitelist,
+    {
+      assertDeployed: vault => assertContractDeployed(client, vault, 'VAULT_WHITELIST entry'),
+      fetchVault: vault =>
+        fetchVaultV2Data(client, vault, { chainId: config.chainId, blockNumber: startupBlock }),
+      isAdapter: (vault, adapter) =>
+        readContract(client, {
+          address: vault,
+          abi: vaultV2Abi,
+          functionName: 'isAdapter',
+          args: [adapter]
+        }),
+      isAllocator
+    },
+    logger
+  )
+
   // Default-deny pre-broadcast guard: only value-0 multicall(bytes[]) calls to whitelisted vaults
   // whose every inner leg is allocate/deallocate to that vault's own adapter, under the
   // fee/gas/size ceilings, are ever signed (see @repo/bot-kit `evaluatePolicy`).
@@ -79,7 +89,7 @@ async function main() {
     privateKey: config.reallocatorPrivateKey,
     policy: {
       chainId: config.chainId,
-      executor: config.vaultWhitelist,
+      targets: config.vaultWhitelist,
       maxFeePerGasWei: config.maxFeeWei,
       maxGasLimit: DEFAULT_MAX_GAS_LIMIT,
       maxDataBytes: DEFAULT_MAX_DATA_BYTES,
@@ -94,7 +104,6 @@ async function main() {
     },
     logger
   })
-  const eoa = signer.account.address
 
   logger.info('startup', {
     chainId: config.chainId,
@@ -106,30 +115,6 @@ async function main() {
     dryRun: config.dryRun
   })
 
-  // The allocator role is probed non-fatally: a pending grant must not crash-loop the bot; the tick
-  // re-checks and resumes on its own. Unlike MetaMorpho V1's onlyAllocatorRole, VaultV2.allocate
-  // requires isAllocator[msg.sender] strictly — curator/owner do NOT implicitly qualify, so the
-  // check is deliberately narrower than the V1 bot's.
-  const isAllocator = (vault: Address) =>
-    readContract(client, {
-      address: vault,
-      abi: vaultV2Abi,
-      functionName: 'isAllocator',
-      args: [eoa]
-    })
-  for (const vault of config.vaultWhitelist) {
-    const role = await tryCatch(isAllocator(vault))
-    if (role.error || !role.data) {
-      logger.warn('allocator.missing_role', {
-        vault,
-        detail: 'grant the allocator role to the EOA'
-      })
-    }
-  }
-
-  // Transaction-queue state is in-memory only — chain truth wins on restart. A redeploy re-derives
-  // the nonce cursor from `getTransactionCount('pending')`, and any tx that was in flight settles
-  // on-chain regardless of the bot; settlement audit ships via the structured `tx.*` log events.
   const queue = createPendingQueue({
     send: signer.send,
     getReceipt: signer.getReceipt,
@@ -154,10 +139,9 @@ async function main() {
   // The block watcher drives one tick per new block; the time gate throttles actual reallocation
   // passes to the configured cadence (queue maintenance still runs every block via `maintain`). A
   // plan is built, simulated, and submitted within a single tick — no unsent plan survives it.
-  let lastRunMs = 0
+  const intervalGate = createIntervalGate(config.reallocationIntervalMs)
   const tick = async (chainHead: bigint) => {
-    if (Date.now() - lastRunMs < config.reallocationIntervalMs) return
-    lastRunMs = Date.now()
+    if (!intervalGate()) return
     await runTick({
       vaults: config.vaultWhitelist,
       chainHead,
@@ -173,7 +157,7 @@ async function main() {
       simulate: (vault, data) => simulateCall(client, { eoa, to: vault, data }),
       submit: async ({ vault, data, blockNumber }) => {
         const fees = initialFees(await signer.getBaseFee(), config.maxFeeWei)
-        await queue.submit({
+        return queue.submit({
           request: { to: vault, data },
           label: vault,
           maxFeePerGas: fees.maxFeePerGas,

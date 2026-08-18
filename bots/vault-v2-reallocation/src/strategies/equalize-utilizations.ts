@@ -6,7 +6,7 @@ import { isAddressEqual, zeroAddress } from 'viem'
 import type { VaultV2MarketData } from '../vault-data'
 import type { Strategy } from './strategy'
 
-import { getUtilization } from '../math'
+import { getUtilization, wadToBips } from '../math'
 import { createReconciler } from './reconcile'
 
 type EqualizeUtilizationsConfig = {
@@ -54,9 +54,8 @@ export const createEqualizeUtilizationsStrategy = (config: EqualizeUtilizationsC
         return {
           targetUtilization,
           clearsMinDelta:
-            Math.abs(
-              Number((getUtilization(marketData.state) - targetUtilization) / 1_000_000_000n) / 1e5
-            ) > minUtilizationDeltaBips
+            Math.abs(wadToBips(getUtilization(marketData.state) - targetUtilization)) >
+            minUtilizationDeltaBips
         }
       }
     }

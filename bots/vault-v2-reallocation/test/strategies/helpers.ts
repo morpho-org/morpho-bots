@@ -22,11 +22,9 @@ const UNLIMITED_CAP: CapState = {
   allocation: 0n
 }
 
+// Ids only need uniqueness; the counter never resets, which keeps every market distinct across a
+// whole test file.
 let marketCounter = 0
-
-export const resetMarketCounter = () => {
-  marketCounter = 0
-}
 
 export const makeMarketParams = (overrides?: Partial<InputMarketParams>): InputMarketParams => {
   marketCounter++
@@ -47,9 +45,10 @@ export const makeMarket = (opts: {
   utilization: bigint
   vaultAssets: bigint
   cap?: Partial<CapState>
-  rateAtTarget: bigint
+  rateAtTarget?: bigint
   params?: InputMarketParams
   isAdaptiveCurve?: boolean
+  isIdle?: boolean
   supplyAssets?: bigint
 }): VaultV2MarketData => {
   const totalSupplyAssets = opts.supplyAssets ?? parseUnits('100000', 6)
@@ -63,8 +62,9 @@ export const makeMarket = (opts: {
     // divergence override `cap.allocation` explicitly.
     cap: { ...UNLIMITED_CAP, allocation: opts.vaultAssets, ...opts.cap },
     vaultAssets: opts.vaultAssets,
-    rateAtTarget: opts.rateAtTarget,
-    isAdaptiveCurve: opts.isAdaptiveCurve ?? true
+    rateAtTarget: opts.rateAtTarget ?? RATE_AT_TARGET,
+    isAdaptiveCurve: opts.isAdaptiveCurve ?? true,
+    isIdle: opts.isIdle ?? false
   }
 }
 
@@ -81,5 +81,6 @@ export const makeVaultData = (
     markets.map(m => [getAddress(m.params.collateralToken), UNLIMITED_CAP])
   ),
   marketsData: markets,
+  nonAdaptiveCurveMarketIds: markets.filter(m => !m.isAdaptiveCurve && !m.isIdle).map(m => m.id),
   ...overrides
 })

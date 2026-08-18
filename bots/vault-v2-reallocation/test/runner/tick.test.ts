@@ -49,7 +49,7 @@ const makeDeps = (overrides: Partial<TickDeps> = {}) => {
     strategy: vi.fn(() => undefined),
     encodeReallocation: vi.fn(() => DATA),
     simulate: vi.fn(async () => ({ status: 'ok' as const })),
-    submit: vi.fn(async () => undefined),
+    submit: vi.fn(async () => true),
     dryRun: false,
     inflightLabels: () => new Set<string>(),
     revertReason: error => (error instanceof Error ? error.message : String(error)),
@@ -69,6 +69,16 @@ describe('runTick', () => {
     expect(deps.submit).toHaveBeenCalledWith({ vault: VAULT_A, data: DATA, blockNumber: 100n })
     expect(tickEnd(events)).toMatchObject({ reallocations_found: 1, submitted: 1, errors: 0 })
     expect(events.some(e => e.event === 'reallocation.found')).toBe(true)
+  })
+
+  it('does not count a submit the queue refused to broadcast', async () => {
+    const { deps, events } = makeDeps({
+      strategy: vi.fn(() => someReallocation()),
+      submit: vi.fn(async () => false)
+    })
+    await runTick(deps)
+    expect(events.some(e => e.event === 'reallocation.not_broadcast')).toBe(true)
+    expect(tickEnd(events)).toMatchObject({ reallocations_found: 1, submitted: 0 })
   })
 
   it('passes the tick chainHead into the vault fetch (block-pinned snapshot)', async () => {
@@ -129,10 +139,11 @@ describe('runTick', () => {
     expect(tickEnd(events)).toMatchObject({ adapter_changed: 1, submitted: 0 })
   })
 
-  it('skips fetch/strategy/simulate while the allocator role is missing', async () => {
+  it('skips strategy/simulate while the allocator role is missing', async () => {
+    // The fetch runs concurrently with the role read, so it is issued regardless.
     const { deps, events } = makeDeps({ isAllocator: vi.fn(async () => false) })
     await runTick(deps)
-    expect(deps.fetchVault).not.toHaveBeenCalled()
+    expect(deps.strategy).not.toHaveBeenCalled()
     expect(events).toContainEqual({
       level: 'warn',
       event: 'allocator.missing_role',

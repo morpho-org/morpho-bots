@@ -1,3 +1,4 @@
+import { wholePercentToWAD } from '@repo/utils'
 import { getAddress, parseUnits } from 'viem'
 import { describe, expect, it } from 'vitest'
 
@@ -8,7 +9,6 @@ import {
   getDepositableAmount,
   getUtilization,
   getWithdrawableAmount,
-  percentToWad,
   takeFromPools
 } from '../src/math'
 import { makeMarket, makeVaultData, RATE_AT_TARGET } from './strategies/helpers'
@@ -43,7 +43,9 @@ describe('getCapHeadroom', () => {
       allocation: parseUnits('10000', 6)
     }
     // Buffered absolute (99.99%) is below the basis → zero headroom.
-    expect(getCapHeadroom(cap, parseUnits('10000', 6), totalAssets, percentToWad(99.99))).toBe(0n)
+    expect(getCapHeadroom(cap, parseUnits('10000', 6), totalAssets, wholePercentToWAD(99.99))).toBe(
+      0n
+    )
   })
 
   it('binds on a sub-WAD relative cap when it is the smaller ceiling', () => {
@@ -202,12 +204,5 @@ describe('deposit pools', () => {
     })
     const pools = createDepositPools(makeVaultData([market]), WAD)
     expect(takeFromPools(pools, getAddress(`0x${'77'.repeat(20)}`), parseUnits('1', 6))).toBe(0n)
-  })
-})
-
-describe('percentToWad', () => {
-  it('scales percentages to WAD fractions', () => {
-    expect(percentToWad(100)).toBe(WAD)
-    expect(percentToWad(99.99)).toBe(parseUnits('0.9999', 18))
   })
 })
