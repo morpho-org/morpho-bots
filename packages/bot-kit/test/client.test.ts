@@ -29,6 +29,16 @@ describe('createDeploylessClient', () => {
     })
     expect(client.transport.type).toBe('viem-dlc-deployless')
   })
+
+  it('keeps the deployless wrapper when batching is opted into', () => {
+    const client = createDeploylessClient({
+      chain: base,
+      rpcUrl: RPC,
+      rpcUrlFallback: undefined,
+      batch: true
+    })
+    expect(client.transport.type).toBe('viem-dlc-deployless')
+  })
 })
 
 describe('assertContractDeployed', () => {

@@ -13,7 +13,7 @@ import { TxSendError } from '../src/tx-error'
 const EXECUTOR = `0x${'11'.repeat(20)}` as const
 const POLICY: Policy = {
   chainId: base.id,
-  executor: EXECUTOR,
+  targets: [EXECUTOR],
   maxFeePerGasWei: 300_000_000_000n,
   maxGasLimit: 15_000_000n,
   maxDataBytes: 65_536
@@ -199,7 +199,7 @@ describe('createSigner', () => {
       }
     })
     const { send } = createSigner({ ...CONFIG, policy: POLICY })
-    // Target is the wrong contract → policy 'executor' violation, thrown before any raw broadcast.
+    // Target is the wrong contract → policy 'target' violation, thrown before any raw broadcast.
     await expect(
       send({
         to: `0x${'99'.repeat(20)}`,

@@ -554,7 +554,7 @@ describe('nonce-hole latch', () => {
     const sendsAfterDrop = ctx.sends.length
     // A NEW first-send is refused while the hole is latched (nonce 8 still pending → queue not empty,
     // so the empty-queue sync can't clear it).
-    await ctx.submit('c', 6n)
+    expect(await ctx.submit('c', 6n)).toBe(false) // refused → not a real broadcast
     expect(ctx.sends.length).toBe(sendsAfterDrop) // no new broadcast
     expect(ctx.queue.size).toBe(1)
     expect(ctx.events.some(e => e.event === 'queue.nonce_hole' && e.fields?.label === 'c')).toBe(
@@ -619,5 +619,40 @@ describe('nonce-hole latch', () => {
     ctx.consumedRef.value = 9
     await ctx.queue.onBlock(9n)
     expect(ctx.events.some(e => e.event === 'queue.nonce_hole_cleared')).toBe(true)
+  })
+})
+
+// A tick counting "submitted" must count only real broadcasts; every silent refusal resolves false.
+describe('submit outcome', () => {
+  it('resolves true when the send is accepted and tracked', async () => {
+    const { queue } = setup()
+    expect(await submitOne(queue)).toBe(true)
+    expect(queue.size).toBe(1)
+  })
+
+  it('resolves false when the first send fails without a nonce', async () => {
+    const send: SendTx = async () => {
+      throw new Error('rpc down')
+    }
+    const { queue } = setup({ send })
+    expect(await submitOne(queue)).toBe(false)
+  })
+
+  it('resolves false when the empty-queue nonce re-sync throws', async () => {
+    const { queue } = setup({
+      syncNonce: async () => {
+        throw new Error('rpc down')
+      }
+    })
+    expect(await submitOne(queue)).toBe(false)
+  })
+
+  it('resolves false while the send-aborted latch is set', async () => {
+    const send: SendTx = async () => {
+      throw new TxSendError(new Error('broadcast lost'), 7)
+    }
+    const { queue } = setup({ send })
+    await expect(submitOne(queue)).rejects.toThrow() // the latching send itself rethrows
+    expect(await submitOne(queue)).toBe(false)
   })
 })

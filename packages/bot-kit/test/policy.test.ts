@@ -10,7 +10,7 @@ const OTHER = getAddress(`0x${'33'.repeat(20)}`)
 
 const POLICY: Policy = {
   chainId: 8453,
-  executor: EXECUTOR,
+  targets: [EXECUTOR],
   maxFeePerGasWei: 300_000_000_000n,
   maxGasLimit: 15_000_000n,
   maxDataBytes: 64
@@ -42,7 +42,7 @@ describe('evaluatePolicy', () => {
 
   it.each([
     ['chainId', { chainId: 1 }],
-    ['executor', { to: OTHER }],
+    ['target', { to: OTHER }],
     ['value', { value: 1n }],
     ['maxFeePerGas', { maxFeePerGas: 300_000_000_001n }],
     ['gas', { gas: 15_000_001n }],
@@ -53,19 +53,19 @@ describe('evaluatePolicy', () => {
   })
 
   it('accepts any member of a target list and rejects non-members', () => {
-    const listed: Policy = { ...POLICY, executor: [EXECUTOR, OTHER] }
+    const listed: Policy = { ...POLICY, targets: [EXECUTOR, OTHER] }
     expect(evaluatePolicy(listed, tx())).toEqual({ ok: true })
     expect(evaluatePolicy(listed, tx({ to: OTHER }))).toEqual({ ok: true })
     expect(evaluatePolicy(listed, tx({ to: getAddress(`0x${'44'.repeat(20)}`) }))).toMatchObject({
       ok: false,
-      check: 'executor'
+      check: 'target'
     })
   })
 
   it('denies every transaction under an empty target list', () => {
-    expect(evaluatePolicy({ ...POLICY, executor: [] }, tx())).toMatchObject({
+    expect(evaluatePolicy({ ...POLICY, targets: [] }, tx())).toMatchObject({
       ok: false,
-      check: 'executor'
+      check: 'target'
     })
   })
 

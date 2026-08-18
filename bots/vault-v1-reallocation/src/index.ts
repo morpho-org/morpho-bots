@@ -47,7 +47,7 @@ async function main() {
     privateKey: config.reallocatorPrivateKey,
     policy: {
       chainId: config.chainId,
-      executor: config.vaultWhitelist,
+      targets: config.vaultWhitelist,
       maxFeePerGasWei: config.maxFeeWei,
       maxGasLimit: DEFAULT_MAX_GAS_LIMIT,
       maxDataBytes: DEFAULT_MAX_DATA_BYTES,

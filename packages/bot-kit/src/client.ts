@@ -18,13 +18,19 @@ const DEPLOYLESS_GAS_LIMIT = 550_000_000
  * viem-dlc's `deployless` transport so the bot's batch lens can run deploylessly. Plain reads
  * (`getCode`, `eth_call`) pass straight through to the base transport. The return is typed against
  * {@link BatchLensTransportType} so `readDeploylessBatchLens`-based fetchers accept it without a cast.
+ *
+ * `batch` is off by default and applies to the underlying HTTP endpoint(s), not the `deployless`
+ * wrapper — see {@link createHttpTransport} for when it pays off and what it couples.
  */
 export function createDeploylessClient(options: {
   chain: Chain
   rpcUrl: string
   rpcUrlFallback?: string | undefined
+  batch?: boolean | undefined
 }): Client<Transport<BatchLensTransportType>> {
-  const base = createHttpTransport(options.rpcUrl, options.rpcUrlFallback)
+  const base = createHttpTransport(options.rpcUrl, options.rpcUrlFallback, {
+    batch: options.batch
+  })
   return createPublicClient({
     chain: options.chain,
     transport: deployless(base, { gasLimit: DEPLOYLESS_GAS_LIMIT })

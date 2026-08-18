@@ -14,8 +14,8 @@ export const DEFAULT_MAX_DATA_BYTES = 65_536
 /** One signer authorizes one entrypoint on a fixed target set on one chain, under fixed fee/gas/size ceilings. */
 export type Policy = {
   chainId: number
-  /** Allowed target contract(s); an empty list denies every transaction. */
-  executor: Address | readonly Address[]
+  /** Allowed target contracts; an empty list denies every transaction. */
+  targets: readonly Address[]
   maxFeePerGasWei: bigint
   maxGasLimit: bigint
   maxDataBytes: number
@@ -35,7 +35,7 @@ export type PolicyTx = {
 
 export type PolicyCheck =
   | 'chainId'
-  | 'executor'
+  | 'target'
   | 'value'
   | 'maxFeePerGas'
   | 'gas'
@@ -76,9 +76,8 @@ export function evaluatePolicy(policy: Policy, tx: PolicyTx): PolicyDecision {
   if (tx.chainId !== policy.chainId) {
     return deny('chainId', `chainId ${tx.chainId} does not equal ${policy.chainId}`)
   }
-  const targets = [policy.executor].flat()
-  if (!targets.some(target => isAddressEqual(tx.to, target))) {
-    return deny('executor', `target ${tx.to} is not among the configured contracts`)
+  if (!policy.targets.some(target => isAddressEqual(tx.to, target))) {
+    return deny('target', `target ${tx.to} is not among the configured targets`)
   }
   if (tx.value !== 0n) return deny('value', 'transaction value must be zero')
   if (tx.maxFeePerGas > policy.maxFeePerGasWei) {
