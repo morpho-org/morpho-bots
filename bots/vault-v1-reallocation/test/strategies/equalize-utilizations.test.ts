@@ -200,9 +200,10 @@ describe('createEqualizeUtilizationsStrategy', () => {
 
     expect(result).toBeDefined()
     const withdrawal = result!.find(r => r.marketParams === under.params)!
-    // Toward a 100% target: 100k * (1 - 0.5/1.0) = 50k moved, leaving 50k. An unclamped 125% target
-    // would move 60k, past the market's available liquidity.
-    expect(withdrawal.assets).toBe(parseUnits('50000', 6))
+    // The reconciler clamps every target at 99.9% utilization, so 100k * (1 - 0.5/0.999) ≈ 49,949.95
+    // moves and a liquidity sliver stays behind — a withdrawal sized to a 100% (let alone the
+    // unclamped 125%) target would drain S − B exactly and revert on the first wei of accrual.
+    expect(withdrawal.assets).toBe(parseUnits('100000', 6) - 49_949_949_949n)
   })
 
   it('does not let a capped-out market arm the min-delta gate', () => {

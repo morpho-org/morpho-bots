@@ -5,7 +5,14 @@ import type { VaultData, VaultMarketData } from '../vault-data'
 import type { MarketAllocation, Strategy } from './strategy'
 
 import { isIdleMarket } from '../market.utils'
-import { getDepositableAmount, getUtilization, getWithdrawableAmount } from '../math'
+import { getDepositableAmount, getUtilization, getWithdrawableAmount, percentToWad } from '../math'
+
+// A target of exactly WAD sizes a withdrawal to the market's entire free liquidity (S − B), which
+// reverts the moment any interest accrues between snapshot and mining — and the AdaptiveCurve
+// inverse legitimately produces WAD bounds on cold markets (any requested rate ≥ 4·rateAtTarget).
+// Clamping keeps the exit-a-dead-market intent while leaving a realizable liquidity sliver; the
+// margin is deliberately looser than the 99.99% cap buffer since it absorbs borrow-side accrual.
+const MAX_TARGET_UTILIZATION = percentToWad(99.9)
 
 /** Where one market should sit, and whether getting it there is worth a transaction. */
 export type MarketTarget = {
@@ -66,15 +73,16 @@ export const createReconciler = (options: ReconcilerOptions): Strategy => {
       if (isIdleMarket(marketData)) continue
       const target = classify(marketData)
       if (target === undefined) continue
+      const targetUtilization = min(target.targetUtilization, MAX_TARGET_UTILIZATION)
 
       const utilization = getUtilization(marketData.state)
-      if (utilization === target.targetUtilization) continue
+      if (utilization === targetUtilization) continue
 
-      const side = utilization > target.targetUtilization ? 'deposit' : 'withdraw'
+      const side = utilization > targetUtilization ? 'deposit' : 'withdraw'
       const amount =
         side === 'deposit'
-          ? getDepositableAmount(marketData, target.targetUtilization, options.capBufferWad)
-          : getWithdrawableAmount(marketData, target.targetUtilization)
+          ? getDepositableAmount(marketData, targetUtilization, options.capBufferWad)
+          : getWithdrawableAmount(marketData, targetUtilization)
 
       if (side === 'deposit') totalDepositableAmount += amount
       else totalWithdrawableAmount += amount

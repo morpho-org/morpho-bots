@@ -163,4 +163,25 @@ describe('createReconciler', () => {
       expect(funded!.map(leg => leg.marketParams)).toContainEqual(hot2.params)
     })
   })
+
+  describe('target clamp', () => {
+    it("clamps a WAD target so no leg drains a market's full free liquidity", () => {
+      // A cold market whose AdaptiveCurve bound degenerates to WAD (rate >= 4·rateAtTarget) must not
+      // be sized to withdraw S − B exactly — that reverts on the first wei of accrual. The reconciler
+      // clamps the target at 99.9%, leaving a realizable sliver behind.
+      const reconcile = makeReconciler(
+        { idle: 'net', allowIdleReallocation: true },
+        fixedTarget(WAD)
+      )
+      const cold = market((50n * WAD) / 100n, parseUnits('100000', 6))
+      const idle = makeIdleMarket(0n)
+
+      const result = reconcile(makeVaultData([cold, idle]))
+
+      expect(result).toBeDefined()
+      const withdrawal = result!.find(leg => leg.marketParams === cold.params)!
+      // 100k · (1 − 0.5/0.999) ≈ 49,949.949949 withdrawn — strictly less than the full S − B = 50k.
+      expect(withdrawal.assets).toBe(parseUnits('100000', 6) - 49_949_949_949n)
+    })
+  })
 })
