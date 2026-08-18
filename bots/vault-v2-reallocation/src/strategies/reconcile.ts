@@ -9,8 +9,19 @@ import {
   getDepositableAmount,
   getUtilization,
   getWithdrawableAmount,
+  percentToWad,
   takeFromPools
 } from '../math'
+
+/**
+ * Ceiling on any classifier target: a WAD target (an APY bound past the curve's max on a market
+ * whose `rateAtTarget` decayed toward the minimum, or an aggregate utilization at/above 100%)
+ * would size a deallocation to the market's ENTIRE free liquidity — exact to the snapshot and
+ * unrealizable one accrual later, so the plan sim-passes then reverts on-chain forever. The ~10
+ * bips left behind scale with the market's borrow, which is what accrues; deliberately looser than
+ * the 99.99% cap buffer, whose sliver absorbs supply-side drift instead.
+ */
+const MAX_TARGET_UTILIZATION = percentToWad(99.9)
 
 /** Where one market should sit, and whether getting it there is worth a transaction. */
 export type MarketTarget = {
@@ -71,8 +82,13 @@ export const createReconciler = (options: ReconcilerOptions): Strategy => {
   return vaultData => {
     const classify = options.classifierFor(vaultData)
     const classified = vaultData.marketsData.flatMap(marketData => {
-      const target = classify(marketData)
-      if (target === undefined) return []
+      const verdict = classify(marketData)
+      if (verdict === undefined) return []
+      // Feasibility is the reconciler's job: every target is clamped to what a leg can realize.
+      const target = {
+        ...verdict,
+        targetUtilization: min(verdict.targetUtilization, MAX_TARGET_UTILIZATION)
+      }
       const utilization = getUtilization(marketData.state)
       // At the target exactly there is nothing to move — skip before sizing.
       if (utilization === target.targetUtilization) return []

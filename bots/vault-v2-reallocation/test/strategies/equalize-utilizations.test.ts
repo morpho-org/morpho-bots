@@ -87,6 +87,30 @@ describe('createEqualizeUtilizationsStrategy', () => {
     }
   })
 
+  it('lands a bad-debt aggregate target at the clamp, never draining free liquidity', () => {
+    const strategy = makeStrategy()
+    // Aggregate utilization > 100% (bad debt dominates): the raw target exceeds WAD, which
+    // unclamped would size the cold market's deallocation past its entire free liquidity.
+    const badDebtMarket = makeMarket({
+      utilization: (300n * WAD) / 100n,
+      vaultAssets: parseUnits('10000', 6),
+      rateAtTarget: RATE_AT_TARGET
+    })
+    const coldMarket = makeMarket({
+      utilization: (10n * WAD) / 100n,
+      vaultAssets: parseUnits('10000', 6), // the adapter holds the whole market
+      supplyAssets: parseUnits('10000', 6),
+      rateAtTarget: RATE_AT_TARGET
+    })
+    const result = strategy(makeVaultData([badDebtMarket, coldMarket]))
+    expect(result).toBeDefined()
+    const deallocation = result!.deallocations.find(l => l.marketId === coldMarket.id)
+    expect(deallocation).toBeDefined()
+    const freeLiquidity = coldMarket.state.totalSupplyAssets - coldMarket.state.totalBorrowAssets
+    expect(deallocation!.assets).toBeLessThan(freeLiquidity)
+    expect(deallocation!.assets).toBeGreaterThan(0n)
+  })
+
   it('handles a dust aggregate borrow whose target rounds to zero without throwing', () => {
     const strategy = makeStrategy()
     // borrow = 1 wei against a huge supply → wDivDown target rounds to 0n, past the

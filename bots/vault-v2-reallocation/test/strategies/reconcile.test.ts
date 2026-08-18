@@ -27,6 +27,36 @@ describe('createReconciler', () => {
     resetMarketCounter()
   })
 
+  it('clamps a WAD target so no leg drains a market to zero free liquidity', () => {
+    // A decayed-rateAtTarget cold market can classify with lowerBound = WAD: unclamped, the
+    // deallocation sizes to the market's ENTIRE free liquidity — exact to the snapshot and
+    // unrealizable one accrual later.
+    const toWad: Classify = () => ({ targetUtilization: WAD, clearsMinDelta: true })
+    const coldMarket = makeMarket({
+      utilization: (50n * WAD) / 100n,
+      vaultAssets: parseUnits('100000', 6), // the adapter holds the whole market
+      rateAtTarget: RATE_AT_TARGET
+    })
+    const hotMarket = makeMarket({
+      utilization: (90n * WAD) / 100n,
+      vaultAssets: parseUnits('10000', 6),
+      rateAtTarget: RATE_AT_TARGET
+    })
+    // hotMarket sits below the WAD target too — classify it away so coldMarket is the only dealloc
+    // and hotMarket the only alloc candidate via a per-market verdict.
+    const classify: Classify = marketData =>
+      marketData.id === coldMarket.id
+        ? toWad(marketData)
+        : { targetUtilization: (50n * WAD) / 100n, clearsMinDelta: true }
+    const result = makeReconciler(classify)(makeVaultData([coldMarket, hotMarket]))
+    expect(result).toBeDefined()
+    const deallocation = result!.deallocations.find(l => l.marketId === coldMarket.id)
+    expect(deallocation).toBeDefined()
+    const freeLiquidity = coldMarket.state.totalSupplyAssets - coldMarket.state.totalBorrowAssets
+    expect(deallocation!.assets).toBeLessThan(freeLiquidity)
+    expect(deallocation!.assets).toBeGreaterThan(0n)
+  })
+
   it('sizes both sides toward the classifier target and emits delta legs', () => {
     const hotMarket = makeMarket({
       utilization: (90n * WAD) / 100n,

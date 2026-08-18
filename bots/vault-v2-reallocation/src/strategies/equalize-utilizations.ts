@@ -16,14 +16,14 @@ type EqualizeUtilizationsConfig = {
   minUtilizationDeltaBips: (vault: Address) => number
 }
 
-const { min, WAD, wDivDown } = MathLib
+const { wDivDown } = MathLib
 
 const isRealCollateral = (marketData: VaultV2MarketData): boolean =>
   !isAddressEqual(marketData.params.collateralToken, zeroAddress)
 
 /**
  * Converges every market toward the vault-wide average utilization
- * (`sum(totalBorrowAssets) / (sum(totalSupplyAssets) + idleAssets)`, clamped at 100% — idle counts
+ * (`sum(totalBorrowAssets) / (sum(totalSupplyAssets) + idleAssets)` — idle counts
  * as deployable supply): deallocates from markets below it, allocates into markets above it, with
  * the imbalance netted through the vault's idle balance (excess deallocations always park there).
  * Fires only when at least one contributing market's deviation exceeds the vault's min-delta
@@ -45,9 +45,9 @@ export const createEqualizeUtilizationsStrategy = (config: EqualizeUtilizationsC
       if (totalSupply === 0n || totalBorrow === 0n) return () => undefined
 
       const minUtilizationDeltaBips = config.minUtilizationDeltaBips(vaultData.vaultAddress)
-      // Aggregate utilization exceeds 100% in bad-debt states; sizing deallocations toward a >100%
-      // target asks for more than the markets hold, so every resulting plan reverts.
-      const targetUtilization = min(wDivDown(totalBorrow, totalSupply), WAD)
+      // May exceed WAD in bad-debt states — the reconciler clamps every target to what a leg can
+      // realize, so the raw aggregate is reported as-is.
+      const targetUtilization = wDivDown(totalBorrow, totalSupply)
 
       return marketData => {
         if (!isRealCollateral(marketData)) return undefined
