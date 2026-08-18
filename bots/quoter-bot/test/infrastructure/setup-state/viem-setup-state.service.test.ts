@@ -466,6 +466,45 @@ describe('ViemSetupStateService', () => {
     }
   })
 
+  test('retries a transient 5xx and returns the recovered payload', async () => {
+    let requests = 0
+    const server = await startFixtureServer(() => {
+      requests += 1
+      return requests < 3 ? new Response('flaky', { status: 503 }) : Response.json({ ok: true })
+    })
+
+    try {
+      await expect(
+        requestJson(`http://localhost:${server.port}/flaky`, 'router-api')
+      ).resolves.toEqual({ ok: true })
+      expect(requests).toBe(3)
+    } finally {
+      await server.stop()
+    }
+  })
+
+  test('does not retry a client error that is not a rate limit or request timeout', async () => {
+    let requests = 0
+    const server = await startFixtureServer(() => {
+      requests += 1
+      return new Response('bad request', { status: 400 })
+    })
+
+    try {
+      const error = await requestJson(`http://localhost:${server.port}/bad`, 'morpho-api').catch(
+        value => value
+      )
+
+      expect(error).toBeInstanceOf(SafeProviderError)
+      expect(error).toMatchObject({
+        failure: { kind: 'provider-error', provider: 'morpho-api', name: 'HttpError', status: 400 }
+      })
+      expect(requests).toBe(1)
+    } finally {
+      await server.stop()
+    }
+  })
+
   test('classifies a bounded request timeout without exposing URL credentials', async () => {
     const server = await startFixtureServer(async () => {
       await sleep(100)
