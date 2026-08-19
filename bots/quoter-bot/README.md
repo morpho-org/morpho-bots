@@ -251,12 +251,14 @@ pnpm --filter @morpho-org/quoter-bot run start -- --version
 ## Deploy
 
 The package owns its production [Dockerfile](./Dockerfile), local
-[docker-compose.yml](./docker-compose.yml), and idempotent
-[`scripts/deploy-railway.ts`](./scripts/deploy-railway.ts) entrypoint. The Docker build context is the
-repository root so pnpm can resolve every workspace dependency; a build stage compiles the
-workspace, and the runtime stage ships only this bot's self-contained bundle — no other bot's code,
-workspace source, or package manager — and starts the combined setup, bootstrap, and ladder monitor
-as an unprivileged Node process.
+[docker-compose.yml](./docker-compose.yml), Kubernetes [Helm chart](./helm/quoter-bot), and
+idempotent [`scripts/deploy-railway.ts`](./scripts/deploy-railway.ts) entrypoint. The Docker build
+context is the repository root so pnpm can resolve every workspace dependency; a build stage
+compiles the workspace, and the runtime stage ships only this bot's self-contained bundle — no
+other bot's code, workspace source, or package manager — and starts the combined setup, bootstrap,
+and ladder monitor as an unprivileged Node process. Kubernetes operators should deploy the
+published Docker Hub image through the package-owned Helm chart — see
+[Kubernetes (Helm)](#kubernetes-helm).
 
 A full deployment creates the `quoter-bot` Railway service, selects the package Dockerfile,
 provisions a persistent volume at `/state`, and writes the effective environment configuration
@@ -312,6 +314,39 @@ tag already exists or the registry returns an unexpected status. A rerun therefo
 an image already associated with a release commit. `latest` only moves forward: when a
 `quoter-bot-*` release tag descends from the built commit, a rerun backfills that commit's image
 tag without touching `latest`.
+
+### Kubernetes (Helm)
+
+The [`helm/quoter-bot`](./helm/quoter-bot) chart is the recommended way to self-host the bot on
+Kubernetes from the public `morphoorg/quoter:latest` image. The chart is consumed directly from
+this repository checkout — it is not published to any Helm registry yet — so install it from the
+local path. One values file fully configures a deployment: classic workload parameters (image,
+CPU/memory resources, persistence, scheduling) sit next to a `config` mapping holding the bot's
+complete native YAML configuration — the same schema as
+[`quoter-bot.example.yaml`](./quoter-bot.example.yaml) — which the chart renders into a Secret and
+passes to the bot with `--config`. Because environment values override YAML values, the chart's
+`env`/`envFrom` parameters keep the maker signing secret and the environment-only Better Stack
+variables out of that block.
+
+From the repository root:
+
+```sh
+helm lint bots/quoter-bot/helm/quoter-bot
+
+helm install quoter-bot bots/quoter-bot/helm/quoter-bot \
+  --namespace quoter-bot --create-namespace --values my-values.yaml
+
+helm upgrade quoter-bot bots/quoter-bot/helm/quoter-bot \
+  --namespace quoter-bot --values my-values.yaml
+```
+
+The chart pins one replica with a `Recreate` update strategy because the bot is a singleton
+writer, mounts a persistent volume at `/state` for durable offer-group ownership state (kept on
+uninstall by default), runs the bundle directly as the image's unprivileged `node` user instead of
+the root-only Railway entrypoint, and defaults the termination grace period to 600 seconds so
+shutdown cleanup can invalidate owned groups and wait for receipts. An upgrade that changes
+`config` rolls the pod automatically. See the [chart README](./helm/quoter-bot/README.md) for the
+full parameter reference, a complete values example, and secret-handling options.
 
 ## Configuration
 

@@ -1,0 +1,30 @@
+quoter-bot deployed as {{ include "quoter-bot.fullname" . }} ({{ include "quoter-bot.image" . }}).
+
+{{- if and .Values.config (not .Values.existingConfigSecret) }}
+Configuration: chart-managed Secret {{ include "quoter-bot.configSecretName" . }}, mounted at
+/repo/bots/quoter-bot/quoter-bot.yaml. Upgrades that change `config` roll the pod automatically.
+{{- else if .Values.existingConfigSecret }}
+Configuration: existing Secret {{ .Values.existingConfigSecret }} (key quoter-bot.yaml). The
+file is read once at startup; after editing the Secret, restart with:
+  kubectl --namespace {{ .Release.Namespace }} rollout restart deployment/{{ include "quoter-bot.fullname" . }}
+{{- else }}
+WARNING: no `config` mapping and no `existingConfigSecret` were provided. The bot starts in
+environment-only mode and fails loudly unless `env`/`envFrom` supply every required variable.
+{{- end }}
+
+{{- if not .Values.persistence.enabled }}
+
+WARNING: persistence is disabled. Durable offer-group ownership state is lost on every
+restart, and previously bot-issued groups become unknown, which fails readiness until an
+operator invalidates or adopts them.
+{{- end }}
+
+Follow the JSON Lines log stream:
+  kubectl --namespace {{ .Release.Namespace }} logs deployment/{{ include "quoter-bot.fullname" . }} --follow
+
+Operational notes:
+  - The bot is a singleton writer; the chart pins one replica with a Recreate strategy. Never
+    scale it or run a second release against the same maker.
+  - Shutdown drains the in-flight cycle, then invalidates owned offer groups and waits for
+    receipts; the pod may legitimately take up to terminationGracePeriodSeconds
+    ({{ .Values.terminationGracePeriodSeconds }}s) to stop.
