@@ -55,7 +55,8 @@ export function createSigner(options: {
   /**
    * Default-deny signing policy. When set, every prepared transaction is checked against it between
    * prepare and broadcast; a violation logs `signer.policy_violation` (error) and throws instead of
-   * sending. Both bots pass their Executor + ceilings here; omitted only in generic/unit contexts.
+   * sending. Bots pass their authorized target(s) + ceilings here; omitted only in generic/unit
+   * contexts.
    */
   policy?: Policy | undefined
   /** Where a policy violation is logged before it throws. */
@@ -68,6 +69,8 @@ export function createSigner(options: {
   const account = privateKeyToAccount(options.privateKey)
   const client = createWalletClient({ account, chain: options.chain, transport })
   let nextNonce: number | undefined
+  // In-flight first read of the cursor, shared by every concurrent first-send (cleared once settled).
+  let cursorRead: Promise<number> | undefined
 
   const readPendingNonce = (): Promise<number> =>
     getTransactionCount(client, { address: account.address, blockTag: 'pending' })
@@ -80,10 +83,20 @@ export function createSigner(options: {
     nextNonce = await readPendingNonce()
   }
 
+  // Defense in depth behind the pending queue's serialized submit: `nextNonce ??= await read()`
+  // null-checks BEFORE the await, so two concurrent first-sends would each read and each claim the
+  // same nonce. Memoizing the in-flight read makes them share one round trip, and the post-await
+  // `??=` keeps the loser from overwriting a cursor the winner already advanced.
   const claimNonce = async (): Promise<number> => {
-    nextNonce ??= await readPendingNonce()
+    if (nextNonce === undefined) {
+      cursorRead ??= readPendingNonce().finally(() => {
+        cursorRead = undefined
+      })
+      const read = await cursorRead
+      nextNonce ??= read
+    }
     const nonce = nextNonce
-    nextNonce += 1
+    nextNonce = nonce + 1
     return nonce
   }
 

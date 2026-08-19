@@ -92,6 +92,33 @@ describe('createSigner', () => {
     expect((await send(req)).nonce).toBe(5)
   })
 
+  it('shares one cursor read across concurrent first sends and claims distinct nonces', async () => {
+    // Defense in depth behind the pending queue's mutex: the lazy cursor init must not double-claim
+    // when two sends race it. Only `eth_getTransactionCount` is counted — the memoized in-flight read
+    // means one round trip, and the post-await `??=` means one nonce each.
+    let counts = 0
+    mockRpc({
+      eth_chainId: `0x${base.id.toString(16)}`,
+      eth_getTransactionCount: () => {
+        counts += 1
+        return '0x5'
+      },
+      eth_estimateGas: '0x5208',
+      eth_getBlockByNumber: { baseFeePerGas: '0x7' },
+      eth_sendRawTransaction: TXHASH
+    })
+    const { send } = createSigner(CONFIG)
+    const req = {
+      to: `0x${'11'.repeat(20)}` as const,
+      data: '0x' as Hex,
+      maxFeePerGas: 1_000_000_000n,
+      maxPriorityFeePerGas: 1_000_000n
+    }
+    const results = await Promise.all([send(req), send(req)])
+    expect(results.map(r => r.nonce).toSorted((a, b) => a - b)).toEqual([5, 6])
+    expect(counts).toBe(1)
+  })
+
   it('rolls back the local nonce cursor when raw broadcast fails before returning a hash', async () => {
     const rawNonces: number[] = []
     let sendCalls = 0
