@@ -386,6 +386,88 @@ describe('createApyRangeStrategy', () => {
     })
   })
 
+  // Any requested APY ≥ 4·rateAtTarget inverts to a utilization bound of exactly WAD, so a wide
+  // range on a cold market legitimately produces bounds no market can ever sit inside. The clamp then
+  // sizes the move against 99.9% — but must never flip which side of the trade the market is on.
+  describe('degenerate (≥WAD) bounds under the target clamp', () => {
+    // min 20% APY is past 4·RATE_AT_TARGET (~12% APY), so BOTH bounds invert to WAD.
+    const DEGENERATE_RANGE = { min: 20, max: 25 }
+
+    const degenerateMarket = (utilization: bigint, vaultAssets: bigint) =>
+      makeMarket({
+        utilization,
+        vaultAssets,
+        cap: parseUnits('100000', 6),
+        rateAtTarget: RATE_AT_TARGET
+      })
+
+    it('emits no leg for a market the clamp leaves at or past its target', () => {
+      // u = 99.95% is BELOW the raw WAD lower bound (so the intent is a withdrawal) but ABOVE the
+      // clamped 99.9% target. Re-deriving the side from the clamped target would read "above target"
+      // and emit a DEPOSIT — the exact inversion this rule removes.
+      const degenerate = degenerateMarket(wholePercentToWAD(99.95), parseUnits('20000', 6))
+      const siblingWithdraw = makeMarket({
+        utilization: apyToUtilization(0.5, RATE_AT_TARGET),
+        vaultAssets: parseUnits('20000', 6),
+        cap: parseUnits('100000', 6),
+        rateAtTarget: RATE_AT_TARGET
+      })
+      const siblingDeposit = makeMarket({
+        utilization: apyToUtilization(12, RATE_AT_TARGET),
+        vaultAssets: parseUnits('10000', 6),
+        cap: parseUnits('100000', 6),
+        rateAtTarget: RATE_AT_TARGET
+      })
+      const strategy = makeStrategy({
+        marketApyRanges: { [degenerate.id]: DEGENERATE_RANGE }
+      })
+
+      const result = strategy(makeVaultData([degenerate, siblingWithdraw, siblingDeposit]))
+
+      // The degenerate market drops out, and it does so WITHOUT taking the rest of the pass with it.
+      expect(result).toBeDefined()
+      expect(result!.map(leg => leg.marketParams)).not.toContainEqual(degenerate.params)
+      expect(result!.map(leg => leg.marketParams)).toContainEqual(siblingWithdraw.params)
+      expect(result!.map(leg => leg.marketParams)).toContainEqual(siblingDeposit.params)
+    })
+
+    it('still exits a dead cold market, sized against the clamped target', () => {
+      // Same degenerate bounds, but far below the clamp: the exit intent survives. This is the
+      // anti-skip assertion — the rule drops empty/backwards moves, never whole markets.
+      const degenerate = degenerateMarket(wholePercentToWAD(50), parseUnits('100000', 6))
+      const idle = makeIdleMarket(0n)
+      const strategy = makeStrategy({
+        marketApyRanges: { [degenerate.id]: DEGENERATE_RANGE }
+      })
+
+      const result = strategy(makeVaultData([degenerate, idle]))
+
+      expect(result).toBeDefined()
+      const withdrawal = result!.find(leg => leg.marketParams === degenerate.params)!
+      // 100k · (1 − 0.5/0.999) ≈ 49,949.949949 — strictly less than the full S − B = 50k the raw
+      // WAD bound would have asked for.
+      expect(withdrawal.assets).toBe(parseUnits('100000', 6) - 49_949_949_949n)
+    })
+
+    it('arms the min-delta gate off the clamped bound, not the raw one', () => {
+      // At u = 99.89% the APY move to the raw WAD bound is ~11.15 bips, but only ~1.01 bips to the
+      // clamped 99.9% target. A 5-bip threshold must therefore NOT fire: the plan can only realize
+      // the clamped move. The idle market is the sole counterpart precisely because idle legs carry
+      // no verdict, so the gate hinges on this market alone.
+      const degenerate = degenerateMarket(wholePercentToWAD(99.89), parseUnits('20000', 6))
+      const ranges = { [degenerate.id]: DEGENERATE_RANGE }
+      const plan = (minApyDeltaBips: number) =>
+        makeStrategy({ marketApyRanges: ranges, minApyDeltaBips })(
+          makeVaultData([degenerate, makeIdleMarket(0n)])
+        )
+
+      expect(plan(5)).toBeUndefined()
+      // Funded control: a threshold under the clamped delta still fires, so the case above is a
+      // threshold verdict and not a market that silently stopped producing a leg.
+      expect(plan(1)).toBeDefined()
+    })
+  })
+
   describe('last deposit gets maxUint256', () => {
     it('assigns maxUint256 to the last deposit market', () => {
       const strategy = makeStrategy()

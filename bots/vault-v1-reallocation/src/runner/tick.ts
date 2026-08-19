@@ -12,12 +12,6 @@ export type TickDeps = {
   chainHead: bigint
   /** The reallocator EOA, compared against each fetched vault's owner and curator. */
   eoa: Address
-  /**
-   * `isAllocator(eoa)` on the vault. Run concurrently with the fetch, whose snapshot supplies the
-   * owner and curator halves of `onlyAllocatorRole`; a vault the EOA cannot reallocate is skipped,
-   * and resumes on its own once the role is granted.
-   */
-  isAllocator: (vault: Address) => Promise<boolean>
   fetchVault: (vault: Address, blockNumber: bigint) => Promise<VaultData>
   strategy: Strategy
   encodeReallocate: (allocations: MarketAllocation[]) => Hex
@@ -42,7 +36,9 @@ type VaultCounters = {
   errors: number
 }
 
-const NO_COUNTS: VaultCounters = {
+// A zeroed counter set. Returned as a fresh copy every time — a shared constant would be one object
+// the fold then mutates in place.
+const noCounts = (): VaultCounters => ({
   skipped_inflight: 0,
   missing_role: 0,
   reallocations_found: 0,
@@ -50,23 +46,21 @@ const NO_COUNTS: VaultCounters = {
   dry_runs: 0,
   submitted: 0,
   errors: 0
-}
+})
 
-const COUNTER_KEYS = Object.keys(NO_COUNTS) as (keyof VaultCounters)[]
+const COUNTER_KEYS = Object.keys(noCounts()) as (keyof VaultCounters)[]
 
 const processVault = async (deps: TickDeps, vault: Address): Promise<VaultCounters> => {
-  const [vaultData, isAllocator] = await Promise.all([
-    deps.fetchVault(vault, deps.chainHead),
-    deps.isAllocator(vault)
-  ])
+  const vaultData = await deps.fetchVault(vault, deps.chainHead)
 
+  // The whole of MetaMorpho's `onlyAllocatorRole`, all three parts read in the snapshot's single call.
   const hasRole =
-    isAllocator ||
+    vaultData.isAllocator ||
     isAddressEqual(vaultData.owner, deps.eoa) ||
     isAddressEqual(vaultData.curator, deps.eoa)
   if (!hasRole) {
     deps.logger.warn('allocator.missing_role', { vault })
-    return { ...NO_COUNTS, missing_role: 1 }
+    return { ...noCounts(), missing_role: 1 }
   }
 
   // Surfaced because `apy-range` excludes these outright — the curve inversion it relies on needs a
@@ -79,7 +73,7 @@ const processVault = async (deps: TickDeps, vault: Address): Promise<VaultCounte
   }
 
   const allocations = deps.strategy(vaultData)
-  if (!allocations) return NO_COUNTS
+  if (!allocations) return noCounts()
 
   const summary = allocations.map(allocation => ({
     collateralToken: allocation.marketParams.collateralToken,
@@ -92,24 +86,24 @@ const processVault = async (deps: TickDeps, vault: Address): Promise<VaultCounte
   const sim = await deps.simulate(vault, data)
   if (sim.status === 'revert') {
     deps.logger.warn('reallocation.sim_revert', { vault, reason: sim.reason })
-    return { ...NO_COUNTS, reallocations_found: 1, sim_reverts: 1 }
+    return { ...noCounts(), reallocations_found: 1, sim_reverts: 1 }
   }
 
   if (deps.dryRun) {
     // The plan itself was just logged by reallocation.found — this line only marks the decision.
     deps.logger.info('reallocation.dry_run', { vault })
-    return { ...NO_COUNTS, reallocations_found: 1, dry_runs: 1 }
+    return { ...noCounts(), reallocations_found: 1, dry_runs: 1 }
   }
 
   const sent = await deps.submit({ vault, data, blockNumber: deps.chainHead })
   if (!sent) deps.logger.debug('reallocation.not_broadcast', { vault })
-  return { ...NO_COUNTS, reallocations_found: 1, submitted: sent ? 1 : 0 }
+  return { ...noCounts(), reallocations_found: 1, submitted: sent ? 1 : 0 }
 }
 
 /**
  * One reallocation pass: every whitelisted vault is processed concurrently — skip if a tx is in
- * flight, fetch a block-pinned snapshot alongside the `isAllocator` read, skip (loudly) if the EOA
- * holds no allocator role, run the strategy, simulate the exact broadcast bytes, and submit (or
+ * flight, fetch a block-pinned snapshot (one deployless `eth_call`, roles included), skip (loudly) if
+ * the EOA holds no allocator role, run the strategy, simulate the exact broadcast bytes, and submit (or
  * dry-run-log) on sim-ok. A failure in one vault logs `vault.error` and never blocks the others;
  * counters are folded after every vault settles and closed by one wide `tick.end` line.
  */
@@ -121,25 +115,22 @@ export const runTick = async (deps: TickDeps): Promise<void> => {
     deps.vaults.map(async (vault): Promise<VaultCounters> => {
       if (inflight.has(vault)) {
         deps.logger.debug('vault.inflight', { vault })
-        return { ...NO_COUNTS, skipped_inflight: 1 }
+        return { ...noCounts(), skipped_inflight: 1 }
       }
       const { data, error } = await tryCatch(processVault(deps, vault))
       if (error) {
         deps.logger.error('vault.error', { vault, reason: deps.revertReason(error) })
-        return { ...NO_COUNTS, errors: 1 }
+        return { ...noCounts(), errors: 1 }
       }
       return data
     })
   )
 
-  const counters = settled.reduce<VaultCounters>(
-    (acc, result) => {
-      if (result.status === 'rejected') return { ...acc, errors: acc.errors + 1 }
-      for (const key of COUNTER_KEYS) acc[key] += result.value[key]
-      return acc
-    },
-    { ...NO_COUNTS }
-  )
+  const counters = settled.reduce<VaultCounters>((acc, result) => {
+    if (result.status === 'rejected') return { ...acc, errors: acc.errors + 1 }
+    for (const key of COUNTER_KEYS) acc[key] += result.value[key]
+    return acc
+  }, noCounts())
 
   deps.logger.info('tick.end', {
     blockNumber: deps.chainHead,

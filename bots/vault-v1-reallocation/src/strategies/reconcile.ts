@@ -1,23 +1,30 @@
 import { MathLib } from '@morpho-org/blue-sdk'
-import { wholePercentToWAD } from '@repo/utils'
 import { maxUint256 } from 'viem'
 
 import type { VaultData, VaultMarketData } from '../vault-data'
 import type { MarketAllocation, Strategy } from './strategy'
 
-import { getDepositableAmount, getUtilization, getWithdrawableAmount } from '../math'
+import {
+  getDepositableAmount,
+  getUtilization,
+  getWithdrawableAmount,
+  MAX_TARGET_UTILIZATION
+} from '../math'
 
-// A target of exactly WAD sizes a withdrawal to the market's entire free liquidity (S − B), which
-// reverts the moment any interest accrues between snapshot and mining — and the AdaptiveCurve
-// inverse legitimately produces WAD bounds on cold markets (any requested rate ≥ 4·rateAtTarget).
-// Clamping keeps the exit-a-dead-market intent while leaving a realizable liquidity sliver; the
-// margin is deliberately looser than the 99.99% cap buffer since it absorbs borrow-side accrual.
-const MAX_TARGET_UTILIZATION = wholePercentToWAD(99.9)
+/** Which way a classifier wants a market to move, decided on its RAW (unclamped) bound. */
+export type MoveIntent = 'deposit' | 'withdraw'
 
 /** Where one market should sit, and whether getting it there is worth a transaction. */
 export type MarketTarget = {
+  /** Already clamped to {@link MAX_TARGET_UTILIZATION}; the move is sized against this. */
   targetUtilization: bigint
-  /** Whether this market's own move clears the strategy's min-delta threshold. */
+  /**
+   * The direction the raw bound asked for. Carried separately because the clamp can pull the target
+   * to the near side of current utilization, and re-deriving the side from the clamped target would
+   * then emit the opposite leg.
+   */
+  intent: MoveIntent
+  /** Whether this market's own move — measured against the CLAMPED target — clears the min-delta. */
   clearsMinDelta: boolean
 }
 
@@ -41,7 +48,7 @@ export type ReconcilerOptions = {
 
 type SizedMove = {
   marketData: VaultMarketData
-  side: 'deposit' | 'withdraw'
+  side: MoveIntent
   amount: bigint
   clearsMinDelta: boolean
 }
@@ -58,7 +65,9 @@ const { min } = MathLib
  * threshold but whose take is entirely consumed by the budget cannot arm the plan, so a fired plan
  * always contains at least one surviving leg worth its transaction. Idle legs never carry a verdict.
  *
- * This is the one place in the bot that builds legs; classifiers never size or clamp.
+ * This is the one place in the bot that builds legs; classifiers never size or trim. A classifier
+ * DOES decide the side (`intent`, off its raw bound) and hand over an already-clamped target — see
+ * {@link MarketTarget} and {@link MAX_TARGET_UTILIZATION}.
  */
 export const createReconciler = (options: ReconcilerOptions): Strategy => {
   return vaultData => {
@@ -76,12 +85,20 @@ export const createReconciler = (options: ReconcilerOptions): Strategy => {
       if (marketData.isIdle) continue
       const target = classify(marketData)
       if (target === undefined) continue
+      // Inert backstop — classifiers already clamp. Kept so a future classifier that forgets cannot
+      // size a leg against a >99.9% target.
       const targetUtilization = min(target.targetUtilization, MAX_TARGET_UTILIZATION)
 
       const utilization = getUtilization(marketData.state)
-      if (utilization === targetUtilization) continue
+      const side = target.intent
+      // An empty-or-backwards move is no move. The clamp can pull the target to the near side of
+      // current utilization, and sizing the opposite leg would invert what the classifier asked for;
+      // this generalizes the at-target skip to the whole wrong-side span. Deliberately NOT a
+      // market-level policy skip — a dead cold market is still exited whenever it sits below the
+      // clamped target.
+      if (side === 'withdraw' ? utilization >= targetUtilization : utilization <= targetUtilization)
+        continue
 
-      const side = utilization > targetUtilization ? 'deposit' : 'withdraw'
       const amount =
         side === 'deposit'
           ? getDepositableAmount(marketData, targetUtilization, options.capBufferWad)

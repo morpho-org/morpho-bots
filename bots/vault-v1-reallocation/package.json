@@ -8,15 +8,17 @@
     "build": "tsx scripts/build.ts",
     "deploy:railway": "tsx scripts/deploy-railway.ts",
     "prestart": "pnpm --filter \"{.}...\" --if-present run build",
+    "probe:lens": "pnpm --filter \"{.}...\" --if-present run build && node --env-file-if-exists=.env dist/scripts/probe-live-lens.js",
     "start": "node --env-file-if-exists=.env dist/src/index.js",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "soltag && tsc --noEmit"
   },
   "dependencies": {
     "@morpho-org/blue-sdk": "catalog:",
     "@morpho-org/blue-sdk-viem": "catalog:",
-    "@morpho-org/morpho-ts": "catalog:",
     "@repo/bot-kit": "workspace:*",
     "@repo/utils": "workspace:*",
+    "solc": "catalog:",
+    "soltag": "catalog:",
     "viem": "catalog:"
   },
   "devDependencies": {

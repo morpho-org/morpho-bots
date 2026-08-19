@@ -18,13 +18,16 @@ default 10 min) throttles the actual reallocation passes. Each pass processes ev
 vault concurrently, so a pass costs the slowest vault rather than the sum:
 
 1. Skip if a reallocation tx for this vault is in flight or cooling down.
-2. Fetch a block-pinned snapshot with `fetchAccrualVault` (`@morpho-org/blue-sdk-viem`) — the
-   withdraw queue plus per-market state, position, and cap, with interest accrued to the pinned
-   block's own timestamp, never wall clock — alongside a concurrent `isAllocator` read. The
-   per-market reads are batched into a few JSON-RPC round trips.
-3. Re-check that the EOA still satisfies `onlyAllocatorRole` — `isAllocator`, or the snapshot's
-   owner / curator (`allocator.missing_role` + skip while absent; a pending grant never crash-loops
-   the bot, and a fresh grant is picked up without restart).
+2. Fetch a block-pinned snapshot in **one** `eth_call` via the deployless lens in
+   [src/state/lens.sol.ts](./src/state/lens.sol.ts): the vault's `owner` / `curator` /
+   `isAllocator(eoa)`, its withdraw queue, and per market the params, accrued Blue state, the vault's
+   position, the cap, and `rateAtTarget`. The lens calls `Morpho.accrueInterest` inside the simulation
+   before reading, so the numbers are the market's exact on-chain state at that block — no client-side
+   accrual, no block-timestamp handling. One vault therefore costs **one billed RPC call per pass**,
+   not the ~55–65 the previous `fetchAccrualVault` fan-out billed for a 10-market vault.
+3. Re-check that the EOA still satisfies `onlyAllocatorRole` — the snapshot's `isAllocator`, `owner`,
+   or `curator`, all three read in that same call (`allocator.missing_role` + skip while absent; a
+   pending grant never crash-loops the bot, and a fresh grant is picked up without restart).
 4. Run the strategy — a pure function of that snapshot:
    - **`apy-range`** (default): keep each market's borrow APY inside its configured range by
      inverting the AdaptiveCurveIRM curve; the idle market absorbs or supplies the imbalance
@@ -33,12 +36,30 @@ vault concurrently, so a pass costs the slowest vault rather than the sum:
    - **`equalize-utilizations`**: converge every non-idle market to the vault-wide average
      utilization; fires only past `MIN_UTILIZATION_DELTA_BIPS`.
 5. Simulate the exact `reallocate(...)` bytes from the EOA; on sim-ok, submit through the pending
-   queue (or log `reallocation.dry_run` when `DRY_RUN=true`).
+   queue (or log `reallocation.dry_run` when `DRY_RUN=true`). Because vaults are processed
+   concurrently, several submits can land in the same instant — the queue serializes its
+   nonce-critical section (bot-kit's coalescing mutex), so each gets its own nonce.
 
 Deposit legs stop at 99.99% of each market's supply cap (`CAP_BUFFER_WAD` in
 [src/math.ts](./src/math.ts), not an env var) so interest accrual between read and mined execution
 can't push a leg over cap. Withdrawals are listed first and the last deposit leg is
 `maxUint256`, per `MetaMorpho.reallocate` semantics.
+
+No leg ever targets a utilization above `MAX_TARGET_UTILIZATION` (99.9%, also in
+[src/math.ts](./src/math.ts)). A target of exactly 100% sizes a withdrawal to a market's entire free
+liquidity (S − B), which reverts on the first wei of accrual — and the AdaptiveCurve inverse
+legitimately returns 100% bounds for any requested APY at or above 4·`rateAtTarget`, i.e. on cold
+markets. Two rules keep that cap from distorting a plan:
+
+- The **side** of a market's move comes from the strategy's raw (unclamped) bound; only the **size**
+  uses the clamped target. Re-deriving the side from the clamped target would flip a market sitting
+  between 99.9% and 100% from the intended withdrawal into a deposit.
+- A move that the clamp leaves empty or backwards is simply **not emitted** — no leg for that market
+  this pass. This is a per-leg rule, not a market-level skip: a dead cold market is still exited in
+  full whenever its utilization is below 99.9%.
+
+The min-delta firing thresholds are likewise measured against the clamped target, so a plan is only
+armed by an APY/utilization move it can actually realize.
 
 Assumptions and posture:
 
@@ -60,14 +81,23 @@ Assumptions and posture:
 - The EOA behind `REALLOCATOR_PRIVATE_KEY` must satisfy `onlyAllocatorRole` on every whitelisted
   vault — i.e. be in the **allocator set**, or be the vault's **curator** or **owner**. All three are
   accepted by the startup probe and the per-pass re-check. The bot only pays gas — reallocation moves
-  vault funds, never the EOA's.
+  vault funds, never the EOA's. A whitelisted vault the EOA cannot reallocate is cheap to leave in
+  place: the role now rides the same single lens call as the snapshot, so such a vault costs one RPC
+  call per pass and a warning line.
 - An RPC endpoint per chain. Supported chains: mainnet (1), Base (8453) — extend `CHAIN_MAP` in
   [src/config.ts](./src/config.ts).
 
 ## Configuration
 
-In-container env vars (unsuffixed; the `_<chainId>` suffix is an operator-side convention used by
-docker-compose and the Railway deploy script):
+In-container env vars are unsuffixed. The `_<chainId>` suffix is an operator-side convention used by
+docker-compose and the Railway deploy script, and it covers every per-chain input: `RPC_URL_<id>`,
+`RPC_URL_FALLBACK_<id>`, `VAULT_WHITELIST_<id>`, `STRATEGY_<id>`, `DRY_RUN_<id>`,
+`BETTERSTACK_HEARTBEAT_URL_<id>`, and the four tuning knobs `MIN_APY_DELTA_BIPS_<id>`,
+`MIN_UTILIZATION_DELTA_BIPS_<id>`, `ALLOW_IDLE_REALLOCATION_<id>`, `MAX_FEE_GWEI_<id>` — so chains can
+be tuned independently. `REALLOCATOR_PRIVATE_KEY` may be suffixed per chain or shared unsuffixed. The
+deploy script sets each optional knob when supplied and **deletes** it from the service when not, so
+dropping one from the deploy env returns that chain to the default below rather than leaving a stale
+value on the service.
 
 | Var                                                       | Required | Default     | Notes                                                    |
 | --------------------------------------------------------- | -------- | ----------- | -------------------------------------------------------- |
@@ -140,5 +170,14 @@ pnpm vitest run --project vault-v1-reallocation
 
 Pure unit tests cover both strategies (ported from the original repo), the IRM math, config
 loading, strategy-config resolution, revert decoding, the startup vault checks, the interval gate,
-and a dependency-injected tick. There is no
-anvil fork suite yet; `DRY_RUN` against a live RPC is the end-to-end check.
+the lens's compile/decode surface, and a dependency-injected tick. There is no anvil fork suite yet.
+Two live checks stand in for it:
+
+```sh
+# Reads the lens against a real vault at a pinned block, then re-reads the same block through the
+# fetchAccrualVault path it replaced and diffs every field.
+RPC_URL=… CHAIN_ID=8453 VAULT=0x… \
+  pnpm --filter @morpho-org/vault-v1-reallocation run probe:lens
+```
+
+and `DRY_RUN` against a live RPC for the full read → strategy → simulate path.

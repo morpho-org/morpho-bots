@@ -65,9 +65,11 @@ The structure is deliberately **flat and non-hexagonal**:
 src/
   config.ts           // env → Config; chain map; fail loud
   strategy-config.ts  // checked-in curator policy tables + resolvers
-  vault-data.ts       // fetchAccrualVault → block-pinned snapshot; IRM classification
-  math.ts             // utilization / withdrawable / depositable / apy⇄rate glue
-  market.utils.ts     // idle-market predicate
+  vault-data.ts       // deployless lens → block-pinned snapshot; IRM classification
+  state/lens.sol.ts   // the soltag lens contract + its one-eth_call reader
+  math.ts             // utilization / withdrawable / depositable / apy⇄rate glue; the target clamp
+  vault-checks.ts     // startup whitelist validation (deployed, V1 surface, allocator probe)
+  interval-gate.ts    // wall-clock throttle between reallocation passes
   strategies/         // reconcile.ts (sizing + legs) + apy-range | equalize classifiers (pure)
   runner/tick.ts      // one pass: read → strategy → encode → simulate → submit
   index.ts, *.error.ts
@@ -84,17 +86,20 @@ gate, budget trimming in withdraw-queue order, and the `reallocate` legs.
 
 ### SDK-first math
 
-All Blue and IRM math comes from `@morpho-org/blue-sdk` (`MathLib`, `AdaptiveCurveIrmLib`, `getChainAddresses`), and all reads from `@morpho-org/blue-sdk-viem` (`fetchAccrualVault`,
-`metaMorphoAbi`, `MetaMorphoAction.reallocate`). Nothing re-derives the adaptive curve or
-hand-rolls vault/market reads. The only local math (`src/math.ts`) is the thin glue with no SDK
-counterpart: `getUtilization`, `getWithdrawableAmount`, `getDepositableAmount`, and
-`apyToRate` / `rateToApy`.
+All Blue and IRM math comes from `@morpho-org/blue-sdk` (`MathLib`, `AdaptiveCurveIrmLib`,
+`getChainAddresses` — which is also where the lens gets its per-chain Morpho and AdaptiveCurveIRM
+addresses, never a hardcoded constant), and the encoding plus the ABI from `@morpho-org/blue-sdk-viem`
+(`metaMorphoAbi`, `MetaMorphoAction.reallocate`). Nothing re-derives the adaptive curve. The only
+local math (`src/math.ts`) is the thin glue with no SDK counterpart: `getUtilization`,
+`getWithdrawableAmount`, `getDepositableAmount`, `apyToRate` / `rateToApy`, `wadToBips`, and the two
+WAD constants `CAP_BUFFER_WAD` and `MAX_TARGET_UTILIZATION` (both built with `@repo/utils`'s
+`wholePercentToWAD`).
 
-### `Policy.executor` widened to a target list
+### `Policy.executor` replaced by `Policy.targets`
 
 bot-kit's default-deny signing policy previously authorized a single Executor address per bot. This
-bot legitimately targets N whitelisted vaults, so `Policy.executor` (`packages/bot-kit/src/policy.ts`)
-became a list with a membership check. The invariant is unchanged: a transaction is signable only
+bot legitimately targets N whitelisted vaults, so `Policy.executor` became `Policy.targets`
+(`packages/bot-kit/src/policy.ts`) — a list with a membership check. The invariant is unchanged: a transaction is signable only
 if it is value-0, selector-matched (`reallocate`), under the fee/gas/size ceilings, and addressed
 to a member of the configured target set. Widening the arity does not widen what may be called.
 
@@ -120,11 +125,81 @@ vault's entire position out of it with perfectly valid, simulation-passing calld
 `rateAtTarget` — and `apy-range` excludes non-AdaptiveCurve markets from **both** the withdraw and
 the deposit leg. `equalize-utilizations` is utilization-only, so it keeps them.
 
+### The target clamp never changes a leg's direction
+
+No target utilization above `MAX_TARGET_UTILIZATION` (99.9%, `src/math.ts`) is ever sized against. A
+target of exactly WAD sizes a withdrawal to a market's entire free liquidity (S − B), which reverts on
+the first wei of accrual between snapshot and mining — and the AdaptiveCurve inverse legitimately
+returns WAD bounds on cold markets (any requested rate ≥ 4·`rateAtTarget`).
+
+Clamping alone is not enough, because it can move the target across current utilization. A market at
+99.95% whose raw lower bound is ≥WAD is intended to be _withdrawn from_; compared against the clamped
+99.9% target it reads "above target" and would emit a _deposit_ — a plan that pushes liquidity into
+exactly the market the strategy wanted to leave. Two mechanical rules resolve it, with no policy
+judgment and no market-level skip:
+
+1. **Side from intent, size from the clamp.** A classifier decides withdraw-vs-deposit on its raw
+   bound and reports it as `MarketTarget.intent`; the reconciler sizes that side against the clamped
+   target. `reconcile.ts` keeps its own `min(..., MAX_TARGET_UTILIZATION)` as an inert backstop.
+2. **An empty-or-backwards move is no move.** If intent says withdraw but utilization is already at or
+   above the clamped target (or intent says deposit and it is at or below), no candidate is emitted
+   for that market this pass. This generalizes the pre-existing at-target skip to the whole wrong-side
+   span. It is explicitly _not_ a degenerate-market policy skip: a dead cold market is still exited in
+   full whenever its utilization sits below 99.9%.
+
+`clearsMinDelta` is likewise computed against the **effective** (clamped) bound, so a plan can only be
+armed by a move it can actually realize — the unclamped bound would over-report the APY delta and fire
+transactions worth less than their gas.
+
+### One concurrent pass, with mutex-serialized submits
+
+A pass processes every whitelisted vault concurrently (`Promise.allSettled`), so it costs the slowest
+vault rather than the sum. That makes simultaneous submits normal rather than exceptional, and two
+races in the shared runtime became reachable: bot-kit's signer claimed nonces with
+`nextNonce ??= await readPendingNonce()` — a null check that precedes its own await — and the pending
+queue's empty-queue `syncNonce` could rewind the cursor past a send already in flight. Either way two
+vaults get one nonce, the second broadcast is replacement-underpriced, and the abort latch wedges.
+
+bot-kit now serializes the queue's whole nonce-critical section (latch checks → `syncNonce` → `send` →
+tracking) through a viem-dlc `createCoalescingMutex()`, used purely for serialization — one mutex per
+queue, one fixed resource key, `collectFollowers` never called. Reusing that primitive rather than
+writing a lock was deliberate. The `pending.size === 0` test sits inside the lock, which is what
+actually closes the rewind. A handler that throws rejects only its own caller and the mutex proceeds to
+the next queued one, so `TxSendError` still aborts the tick that caused it without holding the lock.
+
+### One billed call per vault per pass: a deployless lens
+
+`fetchAccrualVault` fans out per-market reads — roughly 55–65 billed JSON-RPC calls for a 10-market
+vault, every pass, per vault. JSON-RPC batching would have collapsed the latency but not the bill: a
+provider still meters N calls in a batch. So the read moved to a soltag deployless lens
+(`src/state/lens.sol.ts`), modelled directly on `bots/blue-liquidation`: one `eth_call` returns the
+vault's roles, its withdraw queue, and per market the params, accrued state, position, cap, and
+`rateAtTarget`.
+
+Three consequences worth recording:
+
+- **Accrual is on-chain.** The lens calls `Morpho.accrueInterest(marketParams)` inside the simulation
+  before reading each market, so the totals _and_ the IRM's stored `rateAtTarget` are the market's
+  exact state at the pinned block. The previous client-side `accrueInterest(timestamp)` — and the
+  `getBlock` needed to source that timestamp — are gone. This makes the entrypoint `nonpayable`; the
+  writes never leave the `eth_call`, and since `stateMutability` is part of neither the selector nor
+  the encoding, the read path relabels that one ABI item `view` for typing only.
+- **Role data joins the snapshot.** `isAllocator(eoa)` is read in the same call, so the tick's separate
+  read and its `Promise.all` with the fetch are gone, and a whitelisted vault the EOA cannot reallocate
+  costs one call rather than a full fan-out.
+- **Equivalence is the evidence.** `scripts/probe-live-lens.ts` reads a real vault through the lens at a
+  pinned block and re-reads that same block through the `fetchAccrualVault` path it replaced, diffing
+  every field. Both sides are pinned to the same block and the SDK side accrued to that block's
+  timestamp, which makes the comparison exact rather than approximate.
+
 ### Testing and ramp-up
 
-Coverage is pure unit tests over both strategies, the IRM math, config and strategy-config
-resolution, revert decoding, and a dependency-injected tick. There is no anvil fork suite yet
-(unlike the liquidators). Instead, **every new deployment starts with `DRY_RUN=true`**, which runs
+Coverage is pure unit tests over both strategies (including the clamp corner cases above), the IRM
+math, config and strategy-config resolution, revert decoding, the startup vault checks, the interval
+gate, the lens's compile/ABI-decode surface, and a dependency-injected tick. There is no anvil fork
+suite yet (unlike the liquidators). The lens instead carries its own live evidence — the
+`probe:lens` field-by-field equivalence run described above. Beyond that, **every new deployment
+starts with `DRY_RUN=true`**, which runs
 the full live read → strategy → encode → simulate path and logs each would-be transaction as
 `reallocation.dry_run` without submitting. An operator flips `DRY_RUN=false` once the dry-run stream
 looks right for that vault set.
@@ -171,16 +246,21 @@ of a block-pinned snapshot — and it does not match the flat shape every other 
 ## Dependencies
 
 - `@morpho-org/blue-sdk` — `MathLib`, `AdaptiveCurveIrmLib`, `getChainAddresses`.
-- `@morpho-org/blue-sdk-viem` — `fetchAccrualVault`, `metaMorphoAbi`, `MetaMorphoAction.reallocate`.
+- `@morpho-org/blue-sdk-viem` — `metaMorphoAbi`, `MetaMorphoAction.reallocate` (plus
+  `fetchAccrualVault`, now only in the `probe:lens` equivalence check).
+- `soltag` + `solc` — build-time compilation of the inline `sol``` lens; the bot ships a bundle with
+  literal ABI/bytecode and runs no transform at runtime.
+- `@repo/utils` — `readDeploylessBatchLens`, `wholePercentToWAD`, `tryCatch`.
 - `@repo/bot-kit` (workspace) — clients, logger, block watcher + runner, pending-tx queue, signing
-  policy (with the widened `Policy.executor`), simulation, revert decoding, balance metric.
+  policy (with `Policy.targets` in place of the single-Executor field), simulation, revert decoding,
+  balance metric.
 - Repo-wide operator surface: the CI deploy pipeline, Railway, BetterStack.
 
 ## Observability
 
 Bot-specific events: `startup`, `allocator.missing_role`, `reallocation.found`,
-`reallocation.sim_revert`, `reallocation.dry_run`, `vault.inflight` (debug),
-`market.non_adaptive_curve` (debug), `vault.error`, and a
+`reallocation.sim_revert`, `reallocation.dry_run`, `reallocation.not_broadcast` (debug),
+`vault.inflight` (debug), `market.non_adaptive_curve` (debug), `vault.error`, and a
 per-pass `tick.end` counters line — `vaults`, `skipped_inflight`, `missing_role`,
 `reallocations_found`, `sim_reverts`, `dry_runs`, `submitted`, `errors`, `duration_ms`.
 
@@ -190,7 +270,8 @@ existing BetterStack transaction and balance panels work unchanged.
 ## Security
 
 - The signing policy is the trust boundary: value-0, `reallocate` selector, fee/gas/size ceilings,
-  and target ∈ the configured vault set. The list widening preserves default-deny.
+  and target ∈ the configured vault set. Moving from one Executor to a target list preserves
+  default-deny.
 - `REALLOCATOR_PRIVATE_KEY` is read from env once at startup; never logged or persisted.
 - Curator policy is code, not runtime input — a threshold change is a reviewed PR.
 - `DRY_RUN` default-on for new deployments limits the blast radius of a misconfigured whitelist or

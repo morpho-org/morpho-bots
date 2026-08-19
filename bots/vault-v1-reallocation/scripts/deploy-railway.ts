@@ -5,12 +5,22 @@
  *   RAILWAY_PROJECT_ID=… RPC_URL_1=… VAULT_WHITELIST_1=0x… REALLOCATOR_PRIVATE_KEY=0x… \
  *     pnpm --filter @morpho-org/vault-v1-reallocation run deploy:railway
  *
+ * Required per chain: `RPC_URL_<id>`, `VAULT_WHITELIST_<id>`, and `REALLOCATOR_PRIVATE_KEY_<id>` (or
+ * one shared unsuffixed `REALLOCATOR_PRIVATE_KEY`).
+ * Optional per chain: `STRATEGY_<id>`, `DRY_RUN_<id>`, `BETTERSTACK_HEARTBEAT_URL_<id>`,
+ * `MIN_APY_DELTA_BIPS_<id>`, `MIN_UTILIZATION_DELTA_BIPS_<id>`, `ALLOW_IDLE_REALLOCATION_<id>`,
+ * `MAX_FEE_GWEI_<id>`, and `RPC_URL_FALLBACK_<id>` (a secret). The tuning knobs and the fallback
+ * endpoint are set when supplied and DELETED from the service when not, so removing one from the
+ * deploy env returns the bot to its own default rather than leaving a stale value in place.
+ * Optional, shared across chains: `BETTERSTACK_INGESTING_HOST`, `BETTERSTACK_SOURCE_TOKEN`.
+ *
  * The build context MUST be the repo root so the pnpm workspace (packages/*) resolves — the script
  * runs `railway up` with cwd set to the repo root (mirrors the Dockerfile header + compose context).
  *
- * Secrets (per-chain RPC_URL, REALLOCATOR_PRIVATE_KEY) are piped to `railway variable set --stdin`
- * so their values never appear in argv or in a failure message; with DEPLOY_ONLY=1 (how CI re-ships
- * already-provisioned services) no variable is written at all, so CI needs no secret to redeploy.
+ * Secrets (per-chain RPC_URL, RPC_URL_FALLBACK, REALLOCATOR_PRIVATE_KEY) are piped to
+ * `railway variable set --stdin` so their values never appear in argv or in a failure message; with
+ * DEPLOY_ONLY=1 (how CI re-ships already-provisioned services) no variable is written at all, so CI
+ * needs no secret to redeploy.
  */
 import { delay, tryCatch } from '@repo/utils'
 import { $ } from 'execa'
@@ -123,6 +133,28 @@ const setVar = async (service: string, kv: string): Promise<void> => {
   if (error)
     throw new RailwayDeploymentError(`Failed to set ${key} on ${service}`, { cause: error })
   console.log(`Set ${key} on ${service}.`)
+}
+
+// Keys currently set on a service — used to clear a knob the operator has stopped supplying, without
+// blind deletes. The CLI's JSON includes raw values, so it is parsed in-memory and only key NAMES
+// ever leave here.
+const listVarKeys = async (service: string): Promise<Set<string>> => {
+  const { data, error } = await tryCatch(
+    $`railway variable list -s ${service} -e ${ENVIRONMENT} -p ${PROJECT_ID} --json`.then(
+      r => r.stdout
+    )
+  )
+  if (error || typeof data !== 'string') return new Set()
+  const { data: parsed } = tryCatch(() => JSON.parse(data) as unknown)
+  return isRecord(parsed) ? new Set(Object.keys(parsed)) : new Set()
+}
+
+// Delete a variable. Fatal on failure: a stale knob that survives the delete silently keeps its old
+// value in effect, which is exactly the drift this prevents.
+const deleteVar = async (service: string, key: string): Promise<void> => {
+  const { error } = await tryCatch($`railway variable delete ${key} -s ${service} --skip-deploys`)
+  if (error) throw new RailwayDeploymentError(`Failed to delete ${key} on ${service}`)
+  console.log(`Deleted ${key} on ${service} (stale).`)
 }
 
 // Secret variable: value piped via stdin (never argv), `--json` omitted (it echoes raw values), and
@@ -254,7 +286,18 @@ const chainSecrets = CHAINS.map(chain => {
     reallocatorPrivateKey,
     strategy,
     dryRun,
-    betterstackHeartbeatUrl
+    betterstackHeartbeatUrl,
+    // Optional tuning knobs. Each is validated in src/config.ts, so they are passed through verbatim
+    // and left UNSET when the operator supplies nothing — the bot's own default then applies.
+    // Suffixed per chain because thresholds and fee ceilings legitimately differ between chains.
+    optional: {
+      MIN_APY_DELTA_BIPS: suffixed('MIN_APY_DELTA_BIPS', chain.chainId),
+      MIN_UTILIZATION_DELTA_BIPS: suffixed('MIN_UTILIZATION_DELTA_BIPS', chain.chainId),
+      ALLOW_IDLE_REALLOCATION: suffixed('ALLOW_IDLE_REALLOCATION', chain.chainId),
+      MAX_FEE_GWEI: suffixed('MAX_FEE_GWEI', chain.chainId)
+    },
+    // A fallback endpoint is a URL that can carry a key, so it ships as a secret.
+    rpcUrlFallback: suffixed('RPC_URL_FALLBACK', chain.chainId)
   }
 })
 
@@ -277,6 +320,15 @@ for (const chain of chainSecrets) {
   await setVar(chain.service, `DRY_RUN=${chain.dryRun}`)
   await setSecret(chain.service, 'RPC_URL', chain.rpcUrl)
   await setSecret(chain.service, 'REALLOCATOR_PRIVATE_KEY', chain.reallocatorPrivateKey)
+  // Set-when-provided / delete-when-absent, so dropping a knob from the deploy env actually returns
+  // the service to the bot's default instead of leaving the last value stuck on the service.
+  const existingKeys = await listVarKeys(chain.service)
+  for (const [key, value] of Object.entries(chain.optional)) {
+    if (value) await setVar(chain.service, `${key}=${value}`)
+    else if (existingKeys.has(key)) await deleteVar(chain.service, key)
+  }
+  if (chain.rpcUrlFallback) await setSecret(chain.service, 'RPC_URL_FALLBACK', chain.rpcUrlFallback)
+  else if (existingKeys.has('RPC_URL_FALLBACK')) await deleteVar(chain.service, 'RPC_URL_FALLBACK')
   if (betterstackHost) await setVar(chain.service, `BETTERSTACK_INGESTING_HOST=${betterstackHost}`)
   if (betterstackToken) await setSecret(chain.service, 'BETTERSTACK_SOURCE_TOKEN', betterstackToken)
   if (chain.betterstackHeartbeatUrl) {

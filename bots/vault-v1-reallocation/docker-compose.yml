@@ -1,7 +1,9 @@
 # Runs the per-chain vault-v1-reallocation bots. All data comes over RPC, so there is no indexer or
 # database to run. The bots' build context is the repo root so the pnpm workspace (packages/*)
 # resolves — see Dockerfile. Set the chainId-suffixed RPCs/whitelists (RPC_URL_1, VAULT_WHITELIST_1,
-# …) and a REALLOCATOR_PRIVATE_KEY holding the allocator role on every whitelisted vault.
+# …) and a REALLOCATOR_PRIVATE_KEY holding the allocator role on every whitelisted vault. The tuning
+# knobs are chainId-suffixed too (MIN_APY_DELTA_BIPS_1, MAX_FEE_GWEI_8453, …) so chains can differ;
+# leave one unset to take the bot's own default.
 services:
   bot-mainnet:
     build:
@@ -15,10 +17,10 @@ services:
       VAULT_WHITELIST: ${VAULT_WHITELIST_1:?set VAULT_WHITELIST_1}
       STRATEGY: ${STRATEGY_1:-apy-range}
       REALLOCATION_INTERVAL_MS: ${REALLOCATION_INTERVAL_MS:-}
-      MIN_APY_DELTA_BIPS: ${MIN_APY_DELTA_BIPS:-}
-      MIN_UTILIZATION_DELTA_BIPS: ${MIN_UTILIZATION_DELTA_BIPS:-}
-      ALLOW_IDLE_REALLOCATION: ${ALLOW_IDLE_REALLOCATION:-}
-      MAX_FEE_GWEI: ${MAX_FEE_GWEI:-}
+      MIN_APY_DELTA_BIPS: ${MIN_APY_DELTA_BIPS_1:-}
+      MIN_UTILIZATION_DELTA_BIPS: ${MIN_UTILIZATION_DELTA_BIPS_1:-}
+      ALLOW_IDLE_REALLOCATION: ${ALLOW_IDLE_REALLOCATION_1:-}
+      MAX_FEE_GWEI: ${MAX_FEE_GWEI_1:-}
       # Start new deployments in dry-run: read/plan/simulate and log, never submit. Flip to false
       # once the logged reallocation.dry_run plans look right.
       DRY_RUN: ${DRY_RUN_1:-true}
@@ -42,10 +44,10 @@ services:
       VAULT_WHITELIST: ${VAULT_WHITELIST_8453:?set VAULT_WHITELIST_8453}
       STRATEGY: ${STRATEGY_8453:-apy-range}
       REALLOCATION_INTERVAL_MS: ${REALLOCATION_INTERVAL_MS:-}
-      MIN_APY_DELTA_BIPS: ${MIN_APY_DELTA_BIPS:-}
-      MIN_UTILIZATION_DELTA_BIPS: ${MIN_UTILIZATION_DELTA_BIPS:-}
-      ALLOW_IDLE_REALLOCATION: ${ALLOW_IDLE_REALLOCATION:-}
-      MAX_FEE_GWEI: ${MAX_FEE_GWEI:-}
+      MIN_APY_DELTA_BIPS: ${MIN_APY_DELTA_BIPS_8453:-}
+      MIN_UTILIZATION_DELTA_BIPS: ${MIN_UTILIZATION_DELTA_BIPS_8453:-}
+      ALLOW_IDLE_REALLOCATION: ${ALLOW_IDLE_REALLOCATION_8453:-}
+      MAX_FEE_GWEI: ${MAX_FEE_GWEI_8453:-}
       DRY_RUN: ${DRY_RUN_8453:-true}
       LOG_LEVEL: ${LOG_LEVEL:-info}
       BETTERSTACK_SOURCE_TOKEN: ${BETTERSTACK_SOURCE_TOKEN:-}

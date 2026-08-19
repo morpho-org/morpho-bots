@@ -32,6 +32,9 @@ const EOA: Address = getAddress(`0x${'ee'.repeat(20)}`)
 const someVaultData = (): VaultData =>
   makeVaultData([makeMarket({ utilization: 0n, vaultAssets: 0n, cap: 0n })])
 
+// The lens reads `isAllocator` into the snapshot, so "not an allocator" is a snapshot field now.
+const notAnAllocator = (): VaultData => ({ ...someVaultData(), isAllocator: false })
+
 const someAllocations = () => [
   {
     marketParams: {
@@ -51,7 +54,6 @@ const makeDeps = (overrides: Partial<TickDeps> = {}) => {
     vaults: [VAULT_A],
     chainHead: 100n,
     eoa: EOA,
-    isAllocator: vi.fn(async () => true),
     fetchVault: vi.fn(async () => someVaultData()),
     strategy: vi.fn(() => undefined),
     encodeReallocate: vi.fn(() => DATA),
@@ -134,13 +136,12 @@ describe('runTick', () => {
   it('skips a vault whose label is in flight', async () => {
     const { deps, events } = makeDeps({ inflightLabels: () => new Set([VAULT_A]) })
     await runTick(deps)
-    expect(deps.isAllocator).not.toHaveBeenCalled()
     expect(deps.fetchVault).not.toHaveBeenCalled()
     expect(tickEnd(events)).toMatchObject({ skipped_inflight: 1 })
   })
 
   it('skips strategy/simulate while the allocator role is missing', async () => {
-    const { deps, events } = makeDeps({ isAllocator: vi.fn(async () => false) })
+    const { deps, events } = makeDeps({ fetchVault: vi.fn(async () => notAnAllocator()) })
     await runTick(deps)
     expect(deps.strategy).not.toHaveBeenCalled()
     expect(deps.simulate).not.toHaveBeenCalled()
@@ -158,7 +159,7 @@ describe('runTick', () => {
   ])('accepts a %s-keyed EOA that is not in the allocator set', async (_role, eoa) => {
     const { deps, events } = makeDeps({
       eoa,
-      isAllocator: vi.fn(async () => false),
+      fetchVault: vi.fn(async () => notAnAllocator()),
       strategy: vi.fn(() => someAllocations())
     })
     await runTick(deps)

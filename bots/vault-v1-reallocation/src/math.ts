@@ -12,6 +12,20 @@ const WAD_PER_BIP_SCALE = 1_000_000_000n
  */
 export const CAP_BUFFER_WAD = wholePercentToWAD(99.99)
 
+/**
+ * Ceiling on any target utilization a strategy may aim a market at. A target of exactly WAD sizes a
+ * withdrawal to the market's entire free liquidity (S − B), which reverts the moment any interest
+ * accrues between snapshot and mining — and the AdaptiveCurve inverse legitimately produces WAD
+ * bounds on cold markets (any requested rate ≥ 4·rateAtTarget). Clamping keeps the exit-a-dead-market
+ * intent while leaving a realizable liquidity sliver; the margin is deliberately looser than
+ * {@link CAP_BUFFER_WAD} since it absorbs borrow-side accrual.
+ *
+ * The clamp only ever sizes a move — never its direction: a classifier decides withdraw-vs-deposit on
+ * its raw bound and reports that as `intent`, and the reconciler drops any leg the clamp has made
+ * empty or backwards (see `createReconciler`).
+ */
+export const MAX_TARGET_UTILIZATION = wholePercentToWAD(99.9)
+
 /** Converts a WAD-scaled fraction to (fractional, signed) bips. */
 export const wadToBips = (wad: bigint): number => Number(wad / WAD_PER_BIP_SCALE) / 1e5
 

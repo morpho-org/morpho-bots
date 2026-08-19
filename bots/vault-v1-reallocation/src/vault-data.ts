@@ -1,10 +1,12 @@
 import type { InputMarketParams } from '@morpho-org/blue-sdk'
-import type { Address, Client, Hex } from 'viem'
+import type { BatchLensTransportType } from '@repo/utils'
+import type { Address, Client, Hex, Transport } from 'viem'
 
 import { getChainAddresses } from '@morpho-org/blue-sdk'
-import { fetchAccrualVault } from '@morpho-org/blue-sdk-viem'
-import { isAddressEqual } from 'viem'
-import { getBlock } from 'viem/actions'
+import { isAddressEqual, zeroAddress } from 'viem'
+
+import { LensReadFailedError } from './lens-read-failed.error'
+import { readVaultV1Lens } from './state/lens.sol'
 
 export type MarketState = {
   totalSupplyAssets: bigint
@@ -39,6 +41,11 @@ export type VaultData = {
   vaultAddress: Address
   owner: Address
   curator: Address
+  /**
+   * `isAllocator(eoa)` on this vault, read in the same call as the snapshot. Combined with `owner`
+   * and `curator` it is the whole of MetaMorpho's `onlyAllocatorRole`.
+   */
+  isAllocator: boolean
   marketsData: VaultMarketData[]
   /**
    * Ids of the non-idle markets excluded from `apy-range` for running a foreign IRM. Precomputed
@@ -58,53 +65,51 @@ const isAdaptiveCurveMarket = (irm: Address, rateAtTarget: bigint, chainId: numb
   rateAtTarget > 0n && isAddressEqual(irm, getChainAddresses(chainId).adaptiveCurveIrm)
 
 /**
- * Reads one vault's full reallocation input over RPC via `fetchAccrualVault`: a vault-level query
- * plus per-market reads (Blue state, the vault's position, the vault's supply cap), collapsed into a
- * few round trips by the client's batched JSON-RPC transport. Every read — including the accrual
- * timestamp, taken from the pinned block rather than wall clock — is pinned to `blockNumber`, so the
- * snapshot is coherent across markets and reproducible. Throws on any failed read; the tick catches
- * per vault.
+ * Reads one vault's full reallocation input — roles, withdraw queue, and per-market Blue state, cap,
+ * position, and `rateAtTarget` — in a single deployless `eth_call` pinned to `blockNumber`, so the
+ * snapshot is coherent across markets and reproducible. The lens accrues each market on-chain inside
+ * that call, so there is no client-side accrual and no block-timestamp handling here.
+ *
+ * Throws {@link LensReadFailedError} when the lens returns no row for `vault` (a malformed or empty
+ * response); a revert inside the lens propagates as-is. The tick catches per vault either way.
  */
 export const fetchVaultData = async (
-  client: Client,
+  client: Client<Transport<BatchLensTransportType>>,
   vault: Address,
-  { chainId, blockNumber }: { chainId: number; blockNumber: bigint }
+  { chainId, blockNumber, eoa }: { chainId: number; blockNumber: bigint; eoa: Address }
 ): Promise<VaultData> => {
-  const [block, accrualVault] = await Promise.all([
-    getBlock(client, { blockNumber }),
-    fetchAccrualVault(vault, client, { chainId, blockNumber })
-  ])
-  const accrued = accrualVault.accrueInterest(block.timestamp)
+  const { morpho, adaptiveCurveIrm } = getChainAddresses(chainId)
+  const rows = await readVaultV1Lens(
+    client,
+    { morpho, adaptiveCurveIrm },
+    [{ vault, eoa }],
+    blockNumber
+  )
+  const row = rows.get(vault.toLowerCase())
+  if (!row) throw new LensReadFailedError(vault)
 
-  // Map insertion order is the withdraw-queue order (see `AccrualVault`'s constructor).
-  const marketsData = [...accrued.allocations.values()].map((allocation): VaultMarketData => {
-    const market = allocation.position.market
-    const rateAtTarget = market.rateAtTarget ?? 0n
-    return {
+  // The lens walks `withdrawQueue` in order, so array order is withdraw-queue order.
+  const marketsData = row.markets.map(
+    (market): VaultMarketData => ({
       id: market.id,
-      params: {
-        loanToken: market.params.loanToken,
-        collateralToken: market.params.collateralToken,
-        oracle: market.params.oracle,
-        irm: market.params.irm,
-        lltv: market.params.lltv
-      },
+      params: market.params,
       state: {
         totalSupplyAssets: market.totalSupplyAssets,
         totalBorrowAssets: market.totalBorrowAssets
       },
-      cap: allocation.config.cap,
-      vaultAssets: allocation.position.supplyAssets,
-      rateAtTarget,
-      isAdaptiveCurve: isAdaptiveCurveMarket(market.params.irm, rateAtTarget, chainId),
-      isIdle: market.isIdle
-    }
-  })
+      cap: market.cap,
+      vaultAssets: market.vaultAssets,
+      rateAtTarget: market.rateAtTarget,
+      isAdaptiveCurve: isAdaptiveCurveMarket(market.params.irm, market.rateAtTarget, chainId),
+      isIdle: isAddressEqual(market.params.collateralToken, zeroAddress)
+    })
+  )
 
   return {
     vaultAddress: vault,
-    owner: accrued.owner,
-    curator: accrued.curator,
+    owner: row.owner,
+    curator: row.curator,
+    isAllocator: row.isAllocator,
     marketsData,
     nonAdaptiveCurveMarketIds: marketsData
       .filter(marketData => !marketData.isAdaptiveCurve && !marketData.isIdle)

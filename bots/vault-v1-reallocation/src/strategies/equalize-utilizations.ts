@@ -4,7 +4,7 @@ import { MathLib } from '@morpho-org/blue-sdk'
 
 import type { Strategy } from './strategy'
 
-import { getUtilization, wadToBips } from '../math'
+import { getUtilization, MAX_TARGET_UTILIZATION, wadToBips } from '../math'
 import { createReconciler } from './reconcile'
 
 type EqualizeUtilizationsConfig = {
@@ -14,14 +14,18 @@ type EqualizeUtilizationsConfig = {
   minUtilizationDeltaBips: (vault: Address) => number
 }
 
-const { min, WAD, wDivDown } = MathLib
+const { min, wDivDown } = MathLib
 
 /**
  * Converges every non-idle market toward the vault-wide average utilization
- * (`sum(totalBorrowAssets) / sum(totalSupplyAssets)`, clamped at 100%): withdraws from markets below
- * it, deposits into markets above it. The idle market is excluded entirely. Fires only when at least
- * one market's deviation exceeds the vault's min-delta threshold. Utilization-only, so markets on any
- * IRM participate.
+ * (`sum(totalBorrowAssets) / sum(totalSupplyAssets)`): withdraws from markets below it, deposits into
+ * markets above it. The idle market is excluded entirely. Fires only when at least one market's
+ * deviation exceeds the vault's min-delta threshold. Utilization-only, so markets on any IRM
+ * participate.
+ *
+ * The aggregate exceeds 100% in bad-debt states, so the target markets are actually sized against is
+ * capped at {@link MAX_TARGET_UTILIZATION}; the side each market moves is still decided on the raw
+ * aggregate, and a market the cap leaves at-or-past its target gets no leg.
  */
 export const createEqualizeUtilizationsStrategy = (config: EqualizeUtilizationsConfig): Strategy =>
   createReconciler({
@@ -36,15 +40,17 @@ export const createEqualizeUtilizationsStrategy = (config: EqualizeUtilizationsC
       if (totalSupply === 0n || totalBorrow === 0n) return () => undefined
 
       const minUtilizationDeltaBips = config.minUtilizationDeltaBips(vaultData.vaultAddress)
-      // Aggregate utilization exceeds 100% in bad-debt states; sizing withdrawals toward a >100% target
-      // asks for more than the markets hold, so every resulting plan reverts.
-      const targetUtilization = min(wDivDown(totalBorrow, totalSupply), WAD)
+      const rawTarget = wDivDown(totalBorrow, totalSupply)
+      const targetUtilization = min(rawTarget, MAX_TARGET_UTILIZATION)
 
-      return marketData => ({
-        targetUtilization,
-        clearsMinDelta:
-          Math.abs(wadToBips(getUtilization(marketData.state) - targetUtilization)) >
-          minUtilizationDeltaBips
-      })
+      return marketData => {
+        const utilization = getUtilization(marketData.state)
+        return {
+          targetUtilization,
+          intent: utilization > rawTarget ? 'deposit' : 'withdraw',
+          clearsMinDelta:
+            Math.abs(wadToBips(utilization - targetUtilization)) > minUtilizationDeltaBips
+        }
+      }
     }
   })

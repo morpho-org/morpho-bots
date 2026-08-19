@@ -1,10 +1,13 @@
 import type { Address, Hex } from 'viem'
 
+import { MathLib } from '@morpho-org/blue-sdk'
+
 import type { Strategy } from './strategy'
 
 import {
   apyToRate,
   getUtilization,
+  MAX_TARGET_UTILIZATION,
   rateToApy,
   rateToUtilization,
   utilizationToRate,
@@ -57,15 +60,27 @@ export const createApyRangeStrategy = (config: ApyRangeConfig): Strategy =>
         const lowerBound = rateToUtilization(apyToRate(apyRange.min), rateAtTarget)
         const upperBound = rateToUtilization(apyToRate(apyRange.max), rateAtTarget)
 
+        // Side comes from the RAW bounds: a cold market whose lower bound degenerates to ≥WAD asks
+        // for a withdrawal even when the clamped target then sits below current utilization.
+        let intent: 'deposit' | 'withdraw' | undefined
         let bound: bigint | undefined
-        if (utilization > upperBound) bound = upperBound
-        else if (utilization < lowerBound) bound = lowerBound
-        if (bound === undefined) return undefined
+        if (utilization > upperBound) {
+          intent = 'deposit'
+          bound = upperBound
+        } else if (utilization < lowerBound) {
+          intent = 'withdraw'
+          bound = lowerBound
+        }
+        if (bound === undefined || intent === undefined) return undefined
 
+        const targetUtilization = MathLib.min(bound, MAX_TARGET_UTILIZATION)
         return {
-          targetUtilization: bound,
+          targetUtilization,
+          intent,
+          // Measured against the EFFECTIVE target — the APY move the plan can actually realize, not
+          // the one the unclamped bound advertised.
           clearsMinDelta:
-            apyDeltaBips(utilization, bound, rateAtTarget) >
+            apyDeltaBips(utilization, targetUtilization, rateAtTarget) >
             config.minApyDeltaBips(vaultAddress, marketData.id)
         }
       }

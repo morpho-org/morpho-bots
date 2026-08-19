@@ -86,6 +86,7 @@ export const makeVaultData = (markets: VaultMarketData[], vault: Address = VAULT
   vaultAddress: vault,
   owner: VAULT_OWNER,
   curator: VAULT_CURATOR,
+  isAllocator: true,
   marketsData: markets,
   nonAdaptiveCurveMarketIds: markets
     .filter(market => !market.isAdaptiveCurve && !market.isIdle)

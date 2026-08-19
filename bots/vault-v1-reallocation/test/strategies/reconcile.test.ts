@@ -2,18 +2,29 @@ import { wholePercentToWAD } from '@repo/utils'
 import { maxUint256, parseUnits, zeroAddress } from 'viem'
 import { describe, expect, it } from 'vitest'
 
-import type { Classify, ReconcilerOptions } from '../../src/strategies/reconcile'
+import type { Classify, MoveIntent, ReconcilerOptions } from '../../src/strategies/reconcile'
+import type { VaultMarketData } from '../../src/vault-data'
 
+import { getUtilization } from '../../src/math'
 import { createReconciler } from '../../src/strategies/reconcile'
 import { makeIdleMarket, makeMarket, makeVaultData, RATE_AT_TARGET } from './helpers'
 
 const WAD = 10n ** 18n
 const CAP_BUFFER_WAD = wholePercentToWAD(99.99)
 
+// The classifier's own job, reproduced for these stubs: the side is read off the RAW target, so the
+// reconciler's own clamp never flips it.
+const intentFor = (marketData: VaultMarketData, rawTarget: bigint): MoveIntent =>
+  getUtilization(marketData.state) > rawTarget ? 'deposit' : 'withdraw'
+
 /** Every non-idle market targets `targetUtilization`, and every move clears the threshold. */
 const fixedTarget =
   (targetUtilization: bigint): Classify =>
-  () => ({ targetUtilization, clearsMinDelta: true })
+  marketData => ({
+    targetUtilization,
+    intent: intentFor(marketData, targetUtilization),
+    clearsMinDelta: true
+  })
 
 const makeReconciler = (
   options: Omit<ReconcilerOptions, 'capBufferWad' | 'classifierFor'>,
@@ -124,6 +135,7 @@ describe('createReconciler', () => {
       const reconcileWith = (clearingMarketIds: string[]) =>
         makeReconciler({ idle: 'ignore' }, marketData => ({
           targetUtilization,
+          intent: intentFor(marketData, targetUtilization),
           clearsMinDelta: clearingMarketIds.includes(marketData.id)
         }))(makeVaultData([cold, hot, cappedHot]))
 
@@ -143,6 +155,7 @@ describe('createReconciler', () => {
       const reconcileWith = (markets: (typeof cold)[]) =>
         makeReconciler({ idle: 'ignore' }, marketData => ({
           targetUtilization,
+          intent: intentFor(marketData, targetUtilization),
           clearsMinDelta: marketData.id === hot2.id
         }))(makeVaultData(markets))
 

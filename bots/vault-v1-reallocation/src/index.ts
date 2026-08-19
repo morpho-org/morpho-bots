@@ -66,13 +66,12 @@ async function main() {
     dryRun: config.dryRun
   })
 
-  // `fetchAccrualVault` fans out per-market reads, so the read transport batches them into a few
-  // JSON-RPC round trips.
+  // Every per-pass read goes through the deployless lens (one eth_call per vault), so the HTTP
+  // transport has nothing to batch.
   const client = createDeploylessClient({
     chain: config.chain,
     rpcUrl: config.rpcUrl,
-    rpcUrlFallback: config.rpcUrlFallback,
-    batch: true
+    rpcUrlFallback: config.rpcUrlFallback
   })
 
   const isAllocator = (vault: Address) =>
@@ -141,9 +140,8 @@ async function main() {
       vaults: config.vaultWhitelist,
       chainHead,
       eoa,
-      isAllocator,
       fetchVault: (vault, blockNumber) =>
-        fetchVaultData(client, vault, { chainId: config.chainId, blockNumber }),
+        fetchVaultData(client, vault, { chainId: config.chainId, blockNumber, eoa }),
       strategy,
       encodeReallocate: allocations => MetaMorphoAction.reallocate(allocations),
       // Byte-for-byte what gets broadcast. A revert here — role revoked, cap exceeded, inconsistent
