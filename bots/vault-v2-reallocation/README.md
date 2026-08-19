@@ -17,13 +17,13 @@ One long-running process per chain. A block watcher drives per-block queue maint
 default 10 min) throttles the actual reallocation passes. Each pass, per whitelisted vault:
 
 1. Skip if a reallocation tx for this vault is in flight or cooling down.
-2. Re-check the EOA's allocator role (`allocator.missing_role` + skip while absent — a pending
-   grant never crash-loops the bot, and a fresh grant is picked up without restart).
-3. Fetch a block-pinned RPC snapshot: the accrued vault tree via blue-sdk's `fetchAccrualVaultV2`
+2. Concurrently re-check the EOA's allocator role (`allocator.missing_role` + skip while absent —
+   a pending grant never crash-loops the bot, and a fresh grant is picked up without restart) and
+   fetch a block-pinned RPC snapshot: the accrued vault tree via blue-sdk's `fetchAccrualVaultV2`
    (which also proves the address is a factory-made VaultV2), plus per-id
    `absoluteCap`/`relativeCap`/`allocation` reads for every market id, the adapter id, and each
    collateral id. No Morpho API dependency.
-4. Run the strategy — a pure function of that snapshot, emitting **exact-amount deltas**
+3. Run the strategy — a pure function of that snapshot, emitting **exact-amount deltas**
    (`{allocations, deallocations}`). Legs need not balance: surplus deallocations park in the
    vault's idle balance, and allocations may exceed deallocations by up to the idle balance.
    Matching the original bot, a plan only fires when BOTH sides have at least one leg — pure idle
@@ -35,7 +35,7 @@ default 10 min) throttles the actual reallocation passes. Each pass, per whiteli
    - **`apy-range`**: keep each market's borrow APY inside its configured range by inverting the
      AdaptiveCurveIRM curve; allocations top up from idle (`ALLOW_IDLE_REALLOCATION`). Fires only
      past `MIN_APY_DELTA_BIPS`.
-5. Encode ONE `vault.multicall([deallocate…, allocate…])` (deallocations strictly first so idle is
+4. Encode ONE `vault.multicall([deallocate…, allocate…])` (deallocations strictly first so idle is
    funded), simulate those exact bytes from the EOA, and on sim-ok submit through the pending queue
    (or log `reallocation.dry_run` when `DRY_RUN=true`).
 
@@ -46,6 +46,13 @@ market's accrual drift on top of the stored allocation), a relative cap of exact
 as the contract's no-constraint sentinel, and capacity freed by the plan's own deallocations
 (executed first) is credited back. A 99.99% buffer absorbs accrual between read and mined
 execution. A binding aggregate cap shrinks the plan instead of producing a sim-revert loop.
+
+Every strategy target is additionally clamped to a **99.9% utilization ceiling**
+(`MAX_TARGET_UTILIZATION`): a target at/above 100% (a degenerate AdaptiveCurveIRM inversion on a
+decayed market, or a bad-debt aggregate) would size a deallocation to the market's entire free
+liquidity — exact to the snapshot and unrealizable one accrual later. The clamp changes a leg's
+size, never its side: a move the clamp leaves empty or backwards is dropped, and the min-delta
+gates measure against the clamped target the emitted leg actually realizes.
 
 The signing policy is default-deny in depth: only value-0 `multicall(bytes[])` calls to whitelisted
 vaults are signed, and every inner call must be `allocate`/`deallocate` targeting that vault's own
@@ -147,6 +154,7 @@ already-provisioned services with `DEPLOY_ONLY=1` on merge to main (staging) and
 Structured JSON-lines on stderr, one event per line, with `bot`/`chainId` (and Railway identity)
 stamped on every line. Key events: `startup`, `allocator.missing_role`, `reallocation.found`
 (per-leg direction/collateral/lltv/assets), `reallocation.sim_revert`, `reallocation.dry_run`,
+`reallocation.not_broadcast` (queue declined the send — e.g. nonce hole or fee ceiling),
 `vault.error`, per-pass `tick.end` counters, and the shared bot-kit `tx.*` / `signer.balance` /
 `block.new` events. BetterStack shipping and heartbeat are opt-in via the env vars above.
 

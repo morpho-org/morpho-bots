@@ -53,6 +53,36 @@ describe('createReconciler', () => {
     expect(deallocation!.assets).toBeGreaterThan(0n)
   })
 
+  it('drops — never inverts — a move the ceiling clamp leaves empty or backwards', () => {
+    // Intent says deallocate (raw target WAD), but the market already sits past the clamped
+    // ceiling: emitting the clamped leg would flip it into an allocation.
+    const nearFullMarket = makeMarket({
+      utilization: parseUnits('0.9995', 18),
+      vaultAssets: parseUnits('100000', 6),
+      rateAtTarget: RATE_AT_TARGET
+    })
+    const coldMarket = makeMarket({
+      utilization: (50n * WAD) / 100n,
+      vaultAssets: parseUnits('20000', 6),
+      rateAtTarget: RATE_AT_TARGET
+    })
+    const hotMarket = makeMarket({
+      utilization: (90n * WAD) / 100n,
+      vaultAssets: parseUnits('10000', 6),
+      rateAtTarget: RATE_AT_TARGET
+    })
+    const classify: Classify = marketData =>
+      marketData.id === nearFullMarket.id
+        ? { targetUtilization: WAD, clearsMinDelta: true }
+        : marketData.id === coldMarket.id
+          ? { targetUtilization: (80n * WAD) / 100n, clearsMinDelta: true }
+          : { targetUtilization: (50n * WAD) / 100n, clearsMinDelta: true }
+    const result = makeReconciler(classify)(makeVaultData([nearFullMarket, coldMarket, hotMarket]))
+    expect(result).toBeDefined()
+    const legs = [...result!.allocations, ...result!.deallocations]
+    expect(legs.some(l => l.marketId === nearFullMarket.id)).toBe(false)
+  })
+
   it('sizes both sides toward the classifier target and emits delta legs', () => {
     const hotMarket = makeMarket({
       utilization: (90n * WAD) / 100n,

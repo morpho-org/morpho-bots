@@ -21,7 +21,7 @@ import {
  * bips left behind scale with the market's borrow, which is what accrues; deliberately looser than
  * the 99.99% cap buffer, whose sliver absorbs supply-side drift instead.
  */
-const MAX_TARGET_UTILIZATION = wholePercentToWAD(99.9)
+export const MAX_TARGET_UTILIZATION = wholePercentToWAD(99.9)
 
 /** Where one market should sit, and whether getting it there is worth a transaction. */
 export type MarketTarget = {
@@ -84,15 +84,20 @@ export const createReconciler = (options: ReconcilerOptions): Strategy => {
     const classified = vaultData.marketsData.flatMap(marketData => {
       const verdict = classify(marketData)
       if (verdict === undefined) return []
-      // Feasibility is the reconciler's job: every target is clamped to what a leg can realize.
+      const utilization = getUtilization(marketData.state)
+      // At the target exactly there is nothing to move — skip before sizing.
+      if (utilization === verdict.targetUtilization) return []
+      // Feasibility is the reconciler's job: sizes come from the CLAMPED target, but the side
+      // comes from the classifier's raw intent — a move left empty or backwards by the clamp
+      // (intent deallocate, utilization already at/past the ceiling) is dropped, never inverted.
+      const side =
+        utilization < verdict.targetUtilization ? ('deallocate' as const) : ('allocate' as const)
       const target = {
         ...verdict,
         targetUtilization: min(verdict.targetUtilization, MAX_TARGET_UTILIZATION)
       }
-      const utilization = getUtilization(marketData.state)
-      // At the target exactly there is nothing to move — skip before sizing.
-      if (utilization === target.targetUtilization) return []
-      return [{ marketData, target, utilization }]
+      if (side === 'deallocate' && utilization >= target.targetUtilization) return []
+      return [{ marketData, side, target, utilization }]
     })
 
     const moves: SizedMove[] = []
@@ -100,8 +105,8 @@ export const createReconciler = (options: ReconcilerOptions): Strategy => {
     let totalAmountToAllocate = 0n
 
     const sizingPools = createDepositPools(vaultData, options.capBufferWad)
-    for (const { marketData, target, utilization } of classified) {
-      if (utilization > target.targetUtilization) continue
+    for (const { marketData, side, target } of classified) {
+      if (side !== 'deallocate') continue
       const amount = getWithdrawableAmount(marketData, target.targetUtilization)
       totalAmountToDeallocate += amount
       creditPools(sizingPools, marketData.params.collateralToken, amount)
@@ -114,8 +119,8 @@ export const createReconciler = (options: ReconcilerOptions): Strategy => {
         })
       }
     }
-    for (const { marketData, target, utilization } of classified) {
-      if (utilization < target.targetUtilization) continue
+    for (const { marketData, side, target } of classified) {
+      if (side !== 'allocate') continue
       const amount = takeFromPools(
         sizingPools,
         marketData.params.collateralToken,

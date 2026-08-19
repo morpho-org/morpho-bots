@@ -7,7 +7,7 @@ import type { VaultV2MarketData } from '../vault-data'
 import type { Strategy } from './strategy'
 
 import { getUtilization, wadToBips } from '../math'
-import { createReconciler } from './reconcile'
+import { createReconciler, MAX_TARGET_UTILIZATION } from './reconcile'
 
 type EqualizeUtilizationsConfig = {
   /** WAD-scaled cap scale factor (e.g. 99.99% as 0.9999e18). */
@@ -16,7 +16,7 @@ type EqualizeUtilizationsConfig = {
   minUtilizationDeltaBips: (vault: Address) => number
 }
 
-const { wDivDown } = MathLib
+const { min, wDivDown } = MathLib
 
 const isRealCollateral = (marketData: VaultV2MarketData): boolean =>
   !isAddressEqual(marketData.params.collateralToken, zeroAddress)
@@ -45,16 +45,17 @@ export const createEqualizeUtilizationsStrategy = (config: EqualizeUtilizationsC
       if (totalSupply === 0n || totalBorrow === 0n) return () => undefined
 
       const minUtilizationDeltaBips = config.minUtilizationDeltaBips(vaultData.vaultAddress)
-      // May exceed WAD in bad-debt states — the reconciler clamps every target to what a leg can
-      // realize, so the raw aggregate is reported as-is.
+      // May exceed WAD in bad-debt states — the raw aggregate carries the side intent, while the
+      // firing gate measures against the clamped target the emitted leg actually realizes.
       const targetUtilization = wDivDown(totalBorrow, totalSupply)
+      const effectiveTarget = min(targetUtilization, MAX_TARGET_UTILIZATION)
 
       return marketData => {
         if (!isRealCollateral(marketData)) return undefined
         return {
           targetUtilization,
           clearsMinDelta:
-            Math.abs(wadToBips(getUtilization(marketData.state) - targetUtilization)) >
+            Math.abs(wadToBips(getUtilization(marketData.state) - effectiveTarget)) >
             minUtilizationDeltaBips
         }
       }

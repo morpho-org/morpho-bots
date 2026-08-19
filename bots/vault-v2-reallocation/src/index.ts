@@ -40,8 +40,8 @@ async function main() {
     context: { bot: 'vault-v2-reallocation', chainId: config.chainId, ...railwayContext() }
   })
 
-  // The fetch fans out per-market and per-cap-id reads, so the read transport batches them into a
-  // few JSON-RPC round trips.
+  // blue-sdk's vault fetch fans out many single-value reads, so the read transport batches them
+  // into a few JSON-RPC round trips (the per-cap-id reads are already one multicall).
   const client = createDeploylessClient({
     chain: config.chain,
     rpcUrl: config.rpcUrl,

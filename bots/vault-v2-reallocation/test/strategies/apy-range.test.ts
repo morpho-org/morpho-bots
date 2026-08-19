@@ -6,8 +6,15 @@ import { describe, expect, it } from 'vitest'
 
 import type { ApyRangeConfig } from '../../src/strategies/apy-range'
 
-import { apyToRate, rateToUtilization } from '../../src/math'
+import {
+  apyToRate,
+  rateToApy,
+  rateToUtilization,
+  utilizationToRate,
+  wadToBips
+} from '../../src/math'
 import { createApyRangeStrategy } from '../../src/strategies/apy-range'
+import { MAX_TARGET_UTILIZATION } from '../../src/strategies/reconcile'
 import { makeMarket, makeVaultData, RATE_AT_TARGET } from './helpers'
 
 type ApyRangePercent = { min: number; max: number }
@@ -207,6 +214,90 @@ describe('createApyRangeStrategy', () => {
         rateAtTarget: RATE_AT_TARGET
       })
       expect(strategy(makeVaultData([hotMarket, coldMarket]))).toBeUndefined()
+    })
+
+    it('drops a decayed-market leg the ceiling clamp would invert while siblings still trade', () => {
+      const strategy = makeStrategy()
+      // rateAtTarget decayed toward the curve minimum → lowerBound inverts to WAD; utilization
+      // already sits past the clamped ceiling, so the intended deallocation is empty — it must be
+      // dropped, not flipped into an allocation, and the siblings' plan must survive.
+      const decayedMarket = makeMarket({
+        utilization: parseUnits('0.9995', 18),
+        vaultAssets: parseUnits('10000', 6),
+        rateAtTarget: 1n
+      })
+      const hotMarket = makeMarket({
+        utilization: apyToUtilization(12, RATE_AT_TARGET),
+        vaultAssets: parseUnits('10000', 6),
+        rateAtTarget: RATE_AT_TARGET
+      })
+      const coldMarket = makeMarket({
+        utilization: apyToUtilization(0.5, RATE_AT_TARGET),
+        vaultAssets: parseUnits('20000', 6),
+        rateAtTarget: RATE_AT_TARGET
+      })
+
+      const result = strategy(makeVaultData([decayedMarket, hotMarket, coldMarket]))
+
+      expect(result).toBeDefined()
+      const legs = [...result!.allocations, ...result!.deallocations]
+      expect(legs.some(l => l.marketId === decayedMarket.id)).toBe(false)
+    })
+
+    it('still exits a decayed market sitting below the ceiling (clamp, not skip)', () => {
+      const strategy = makeStrategy()
+      // Same degenerate lowerBound = WAD, but utilization is far below the ceiling: the market
+      // must still be exited — toward the clamp, never draining its entire free liquidity.
+      const decayedMarket = makeMarket({
+        utilization: parseUnits('0.5', 18),
+        vaultAssets: parseUnits('100000', 6),
+        rateAtTarget: 1n
+      })
+      const hotMarket = makeMarket({
+        utilization: apyToUtilization(12, RATE_AT_TARGET),
+        vaultAssets: parseUnits('10000', 6),
+        rateAtTarget: RATE_AT_TARGET
+      })
+
+      const result = strategy(makeVaultData([decayedMarket, hotMarket]))
+
+      expect(result).toBeDefined()
+      const deallocation = result!.deallocations.find(l => l.marketId === decayedMarket.id)
+      expect(deallocation).toBeDefined()
+      const freeLiquidity =
+        decayedMarket.state.totalSupplyAssets - decayedMarket.state.totalBorrowAssets
+      expect(deallocation!.assets).toBeGreaterThan(0n)
+      expect(deallocation!.assets).toBeLessThan(freeLiquidity)
+    })
+
+    it('gates on the APY delta to the clamped bound, not the raw inverted bound', () => {
+      // min APY above the curve's max at this rateAtTarget inverts lowerBound to WAD; the emitted
+      // leg only travels to MAX_TARGET_UTILIZATION, so the gate must measure that shorter move.
+      const utilization = parseUnits('0.97', 18)
+      const gatedMarket = makeMarket({
+        utilization,
+        vaultAssets: parseUnits('50000', 6),
+        rateAtTarget: RATE_AT_TARGET
+      })
+      const hotMarket = makeMarket({
+        utilization: apyToUtilization(8.5, RATE_AT_TARGET), // small move: never arms the gate below
+        vaultAssets: parseUnits('10000', 6),
+        rateAtTarget: RATE_AT_TARGET
+      })
+      const apyAt = (u: bigint) => rateToApy(utilizationToRate(u, RATE_AT_TARGET))
+      const effectiveDelta = Math.abs(wadToBips(apyAt(MAX_TARGET_UTILIZATION) - apyAt(utilization)))
+      const rawDelta = Math.abs(wadToBips(apyAt(10n ** 18n) - apyAt(utilization)))
+      // The threshold below discriminates: gating on the raw bound would have fired.
+      expect(rawDelta).toBeGreaterThan(effectiveDelta)
+
+      const marketApyRanges = { [gatedMarket.id]: { min: 13, max: 20 } }
+      const gated = makeStrategy({ marketApyRanges, minApyDeltaBips: effectiveDelta })
+      expect(gated(makeVaultData([gatedMarket, hotMarket]))).toBeUndefined()
+
+      const armed = makeStrategy({ marketApyRanges, minApyDeltaBips: effectiveDelta - 1 })
+      const result = armed(makeVaultData([gatedMarket, hotMarket]))
+      expect(result).toBeDefined()
+      expect(result!.deallocations.some(l => l.marketId === gatedMarket.id)).toBe(true)
     })
   })
 

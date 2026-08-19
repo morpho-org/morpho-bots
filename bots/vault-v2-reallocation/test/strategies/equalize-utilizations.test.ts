@@ -103,6 +103,38 @@ describe('createEqualizeUtilizationsStrategy', () => {
     expect(deallocation!.assets).toBeGreaterThan(0n)
   })
 
+  it('never inverts a near-ceiling market when bad debt pushes the aggregate target past the clamp', () => {
+    const strategy = makeStrategy()
+    // Raw aggregate target > WAD: the near-ceiling market's intent is a (tiny) deallocation, but
+    // its utilization already sits past the clamped target — under a naive clamp it would flip
+    // into an allocation into an almost-drained market.
+    const badDebtMarket = makeMarket({
+      utilization: (300n * WAD) / 100n,
+      supplyAssets: parseUnits('10000', 6),
+      vaultAssets: parseUnits('10000', 6),
+      rateAtTarget: RATE_AT_TARGET
+    })
+    const nearMaxMarket = makeMarket({
+      utilization: parseUnits('0.9995', 18),
+      vaultAssets: parseUnits('1000', 6),
+      rateAtTarget: RATE_AT_TARGET
+    })
+    const coldMarket = makeMarket({
+      utilization: (95n * WAD) / 100n,
+      vaultAssets: parseUnits('20000', 6),
+      rateAtTarget: RATE_AT_TARGET
+    })
+
+    // nearMax listed first so a wrong-side allocation could not hide behind budget trimming.
+    const result = strategy(makeVaultData([nearMaxMarket, badDebtMarket, coldMarket]))
+
+    expect(result).toBeDefined()
+    const legs = [...result!.allocations, ...result!.deallocations]
+    expect(legs.some(l => l.marketId === nearMaxMarket.id)).toBe(false)
+    expect(result!.deallocations.some(l => l.marketId === coldMarket.id)).toBe(true)
+    expect(result!.allocations.some(l => l.marketId === badDebtMarket.id)).toBe(true)
+  })
+
   it('handles a dust aggregate borrow whose target rounds to zero without throwing', () => {
     const strategy = makeStrategy()
     // borrow = 1 wei against a huge supply → wDivDown target rounds to 0n, past the

@@ -10,7 +10,8 @@ export type TickDeps = {
   vaults: Address[]
   chainHead: bigint
   /**
-   * Strict `isAllocator(eoa)` on the vault — VaultV2.allocate admits no curator/owner fallback.
+   * Strict `isAllocator(eoa)` on the vault — deliberately narrower than the V1 bot's
+   * allocator|curator|owner check, because VaultV2.allocate admits no curator/owner fallback.
    * Run concurrently with the fetch; a vault the EOA cannot reallocate is skipped, and resumes on
    * its own once the role is granted.
    */
