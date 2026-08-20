@@ -1,0 +1,9 @@
+{
+  "extends": "@repo/typescript-config/base",
+  "compilerOptions": {
+    "types": ["node"],
+    "plugins": [{ "name": "soltag/plugin" }]
+  },
+  "include": ["src", "test", "scripts", ".soltag/types.d.ts"],
+  "exclude": ["node_modules"]
+}

@@ -160,9 +160,11 @@ This is a **pnpm workspaces monorepo** housing off-chain Morpho curator bots:
   Each bot owns its own operator surface — `README.md`, `Dockerfile`, `docker-compose.yml`, and
   `scripts/deploy-railway.ts` — so it ships as its own image and
   deploys independently. `bots/blue-liquidation` and `bots/midnight-liquidation` are the live
-  liquidators; `bots/quoter-bot` is the Midnight maker bot (setup checks, position bootstrap,
-  ladder quoting, combined monitoring); `bots/midnight-crossed-books` resolves crossed Midnight
-  books; `bots/kill-switch` is a proposal bot (docs only).
+  liquidators; `bots/vault-v1-reallocation` and `bots/vault-v2-reallocation` reallocate liquidity
+  across whitelisted MetaMorpho (Vault V1) and Morpho Vault V2 vaults' markets;
+  `bots/quoter-bot` is the Midnight maker bot (setup checks, position
+  bootstrap, ladder quoting, combined monitoring); `bots/midnight-crossed-books` resolves crossed
+  Midnight books; `bots/kill-switch` is a proposal bot (docs only).
 - `/packages/` — shared libraries: `@repo/bot-kit` (the shared bot runtime — viem
   clients/transport, loglayer-backed JSON-lines logger (opt-in in-process BetterStack shipping),
   block watcher + runner loop, pending-tx queue with fee
@@ -250,6 +252,8 @@ All commit messages, PR titles, and Linear ticket titles use the same format:
 | quoter-bot             | `quoter-bot`             |
 | midnight-crossed-books | `midnight-crossed-books` |
 | midnight-liquidation   | `midnight-liquidation`   |
+| vault-v1-reallocation  | `vault-v1-reallocation`  |
+| vault-v2-reallocation  | `vault-v2-reallocation`  |
 
 **Scopes — Cross-cutting:**
 

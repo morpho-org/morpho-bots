@@ -66,7 +66,7 @@ async function main() {
     // under the fee/gas/size ceilings, are ever signed (see @repo/bot-kit `evaluatePolicy`).
     policy: {
       chainId: config.chainId,
-      executor: config.executooorAddress,
+      targets: [config.executooorAddress],
       maxFeePerGasWei: config.maxFeeWei,
       maxGasLimit: DEFAULT_MAX_GAS_LIMIT,
       maxDataBytes: DEFAULT_MAX_DATA_BYTES

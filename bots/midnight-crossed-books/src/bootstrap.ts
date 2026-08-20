@@ -74,7 +74,7 @@ export async function createApplication(
       privateKey,
       policy: {
         chainId: config.chainId,
-        executor: config.resolver,
+        targets: [config.resolver],
         selector: resolverSelector(),
         maxFeePerGasWei: config.maxFeeWei,
         maxGasLimit: DEFAULT_MAX_GAS_LIMIT,

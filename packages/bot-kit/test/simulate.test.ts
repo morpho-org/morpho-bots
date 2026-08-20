@@ -4,7 +4,7 @@ import { createPublicClient, custom, getAddress } from 'viem'
 import { base } from 'viem/chains'
 import { describe, expect, it } from 'vitest'
 
-import { simulateLiquidationExec } from '../src/simulate'
+import { simulateCall, simulateLiquidationExec } from '../src/simulate'
 
 const EXECUTOR = getAddress('0x1111111111111111111111111111111111111111')
 const EOA = getAddress('0x4444444444444444444444444444444444444444')
@@ -28,6 +28,44 @@ function clientThatCalls(onCall: () => string, calls: Record<string, unknown>[] 
     })
   })
 }
+
+describe('simulateCall', () => {
+  it('returns ok when the call succeeds', async () => {
+    const client = clientThatCalls(() => '0x')
+    expect(await simulateCall(client, { eoa: EOA, to: EXECUTOR, data: DATA })).toEqual({
+      status: 'ok'
+    })
+  })
+
+  it('returns revert with a reason when the call reverts', async () => {
+    const client = clientThatCalls(() => {
+      throw new Error('execution reverted: InconsistentReallocation')
+    })
+    const result = await simulateCall(client, { eoa: EOA, to: EXECUTOR, data: DATA })
+    expect(result.status).toBe('revert')
+    expect(result.reason).toBeTruthy()
+  })
+
+  it('sends the from/to/data of the would-be broadcast', async () => {
+    const calls: Record<string, unknown>[] = []
+    const client = clientThatCalls(() => '0x', calls)
+    await simulateCall(client, { eoa: EOA, to: EXECUTOR, data: DATA })
+    expect(calls[0]).toMatchObject({
+      from: EOA.toLowerCase(),
+      to: EXECUTOR.toLowerCase(),
+      data: DATA
+    })
+  })
+
+  it('threads the tx value and defaults it to zero', async () => {
+    const calls: Record<string, unknown>[] = []
+    const client = clientThatCalls(() => '0x', calls)
+    await simulateCall(client, { eoa: EOA, to: EXECUTOR, data: DATA, value: 7n })
+    await simulateCall(client, { eoa: EOA, to: EXECUTOR, data: DATA })
+    expect(calls[0]?.value).toBe('0x7')
+    expect(calls[1]?.value).toBe('0x0')
+  })
+})
 
 describe('simulateLiquidationExec', () => {
   it('returns ok when the exec_606BaXt call succeeds', async () => {

@@ -1,4 +1,4 @@
-import { getAddress } from 'viem'
+import { encodeFunctionData, getAddress, parseAbi, toFunctionSelector } from 'viem'
 import { describe, expect, it } from 'vitest'
 
 import type { Policy, PolicyTx } from '../src/policy'
@@ -10,7 +10,7 @@ const OTHER = getAddress(`0x${'33'.repeat(20)}`)
 
 const POLICY: Policy = {
   chainId: 8453,
-  executor: EXECUTOR,
+  targets: [EXECUTOR],
   maxFeePerGasWei: 300_000_000_000n,
   maxGasLimit: 15_000_000n,
   maxDataBytes: 64
@@ -42,7 +42,7 @@ describe('evaluatePolicy', () => {
 
   it.each([
     ['chainId', { chainId: 1 }],
-    ['executor', { to: OTHER }],
+    ['target', { to: OTHER }],
     ['value', { value: 1n }],
     ['maxFeePerGas', { maxFeePerGas: 300_000_000_001n }],
     ['gas', { gas: 15_000_001n }],
@@ -50,6 +50,23 @@ describe('evaluatePolicy', () => {
     ['selector', { data: '0x00000002' }]
   ] as const)('rejects on %s', (check, overrides) => {
     expect(evaluatePolicy(POLICY, tx(overrides))).toMatchObject({ ok: false, check })
+  })
+
+  it('accepts any member of a target list and rejects non-members', () => {
+    const listed: Policy = { ...POLICY, targets: [EXECUTOR, OTHER] }
+    expect(evaluatePolicy(listed, tx())).toEqual({ ok: true })
+    expect(evaluatePolicy(listed, tx({ to: OTHER }))).toEqual({ ok: true })
+    expect(evaluatePolicy(listed, tx({ to: getAddress(`0x${'44'.repeat(20)}`) }))).toMatchObject({
+      ok: false,
+      check: 'target'
+    })
+  })
+
+  it('denies every transaction under an empty target list', () => {
+    expect(evaluatePolicy({ ...POLICY, targets: [] }, tx())).toMatchObject({
+      ok: false,
+      check: 'target'
+    })
   })
 
   it('accepts a caller-pinned selector', () => {
@@ -66,5 +83,121 @@ describe('evaluatePolicy', () => {
   it('defaults to zero value and exec_606BaXt', () => {
     expect(evaluatePolicy(POLICY, tx({ value: 1n }))).toMatchObject({ check: 'value' })
     expect(evaluatePolicy(POLICY, tx({ data: '0xdeadbeef' }))).toMatchObject({ check: 'selector' })
+  })
+})
+
+describe('evaluatePolicy multicall envelope', () => {
+  const VAULT_ABI = parseAbi([
+    'function multicall(bytes[] data)',
+    'function allocate(address adapter, bytes data, uint256 assets)',
+    'function deallocate(address adapter, bytes data, uint256 assets)',
+    'function setIsAllocator(address account, bool newIsAllocator)'
+  ])
+  const VAULT_A = getAddress(`0x${'aa'.repeat(20)}`)
+  const VAULT_B = getAddress(`0x${'bb'.repeat(20)}`)
+  const ADAPTER_A = getAddress(`0x${'a1'.repeat(20)}`)
+  const ADAPTER_B = getAddress(`0x${'b1'.repeat(20)}`)
+
+  const leg = (functionName: 'allocate' | 'deallocate', adapter: `0x${string}`) =>
+    encodeFunctionData({ abi: VAULT_ABI, functionName, args: [adapter, '0x1234', 1_000n] })
+  const bundle = (calls: `0x${string}`[]) =>
+    encodeFunctionData({ abi: VAULT_ABI, functionName: 'multicall', args: [calls] })
+
+  const MULTICALL_POLICY: Policy = {
+    chainId: 8453,
+    targets: [VAULT_A, VAULT_B],
+    maxFeePerGasWei: 300_000_000_000n,
+    maxGasLimit: 15_000_000n,
+    maxDataBytes: 65_536,
+    selector: toFunctionSelector('function multicall(bytes[])'),
+    multicall: {
+      innerSelectors: [
+        toFunctionSelector('function allocate(address, bytes, uint256)'),
+        toFunctionSelector('function deallocate(address, bytes, uint256)')
+      ],
+      innerTargetsByOuter: { [VAULT_A]: [ADAPTER_A], [VAULT_B]: [ADAPTER_B] }
+    }
+  }
+  const mtx = (overrides: Partial<PolicyTx> = {}): PolicyTx =>
+    tx({
+      to: VAULT_A,
+      data: bundle([leg('deallocate', ADAPTER_A), leg('allocate', ADAPTER_A)]),
+      ...overrides
+    })
+
+  it('accepts a valid allocate/deallocate bundle to the registered adapter', () => {
+    expect(evaluatePolicy(MULTICALL_POLICY, mtx())).toEqual({ ok: true })
+    expect(
+      evaluatePolicy(
+        MULTICALL_POLICY,
+        mtx({ to: VAULT_B, data: bundle([leg('allocate', ADAPTER_B)]) })
+      )
+    ).toEqual({ ok: true })
+  })
+
+  it('rejects a smuggled inner selector', () => {
+    const smuggled = encodeFunctionData({
+      abi: VAULT_ABI,
+      functionName: 'setIsAllocator',
+      args: [ADAPTER_A, true]
+    })
+    expect(
+      evaluatePolicy(
+        MULTICALL_POLICY,
+        mtx({ data: bundle([leg('deallocate', ADAPTER_A), smuggled]) })
+      )
+    ).toMatchObject({ ok: false, check: 'data' })
+  })
+
+  it("rejects another vault's adapter (cross-vault)", () => {
+    expect(
+      evaluatePolicy(MULTICALL_POLICY, mtx({ data: bundle([leg('allocate', ADAPTER_B)]) }))
+    ).toMatchObject({ ok: false, check: 'data' })
+  })
+
+  it('rejects an outer target with no registered inner targets', () => {
+    const policy: Policy = {
+      ...MULTICALL_POLICY,
+      targets: [getAddress(`0x${'cc'.repeat(20)}`)]
+    }
+    expect(evaluatePolicy(policy, mtx({ to: getAddress(`0x${'cc'.repeat(20)}`) }))).toMatchObject({
+      ok: false,
+      check: 'data'
+    })
+  })
+
+  it('rejects an empty bundle and malformed bytes', () => {
+    expect(evaluatePolicy(MULTICALL_POLICY, mtx({ data: bundle([]) }))).toMatchObject({
+      ok: false,
+      check: 'data'
+    })
+    const selector = MULTICALL_POLICY.selector ?? '0x'
+    expect(evaluatePolicy(MULTICALL_POLICY, mtx({ data: `${selector}deadbeef` }))).toMatchObject({
+      ok: false,
+      check: 'data'
+    })
+  })
+
+  it('rejects an inner call too short to carry an address argument', () => {
+    const allocateSelector = toFunctionSelector('function allocate(address, bytes, uint256)')
+    expect(
+      evaluatePolicy(MULTICALL_POLICY, mtx({ data: bundle([`${allocateSelector}beef`]) }))
+    ).toMatchObject({ ok: false, check: 'data' })
+  })
+
+  it('rejects a first argument word with dirty upper bits', () => {
+    const allocateSelector = toFunctionSelector('function allocate(address, bytes, uint256)')
+    // A registered adapter smuggled inside a word whose top 12 bytes are non-zero.
+    const dirtyWord = `${'de'.repeat(12)}${ADAPTER_A.slice(2)}`
+    expect(
+      evaluatePolicy(
+        MULTICALL_POLICY,
+        mtx({ data: bundle([`${allocateSelector}${dirtyWord}${'00'.repeat(64)}`]) })
+      )
+    ).toMatchObject({ ok: false, check: 'data' })
+  })
+
+  it('leaves policies without a multicall spec unchanged', () => {
+    expect(evaluatePolicy(POLICY, tx())).toEqual({ ok: true })
   })
 })
