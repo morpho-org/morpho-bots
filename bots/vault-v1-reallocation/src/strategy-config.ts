@@ -1,5 +1,7 @@
 import type { Address, Hex } from 'viem'
 
+import { InvalidConfigError } from './invalid-config.error'
+
 type ApyRangePercent = { min: number; max: number }
 
 /** Global default borrow-APY range (percent) when no vault or market override matches. */
@@ -15,6 +17,25 @@ export const DEFAULT_APY_RANGE: ApyRangePercent = { min: 3, max: 8 }
 export const vaultApyRanges: Record<number, Record<Address, ApyRangePercent>> = {}
 
 export const marketApyRanges: Record<number, Record<Hex, ApyRangePercent>> = {}
+
+/** Throws {@link InvalidConfigError} on an inverted range — min ≥ max flips a market to allocate every pass. */
+export const assertApyRangeValid = (range: ApyRangePercent, label: string): void => {
+  if (!(range.min < range.max)) {
+    throw new InvalidConfigError(
+      `Inverted APY range for ${label}: min ${range.min} >= max ${range.max}`
+    )
+  }
+}
+
+assertApyRangeValid(DEFAULT_APY_RANGE, 'DEFAULT_APY_RANGE')
+for (const [chainId, table] of Object.entries(vaultApyRanges)) {
+  for (const [vault, range] of Object.entries(table))
+    assertApyRangeValid(range, `${chainId}/${vault}`)
+}
+for (const [chainId, table] of Object.entries(marketApyRanges)) {
+  for (const [marketId, range] of Object.entries(table))
+    assertApyRangeValid(range, `${chainId}/${marketId}`)
+}
 
 export const vaultMinApyDeltaBips: Record<number, Record<Address, number>> = {}
 

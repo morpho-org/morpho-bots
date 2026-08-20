@@ -31,6 +31,11 @@ describe('loadConfig', () => {
     expect(config.rpcUrlFallback).toBeUndefined()
   })
 
+  it('trims padding from required values', () => {
+    const config = loadConfig({ ...BASE_ENV, RPC_URL: '  https://rpc.example \n' })
+    expect(config.rpcUrl).toBe('https://rpc.example')
+  })
+
   it('collapses case-variant duplicate whitelist entries', () => {
     const config = loadConfig({
       ...BASE_ENV,

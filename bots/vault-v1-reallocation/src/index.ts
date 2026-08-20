@@ -57,7 +57,6 @@ async function main() {
   const eoa = signer.account.address
 
   logger.info('startup', {
-    chainId: config.chainId,
     reallocator: eoa,
     vaults: config.vaultWhitelist,
     strategy: config.strategy,

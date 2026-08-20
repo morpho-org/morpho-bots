@@ -1,7 +1,9 @@
 import { getAddress } from 'viem'
 import { afterEach, describe, expect, it } from 'vitest'
 
+import { InvalidConfigError } from '../src/invalid-config.error'
 import {
+  assertApyRangeValid,
   DEFAULT_APY_RANGE,
   marketApyRanges,
   marketMinApyDeltaBips,
@@ -32,22 +34,19 @@ afterEach(() => {
   }
 })
 
-describe('checked-in APY range tables', () => {
-  // Guards future PRs editing the (currently empty) tables: a flipped pair silently inverts the
-  // above-range / below-range classification instead of failing.
-  it('keeps min below max in the global default', () => {
-    expect(DEFAULT_APY_RANGE.min).toBeLessThan(DEFAULT_APY_RANGE.max)
+describe('assertApyRangeValid', () => {
+  // Runs at module load over the default + both tables, so a flipped pair added to the (currently
+  // empty) templates fails the bot at startup instead of silently inverting the above-range /
+  // below-range classification.
+  it('accepts the global default', () => {
+    expect(() => assertApyRangeValid(DEFAULT_APY_RANGE, 'default')).not.toThrow()
   })
 
   it.each([
-    ['vault', vaultApyRanges as Record<number, Record<string, ApyRangePercent>>],
-    ['market', marketApyRanges as Record<number, Record<string, ApyRangePercent>>]
-  ])('keeps min below max in every %s override', (_label, table) => {
-    for (const [chainId, entries] of Object.entries(table)) {
-      for (const [key, range] of Object.entries(entries)) {
-        expect(range.min, `${chainId}/${key}`).toBeLessThan(range.max)
-      }
-    }
+    ['inverted', { min: 8, max: 3 }],
+    ['degenerate', { min: 5, max: 5 }]
+  ])('rejects a %s range', (_label, range: ApyRangePercent) => {
+    expect(() => assertApyRangeValid(range, 'test')).toThrow(InvalidConfigError)
   })
 })
 
