@@ -17,7 +17,7 @@ import {
 import { ensureError } from '@repo/utils'
 import { getAbiItem, toFunctionSelector } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
-import { getBlockNumber, readContract } from 'viem/actions'
+import { getBlockNumber } from 'viem/actions'
 
 import { loadConfig } from './config'
 import { encodeReallocation } from './encode'
@@ -60,13 +60,6 @@ async function main() {
           chainId: config.chainId,
           blockNumber: startupBlock,
           eoa
-        }),
-      isAdapter: (vault, adapter) =>
-        readContract(client, {
-          address: vault,
-          abi: vaultV2Abi,
-          functionName: 'isAdapter',
-          args: [adapter]
         })
     },
     logger

@@ -1,7 +1,7 @@
 import type { Address } from 'viem'
 
 import { MathLib } from '@morpho-org/blue-sdk'
-import { isAddressEqual, zeroAddress } from 'viem'
+import { isNonZeroAddress } from '@repo/utils'
 
 import type { VaultV2MarketData } from '../vault-data'
 import type { Strategy } from './strategy'
@@ -19,7 +19,7 @@ type EqualizeUtilizationsConfig = {
 const { min, wDivDown } = MathLib
 
 const isRealCollateral = (marketData: VaultV2MarketData): boolean =>
-  !isAddressEqual(marketData.params.collateralToken, zeroAddress)
+  isNonZeroAddress(marketData.params.collateralToken)
 
 /**
  * Converges every market toward the vault-wide average utilization

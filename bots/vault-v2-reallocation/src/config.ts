@@ -21,6 +21,7 @@ const STRATEGY_NAMES = ['apy-range', 'equalize-utilizations'] as const
 export type StrategyName = (typeof STRATEGY_NAMES)[number]
 
 const DEFAULT_MAX_FEE_GWEI = '300'
+// Reallocation cadence in wall-clock ms, gating the per-block tick.
 const DEFAULT_REALLOCATION_INTERVAL_MS = 600_000
 // ApyRange fires only when some market's implied borrow-APY move exceeds this (bips).
 const DEFAULT_MIN_APY_DELTA_BIPS = 25
@@ -132,23 +133,17 @@ const isStrategyName = (value: string): value is StrategyName =>
  * and is a factory-made VaultV2 with a supported adapter) are performed in `index.ts` once a
  * client exists.
  */
-export const loadConfig = (
-  env: Env = process.env,
-  deps: { chainMap?: Record<number, Chain> } = {}
-): Config => {
-  const chainMap = deps.chainMap ?? CHAIN_MAP
-
+export const loadConfig = (env: Env = process.env): Config => {
   const chainIdRaw = required(env, 'CHAIN_ID')
   if (!/^\d+$/.test(chainIdRaw)) {
     // Plain decimal only — reject hex (Number('0x1')) and exponent (Number('1e3')) forms.
     throw new InvalidConfigError(`CHAIN_ID must be a positive integer, got: ${chainIdRaw}`)
   }
   const chainId = Number(chainIdRaw)
-  const chain = chainMap[chainId]
+  const chain = CHAIN_MAP[chainId]
   if (!chain) {
-    const supported = Object.keys(chainMap).join(', ') || '(none configured)'
     throw new InvalidConfigError(
-      `Unsupported CHAIN_ID ${chainId}; supported chain ids: ${supported}`
+      `Unsupported CHAIN_ID ${chainId}; supported chain ids: ${Object.keys(CHAIN_MAP).join(', ')}`
     )
   }
 

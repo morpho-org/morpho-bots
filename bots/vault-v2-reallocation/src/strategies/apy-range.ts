@@ -57,8 +57,12 @@ export const createApyRangeStrategy = (config: ApyRangeConfig): Strategy =>
         const lowerBound = rateToUtilization(apyToRate(apyRange.min), rateAtTarget)
         const upperBound = rateToUtilization(apyToRate(apyRange.max), rateAtTarget)
 
-        const bound =
-          utilization > upperBound ? upperBound : utilization < lowerBound ? lowerBound : undefined
+        const boundFor = (u: bigint): bigint | undefined => {
+          if (u > upperBound) return upperBound
+          if (u < lowerBound) return lowerBound
+          return undefined
+        }
+        const bound = boundFor(utilization)
         if (bound === undefined) return undefined
         // The leg only travels to the clamped bound, so the firing gate measures that realizable
         // move — while the side stays decided by the raw bound (see MarketTarget.intent).

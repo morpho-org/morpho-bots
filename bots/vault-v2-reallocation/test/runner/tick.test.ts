@@ -9,9 +9,9 @@ import type { Reallocation } from '../../src/strategies'
 import type { VaultV2Data } from '../../src/vault-data'
 
 import { runTick } from '../../src/runner/tick'
-import { makeMarket, makeMarketParams, makeVaultData, RATE_AT_TARGET } from '../strategies/helpers'
+import { makeMarket, makeMarketParams, makeVaultData, RATE_AT_TARGET } from '../helpers'
 
-function spyLogger() {
+const spyLogger = () => {
   const events: { level: string; event: string; fields?: Record<string, unknown> }[] = []
   const make = (level: string) => (event: string, fields?: Record<string, unknown>) =>
     events.push({ level, event, fields })

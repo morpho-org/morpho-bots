@@ -6,7 +6,7 @@ import type { Classify, MarketTarget } from '../../src/strategies/reconcile'
 
 import { getUtilization, wadToBips } from '../../src/math'
 import { createReconciler } from '../../src/strategies/reconcile'
-import { makeMarket, makeVaultData, RATE_AT_TARGET } from './helpers'
+import { makeMarket, makeVaultData, RATE_AT_TARGET } from '../helpers'
 
 const WAD = 10n ** 18n
 

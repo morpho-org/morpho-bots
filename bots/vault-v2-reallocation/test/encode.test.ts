@@ -4,7 +4,7 @@ import { decodeAbiParameters, decodeFunctionData, getAddress, parseUnits } from 
 import { describe, expect, it } from 'vitest'
 
 import { encodeReallocation } from '../src/encode'
-import { ADAPTER, makeMarketParams } from './strategies/helpers'
+import { ADAPTER, makeMarketParams } from './helpers'
 
 describe('encodeReallocation', () => {
   it('encodes deallocate legs strictly before allocate legs with exact args', () => {

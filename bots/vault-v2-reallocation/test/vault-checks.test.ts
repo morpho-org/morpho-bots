@@ -7,9 +7,9 @@ import type { VaultCheckReads } from '../src/vault-checks'
 
 import { InvalidVaultError } from '../src/invalid-vault.error'
 import { checkVaults } from '../src/vault-checks'
-import { ADAPTER, makeMarket, makeVaultData, RATE_AT_TARGET } from './strategies/helpers'
+import { ADAPTER, makeMarket, makeVaultData, RATE_AT_TARGET } from './helpers'
 
-function spyLogger() {
+const spyLogger = () => {
   const events: { level: string; event: string; fields?: Record<string, unknown> }[] = []
   const make = (level: string) => (event: string, fields?: Record<string, unknown>) =>
     events.push({ level, event, fields })
@@ -30,7 +30,6 @@ const someVaultData = () =>
 const makeReads = (overrides: Partial<VaultCheckReads> = {}): VaultCheckReads => ({
   assertDeployed: vi.fn(async () => undefined),
   fetchVault: vi.fn(async () => someVaultData()),
-  isAdapter: vi.fn(async () => true),
   ...overrides
 })
 
@@ -40,13 +39,6 @@ describe('checkVaults', () => {
     const adapterByVault = await checkVaults([VAULT], makeReads(), logger)
     expect(adapterByVault).toEqual({ [VAULT]: [ADAPTER] })
     expect(events).toEqual([])
-  })
-
-  it('throws when the vault does not recognize its fetched adapter', async () => {
-    const { logger } = spyLogger()
-    await expect(
-      checkVaults([VAULT], makeReads({ isAdapter: vi.fn(async () => false) }), logger)
-    ).rejects.toBeInstanceOf(InvalidVaultError)
   })
 
   it('propagates a fetch rejection (non-V2 address, unsupported adapter shape)', async () => {

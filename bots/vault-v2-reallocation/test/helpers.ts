@@ -1,10 +1,10 @@
 import type { InputMarketParams } from '@morpho-org/blue-sdk'
 import type { Hex } from 'viem'
 
-import { MathLib } from '@morpho-org/blue-sdk'
+import { MathLib, SECONDS_PER_YEAR } from '@morpho-org/blue-sdk'
 import { getAddress, maxUint256, parseUnits } from 'viem'
 
-import type { CapState, VaultV2Data, VaultV2MarketData } from '../../src/vault-data'
+import type { CapState, VaultV2Data, VaultV2MarketData } from '../src/vault-data'
 
 export const VAULT = getAddress('0x0000000000000000000000000000000000000001')
 export const ADAPTER = getAddress('0x0000000000000000000000000000000000000002')
@@ -14,7 +14,7 @@ const ORACLE = getAddress('0x0000000000000000000000000000000000000030')
 const IRM = getAddress('0x0000000000000000000000000000000000000040')
 
 // ~3% APY at target utilization, per second.
-export const RATE_AT_TARGET = parseUnits('0.03', 18) / (365n * 24n * 60n * 60n)
+export const RATE_AT_TARGET = parseUnits('0.03', 18) / SECONDS_PER_YEAR
 
 const UNLIMITED_CAP: CapState = {
   absolute: maxUint256 / 10n ** 18n, // large but buffer-multiplication-safe

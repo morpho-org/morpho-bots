@@ -1,7 +1,7 @@
 import { MathLib } from '@morpho-org/blue-sdk'
 
 import type { VaultV2Data, VaultV2MarketData } from '../vault-data'
-import type { Reallocation, ReallocationAction, Strategy } from './strategy'
+import type { ReallocationAction, Strategy } from './strategy'
 
 import {
   createDepositPools,
@@ -54,7 +54,6 @@ type ReconcilerOptions = {
 
 type SizedMove = {
   marketData: VaultV2MarketData
-  side: MoveIntent
   amount: bigint
   clearsMinDelta: MarketTarget['clearsMinDelta']
 }
@@ -113,7 +112,8 @@ export const createReconciler = (options: ReconcilerOptions): Strategy => {
       ]
     })
 
-    const moves: SizedMove[] = []
+    const deallocateMoves: SizedMove[] = []
+    const allocateMoves: SizedMove[] = []
     let totalAmountToDeallocate = 0n
     let totalAmountToAllocate = 0n
 
@@ -124,12 +124,7 @@ export const createReconciler = (options: ReconcilerOptions): Strategy => {
       totalAmountToDeallocate += amount
       creditPools(sizingPools, marketData.params.collateralToken, amount)
       if (amount > 0n) {
-        moves.push({
-          marketData,
-          side: 'deallocate',
-          amount,
-          clearsMinDelta: target.clearsMinDelta
-        })
+        deallocateMoves.push({ marketData, amount, clearsMinDelta: target.clearsMinDelta })
       }
     }
     for (const { marketData, side, target } of classified) {
@@ -146,7 +141,7 @@ export const createReconciler = (options: ReconcilerOptions): Strategy => {
       )
       totalAmountToAllocate += amount
       if (amount > 0n) {
-        moves.push({ marketData, side: 'allocate', amount, clearsMinDelta: target.clearsMinDelta })
+        allocateMoves.push({ marketData, amount, clearsMinDelta: target.clearsMinDelta })
       }
     }
 
@@ -170,21 +165,18 @@ export const createReconciler = (options: ReconcilerOptions): Strategy => {
     const deallocations: ReallocationAction[] = []
 
     const legPools = createDepositPools(vaultData, options.capBufferWad)
-    for (const move of moves) {
-      if (move.side !== 'deallocate') continue
+    for (const move of deallocateMoves) {
       if (remainingAmountToDeallocate === 0n) break
+      // Sized amounts and the remaining budget are both positive here, so the take always is.
       const toDeallocate = min(move.amount, remainingAmountToDeallocate)
       remainingAmountToDeallocate -= toDeallocate
       creditPools(legPools, move.marketData.params.collateralToken, toDeallocate)
-      if (toDeallocate > 0n) {
-        didClearMinDelta ||= move.clearsMinDelta(
-          getUtilizationAfter(move.marketData.state, move.side, toDeallocate)
-        )
-        deallocations.push(toLeg(move, toDeallocate))
-      }
+      didClearMinDelta ||= move.clearsMinDelta(
+        getUtilizationAfter(move.marketData.state, 'deallocate', toDeallocate)
+      )
+      deallocations.push(toLeg(move, toDeallocate))
     }
-    for (const move of moves) {
-      if (move.side !== 'allocate') continue
+    for (const move of allocateMoves) {
       if (remainingAmountToAllocate === 0n) break
       const toAllocate = takeFromPools(
         legPools,
@@ -194,13 +186,13 @@ export const createReconciler = (options: ReconcilerOptions): Strategy => {
       remainingAmountToAllocate -= toAllocate
       if (toAllocate > 0n) {
         didClearMinDelta ||= move.clearsMinDelta(
-          getUtilizationAfter(move.marketData.state, move.side, toAllocate)
+          getUtilizationAfter(move.marketData.state, 'allocate', toAllocate)
         )
         allocations.push(toLeg(move, toAllocate))
       }
     }
 
     if (!didClearMinDelta) return undefined
-    return { allocations, deallocations } satisfies Reallocation
+    return { allocations, deallocations }
   }
 }

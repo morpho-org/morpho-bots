@@ -45,8 +45,9 @@ default 10 min) throttles the actual reallocation passes. Each pass, per whiteli
      vault-wide average utilization, `Σborrow / (Σsupply + idle)`. Fires only past
      `MIN_UTILIZATION_DELTA_BIPS`.
    - **`apy-range`**: keep each market's borrow APY inside its configured range by inverting the
-     AdaptiveCurveIRM curve; allocations top up from idle (`ALLOW_IDLE_REALLOCATION`). Fires only
-     past `MIN_APY_DELTA_BIPS`.
+     AdaptiveCurveIRM curve; deallocation surplus parks in idle only when
+     `ALLOW_IDLE_REALLOCATION=true` (allocations always draw on idle). Fires only past
+     `MIN_APY_DELTA_BIPS`.
 5. Encode ONE `vault.multicall([deallocate…, allocate…])` (deallocations strictly first so idle is
    funded), simulate those exact bytes from the EOA, and on sim-ok submit through the pending queue
    (or log `reallocation.dry_run` when `DRY_RUN=true`).

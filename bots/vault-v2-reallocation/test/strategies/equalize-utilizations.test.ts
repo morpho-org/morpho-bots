@@ -3,7 +3,7 @@ import { getAddress, parseUnits } from 'viem'
 import { describe, expect, it } from 'vitest'
 
 import { createEqualizeUtilizationsStrategy } from '../../src/strategies/equalize-utilizations'
-import { makeMarket, makeMarketParams, makeVaultData, RATE_AT_TARGET, VAULT } from './helpers'
+import { makeMarket, makeMarketParams, makeVaultData, RATE_AT_TARGET, VAULT } from '../helpers'
 
 const makeStrategy = (minUtilizationDeltaBips: (vault: `0x${string}`) => number = () => 0) =>
   createEqualizeUtilizationsStrategy({
@@ -50,12 +50,38 @@ describe('createEqualizeUtilizationsStrategy', () => {
     })
     // Without idle the single market sits exactly at target (no move); a large idle balance drags
     // the target below the market's utilization, making it an allocation candidate — but with no
-    // deallocation source min(dealloc, alloc) is 0, so still no reallocation. The observable
-    // effect: adding a cold market makes idle tilt the split.
+    // deallocation source min(dealloc, alloc) is 0, so still no reallocation.
     expect(strategy(makeVaultData([market]))).toBeUndefined()
     expect(
       strategy(makeVaultData([market], { idleAssets: parseUnits('1000000', 6) }))
     ).toBeUndefined()
+
+    // Observable with a pair: allocations may exceed deallocations by EXACTLY the idle balance
+    // when the allocation appetite outruns the deallocation budget by more than idle.
+    const hotMarket = makeMarket({
+      utilization: (95n * WAD) / 100n,
+      vaultAssets: parseUnits('50000', 6),
+      rateAtTarget: RATE_AT_TARGET
+    })
+    const coldMarket = makeMarket({
+      utilization: (10n * WAD) / 100n,
+      vaultAssets: parseUnits('100', 6),
+      supplyAssets: parseUnits('1000', 6),
+      rateAtTarget: RATE_AT_TARGET
+    })
+    const totals = (idleAssets: bigint) => {
+      const result = strategy(makeVaultData([hotMarket, coldMarket], { idleAssets }))
+      expect(result).toBeDefined()
+      return {
+        allocated: result!.allocations.reduce((acc, l) => acc + l.assets, 0n),
+        deallocated: result!.deallocations.reduce((acc, l) => acc + l.assets, 0n)
+      }
+    }
+    const dry = totals(0n)
+    expect(dry.allocated).toBe(dry.deallocated)
+    const idleAssets = parseUnits('500', 6)
+    const funded = totals(idleAssets)
+    expect(funded.allocated).toBe(funded.deallocated + idleAssets)
   })
 
   it('clamps the target utilization at 100% in bad-debt states', () => {
@@ -73,10 +99,9 @@ describe('createEqualizeUtilizationsStrategy', () => {
       rateAtTarget: RATE_AT_TARGET
     })
     const result = strategy(makeVaultData([badDebtMarket, coldMarket]))
-    if (result) {
-      const deallocation = result.deallocations[0]
-      expect(deallocation?.assets ?? 0n).toBeLessThanOrEqual(coldMarket.vaultAssets)
-    }
+    expect(result).toBeDefined()
+    const deallocation = result!.deallocations[0]
+    expect(deallocation?.assets ?? 0n).toBeLessThanOrEqual(coldMarket.vaultAssets)
   })
 
   it('lands a bad-debt aggregate target at the clamp, never draining free liquidity', () => {
@@ -293,11 +318,10 @@ describe('createEqualizeUtilizationsStrategy', () => {
       rateAtTarget: RATE_AT_TARGET
     })
     const result = strategy(makeVaultData([coldMarket, hotMarket], { idleAssets: 0n }))
-    if (result) {
-      const totalAllocated = result.allocations.reduce((acc, l) => acc + l.assets, 0n)
-      const totalDeallocated = result.deallocations.reduce((acc, l) => acc + l.assets, 0n)
-      expect(totalAllocated).toBeLessThanOrEqual(totalDeallocated)
-    }
+    expect(result).toBeDefined()
+    const totalAllocated = result!.allocations.reduce((acc, l) => acc + l.assets, 0n)
+    const totalDeallocated = result!.deallocations.reduce((acc, l) => acc + l.assets, 0n)
+    expect(totalAllocated).toBeLessThanOrEqual(totalDeallocated)
   })
 
   it('uses capacity freed by its own deallocations under a full adapter cap', () => {

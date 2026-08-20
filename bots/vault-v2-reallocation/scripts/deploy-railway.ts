@@ -58,14 +58,16 @@ const assertPrivateKey = (key: string): void => {
   }
 }
 
+// The CLI's JSON is either a bare array or an object wrapping one under `key`.
+const rowsOf = (data: unknown, key: string): unknown[] => {
+  if (Array.isArray(data)) return data
+  if (isRecord(data) && Array.isArray(data[key])) return data[key]
+  return []
+}
+
 const parseServices = (raw: string): RailwayService[] => {
   const { data } = tryCatch(() => JSON.parse(raw) as unknown)
-  const rows = Array.isArray(data)
-    ? data
-    : isRecord(data) && Array.isArray(data.services)
-      ? data.services
-      : []
-  return rows
+  return rowsOf(data, 'services')
     .filter(isRecord)
     .map(row => ({ id: str(row.id), name: str(row.name) || str(row.serviceName) }))
     .filter(service => service.name)
@@ -73,12 +75,7 @@ const parseServices = (raw: string): RailwayService[] => {
 
 const parseLatestStatus = (raw: string): string => {
   const { data } = tryCatch(() => JSON.parse(raw) as unknown)
-  const rows = Array.isArray(data)
-    ? data
-    : isRecord(data) && Array.isArray(data.deployments)
-      ? data.deployments
-      : []
-  const latest = rows.filter(isRecord)[0]
+  const latest = rowsOf(data, 'deployments').filter(isRecord)[0]
   return latest ? str(latest.status) || 'UNKNOWN' : 'UNKNOWN'
 }
 
@@ -182,21 +179,11 @@ const deployService = async (service: string): Promise<void> => {
 
 const latestStatus = async (service: string): Promise<string> => {
   // -e/-p explicit for the same reason as deployService: don't depend on ambient link state.
-  const args = [
-    'railway',
-    'deployment',
-    'list',
-    '-s',
-    service,
-    '-e',
-    ENVIRONMENT,
-    '-p',
-    PROJECT_ID,
-    '--limit',
-    '1',
-    '--json'
-  ]
-  const { data, error } = await tryCatch($(args[0] ?? 'railway', args.slice(1)).then(r => r.stdout))
+  const { data, error } = await tryCatch(
+    $`railway deployment list -s ${service} -e ${ENVIRONMENT} -p ${PROJECT_ID} --limit 1 --json`.then(
+      r => r.stdout
+    )
+  )
   return error || typeof data !== 'string' ? 'UNKNOWN' : parseLatestStatus(data)
 }
 

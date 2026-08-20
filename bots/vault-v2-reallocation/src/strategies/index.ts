@@ -12,7 +12,7 @@ import {
 import { createApyRangeStrategy } from './apy-range'
 import { createEqualizeUtilizationsStrategy } from './equalize-utilizations'
 
-export type { Reallocation, Strategy } from './strategy'
+export type { Reallocation, ReallocationAction, Strategy } from './strategy'
 
 /**
  * Builds the configured {@link Strategy}, binding the checked-in strategy-config tables (market >

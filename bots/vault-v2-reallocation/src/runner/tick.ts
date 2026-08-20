@@ -2,8 +2,9 @@ import type { Logger, SimulateResult } from '@repo/bot-kit'
 import type { Address, Hex } from 'viem'
 
 import { tryCatch } from '@repo/utils'
+import { isAddressEqual } from 'viem'
 
-import type { Reallocation, Strategy } from '../strategies'
+import type { Reallocation, ReallocationAction, Strategy } from '../strategies'
 import type { VaultV2Data } from '../vault-data'
 
 export type TickDeps = {
@@ -53,21 +54,17 @@ const NO_COUNTS: VaultCounters = {
 
 const COUNTER_KEYS = Object.keys(NO_COUNTS) as (keyof VaultCounters)[]
 
+const legSummary = (action: 'allocate' | 'deallocate', leg: ReallocationAction) => ({
+  action,
+  marketId: leg.marketId,
+  collateralToken: leg.marketParams.collateralToken,
+  lltv: leg.marketParams.lltv,
+  assets: leg.assets
+})
+
 const summarize = (reallocation: Reallocation) => [
-  ...reallocation.deallocations.map(leg => ({
-    action: 'deallocate',
-    marketId: leg.marketId,
-    collateralToken: leg.marketParams.collateralToken,
-    lltv: leg.marketParams.lltv,
-    assets: leg.assets
-  })),
-  ...reallocation.allocations.map(leg => ({
-    action: 'allocate',
-    marketId: leg.marketId,
-    collateralToken: leg.marketParams.collateralToken,
-    lltv: leg.marketParams.lltv,
-    assets: leg.assets
-  }))
+  ...reallocation.deallocations.map(leg => legSummary('deallocate', leg)),
+  ...reallocation.allocations.map(leg => legSummary('allocate', leg))
 ]
 
 const processVault = async (deps: TickDeps, vault: Address): Promise<VaultCounters> => {
@@ -81,7 +78,7 @@ const processVault = async (deps: TickDeps, vault: Address): Promise<VaultCounte
   }
 
   const expectedAdapter = deps.expectedAdapter(vault)
-  if (expectedAdapter !== undefined && vaultData.adapterAddress !== expectedAdapter) {
+  if (expectedAdapter !== undefined && !isAddressEqual(vaultData.adapterAddress, expectedAdapter)) {
     deps.logger.warn('adapter.changed', {
       vault,
       expected: expectedAdapter,
@@ -103,8 +100,8 @@ const processVault = async (deps: TickDeps, vault: Address): Promise<VaultCounte
   const reallocation = deps.strategy(vaultData)
   if (!reallocation) return NO_COUNTS
 
-  const legs = reallocation.deallocations.length + reallocation.allocations.length
-  deps.logger.info('reallocation.found', { vault, legs, allocations: summarize(reallocation) })
+  const summary = summarize(reallocation)
+  deps.logger.info('reallocation.found', { vault, legs: summary.length, allocations: summary })
 
   const data = deps.encodeReallocation(vaultData, reallocation)
   const sim = await deps.simulate(vault, data)

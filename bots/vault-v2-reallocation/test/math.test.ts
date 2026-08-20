@@ -11,7 +11,7 @@ import {
   getWithdrawableAmount,
   takeFromPools
 } from '../src/math'
-import { makeMarket, makeVaultData, RATE_AT_TARGET } from './strategies/helpers'
+import { makeMarket, makeVaultData, RATE_AT_TARGET } from './helpers'
 
 const WAD = 10n ** 18n
 

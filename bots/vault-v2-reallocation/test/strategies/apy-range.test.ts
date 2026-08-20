@@ -15,7 +15,7 @@ import {
   wadToBips
 } from '../../src/math'
 import { createApyRangeStrategy } from '../../src/strategies/apy-range'
-import { makeMarket, makeVaultData, RATE_AT_TARGET } from './helpers'
+import { makeMarket, makeVaultData, RATE_AT_TARGET } from '../helpers'
 
 type ApyRangePercent = { min: number; max: number }
 
@@ -167,8 +167,7 @@ describe('createApyRangeStrategy', () => {
         rateAtTarget: RATE_AT_TARGET
       })
       const result = strategy(makeVaultData([hotMarket], { idleAssets: parseUnits('50000', 6) }))
-      // Only an allocation candidate: with no deallocation source the whole leg is idle-funded...
-      // but min(dealloc, alloc) === 0 with dealloc 0 — matching the old bot, idle-only funding
+      // Only an allocation candidate: min(dealloc, alloc) === 0 with dealloc 0 — idle-only funding
       // still requires at least one deallocation leg. Verify surplus-topping instead:
       expect(result).toBeUndefined()
 

@@ -59,22 +59,19 @@ export const getUtilizationAfter = (
 // A 0 target is reachable (an APY bound at/below the curve's minimum rate, or an aggregate borrow
 // that rounds to zero) and `wDivDown(_, 0n)` would throw, erroring the whole vault every pass.
 // Depositing toward 0% utilization is unachievable and a 0-utilization market has nothing a
-// withdrawal target constrains, so both size to 0.
-const getWithdrawalToUtilization = (state: MarketState, targetUtilization: bigint): bigint =>
-  targetUtilization === 0n
-    ? 0n
-    : MathLib.wMulDown(
-        state.totalSupplyAssets,
-        MathLib.WAD - MathLib.wDivDown(getUtilization(state), targetUtilization)
-      )
+// withdrawal target constrains, so both moves size to 0 via the `undefined` ratio.
+const getUtilizationRatio = (state: MarketState, targetUtilization: bigint): bigint | undefined =>
+  targetUtilization === 0n ? undefined : MathLib.wDivDown(getUtilization(state), targetUtilization)
 
-const getDepositToUtilization = (state: MarketState, targetUtilization: bigint): bigint =>
-  targetUtilization === 0n
-    ? 0n
-    : MathLib.wMulDown(
-        state.totalSupplyAssets,
-        MathLib.wDivDown(getUtilization(state), targetUtilization) - MathLib.WAD
-      )
+const getWithdrawalToUtilization = (state: MarketState, targetUtilization: bigint): bigint => {
+  const ratio = getUtilizationRatio(state, targetUtilization)
+  return ratio === undefined ? 0n : MathLib.wMulDown(state.totalSupplyAssets, MathLib.WAD - ratio)
+}
+
+const getDepositToUtilization = (state: MarketState, targetUtilization: bigint): bigint => {
+  const ratio = getUtilizationRatio(state, targetUtilization)
+  return ratio === undefined ? 0n : MathLib.wMulDown(state.totalSupplyAssets, ratio - MathLib.WAD)
+}
 
 /**
  * Assets deallocatable from a market before its utilization would exceed `targetUtilization`,
@@ -106,7 +103,7 @@ export const getCapHeadroom = (
   const absoluteHeadroom = MathLib.zeroFloorSub(MathLib.wMulDown(cap.absolute, capBufferWad), basis)
   if (cap.relative === MathLib.WAD) return absoluteHeadroom
   const relativeHeadroom = MathLib.zeroFloorSub(
-    MathLib.wMulDown(MathLib.wMulUp(totalAssets, cap.relative), capBufferWad),
+    MathLib.wMulDown(MathLib.wMulDown(totalAssets, cap.relative), capBufferWad),
     basis
   )
   return MathLib.min(absoluteHeadroom, relativeHeadroom)
@@ -115,7 +112,7 @@ export const getCapHeadroom = (
 // The allocation true-up an allocate/deallocate leg applies to every id it touches: the accrued
 // position minus the stored allocation (never negative — accrual only grows a position).
 const accrualDrift = (marketData: VaultV2MarketData): bigint =>
-  MathLib.max(0n, marketData.vaultAssets - marketData.cap.allocation)
+  MathLib.zeroFloorSub(marketData.vaultAssets, marketData.cap.allocation)
 
 /**
  * Assets allocatable into a market before its utilization would fall below `targetUtilization`,
