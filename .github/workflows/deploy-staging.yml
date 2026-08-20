@@ -25,14 +25,6 @@ jobs:
       stage: staging
       ref: ${{ github.sha }}
 
-  vault-v1-realloc:
-    uses: ./.github/workflows/deploy-bot.yml
-    secrets: inherit
-    with:
-      bot: vault-v1-realloc
-      stage: staging
-      ref: ${{ github.sha }}
-
   midnight-liq:
     uses: ./.github/workflows/deploy-bot.yml
     secrets: inherit

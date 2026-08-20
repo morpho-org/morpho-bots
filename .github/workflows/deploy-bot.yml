@@ -11,7 +11,7 @@ on:
   workflow_call:
     inputs:
       bot:
-        description: Which bot to deploy (blue-liq | vault-v1-realloc | midnight-liq | crossed-books)
+        description: Which bot to deploy (blue-liq | midnight-liq | crossed-books)
         required: true
         type: string
       stage:
@@ -69,7 +69,6 @@ jobs:
           # Map the stable bot id (also the release-label suffix) to its workspace package.
           case "$BOT" in
             blue-liq) pkg='@morpho-org/blue-liquidation' ;;
-            vault-v1-realloc) pkg='@morpho-org/vault-v1-reallocation' ;;
             midnight-liq) pkg='@morpho-org/midnight-liquidation' ;;
             crossed-books) pkg='@morpho-org/midnight-crossed-books' ;;
             *) echo "Unknown bot: $BOT" >&2; exit 1 ;;

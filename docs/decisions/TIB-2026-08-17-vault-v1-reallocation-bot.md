@@ -209,6 +209,17 @@ the full live read → strategy → encode → simulate path and logs each would
 `reallocation.dry_run` without submitting. An operator flips `DRY_RUN=false` once the dry-run stream
 looks right for that vault set.
 
+### Deployment: a reference bot, not a Morpho-operated service
+
+Morpho is not a curator, so it publishes this bot open source rather than running it. The bot keeps
+its full per-bot operator surface — `README.md`, `Dockerfile`, `docker-compose.yml`,
+`scripts/deploy-railway.ts` — as a worked example for third-party operators, but it is deliberately
+**not** registered in the repo's CI deploy pipeline (`deploy-staging.yml` / `deploy-production.yml`
+/ `deploy-bot.yml`). Wiring it in without backing Railway services and GitHub Environments would
+fail the staging job on every merge to main; wiring it in _with_ them would make Morpho the
+operator. Registering the bot in CI is a deliberate future step for whoever chooses to operate it
+from a fork of this repo.
+
 ## Considered Alternatives
 
 ### Alternative 1: Keep the bot in its own repository
@@ -216,8 +227,7 @@ looks right for that vault set.
 Leave `morpho-blue-reallocation-bot` standalone and adopt bot-kit patterns by hand.
 
 **Why rejected:** it would keep forking the runtime — queue, signer, policy guard, logging — that
-`@repo/bot-kit` already owns, and the operator surface it needs (CI deploy, Railway provisioning,
-BetterStack sources and dashboards) is repo-wide here. Two implementations of the submission path
+`@repo/bot-kit` already owns. Two implementations of the submission path
 is exactly the divergence this monorepo exists to prevent.
 
 ### Alternative 2: Port the old repo's hexagonal ports/adapters layering
@@ -259,7 +269,8 @@ of a block-pinned snapshot — and it does not match the flat shape every other 
 - `@repo/bot-kit` (workspace) — clients, logger, block watcher + runner, pending-tx queue, signing
   policy (with `Policy.targets` in place of the single-Executor field), simulation, revert decoding,
   balance metric.
-- Repo-wide operator surface: the CI deploy pipeline, Railway, BetterStack.
+- BetterStack shipping and the heartbeat are opt-in env knobs; the repo's CI deploy pipeline is
+  deliberately not a dependency (see Deployment above).
 
 ## Observability
 
