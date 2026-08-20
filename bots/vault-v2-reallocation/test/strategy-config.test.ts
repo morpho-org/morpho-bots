@@ -1,7 +1,9 @@
 import { getAddress } from 'viem'
 import { afterEach, describe, expect, it } from 'vitest'
 
+import { InvalidConfigError } from '../src/invalid-config.error'
 import {
+  assertApyRangeValid,
   DEFAULT_APY_RANGE,
   marketApyRanges,
   marketMinApyDeltaBips,
@@ -73,14 +75,15 @@ describe('resolveMinUtilizationDeltaBips', () => {
   })
 })
 
-describe('table shape', () => {
-  it('every configured APY range has min < max', () => {
-    for (const table of [vaultApyRanges, marketApyRanges]) {
-      for (const perChain of Object.values(table)) {
-        for (const range of Object.values(perChain)) {
-          expect(range.min).toBeLessThan(range.max)
-        }
-      }
-    }
+// The checked-in tables themselves are guarded at module load — importing this module with a bad
+// entry throws, which the imports above already exercise for the shipped (empty) tables.
+describe('assertApyRangeValid', () => {
+  it('rejects inverted and empty ranges', () => {
+    expect(() => assertApyRangeValid({ min: 8, max: 3 }, 'test')).toThrow(InvalidConfigError)
+    expect(() => assertApyRangeValid({ min: 5, max: 5 }, 'test')).toThrow(InvalidConfigError)
+  })
+
+  it('accepts a well-formed range', () => {
+    expect(() => assertApyRangeValid(DEFAULT_APY_RANGE, 'default')).not.toThrow()
   })
 })

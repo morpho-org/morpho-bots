@@ -116,9 +116,10 @@ export function evaluatePolicy(policy: Policy, tx: PolicyTx): PolicyDecision {
   if (tx.data.slice(0, 10).toLowerCase() !== selector) {
     return deny('selector', `calldata must call configured selector ${selector}`)
   }
-  if (policy.multicall) {
+  const { multicall } = policy
+  if (multicall) {
     // A throw out of the deep check must never escape the PolicyDecision contract — default-deny.
-    const { data: reason, error } = tryCatch(() => checkMulticall(policy.multicall!, tx))
+    const { data: reason, error } = tryCatch(() => checkMulticall(multicall, tx))
     if (error) return deny('data', 'multicall authorization threw; denying')
     if (reason !== undefined) return deny('data', reason)
   }

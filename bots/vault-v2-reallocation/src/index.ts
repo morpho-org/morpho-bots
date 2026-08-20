@@ -91,7 +91,6 @@ async function main() {
   })
 
   logger.info('startup', {
-    chainId: config.chainId,
     reallocator: eoa,
     vaults: config.vaultWhitelist,
     adapters: adapterByVault,

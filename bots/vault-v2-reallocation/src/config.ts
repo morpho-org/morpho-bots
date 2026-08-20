@@ -57,7 +57,7 @@ const required = (env: Env, name: string): string => {
   if (value === undefined || value.trim() === '') {
     throw new InvalidConfigError(`Missing required env var: ${name}`)
   }
-  return value
+  return value.trim()
 }
 
 // Parses an optional non-negative integer env var, with a default and optional min/max bounds.

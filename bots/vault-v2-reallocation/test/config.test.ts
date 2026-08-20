@@ -62,6 +62,11 @@ describe('loadConfig', () => {
     expect(config.logLevel).toBe('debug')
   })
 
+  it('trims required values so padded env vars never reach the transport', () => {
+    const config = loadConfig({ ...BASE_ENV, RPC_URL: '  https://rpc.example  ' })
+    expect(config.rpcUrl).toBe('https://rpc.example')
+  })
+
   it.each([
     ['CHAIN_ID missing', { ...BASE_ENV, CHAIN_ID: undefined }],
     ['CHAIN_ID unsupported', { ...BASE_ENV, CHAIN_ID: '42' }],
