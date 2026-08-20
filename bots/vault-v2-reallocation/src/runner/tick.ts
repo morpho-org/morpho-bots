@@ -10,13 +10,6 @@ export type TickDeps = {
   vaults: Address[]
   chainHead: bigint
   /**
-   * Strict `isAllocator(eoa)` on the vault — deliberately narrower than the V1 bot's
-   * allocator|curator|owner check, because VaultV2.allocate admits no curator/owner fallback.
-   * Run concurrently with the fetch; a vault the EOA cannot reallocate is skipped, and resumes on
-   * its own once the role is granted.
-   */
-  isAllocator: (vault: Address) => Promise<boolean>
-  /**
    * The adapter the signing policy was pinned to at startup. A curator swapping the adapter
    * mid-run would otherwise surface as an opaque PolicyViolationError on every submit — the tick
    * skips the vault with an actionable `adapter.changed` instead (restart to re-pin).
@@ -78,12 +71,11 @@ const summarize = (reallocation: Reallocation) => [
 ]
 
 const processVault = async (deps: TickDeps, vault: Address): Promise<VaultCounters> => {
-  const [vaultData, isAllocator] = await Promise.all([
-    deps.fetchVault(vault, deps.chainHead),
-    deps.isAllocator(vault)
-  ])
+  const vaultData = await deps.fetchVault(vault, deps.chainHead)
 
-  if (!isAllocator) {
+  // Strict `isAllocator(eoa)`, read in the snapshot's single call (see {@link VaultV2Data}); a
+  // vault the EOA cannot reallocate is skipped, and resumes on its own once the role is granted.
+  if (!vaultData.isAllocator) {
     deps.logger.warn('allocator.missing_role', { vault })
     return { ...NO_COUNTS, missing_role: 1 }
   }
@@ -134,17 +126,19 @@ const processVault = async (deps: TickDeps, vault: Address): Promise<VaultCounte
 
 /**
  * One reallocation pass: every whitelisted vault is processed concurrently — skip if a tx is in
- * flight, fetch a block-pinned snapshot alongside the `isAllocator` read, skip (loudly) if the EOA
- * lacks the role or the vault's adapter changed since startup, run the strategy, simulate the
- * exact multicall bytes, and submit (or dry-run-log) on sim-ok. A failure in one vault logs
- * `vault.error` and never blocks the others; counters are folded after every vault settles and
- * closed by one wide `tick.end` line.
+ * flight, fetch a block-pinned snapshot (one deployless `eth_call`, allocator bit included), skip
+ * (loudly) if the EOA lacks the role or the vault's adapter changed since startup, run the
+ * strategy, simulate the exact multicall bytes, and submit (or dry-run-log) on sim-ok. A failure in
+ * one vault logs `vault.error` and never blocks the others; counters are folded after every vault
+ * settles and closed by one wide `tick.end` line.
  */
 export const runTick = async (deps: TickDeps): Promise<void> => {
   const started = Date.now()
   const inflight = deps.inflightLabels()
 
-  const settled = await Promise.allSettled(
+  // The mapper cannot reject — `processVault` is wrapped in `tryCatch` and every branch returns a
+  // counter set — so `Promise.all` never short-circuits a vault.
+  const results = await Promise.all(
     deps.vaults.map(async (vault): Promise<VaultCounters> => {
       if (inflight.has(vault)) {
         deps.logger.debug('vault.inflight', { vault })
@@ -159,10 +153,9 @@ export const runTick = async (deps: TickDeps): Promise<void> => {
     })
   )
 
-  const counters = settled.reduce<VaultCounters>(
+  const counters = results.reduce<VaultCounters>(
     (acc, result) => {
-      if (result.status === 'rejected') return { ...acc, errors: acc.errors + 1 }
-      for (const key of COUNTER_KEYS) acc[key] += result.value[key]
+      for (const key of COUNTER_KEYS) acc[key] += result[key]
       return acc
     },
     { ...NO_COUNTS }

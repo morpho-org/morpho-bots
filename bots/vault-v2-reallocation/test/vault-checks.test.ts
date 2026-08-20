@@ -31,7 +31,6 @@ const makeReads = (overrides: Partial<VaultCheckReads> = {}): VaultCheckReads =>
   assertDeployed: vi.fn(async () => undefined),
   fetchVault: vi.fn(async () => someVaultData()),
   isAdapter: vi.fn(async () => true),
-  isAllocator: vi.fn(async () => true),
   ...overrides
 })
 
@@ -61,17 +60,13 @@ describe('checkVaults', () => {
     ).rejects.toBeInstanceOf(InvalidVaultError)
   })
 
-  it('warns but does not throw when the allocator role is missing or unreadable', async () => {
+  it('warns but does not throw when the allocator role is missing', async () => {
     const { logger, events } = spyLogger()
-    await checkVaults([VAULT], makeReads({ isAllocator: vi.fn(async () => false) }), logger)
-    expect(events.some(e => e.event === 'allocator.missing_role' && e.level === 'warn')).toBe(true)
-
-    const { logger: logger2, events: events2 } = spyLogger()
     await checkVaults(
       [VAULT],
-      makeReads({ isAllocator: vi.fn(async () => Promise.reject(new Error('rpc'))) }),
-      logger2
+      makeReads({ fetchVault: vi.fn(async () => ({ ...someVaultData(), isAllocator: false })) }),
+      logger
     )
-    expect(events2.some(e => e.event === 'allocator.missing_role')).toBe(true)
+    expect(events.some(e => e.event === 'allocator.missing_role' && e.level === 'warn')).toBe(true)
   })
 })

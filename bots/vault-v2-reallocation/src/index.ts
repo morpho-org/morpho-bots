@@ -1,5 +1,3 @@
-import type { Address } from 'viem'
-
 import { vaultV2Abi } from '@morpho-org/blue-sdk-viem'
 import {
   assertContractDeployed,
@@ -40,41 +38,36 @@ async function main() {
     context: { bot: 'vault-v2-reallocation', chainId: config.chainId, ...railwayContext() }
   })
 
-  // blue-sdk's vault fetch fans out many single-value reads, so the read transport batches them
-  // into a few JSON-RPC round trips (the per-cap-id reads are already one multicall).
+  // Every per-pass read goes through the deployless lens (one eth_call per vault), so the HTTP
+  // transport has nothing to batch.
   const client = createDeploylessClient({
     chain: config.chain,
     rpcUrl: config.rpcUrl,
-    rpcUrlFallback: config.rpcUrlFallback,
-    batch: true
+    rpcUrlFallback: config.rpcUrlFallback
   })
 
   // The signer's policy needs the vault → adapter map the startup checks resolve, so the EOA is
   // derived from the key directly here.
   const eoa = privateKeyToAccount(config.reallocatorPrivateKey).address
   const startupBlock = await getBlockNumber(client)
-  const isAllocator = (vault: Address) =>
-    readContract(client, {
-      address: vault,
-      abi: vaultV2Abi,
-      functionName: 'isAllocator',
-      args: [eoa]
-    })
 
   const adapterByVault = await checkVaults(
     config.vaultWhitelist,
     {
       assertDeployed: vault => assertContractDeployed(client, vault, 'VAULT_WHITELIST entry'),
       fetchVault: vault =>
-        fetchVaultV2Data(client, vault, { chainId: config.chainId, blockNumber: startupBlock }),
+        fetchVaultV2Data(client, vault, {
+          chainId: config.chainId,
+          blockNumber: startupBlock,
+          eoa
+        }),
       isAdapter: (vault, adapter) =>
         readContract(client, {
           address: vault,
           abi: vaultV2Abi,
           functionName: 'isAdapter',
           args: [adapter]
-        }),
-      isAllocator
+        })
     },
     logger
   )
@@ -145,10 +138,9 @@ async function main() {
     await runTick({
       vaults: config.vaultWhitelist,
       chainHead,
-      isAllocator,
       expectedAdapter: vault => adapterByVault[vault]?.[0],
       fetchVault: (vault, blockNumber) =>
-        fetchVaultV2Data(client, vault, { chainId: config.chainId, blockNumber }),
+        fetchVaultV2Data(client, vault, { chainId: config.chainId, blockNumber, eoa }),
       strategy,
       encodeReallocation: (vaultData, reallocation) =>
         encodeReallocation(vaultData.adapterAddress, reallocation),

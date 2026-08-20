@@ -56,8 +56,8 @@ export const createEqualizeUtilizationsStrategy = (config: EqualizeUtilizationsC
         return {
           targetUtilization,
           intent: utilization > rawTarget ? 'allocate' : 'deallocate',
-          clearsMinDelta:
-            Math.abs(wadToBips(utilization - targetUtilization)) > minUtilizationDeltaBips
+          clearsMinDelta: utilizationAfter =>
+            Math.abs(wadToBips(utilization - utilizationAfter)) > minUtilizationDeltaBips
         }
       }
     }

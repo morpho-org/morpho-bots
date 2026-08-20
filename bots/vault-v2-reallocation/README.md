@@ -17,13 +17,20 @@ One long-running process per chain. A block watcher drives per-block queue maint
 default 10 min) throttles the actual reallocation passes. Each pass, per whitelisted vault:
 
 1. Skip if a reallocation tx for this vault is in flight or cooling down.
-2. Concurrently re-check the EOA's allocator role (`allocator.missing_role` + skip while absent —
-   a pending grant never crash-loops the bot, and a fresh grant is picked up without restart) and
-   fetch a block-pinned RPC snapshot: the accrued vault tree via blue-sdk's `fetchAccrualVaultV2`
-   (which also proves the address is a factory-made VaultV2), plus per-id
-   `absoluteCap`/`relativeCap`/`allocation` reads for every market id, the adapter id, and each
-   collateral id. No Morpho API dependency.
-3. Run the strategy — a pure function of that snapshot, emitting **exact-amount deltas**
+2. Fetch a block-pinned snapshot in **one** `eth_call` via the deployless lens in
+   [src/state/lens.sol.ts](./src/state/lens.sol.ts): the VaultV2 factory identity, the EOA's
+   `isAllocator` bit, the idle balance, the (factory-classified) adapter set, the accrued
+   `totalAssets`, and per market the params, accrued Blue state, the adapter's position,
+   `rateAtTarget`, and the `absoluteCap`/`relativeCap`/`allocation` triple for the market,
+   collateral, and adapter cap ids. The lens calls `Morpho.accrueInterest` inside the simulation
+   before reading — and reads `totalAssets()` after, so the vault-level accrual folds in the
+   adapters' just-accrued real assets — meaning the numbers are exact on-chain state at that block
+   with no client-side accrual. One vault therefore costs **one billed RPC call per pass**, not the
+   ~40–70 the previous `fetchAccrualVaultV2` fan-out + cap multicall billed for a 20-market vault.
+   No Morpho API dependency.
+3. Re-check the snapshot's `isAllocator` bit (`allocator.missing_role` + skip while absent — a
+   pending grant never crash-loops the bot, and a fresh grant is picked up without restart).
+4. Run the strategy — a pure function of that snapshot, emitting **exact-amount deltas**
    (`{allocations, deallocations}`). Legs need not balance: surplus deallocations park in the
    vault's idle balance, and allocations may exceed deallocations by up to the idle balance.
    Matching the original bot, a plan only fires when BOTH sides have at least one leg — pure idle
@@ -35,7 +42,7 @@ default 10 min) throttles the actual reallocation passes. Each pass, per whiteli
    - **`apy-range`**: keep each market's borrow APY inside its configured range by inverting the
      AdaptiveCurveIRM curve; allocations top up from idle (`ALLOW_IDLE_REALLOCATION`). Fires only
      past `MIN_APY_DELTA_BIPS`.
-4. Encode ONE `vault.multicall([deallocate…, allocate…])` (deallocations strictly first so idle is
+5. Encode ONE `vault.multicall([deallocate…, allocate…])` (deallocations strictly first so idle is
    funded), simulate those exact bytes from the EOA, and on sim-ok submit through the pending queue
    (or log `reallocation.dry_run` when `DRY_RUN=true`).
 
@@ -52,7 +59,10 @@ Every strategy target is additionally clamped to a **99.9% utilization ceiling**
 decayed market, or a bad-debt aggregate) would size a deallocation to the market's entire free
 liquidity — exact to the snapshot and unrealizable one accrual later. The clamp changes a leg's
 size, never its side: a move the clamp leaves empty or backwards is dropped, and the min-delta
-gates measure against the clamped target the emitted leg actually realizes.
+gates measure the utilization each TRIMMED leg actually realizes — a clearing move cut to a
+fragment by the budget or the cap pools cannot arm a plan. One corollary: a withdrawal out of a
+zero-borrow market realizes no utilization change, so an empty-market exit only ships alongside a
+leg that clears the threshold on its own merits.
 
 The signing policy is default-deny in depth: only value-0 `multicall(bytes[])` calls to whitelisted
 vaults are signed, and every inner call must be `allocate`/`deallocate` targeting that vault's own
@@ -166,7 +176,20 @@ pnpm vitest run --project vault-v2-reallocation
 
 Pure unit tests cover both strategies (delta output, idle folding/top-up, three-level cap pools),
 the cap/IRM math, multicall encoding (decode round-trip incl. leg ordering), config loading,
-strategy-config resolution, revert decoding, and a dependency-injected tick; the multicall signing
-policy is tested in `@repo/bot-kit`. There is no anvil fork suite yet (the old repo's
-`test/vitest/vaultSetup.ts` V2 timelock harness is the seed for one); `DRY_RUN` against a live RPC
-is the end-to-end check.
+strategy-config resolution, revert decoding, lens-row shaping/validation, and a
+dependency-injected tick; the multicall signing policy is tested in `@repo/bot-kit`. There is no
+anvil fork suite yet (the old repo's `test/vitest/vaultSetup.ts` V2 timelock harness is the seed
+for one). Two live checks stand in for it:
+
+```sh
+# Reads the lens against a real vault at a pinned block, then re-reads the same block through the
+# fetchAccrualVaultV2 + cap-multicall path it replaced and diffs every field (markets paired by id,
+# in-Solidity cap ids checked against the SDK's derivations).
+RPC_URL=… CHAIN_ID=8453 VAULT=0x… \
+  pnpm --filter @morpho-org/vault-v2-reallocation run probe:lens
+```
+
+and `DRY_RUN` against a live RPC for the full read → strategy → simulate path. Known live-evidence
+gap: every live vault runs `MorphoMarketV1AdapterV2`, so the lens's original-generation
+(`marketParamsList`) branch has no live counterpart — it mirrors the SDK's exact call sequence and
+is exercised at the TS layer only.

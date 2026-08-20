@@ -1,8 +1,6 @@
 import type { Logger } from '@repo/bot-kit'
 import type { Address } from 'viem'
 
-import { tryCatch } from '@repo/utils'
-
 import type { VaultV2Data } from './vault-data'
 
 import { InvalidVaultError } from './invalid-vault.error'
@@ -11,14 +9,13 @@ export type VaultCheckReads = {
   /** Fatal liveness gate; throws when the address holds no code on this chain. */
   assertDeployed: (vault: Address) => Promise<void>
   /**
-   * Block-pinned V2 fetch; throws {@link InvalidVaultError} (or the SDK's factory rejection) when
-   * the address is not a factory-made VaultV2 with exactly one Morpho Blue market adapter.
+   * Block-pinned lens fetch; throws {@link InvalidVaultError} when the address is not a
+   * factory-made VaultV2 with exactly one Morpho Blue market adapter. Carries the EOA's strict
+   * `isAllocator` bit (VaultV2.allocate admits no curator/owner fallback).
    */
   fetchVault: (vault: Address) => Promise<VaultV2Data>
   /** `vault.isAdapter(adapter)` cross-check that the vault recognizes its fetched adapter. */
   isAdapter: (vault: Address, adapter: Address) => Promise<boolean>
-  /** Strict `isAllocator(eoa)` — VaultV2.allocate admits no curator/owner fallback. */
-  isAllocator: (vault: Address) => Promise<boolean>
 }
 
 /**
@@ -45,8 +42,7 @@ export const checkVaults = async (
       )
     }
     adapterByVault[vault] = [vaultData.adapterAddress]
-    const role = await tryCatch(reads.isAllocator(vault))
-    if (role.error || !role.data) {
+    if (!vaultData.isAllocator) {
       logger.warn('allocator.missing_role', {
         vault,
         detail: 'grant the allocator role to the EOA'

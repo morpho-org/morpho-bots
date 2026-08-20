@@ -67,8 +67,8 @@ export const createApyRangeStrategy = (config: ApyRangeConfig): Strategy =>
         return {
           targetUtilization,
           intent: utilization > bound ? 'allocate' : 'deallocate',
-          clearsMinDelta:
-            apyDeltaBips(utilization, targetUtilization, rateAtTarget) >
+          clearsMinDelta: utilizationAfter =>
+            apyDeltaBips(utilization, utilizationAfter, rateAtTarget) >
             config.minApyDeltaBips(vaultAddress, marketData.id)
         }
       }

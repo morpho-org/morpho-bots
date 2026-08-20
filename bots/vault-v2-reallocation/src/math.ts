@@ -40,6 +40,22 @@ export const getUtilization = (state: MarketState): bigint =>
     ? 0n
     : MathLib.wDivDown(state.totalBorrowAssets, state.totalSupplyAssets)
 
+/**
+ * Utilization a market lands at once `take` assets have moved onto (`allocate`) or off
+ * (`deallocate`) its supply side — the realized counterpart of the target the move was sized
+ * against, which a budget-trimmed take falls short of. Empties to 0 like {@link getUtilization}.
+ */
+export const getUtilizationAfter = (
+  state: MarketState,
+  side: 'allocate' | 'deallocate',
+  take: bigint
+): bigint =>
+  getUtilization({
+    ...state,
+    totalSupplyAssets:
+      side === 'deallocate' ? state.totalSupplyAssets - take : state.totalSupplyAssets + take
+  })
+
 // A 0 target is reachable (an APY bound at/below the curve's minimum rate, or an aggregate borrow
 // that rounds to zero) and `wDivDown(_, 0n)` would throw, erroring the whole vault every pass.
 // Depositing toward 0% utilization is unachievable and a 0-utilization market has nothing a

@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { Classify, MarketTarget } from '../../src/strategies/reconcile'
 
-import { getUtilization } from '../../src/math'
+import { getUtilization, wadToBips } from '../../src/math'
 import { createReconciler } from '../../src/strategies/reconcile'
 import { makeMarket, makeVaultData, RATE_AT_TARGET } from './helpers'
 
@@ -27,7 +27,7 @@ const toTarget =
   (marketData): MarketTarget => ({
     targetUtilization: rawTarget,
     intent: getUtilization(marketData.state) > rawTarget ? 'allocate' : 'deallocate',
-    clearsMinDelta
+    clearsMinDelta: () => clearsMinDelta
   })
 
 // Every market converges on 50% utilization and always clears the gate.
@@ -293,6 +293,58 @@ describe('createReconciler', () => {
     const totalDeallocated = result!.deallocations.reduce((acc, l) => acc + l.assets, 0n)
     expect(totalAllocated).toBeGreaterThan(0n)
     expect(totalAllocated).toBeLessThanOrEqual(totalDeallocated)
+  })
+
+  it('does not arm off a clearing move trimmed to a fragment (realized delta)', () => {
+    // The hot market's FULL move (90% -> 50%) would clear 500 bips easily, but the only funding is
+    // a 1-wei deallocation: the realized endpoint barely moves, so the plan must not fire.
+    const minDeltaBips = 500
+    const gated: Classify = marketData => {
+      const target = (50n * WAD) / 100n
+      const utilization = getUtilization(marketData.state)
+      return {
+        targetUtilization: target,
+        intent: utilization > target ? 'allocate' : 'deallocate',
+        clearsMinDelta: utilizationAfter =>
+          Math.abs(wadToBips(utilization - utilizationAfter)) > minDeltaBips
+      }
+    }
+    const hotMarket = makeMarket({
+      utilization: (90n * WAD) / 100n,
+      vaultAssets: parseUnits('100000', 6),
+      rateAtTarget: RATE_AT_TARGET
+    })
+    const dustSource = makeMarket({
+      utilization: (10n * WAD) / 100n,
+      vaultAssets: 1n,
+      rateAtTarget: RATE_AT_TARGET
+    })
+    expect(makeReconciler(gated)(makeVaultData([hotMarket, dustSource]))).toBeUndefined()
+
+    // Funded control: with a real deallocation source the same classifier fires.
+    const realSource = makeMarket({
+      utilization: (10n * WAD) / 100n,
+      vaultAssets: parseUnits('100000', 6),
+      supplyAssets: parseUnits('200000', 6),
+      rateAtTarget: RATE_AT_TARGET
+    })
+    const funded = makeReconciler(gated)(makeVaultData([hotMarket, realSource]))
+    expect(funded).toBeDefined()
+
+    // Partial-trim boundary: funding covers only part of the hot market's want, but the realized
+    // endpoint still clears the threshold — the trimmed leg fires at the trimmed size.
+    const partialSource = makeMarket({
+      utilization: (10n * WAD) / 100n,
+      vaultAssets: parseUnits('40000', 6),
+      supplyAssets: parseUnits('100000', 6),
+      rateAtTarget: RATE_AT_TARGET
+    })
+    const partial = makeReconciler(gated)(makeVaultData([hotMarket, partialSource]))
+    expect(partial).toBeDefined()
+    const hotLeg = partial!.allocations.find(l => l.marketId === hotMarket.id)
+    expect(hotLeg).toBeDefined()
+    const totalDeallocated = partial!.deallocations.reduce((acc, l) => acc + l.assets, 0n)
+    expect(hotLeg!.assets).toBe(totalDeallocated)
   })
 
   it('trims the smaller side in market order', () => {

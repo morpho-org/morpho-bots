@@ -8,6 +8,7 @@ import {
   creditPools,
   getDepositableAmount,
   getUtilization,
+  getUtilizationAfter,
   getWithdrawableAmount,
   MAX_TARGET_UTILIZATION,
   takeFromPools
@@ -26,8 +27,13 @@ export type MarketTarget = {
    * then emit the opposite leg.
    */
   intent: MoveIntent
-  /** Whether this market's own move — measured against the CLAMPED target — clears the min-delta. */
-  clearsMinDelta: boolean
+  /**
+   * Whether a move that lands this market at `utilizationAfter` clears the min-delta. The reconciler
+   * calls it with the REALIZED endpoint of the trimmed leg — a full move lands at the clamped
+   * target, but a leg cut down by the budget or the cap pools lands short, and a fragment must not
+   * arm the plan on the delta its classifier originally wanted.
+   */
+  clearsMinDelta: (utilizationAfter: bigint) => boolean
 }
 
 /** Verdict for one market; `undefined` leaves the market out of the plan entirely. */
@@ -50,7 +56,7 @@ type SizedMove = {
   marketData: VaultV2MarketData
   side: MoveIntent
   amount: bigint
-  clearsMinDelta: boolean
+  clearsMinDelta: MarketTarget['clearsMinDelta']
 }
 
 const { min } = MathLib
@@ -67,9 +73,10 @@ const toLeg = ({ marketData }: SizedMove, assets: bigint): ReallocationAction =>
  * idle balance, trims both sides to the shared budget in market order, and emits the
  * `{allocations, deallocations}` delta legs.
  *
- * The min-delta firing gate is evaluated on the TRIMMED legs: a market whose move clears the
- * threshold but whose take is entirely consumed by the budget or the cap pools cannot arm the
- * plan, so a fired plan always contains at least one surviving leg worth its transaction.
+ * The min-delta firing gate is evaluated on the TRIMMED legs' REALIZED endpoints: each surviving
+ * take is converted back to the utilization it lands the market at, and the classifier judges that
+ * delta — a clearing move cut down to a fragment by the budget or the cap pools cannot arm the
+ * plan, so a fired plan always contains at least one leg worth its transaction.
  *
  * Deallocations resolve FIRST in both phases — the contract executes them first, so their amounts
  * credit the aggregate cap pools that allocation sizing then draws from; the emission phase re-runs
@@ -170,7 +177,9 @@ export const createReconciler = (options: ReconcilerOptions): Strategy => {
       remainingAmountToDeallocate -= toDeallocate
       creditPools(legPools, move.marketData.params.collateralToken, toDeallocate)
       if (toDeallocate > 0n) {
-        didClearMinDelta ||= move.clearsMinDelta
+        didClearMinDelta ||= move.clearsMinDelta(
+          getUtilizationAfter(move.marketData.state, move.side, toDeallocate)
+        )
         deallocations.push(toLeg(move, toDeallocate))
       }
     }
@@ -184,7 +193,9 @@ export const createReconciler = (options: ReconcilerOptions): Strategy => {
       )
       remainingAmountToAllocate -= toAllocate
       if (toAllocate > 0n) {
-        didClearMinDelta ||= move.clearsMinDelta
+        didClearMinDelta ||= move.clearsMinDelta(
+          getUtilizationAfter(move.marketData.state, move.side, toAllocate)
+        )
         allocations.push(toLeg(move, toAllocate))
       }
     }

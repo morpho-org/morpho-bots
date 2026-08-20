@@ -1,18 +1,14 @@
-import type { InputMarketParams, MarketParams } from '@morpho-org/blue-sdk'
-import type { Address, Client, Hex } from 'viem'
+import type { InputMarketParams } from '@morpho-org/blue-sdk'
+import type { BatchLensTransportType } from '@repo/utils'
+import type { Address, Client, Hex, Transport } from 'viem'
 
-import {
-  AccrualVaultV2MorphoMarketV1Adapter,
-  AccrualVaultV2MorphoMarketV1AdapterV2,
-  getChainAddresses,
-  SharesMath,
-  VaultV2MorphoMarketV1Adapter
-} from '@morpho-org/blue-sdk'
-import { fetchAccrualVaultV2, vaultV2Abi } from '@morpho-org/blue-sdk-viem'
-import { getAddress, isAddressEqual } from 'viem'
-import { getBlock, multicall } from 'viem/actions'
+import { getChainAddresses } from '@morpho-org/blue-sdk'
+import { getAddress, isAddressEqual, zeroAddress } from 'viem'
+
+import type { LensVaultOut } from './state/lens.sol'
 
 import { InvalidVaultError } from './invalid-vault.error'
+import { KIND_UNKNOWN, readVaultV2Lens } from './state/lens.sol'
 
 export type MarketState = {
   totalSupplyAssets: bigint
@@ -54,7 +50,13 @@ export type VaultV2MarketData = {
 export type VaultV2Data = {
   vaultAddress: Address
   adapterAddress: Address
-  /** The vault's total assets, interest accrued to the pinned block's timestamp. */
+  /**
+   * Strict `isAllocator(eoa)` on the vault, read in the same call as the snapshot — deliberately
+   * narrower than the V1 bot's allocator|curator|owner check, because VaultV2.allocate admits no
+   * curator/owner fallback.
+   */
+  isAllocator: boolean
+  /** The vault's total assets, accrued on-chain to the pinned block. */
   totalAssets: bigint
   /** The vault's un-allocated asset balance (deallocate parks here; allocate draws from here). */
   idleAssets: bigint
@@ -80,175 +82,112 @@ export type VaultV2Data = {
 const isAdaptiveCurveMarket = (irm: Address, rateAtTarget: bigint, chainId: number): boolean =>
   rateAtTarget > 0n && isAddressEqual(irm, getChainAddresses(chainId).adaptiveCurveIrm)
 
-type MarketAdapter = AccrualVaultV2MorphoMarketV1Adapter | AccrualVaultV2MorphoMarketV1AdapterV2
-
-type AdapterMarket = {
-  params: MarketParams
-  state: MarketState
-  vaultAssets: bigint
-  rateAtTarget: bigint
-  isIdle: boolean
-}
-
-// Both Morpho Blue market adapter generations take the same abi-encoded market params in
-// allocate/deallocate and derive identical cap ids; they differ only in how the SDK models their
-// positions (AccrualPosition list vs supplyShares per market id). Normalize to one shape.
-const normalizeAdapterMarkets = (adapter: MarketAdapter, timestamp: bigint): AdapterMarket[] => {
-  if (adapter instanceof AccrualVaultV2MorphoMarketV1Adapter) {
-    return adapter.marketParamsList.map(params => {
-      const position = adapter.positions.find(candidate => candidate.marketId === params.id)
-      if (position === undefined) {
-        throw new InvalidVaultError(`adapter position missing for market ${params.id}`)
-      }
-      const accrued = position.accrueInterest(timestamp)
-      return {
-        params,
-        state: accrued.market,
-        vaultAssets: accrued.supplyAssets,
-        rateAtTarget: accrued.market.rateAtTarget ?? 0n,
-        isIdle: accrued.market.isIdle
-      }
-    })
-  }
-  return adapter.markets.map(market => {
-    const accrued = market.accrueInterest(timestamp)
-    return {
-      params: accrued.params,
-      state: accrued,
-      vaultAssets: SharesMath.toAssets(
-        adapter.supplyShares[accrued.id] ?? 0n,
-        accrued.totalSupplyAssets,
-        accrued.totalSupplyShares,
-        'Down'
-      ),
-      rateAtTarget: accrued.rateAtTarget ?? 0n,
-      isIdle: accrued.isIdle
-    }
-  })
-}
-
-const CAP_FUNCTIONS = ['absoluteCap', 'relativeCap', 'allocation'] as const
-
-// One multicall for all ids' cap state — 3 × (markets + collaterals + 1) reads would otherwise be
-// individual eth_calls per tick.
-const readCaps = async (
-  client: Client,
-  vault: Address,
-  ids: readonly Hex[],
-  blockNumber: bigint
-): Promise<CapState[]> => {
-  const results = await multicall(client, {
-    allowFailure: false,
-    blockNumber,
-    contracts: ids.flatMap(id =>
-      CAP_FUNCTIONS.map(functionName => ({
-        address: vault,
-        abi: vaultV2Abi,
-        functionName,
-        args: [id] as const
-      }))
-    )
-  })
-  return ids.map((_, i) => ({
-    absolute: results[i * CAP_FUNCTIONS.length] as bigint,
-    relative: results[i * CAP_FUNCTIONS.length + 1] as bigint,
-    allocation: results[i * CAP_FUNCTIONS.length + 2] as bigint
-  }))
-}
+const toCapState = (caps: {
+  absoluteCap: bigint
+  relativeCap: bigint
+  allocation: bigint
+}): CapState => ({
+  absolute: caps.absoluteCap,
+  relative: caps.relativeCap,
+  allocation: caps.allocation
+})
 
 /**
- * Reads one VaultV2's full reallocation input over RPC, pinned to `blockNumber` for a coherent
- * snapshot: the accrued vault tree via blue-sdk's `fetchAccrualVaultV2` (which also proves the
- * address is a factory-made VaultV2), plus the per-id cap/allocation reads the SDK fetcher does not
- * cover for a regular adapter (market ids, the adapter id, and each distinct collateral id).
- * Throws {@link InvalidVaultError} unless the vault has exactly one adapter and it is a Morpho Blue
- * market adapter (either adapter-contract generation). Throws on any failed read — the tick
- * catches per vault.
+ * Shapes one decoded lens row into {@link VaultV2Data}. Throws {@link InvalidVaultError} when the
+ * row is not a factory-made VaultV2 with exactly one factory-verified Morpho Blue market adapter
+ * (either adapter-contract generation) — the signing policy authorizes the vault as a tx target and
+ * pins its adapter, so any other shape must fail loud.
  */
-export const fetchVaultV2Data = async (
-  client: Client,
-  vault: Address,
-  { chainId, blockNumber }: { chainId: number; blockNumber: bigint }
-): Promise<VaultV2Data> => {
-  // Accrue to the pinned block's timestamp, not wall clock, so the snapshot is coherent and
-  // reproducible against the pinned reads.
-  const [{ timestamp }, vaultV2] = await Promise.all([
-    getBlock(client, { blockNumber }),
-    fetchAccrualVaultV2(vault, client, { chainId, blockNumber })
-  ])
-
-  const marketAdapters = vaultV2.accrualAdapters.filter(
-    (adapter): adapter is MarketAdapter =>
-      adapter instanceof AccrualVaultV2MorphoMarketV1Adapter ||
-      adapter instanceof AccrualVaultV2MorphoMarketV1AdapterV2
-  )
-  if (vaultV2.adapters.length !== 1 || marketAdapters.length !== 1) {
+export const toVaultV2Data = (vault: Address, row: LensVaultOut, chainId: number): VaultV2Data => {
+  if (!row.isVaultV2) {
+    throw new InvalidVaultError(`VAULT_WHITELIST entry ${vault} is not a factory-made VaultV2`)
+  }
+  const qualifying = row.adapters.filter(({ kind }) => kind !== KIND_UNKNOWN)
+  if (row.adapters.length !== 1 || qualifying.length !== 1) {
     throw new InvalidVaultError(
       `vault ${vault} must have exactly one Morpho Blue market adapter; found ` +
-        `${vaultV2.adapters.length} adapter(s) of which ${marketAdapters.length} qualify`
+        `${row.adapters.length} adapter(s) of which ${qualifying.length} qualify`
     )
   }
-  const adapter = marketAdapters[0]!
-  const adapterAddress = getAddress(adapter.address)
+  const adapterAddress = getAddress(qualifying[0]!.adapter)
 
-  const adapterMarkets = normalizeAdapterMarkets(adapter, timestamp)
-  const collateralTokens = [
-    ...new Set(adapterMarkets.map(({ params }) => getAddress(params.collateralToken)))
-  ]
-
-  // Both adapter generations derive identical "this"/"collateralToken"/"this/marketParams" ids.
-  const marketCapIds = adapterMarkets.map(({ params }) =>
-    VaultV2MorphoMarketV1Adapter.marketParamsId(adapterAddress, params)
-  )
-  const caps = await readCaps(
-    client,
-    vault,
-    [
-      VaultV2MorphoMarketV1Adapter.adapterId(adapterAddress),
-      ...collateralTokens.map(token => VaultV2MorphoMarketV1Adapter.collateralId(token)),
-      ...marketCapIds
-    ],
-    blockNumber
-  )
-  const adapterCap = caps[0]!
-  const collateralCaps = Object.fromEntries(
-    collateralTokens.map((token, i) => [token, caps[1 + i]!])
-  )
-  const marketCaps = caps.slice(1 + collateralTokens.length)
-
-  const marketsData = adapterMarkets.map(
-    ({ params, state, vaultAssets, rateAtTarget, isIdle }, i): VaultV2MarketData => ({
-      id: params.id,
-      capId: marketCapIds[i]!,
-      params: {
-        loanToken: params.loanToken,
-        collateralToken: params.collateralToken,
-        oracle: params.oracle,
-        irm: params.irm,
-        lltv: params.lltv
-      },
+  const marketsData = row.markets.map(
+    (market): VaultV2MarketData => ({
+      id: market.id,
+      capId: market.capId,
+      params: market.params,
       state: {
-        totalSupplyAssets: state.totalSupplyAssets,
-        totalBorrowAssets: state.totalBorrowAssets
+        totalSupplyAssets: market.totalSupplyAssets,
+        totalBorrowAssets: market.totalBorrowAssets
       },
-      cap: marketCaps[i]!,
-      vaultAssets,
-      rateAtTarget,
-      isAdaptiveCurve: isAdaptiveCurveMarket(params.irm, rateAtTarget, chainId),
-      isIdle
+      cap: toCapState(market.cap),
+      vaultAssets: market.vaultAssets,
+      rateAtTarget: market.rateAtTarget,
+      isAdaptiveCurve: isAdaptiveCurveMarket(market.params.irm, market.rateAtTarget, chainId),
+      isIdle: isAddressEqual(market.params.collateralToken, zeroAddress)
     })
+  )
+
+  // Markets sharing a collateral share one cap id; the lens reports the triple per market, so the
+  // duplicates collapse to identical values here.
+  const collateralCaps = Object.fromEntries(
+    row.markets.map(market => [
+      getAddress(market.params.collateralToken),
+      toCapState(market.collateralCap)
+    ])
   )
 
   return {
     vaultAddress: vault,
     adapterAddress,
-    totalAssets: vaultV2.accrueInterest(timestamp).vault._totalAssets,
-    idleAssets: vaultV2.assetBalance,
-    adapterCap,
+    isAllocator: row.isAllocator,
+    totalAssets: row.totalAssets,
+    idleAssets: row.idleAssets,
+    adapterCap: toCapState(row.adapterCap),
     collateralCaps,
     marketsData,
     nonAdaptiveCurveMarketIds: marketsData
       .filter(marketData => !marketData.isAdaptiveCurve && !marketData.isIdle)
       .map(marketData => marketData.id)
   }
+}
+
+/**
+ * Reads one VaultV2's full reallocation input — factory identity, the EOA's allocator bit, idle
+ * balance, adapter set, and per-market Blue state, position, `rateAtTarget`, and all three cap
+ * levels — in a single deployless `eth_call` pinned to `blockNumber`, so the snapshot is coherent
+ * across markets and reproducible. The lens accrues each market on-chain inside that call, so there
+ * is no client-side accrual and no block-timestamp handling here.
+ *
+ * Throws {@link InvalidVaultError} on a non-VaultV2 address or an unsupported adapter shape (see
+ * {@link toVaultV2Data}); a revert inside the lens propagates as-is. The tick catches per vault
+ * either way.
+ */
+export const fetchVaultV2Data = async (
+  client: Client<Transport<BatchLensTransportType>>,
+  vault: Address,
+  { chainId, blockNumber, eoa }: { chainId: number; blockNumber: bigint; eoa: Address }
+): Promise<VaultV2Data> => {
+  const {
+    morpho,
+    adaptiveCurveIrm,
+    vaultV2Factory,
+    morphoMarketV1AdapterFactory,
+    morphoMarketV1AdapterV2Factory
+  } = getChainAddresses(chainId)
+  if (!vaultV2Factory) throw new InvalidVaultError(`chain ${chainId} has no VaultV2 factory`)
+  const rows = await readVaultV2Lens(
+    client,
+    {
+      morpho,
+      adaptiveCurveIrm,
+      vaultV2Factory,
+      marketV1AdapterFactory: morphoMarketV1AdapterFactory ?? zeroAddress,
+      marketV1AdapterV2Factory: morphoMarketV1AdapterV2Factory ?? zeroAddress
+    },
+    [{ vault, eoa }],
+    blockNumber
+  )
+  // `readDeploylessBatchLens` already validates one output row per input, so the key is present.
+  return toVaultV2Data(vault, rows.get(vault.toLowerCase())!, chainId)
 }

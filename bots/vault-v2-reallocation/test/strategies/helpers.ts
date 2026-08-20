@@ -74,6 +74,7 @@ export const makeVaultData = (
 ): VaultV2Data => ({
   vaultAddress: VAULT,
   adapterAddress: ADAPTER,
+  isAllocator: true,
   totalAssets: markets.reduce((acc, m) => acc + m.vaultAssets, 0n) + (overrides.idleAssets ?? 0n),
   idleAssets: 0n,
   adapterCap: UNLIMITED_CAP,

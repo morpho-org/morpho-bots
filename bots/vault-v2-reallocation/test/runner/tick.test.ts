@@ -43,7 +43,6 @@ const makeDeps = (overrides: Partial<TickDeps> = {}) => {
   const deps: TickDeps = {
     vaults: [VAULT_A],
     chainHead: 100n,
-    isAllocator: vi.fn(async () => true),
     expectedAdapter: vi.fn(() => undefined),
     fetchVault: vi.fn(async () => someVaultData()),
     strategy: vi.fn(() => undefined),
@@ -122,7 +121,6 @@ describe('runTick', () => {
   it('skips a vault whose label is in flight', async () => {
     const { deps, events } = makeDeps({ inflightLabels: () => new Set([VAULT_A]) })
     await runTick(deps)
-    expect(deps.isAllocator).not.toHaveBeenCalled()
     expect(deps.fetchVault).not.toHaveBeenCalled()
     expect(tickEnd(events)).toMatchObject({ skipped_inflight: 1 })
   })
@@ -140,8 +138,9 @@ describe('runTick', () => {
   })
 
   it('skips strategy/simulate while the allocator role is missing', async () => {
-    // The fetch runs concurrently with the role read, so it is issued regardless.
-    const { deps, events } = makeDeps({ isAllocator: vi.fn(async () => false) })
+    const { deps, events } = makeDeps({
+      fetchVault: vi.fn(async () => ({ ...someVaultData(), isAllocator: false }))
+    })
     await runTick(deps)
     expect(deps.strategy).not.toHaveBeenCalled()
     expect(events).toContainEqual({
