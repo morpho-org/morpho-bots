@@ -1,5 +1,4 @@
 import { MathLib } from '@morpho-org/blue-sdk'
-import { wholePercentToWAD } from '@repo/utils'
 
 import type { VaultV2Data, VaultV2MarketData } from '../vault-data'
 import type { Reallocation, ReallocationAction, Strategy } from './strategy'
@@ -10,23 +9,24 @@ import {
   getDepositableAmount,
   getUtilization,
   getWithdrawableAmount,
+  MAX_TARGET_UTILIZATION,
   takeFromPools
 } from '../math'
 
-/**
- * Ceiling on any classifier target: a WAD target (an APY bound past the curve's max on a market
- * whose `rateAtTarget` decayed toward the minimum, or an aggregate utilization at/above 100%)
- * would size a deallocation to the market's ENTIRE free liquidity — exact to the snapshot and
- * unrealizable one accrual later, so the plan sim-passes then reverts on-chain forever. The ~10
- * bips left behind scale with the market's borrow, which is what accrues; deliberately looser than
- * the 99.99% cap buffer, whose sliver absorbs supply-side drift instead.
- */
-export const MAX_TARGET_UTILIZATION = wholePercentToWAD(99.9)
+/** Which way a classifier wants a market to move, decided on its RAW (unclamped) bound. */
+export type MoveIntent = 'allocate' | 'deallocate'
 
 /** Where one market should sit, and whether getting it there is worth a transaction. */
 export type MarketTarget = {
+  /** Already clamped to {@link MAX_TARGET_UTILIZATION}; the move is sized against this. */
   targetUtilization: bigint
-  /** Whether this market's own move clears the strategy's min-delta threshold. */
+  /**
+   * The direction the raw bound asked for. Carried separately because the clamp can pull the target
+   * to the near side of current utilization, and re-deriving the side from the clamped target would
+   * then emit the opposite leg.
+   */
+  intent: MoveIntent
+  /** Whether this market's own move — measured against the CLAMPED target — clears the min-delta. */
   clearsMinDelta: boolean
 }
 
@@ -48,7 +48,7 @@ type ReconcilerOptions = {
 
 type SizedMove = {
   marketData: VaultV2MarketData
-  side: 'allocate' | 'deallocate'
+  side: MoveIntent
   amount: bigint
   clearsMinDelta: boolean
 }
@@ -76,7 +76,9 @@ const toLeg = ({ marketData }: SizedMove, assets: bigint): ReallocationAction =>
  * the pools with the TRIMMED deallocation credits so per-collateral funding stays exact even when
  * the deallocation budget clamps.
  *
- * This is the one place in the bot that builds legs; classifiers never size or clamp.
+ * This is the one place in the bot that builds legs; classifiers never size or trim. A classifier
+ * DOES decide the side (`intent`, off its raw bound) and hands over an already-clamped target — see
+ * {@link MarketTarget} and {@link MAX_TARGET_UTILIZATION}.
  */
 export const createReconciler = (options: ReconcilerOptions): Strategy => {
   return vaultData => {
@@ -84,20 +86,24 @@ export const createReconciler = (options: ReconcilerOptions): Strategy => {
     const classified = vaultData.marketsData.flatMap(marketData => {
       const verdict = classify(marketData)
       if (verdict === undefined) return []
+      // Inert backstop — classifiers already clamp. Kept so a future classifier that forgets
+      // cannot size a leg against a >99.9% target.
+      const targetUtilization = min(verdict.targetUtilization, MAX_TARGET_UTILIZATION)
       const utilization = getUtilization(marketData.state)
-      // At the target exactly there is nothing to move — skip before sizing.
-      if (utilization === verdict.targetUtilization) return []
-      // Feasibility is the reconciler's job: sizes come from the CLAMPED target, but the side
-      // comes from the classifier's raw intent — a move left empty or backwards by the clamp
-      // (intent deallocate, utilization already at/past the ceiling) is dropped, never inverted.
-      const side =
-        utilization < verdict.targetUtilization ? ('deallocate' as const) : ('allocate' as const)
-      const target = {
-        ...verdict,
-        targetUtilization: min(verdict.targetUtilization, MAX_TARGET_UTILIZATION)
+      const side = verdict.intent
+      // An empty-or-backwards move is no move. The clamp can pull the target to the near side of
+      // current utilization, and sizing the opposite leg would invert what the classifier asked
+      // for; this generalizes the at-target skip to the whole wrong-side span. Deliberately NOT a
+      // market-level policy skip — a dead cold market is still exited whenever it sits below the
+      // clamped target.
+      if (
+        side === 'deallocate' ? utilization >= targetUtilization : utilization <= targetUtilization
+      ) {
+        return []
       }
-      if (side === 'deallocate' && utilization >= target.targetUtilization) return []
-      return [{ marketData, side, target, utilization }]
+      return [
+        { marketData, side, target: { targetUtilization, clearsMinDelta: verdict.clearsMinDelta } }
+      ]
     })
 
     const moves: SizedMove[] = []

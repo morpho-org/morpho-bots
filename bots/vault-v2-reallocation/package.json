@@ -14,7 +14,6 @@
   "dependencies": {
     "@morpho-org/blue-sdk": "catalog:",
     "@morpho-org/blue-sdk-viem": "catalog:",
-    "@morpho-org/morpho-ts": "catalog:",
     "@repo/bot-kit": "workspace:*",
     "@repo/utils": "workspace:*",
     "viem": "catalog:"

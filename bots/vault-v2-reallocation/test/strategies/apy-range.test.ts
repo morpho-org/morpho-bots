@@ -8,13 +8,13 @@ import type { ApyRangeConfig } from '../../src/strategies/apy-range'
 
 import {
   apyToRate,
+  MAX_TARGET_UTILIZATION,
   rateToApy,
   rateToUtilization,
   utilizationToRate,
   wadToBips
 } from '../../src/math'
 import { createApyRangeStrategy } from '../../src/strategies/apy-range'
-import { MAX_TARGET_UTILIZATION } from '../../src/strategies/reconcile'
 import { makeMarket, makeVaultData, RATE_AT_TARGET } from './helpers'
 
 type ApyRangePercent = { min: number; max: number }

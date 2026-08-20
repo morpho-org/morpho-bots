@@ -6,8 +6,8 @@ import { isAddressEqual, zeroAddress } from 'viem'
 import type { VaultV2MarketData } from '../vault-data'
 import type { Strategy } from './strategy'
 
-import { getUtilization, wadToBips } from '../math'
-import { createReconciler, MAX_TARGET_UTILIZATION } from './reconcile'
+import { getUtilization, MAX_TARGET_UTILIZATION, wadToBips } from '../math'
+import { createReconciler } from './reconcile'
 
 type EqualizeUtilizationsConfig = {
   /** WAD-scaled cap scale factor (e.g. 99.99% as 0.9999e18). */
@@ -45,18 +45,19 @@ export const createEqualizeUtilizationsStrategy = (config: EqualizeUtilizationsC
       if (totalSupply === 0n || totalBorrow === 0n) return () => undefined
 
       const minUtilizationDeltaBips = config.minUtilizationDeltaBips(vaultData.vaultAddress)
-      // May exceed WAD in bad-debt states — the raw aggregate carries the side intent, while the
-      // firing gate measures against the clamped target the emitted leg actually realizes.
-      const targetUtilization = wDivDown(totalBorrow, totalSupply)
-      const effectiveTarget = min(targetUtilization, MAX_TARGET_UTILIZATION)
+      // May exceed WAD in bad-debt states — the raw aggregate decides each market's side (intent),
+      // while sizing and the firing gate use the clamped target the emitted leg actually realizes.
+      const rawTarget = wDivDown(totalBorrow, totalSupply)
+      const targetUtilization = min(rawTarget, MAX_TARGET_UTILIZATION)
 
       return marketData => {
         if (!isRealCollateral(marketData)) return undefined
+        const utilization = getUtilization(marketData.state)
         return {
           targetUtilization,
+          intent: utilization > rawTarget ? 'allocate' : 'deallocate',
           clearsMinDelta:
-            Math.abs(wadToBips(getUtilization(marketData.state) - effectiveTarget)) >
-            minUtilizationDeltaBips
+            Math.abs(wadToBips(utilization - targetUtilization)) > minUtilizationDeltaBips
         }
       }
     }

@@ -2,8 +2,9 @@ import { wholePercentToWAD } from '@repo/utils'
 import { parseUnits } from 'viem'
 import { describe, expect, it } from 'vitest'
 
-import type { Classify } from '../../src/strategies/reconcile'
+import type { Classify, MarketTarget } from '../../src/strategies/reconcile'
 
+import { getUtilization } from '../../src/math'
 import { createReconciler } from '../../src/strategies/reconcile'
 import { makeMarket, makeVaultData, RATE_AT_TARGET } from './helpers'
 
@@ -19,15 +20,25 @@ const makeReconciler = (
     classifierFor: () => classify
   })
 
+// Classifier contract in miniature: intent from the RAW target, target handed over pre-clamped
+// (the reconciler's own clamp is only a backstop) — tests pass raw targets to exercise it.
+const toTarget =
+  (rawTarget: bigint, clearsMinDelta = true): Classify =>
+  (marketData): MarketTarget => ({
+    targetUtilization: rawTarget,
+    intent: getUtilization(marketData.state) > rawTarget ? 'allocate' : 'deallocate',
+    clearsMinDelta
+  })
+
 // Every market converges on 50% utilization and always clears the gate.
-const toHalf: Classify = () => ({ targetUtilization: (50n * WAD) / 100n, clearsMinDelta: true })
+const toHalf: Classify = toTarget((50n * WAD) / 100n)
 
 describe('createReconciler', () => {
   it('clamps a WAD target so no leg drains a market to zero free liquidity', () => {
     // A decayed-rateAtTarget cold market can classify with lowerBound = WAD: unclamped, the
     // deallocation sizes to the market's ENTIRE free liquidity — exact to the snapshot and
     // unrealizable one accrual later.
-    const toWad: Classify = () => ({ targetUtilization: WAD, clearsMinDelta: true })
+    const toWad: Classify = toTarget(WAD)
     const coldMarket = makeMarket({
       utilization: (50n * WAD) / 100n,
       vaultAssets: parseUnits('100000', 6), // the adapter holds the whole market
@@ -41,9 +52,7 @@ describe('createReconciler', () => {
     // hotMarket sits below the WAD target too — classify it away so coldMarket is the only dealloc
     // and hotMarket the only alloc candidate via a per-market verdict.
     const classify: Classify = marketData =>
-      marketData.id === coldMarket.id
-        ? toWad(marketData)
-        : { targetUtilization: (50n * WAD) / 100n, clearsMinDelta: true }
+      marketData.id === coldMarket.id ? toWad(marketData) : toHalf(marketData)
     const result = makeReconciler(classify)(makeVaultData([coldMarket, hotMarket]))
     expect(result).toBeDefined()
     const deallocation = result!.deallocations.find(l => l.marketId === coldMarket.id)
@@ -73,10 +82,10 @@ describe('createReconciler', () => {
     })
     const classify: Classify = marketData =>
       marketData.id === nearFullMarket.id
-        ? { targetUtilization: WAD, clearsMinDelta: true }
+        ? toTarget(WAD)(marketData)
         : marketData.id === coldMarket.id
-          ? { targetUtilization: (80n * WAD) / 100n, clearsMinDelta: true }
-          : { targetUtilization: (50n * WAD) / 100n, clearsMinDelta: true }
+          ? toTarget((80n * WAD) / 100n)(marketData)
+          : toHalf(marketData)
     const result = makeReconciler(classify)(makeVaultData([nearFullMarket, coldMarket, hotMarket]))
     expect(result).toBeDefined()
     const legs = [...result!.allocations, ...result!.deallocations]
@@ -114,9 +123,7 @@ describe('createReconciler', () => {
       rateAtTarget: RATE_AT_TARGET
     })
     const classify: Classify = marketData =>
-      marketData.id === excluded.id
-        ? undefined
-        : { targetUtilization: (50n * WAD) / 100n, clearsMinDelta: true }
+      marketData.id === excluded.id ? undefined : toHalf(marketData)
     // The only allocation candidate is excluded → one-sided → no plan.
     expect(makeReconciler(classify)(makeVaultData([excluded, coldMarket]))).toBeUndefined()
   })
@@ -163,10 +170,8 @@ describe('createReconciler', () => {
       vaultAssets: parseUnits('20000', 6),
       rateAtTarget: RATE_AT_TARGET
     })
-    const classify: Classify = marketData => ({
-      targetUtilization: (50n * WAD) / 100n,
-      clearsMinDelta: marketData.id === gateOnlyMarket.id
-    })
+    const classify: Classify = marketData =>
+      toTarget((50n * WAD) / 100n, marketData.id === gateOnlyMarket.id)(marketData)
     expect(
       makeReconciler(classify)(makeVaultData([gateOnlyMarket, hotMarket, coldMarket]))
     ).toBeUndefined()
@@ -192,10 +197,8 @@ describe('createReconciler', () => {
       supplyAssets: parseUnits('1000', 6),
       rateAtTarget: RATE_AT_TARGET
     })
-    const classify: Classify = marketData => ({
-      targetUtilization: (50n * WAD) / 100n,
-      clearsMinDelta: marketData.id === hotA.id
-    })
+    const classify: Classify = marketData =>
+      toTarget((50n * WAD) / 100n, marketData.id === hotA.id)(marketData)
     expect(makeReconciler(classify)(makeVaultData([hotB, hotA, coldMarket]))).toBeUndefined()
   })
 
@@ -216,10 +219,8 @@ describe('createReconciler', () => {
       supplyAssets: parseUnits('1000', 6),
       rateAtTarget: RATE_AT_TARGET
     })
-    const classify: Classify = marketData => ({
-      targetUtilization: (50n * WAD) / 100n,
-      clearsMinDelta: marketData.id === hotA.id
-    })
+    const classify: Classify = marketData =>
+      toTarget((50n * WAD) / 100n, marketData.id === hotA.id)(marketData)
     const result = makeReconciler(classify)(makeVaultData([hotA, hotB, coldMarket]))
     expect(result).toBeDefined()
     expect(result!.allocations.map(l => l.marketId)).toEqual([hotA.id])

@@ -5,12 +5,13 @@ import type { Strategy } from './strategy'
 import {
   apyToRate,
   getUtilization,
+  MAX_TARGET_UTILIZATION,
   rateToApy,
   rateToUtilization,
   utilizationToRate,
   wadToBips
 } from '../math'
-import { createReconciler, MAX_TARGET_UTILIZATION } from './reconcile'
+import { createReconciler } from './reconcile'
 
 export type ApyRangeConfig = {
   /** Whether excess deallocations may be parked in the vault's idle balance. */
@@ -59,14 +60,15 @@ export const createApyRangeStrategy = (config: ApyRangeConfig): Strategy =>
         const bound =
           utilization > upperBound ? upperBound : utilization < lowerBound ? lowerBound : undefined
         if (bound === undefined) return undefined
-        // The reconciler sizes toward at most {@link MAX_TARGET_UTILIZATION}, so the firing gate
-        // measures the move the emitted leg can actually realize, not the raw inverted bound.
-        const effectiveBound = bound > MAX_TARGET_UTILIZATION ? MAX_TARGET_UTILIZATION : bound
+        // The leg only travels to the clamped bound, so the firing gate measures that realizable
+        // move — while the side stays decided by the raw bound (see MarketTarget.intent).
+        const targetUtilization = bound > MAX_TARGET_UTILIZATION ? MAX_TARGET_UTILIZATION : bound
 
         return {
-          targetUtilization: bound,
+          targetUtilization,
+          intent: utilization > bound ? 'allocate' : 'deallocate',
           clearsMinDelta:
-            apyDeltaBips(utilization, effectiveBound, rateAtTarget) >
+            apyDeltaBips(utilization, targetUtilization, rateAtTarget) >
             config.minApyDeltaBips(vaultAddress, marketData.id)
         }
       }
