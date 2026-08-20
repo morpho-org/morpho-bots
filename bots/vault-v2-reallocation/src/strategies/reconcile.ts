@@ -1,4 +1,5 @@
 import { MathLib } from '@morpho-org/blue-sdk'
+import { getAddress } from 'viem'
 
 import type { VaultV2Data, VaultV2MarketData } from '../vault-data'
 import type { ReallocationAction, Strategy } from './strategy'
@@ -159,10 +160,10 @@ export const createReconciler = (options: ReconcilerOptions): Strategy => {
 
     let remainingAmountToDeallocate = totalAmountToDeallocate
     let remainingAmountToAllocate = totalAmountToAllocate
-    let didClearMinDelta = false // true if *at least one surviving* leg moves enough
 
-    const allocations: ReallocationAction[] = []
-    const deallocations: ReallocationAction[] = []
+    type EmittedLeg = { move: SizedMove; assets: bigint }
+    const emittedDeallocations: EmittedLeg[] = []
+    const emittedAllocations: EmittedLeg[] = []
 
     const legPools = createDepositPools(vaultData, options.capBufferWad)
     for (const move of deallocateMoves) {
@@ -171,10 +172,7 @@ export const createReconciler = (options: ReconcilerOptions): Strategy => {
       const toDeallocate = min(move.amount, remainingAmountToDeallocate)
       remainingAmountToDeallocate -= toDeallocate
       creditPools(legPools, move.marketData.params.collateralToken, toDeallocate)
-      didClearMinDelta ||= move.clearsMinDelta(
-        getUtilizationAfter(move.marketData.state, 'deallocate', toDeallocate)
-      )
-      deallocations.push(toLeg(move, toDeallocate))
+      emittedDeallocations.push({ move, assets: toDeallocate })
     }
     for (const move of allocateMoves) {
       if (remainingAmountToAllocate === 0n) break
@@ -184,12 +182,52 @@ export const createReconciler = (options: ReconcilerOptions): Strategy => {
         min(move.amount, remainingAmountToAllocate)
       )
       remainingAmountToAllocate -= toAllocate
-      if (toAllocate > 0n) {
-        didClearMinDelta ||= move.clearsMinDelta(
-          getUtilizationAfter(move.marketData.state, 'allocate', toAllocate)
+      if (toAllocate > 0n) emittedAllocations.push({ move, assets: toAllocate })
+    }
+
+    if (!options.allowIdleParking) {
+      // The deallocation budget trim can keep a leg whose planned counterpart allocation was then
+      // clamped away by the cap pools — the sides no longer match, and the mismatch would park in
+      // idle against the operator's setting. Shrink deallocations in reverse by credits no
+      // allocation consumed: each reduction is bounded by the leg's own collateral leftover and
+      // the shared adapter leftover, so every emitted allocation keeps its on-chain funding.
+      const allocated = emittedAllocations.reduce((acc, leg) => acc + leg.assets, 0n)
+      let surplus = emittedDeallocations.reduce((acc, leg) => acc + leg.assets, 0n) - allocated
+      for (let i = emittedDeallocations.length - 1; i >= 0 && surplus > 0n; i--) {
+        const leg = emittedDeallocations[i]!
+        const room = legPools.byCollateral.get(
+          getAddress(leg.move.marketData.params.collateralToken)
         )
-        allocations.push(toLeg(move, toAllocate))
+        const reducible = min(
+          min(surplus, leg.assets),
+          min(legPools.adapter.headroom, room?.headroom ?? 0n)
+        )
+        leg.assets -= reducible
+        legPools.adapter.headroom -= reducible
+        if (room) room.headroom -= reducible
+        surplus -= reducible
       }
+      // Unreachable by construction — every credit either funded an allocation or is still pool
+      // leftover — but refusing to plan beats parking assets in idle.
+      if (surplus > 0n) return undefined
+    }
+
+    // The min-delta gate judges the FINAL legs' realized endpoints (see the TSDoc above).
+    let didClearMinDelta = false
+    const allocations: ReallocationAction[] = []
+    const deallocations: ReallocationAction[] = []
+    for (const { move, assets } of emittedDeallocations) {
+      if (assets === 0n) continue
+      didClearMinDelta ||= move.clearsMinDelta(
+        getUtilizationAfter(move.marketData.state, 'deallocate', assets)
+      )
+      deallocations.push(toLeg(move, assets))
+    }
+    for (const { move, assets } of emittedAllocations) {
+      didClearMinDelta ||= move.clearsMinDelta(
+        getUtilizationAfter(move.marketData.state, 'allocate', assets)
+      )
+      allocations.push(toLeg(move, assets))
     }
 
     if (!didClearMinDelta) return undefined

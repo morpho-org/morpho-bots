@@ -14,7 +14,6 @@ import {
   railwayContext,
   simulateCall
 } from '@repo/bot-kit'
-import { ensureError } from '@repo/utils'
 import { getAbiItem, toFunctionSelector } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
 import { getBlockNumber } from 'viem/actions'
@@ -187,8 +186,10 @@ async function main() {
 
 main().catch(error => {
   // Config/client never came up, so we cannot honor LOG_LEVEL — emit the failure directly.
+  // `revertReason` keeps the line log-safe: a raw viem transport message can embed the
+  // authenticated RPC URL and response body.
   console.error(
-    JSON.stringify({ level: 'error', event: 'startup.error', error: ensureError(error).message })
+    JSON.stringify({ level: 'error', event: 'startup.error', error: revertReason(error) })
   )
   process.exitCode = 1
 })

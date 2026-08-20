@@ -99,14 +99,34 @@ export const getCapHeadroom = (
   basis: bigint,
   totalAssets: bigint,
   capBufferWad: bigint
-): bigint => {
-  const absoluteHeadroom = MathLib.zeroFloorSub(MathLib.wMulDown(cap.absolute, capBufferWad), basis)
-  if (cap.relative === MathLib.WAD) return absoluteHeadroom
-  const relativeHeadroom = MathLib.zeroFloorSub(
-    MathLib.wMulDown(MathLib.wMulDown(totalAssets, cap.relative), capBufferWad),
-    basis
+): bigint => MathLib.zeroFloorSub(getBufferedCeiling(cap, totalAssets, capBufferWad), basis)
+
+// The binding buffered ceiling across both cap dimensions (see {@link getCapHeadroom} for the
+// WAD-sentinel rule).
+const getBufferedCeiling = (cap: CapState, totalAssets: bigint, capBufferWad: bigint): bigint => {
+  const absolute = MathLib.wMulDown(cap.absolute, capBufferWad)
+  if (cap.relative === MathLib.WAD) return absolute
+  return MathLib.min(
+    absolute,
+    MathLib.wMulDown(MathLib.wMulDown(totalAssets, cap.relative), capBufferWad)
   )
-  return MathLib.min(absoluteHeadroom, relativeHeadroom)
+}
+
+// A pool can start UNDER water: accrual or a curator's cap reduction can leave the effective
+// allocation above the buffered ceiling. The deficit must be repaid by deallocations before any
+// credit becomes headroom — otherwise an allocation could restore the over-cap balance the plan's
+// own deallocations just relieved.
+const getCapRoom = (
+  cap: CapState,
+  basis: bigint,
+  totalAssets: bigint,
+  capBufferWad: bigint
+): CapRoom => {
+  const ceiling = getBufferedCeiling(cap, totalAssets, capBufferWad)
+  return {
+    headroom: MathLib.zeroFloorSub(ceiling, basis),
+    deficit: MathLib.zeroFloorSub(basis, ceiling)
+  }
 }
 
 // The allocation true-up an allocate/deallocate leg applies to every id it touches: the accrued
@@ -146,9 +166,11 @@ export const getDepositableAmount = (
  * genuinely free — and draw allocation legs through {@link takeFromPools}, so a plan can never
  * exceed an aggregate cap.
  */
+type CapRoom = { headroom: bigint; deficit: bigint }
+
 type DepositPools = {
-  adapter: bigint
-  byCollateral: Map<Address, bigint>
+  adapter: CapRoom
+  byCollateral: Map<Address, CapRoom>
 }
 
 export const createDepositPools = (vaultData: VaultV2Data, capBufferWad: bigint): DepositPools => {
@@ -159,7 +181,7 @@ export const createDepositPools = (vaultData: VaultV2Data, capBufferWad: bigint)
     driftByCollateral.set(key, (driftByCollateral.get(key) ?? 0n) + accrualDrift(marketData))
   }
   return {
-    adapter: getCapHeadroom(
+    adapter: getCapRoom(
       vaultData.adapterCap,
       vaultData.adapterCap.allocation + totalDrift,
       vaultData.totalAssets,
@@ -168,7 +190,7 @@ export const createDepositPools = (vaultData: VaultV2Data, capBufferWad: bigint)
     byCollateral: new Map(
       Object.entries(vaultData.collateralCaps).map(([token, cap]) => [
         getAddress(token),
-        getCapHeadroom(
+        getCapRoom(
           cap,
           cap.allocation + (driftByCollateral.get(getAddress(token)) ?? 0n),
           vaultData.totalAssets,
@@ -179,15 +201,26 @@ export const createDepositPools = (vaultData: VaultV2Data, capBufferWad: bigint)
   }
 }
 
-/** Credits capacity freed by a deallocation leg (executed before every allocation leg). */
+const creditRoom = (room: CapRoom, amount: bigint): void => {
+  const repaid = MathLib.min(amount, room.deficit)
+  room.deficit -= repaid
+  room.headroom += amount - repaid
+}
+
+/**
+ * Credits capacity freed by a deallocation leg (executed before every allocation leg). A pool's
+ * pre-existing over-cap deficit is repaid first — only the remainder becomes drawable headroom.
+ */
 export const creditPools = (
   pools: DepositPools,
   collateralToken: Address,
   amount: bigint
 ): void => {
   const key = getAddress(collateralToken)
-  pools.adapter += amount
-  pools.byCollateral.set(key, (pools.byCollateral.get(key) ?? 0n) + amount)
+  creditRoom(pools.adapter, amount)
+  const room = pools.byCollateral.get(key) ?? { headroom: 0n, deficit: 0n }
+  creditRoom(room, amount)
+  pools.byCollateral.set(key, room)
 }
 
 /** Clamps `amount` to the adapter and collateral pools, decrements both, and returns the clamp. */
@@ -197,10 +230,10 @@ export const takeFromPools = (
   amount: bigint
 ): bigint => {
   const key = getAddress(collateralToken)
-  const collateralPool = pools.byCollateral.get(key) ?? 0n
-  const taken = MathLib.min(amount, MathLib.min(pools.adapter, collateralPool))
-  pools.adapter -= taken
-  pools.byCollateral.set(key, collateralPool - taken)
+  const room = pools.byCollateral.get(key)
+  const taken = MathLib.min(amount, MathLib.min(pools.adapter.headroom, room?.headroom ?? 0n))
+  pools.adapter.headroom -= taken
+  if (room) room.headroom -= taken
   return taken
 }
 

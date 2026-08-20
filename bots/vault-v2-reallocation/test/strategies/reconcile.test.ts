@@ -1,12 +1,12 @@
 import { wholePercentToWAD } from '@repo/utils'
-import { parseUnits } from 'viem'
+import { getAddress, parseUnits } from 'viem'
 import { describe, expect, it } from 'vitest'
 
 import type { Classify, MarketTarget } from '../../src/strategies/reconcile'
 
 import { getUtilization, wadToBips } from '../../src/math'
 import { createReconciler } from '../../src/strategies/reconcile'
-import { makeMarket, makeVaultData, RATE_AT_TARGET } from '../helpers'
+import { makeMarket, makeMarketParams, makeVaultData, RATE_AT_TARGET } from '../helpers'
 
 const WAD = 10n ** 18n
 
@@ -345,6 +345,47 @@ describe('createReconciler', () => {
     expect(hotLeg).toBeDefined()
     const totalDeallocated = partial!.deallocations.reduce((acc, l) => acc + l.assets, 0n)
     expect(hotLeg!.assets).toBe(totalDeallocated)
+  })
+
+  it('never parks a stranded deallocation in idle when idle parking is off', () => {
+    // The deallocation budget trim keeps the FIRST (collateral-A) leg, dropping the collateral-B
+    // leg whose credit was the only funding for the collateral-B allocation — which the cap pools
+    // then clamp to zero. Unfixed, the surviving A deallocation ships alone and its assets park in
+    // idle despite allowIdleParking: false.
+    const coldA = makeMarket({
+      utilization: (10n * WAD) / 100n,
+      vaultAssets: parseUnits('20000', 6),
+      rateAtTarget: RATE_AT_TARGET
+    })
+    const collateralB = getAddress(`0x${'77'.repeat(20)}`)
+    const coldB = makeMarket({
+      utilization: (10n * WAD) / 100n,
+      vaultAssets: parseUnits('1000', 6),
+      supplyAssets: parseUnits('2000', 6),
+      params: makeMarketParams({ collateralToken: collateralB }),
+      rateAtTarget: RATE_AT_TARGET
+    })
+    const hotB = makeMarket({
+      utilization: (90n * WAD) / 100n,
+      vaultAssets: parseUnits('10000', 6),
+      params: makeMarketParams({ collateralToken: collateralB }),
+      rateAtTarget: RATE_AT_TARGET
+    })
+    const base = makeVaultData([coldA, coldB, hotB])
+    const exhausted = parseUnits('11000', 6)
+    const vaultData = {
+      ...base,
+      // Collateral B's cap is exhausted: the B allocation can only be funded by B deallocations.
+      collateralCaps: {
+        ...base.collateralCaps,
+        [collateralB]: { absolute: exhausted, relative: WAD, allocation: exhausted }
+      }
+    }
+    expect(makeReconciler(toHalf, { allowIdleParking: false })(vaultData)).toBeUndefined()
+
+    // With idle parking allowed the same shape ships — the surplus parks in idle by design.
+    const parked = makeReconciler(toHalf)(vaultData)
+    expect(parked).toBeDefined()
   })
 
   it('trims the smaller side in market order', () => {

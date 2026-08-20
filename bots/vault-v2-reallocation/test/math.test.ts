@@ -148,7 +148,31 @@ describe('deposit pools', () => {
     expect(takeFromPools(pools, collateral, parseUnits('500', 6))).toBe(parseUnits('200', 6))
     // Both pools are now drained for this collateral.
     expect(takeFromPools(pools, collateral, parseUnits('500', 6))).toBe(0n)
-    expect(pools.adapter).toBe(parseUnits('100', 6))
+    expect(pools.adapter.headroom).toBe(parseUnits('100', 6))
+  })
+
+  it('repays an existing over-cap deficit before crediting deallocations as headroom', () => {
+    const market = makeMarket({
+      utilization: (50n * WAD) / 100n,
+      vaultAssets: parseUnits('10000', 6),
+      rateAtTarget: RATE_AT_TARGET
+    })
+    const collateral = getAddress(market.params.collateralToken)
+    const vaultData = makeVaultData([market], {
+      // The adapter allocation already sits 100 OVER its cap (accrual, or a curator lowering the
+      // cap): a deallocation must relieve that overage before any of it becomes new headroom.
+      adapterCap: {
+        absolute: parseUnits('10000', 6),
+        relative: WAD,
+        allocation: parseUnits('10100', 6)
+      }
+    })
+    const pools = createDepositPools(vaultData, WAD)
+    expect(pools.adapter).toEqual({ headroom: 0n, deficit: parseUnits('100', 6) })
+    creditPools(pools, collateral, parseUnits('150', 6))
+    // Only the 50 past the deficit is drawable — allocating the full 150 back would restore the
+    // over-cap balance the deallocation just relieved.
+    expect(takeFromPools(pools, collateral, parseUnits('1000', 6))).toBe(parseUnits('50', 6))
   })
 
   it("includes every market's accrual drift in the aggregate pool bases", () => {
@@ -173,7 +197,7 @@ describe('deposit pools', () => {
     })
     const pools = createDepositPools(vaultData, WAD)
     // Adapter basis = stored 10000 + drift 100 → headroom 200 instead of 300.
-    expect(pools.adapter).toBe(parseUnits('200', 6))
+    expect(pools.adapter.headroom).toBe(parseUnits('200', 6))
   })
 
   it('credits deallocation legs back into both pools', () => {
@@ -191,7 +215,7 @@ describe('deposit pools', () => {
       }
     })
     const pools = createDepositPools(vaultData, WAD)
-    expect(pools.adapter).toBe(0n)
+    expect(pools.adapter.headroom).toBe(0n)
     creditPools(pools, collateral, parseUnits('700', 6))
     expect(takeFromPools(pools, collateral, parseUnits('1000', 6))).toBe(parseUnits('700', 6))
   })
