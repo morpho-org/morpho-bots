@@ -20,8 +20,9 @@
  *
  * Secrets (per-chain RPC_URL, RPC_URL_FALLBACK, REALLOCATOR_PRIVATE_KEY) are piped to
  * `railway variable set --stdin` so their values never appear in argv or in a failure message; with
- * DEPLOY_ONLY=1 (how CI re-ships already-provisioned services) no variable is written at all, so CI
- * needs no secret to redeploy.
+ * DEPLOY_ONLY=1 (how a CI pipeline would re-ship already-provisioned services) no variable is
+ * written at all, so such a pipeline needs no secret to redeploy. This repo's own CI deliberately
+ * does not call this script — Morpho publishes this bot as a reference and does not operate it.
  */
 import { delay, tryCatch } from '@repo/utils'
 import { $ } from 'execa'
@@ -248,8 +249,8 @@ const CHAINS: ChainDeploy[] = [
 ]
 
 // Deploy-only mode (DEPLOY_ONLY=1|true): re-ship the ALREADY-PROVISIONED services from the
-// checked-out tree and set NOTHING — no secrets, no variables. This is the path CI uses: the
-// per-bot-per-stage GitHub Environment holds only RAILWAY_TOKEN + RAILWAY_PROJECT_ID, and the
+// checked-out tree and set NOTHING — no secrets, no variables. This is the path a CI pipeline
+// would use: its environment holds only RAILWAY_TOKEN + RAILWAY_PROJECT_ID, and the
 // services/secrets were provisioned once by a full (secret-bearing) run of this script.
 if (/^(1|true)$/i.test(process.env.DEPLOY_ONLY?.trim() ?? '')) {
   await ensureContext()

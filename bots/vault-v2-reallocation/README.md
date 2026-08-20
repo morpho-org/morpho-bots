@@ -5,6 +5,11 @@ each vault's MorphoMarketV1 adapter), migrated from the standalone
 [vault-v2-reallocation-bot](https://github.com/morpho-org/vault-v2-reallocation-bot) repo onto the
 shared `@repo/bot-kit` runtime. Sibling of [vault-v1-reallocation](../vault-v1-reallocation).
 
+> **Reference bot — not operated by Morpho.** Morpho is not a curator and publishes this bot as
+> open source for curators to run themselves. It is not wired into this repo's CI deploy pipeline;
+> the Dockerfile, compose file, and Railway deploy script below are worked examples of a
+> deployment, not a managed service.
+
 **Whitelisting a vault is production-active**: once a vault is in `VAULT_WHITELIST` (and `DRY_RUN`
 is off), the bot continuously manages its allocations under the strategy's defaults — the
 vault-wide `equalize-utilizations` target unless `STRATEGY`/[src/strategy-config.ts](./src/strategy-config.ts)
@@ -148,16 +153,19 @@ Start any new deployment with `DRY_RUN=true`: the bot runs the full live read �
 encode → simulate path and logs each would-be transaction as `reallocation.dry_run`, but never
 submits. Review a few passes' plans, then flip `DRY_RUN=false`.
 
-## Deploy (Railway)
+## Deploy (Railway example)
+
+An example of a real hosted deployment, for operators who want more than compose:
 
 ```sh
 RAILWAY_PROJECT_ID=… RPC_URL_1=… VAULT_WHITELIST_1=0x… REALLOCATOR_PRIVATE_KEY=0x… \
   pnpm --filter @morpho-org/vault-v2-reallocation run deploy:railway
 ```
 
-Provisions one `bot-<chainId>` service per chain (new services start in dry-run). CI re-ships
-already-provisioned services with `DEPLOY_ONLY=1` on merge to main (staging) and via the
-`release-vault-v2-realloc` PR label (production).
+Provisions one `bot-<chainId>` service per chain (new services start in dry-run). Re-running with
+`DEPLOY_ONLY=1` re-ships already-provisioned services without touching their variables — the shape
+a CI pipeline would call; this repo's CI deliberately does not, since Morpho does not operate this
+bot.
 
 ## Observability
 
