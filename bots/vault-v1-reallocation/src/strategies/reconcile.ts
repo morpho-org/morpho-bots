@@ -7,6 +7,7 @@ import type { MarketAllocation, Strategy } from './strategy'
 import {
   getDepositableAmount,
   getUtilization,
+  getUtilizationAfter,
   getWithdrawableAmount,
   MAX_TARGET_UTILIZATION
 } from '../math'
@@ -24,8 +25,13 @@ export type MarketTarget = {
    * then emit the opposite leg.
    */
   intent: MoveIntent
-  /** Whether this market's own move — measured against the CLAMPED target — clears the min-delta. */
-  clearsMinDelta: boolean
+  /**
+   * Whether the move this market actually realizes is worth a transaction, judged by the classifier
+   * in its own units (APY bips, utilization bips, …) against the post-move utilization the reconciler
+   * reaches. A full-size move lands on {@link MarketTarget.targetUtilization}; a budget-trimmed one
+   * stops short, and a fragment of a leg must not arm a plan.
+   */
+  clearsMinDelta: (utilizationAfter: bigint) => boolean
 }
 
 /** Verdict for one market; `undefined` leaves the market out of the plan entirely. */
@@ -50,7 +56,7 @@ type SizedMove = {
   marketData: VaultMarketData
   side: MoveIntent
   amount: bigint
-  clearsMinDelta: boolean
+  clearsMinDelta: MarketTarget['clearsMinDelta']
 }
 
 const { min } = MathLib
@@ -61,9 +67,10 @@ const { min } = MathLib
  * to the shared budget in withdraw-queue order, and emits the `reallocate` legs (withdrawals first,
  * the budget-exhausting deposit as `maxUint256`).
  *
- * The min-delta firing gate is evaluated on the TRIMMED legs: a market whose move clears the
- * threshold but whose take is entirely consumed by the budget cannot arm the plan, so a fired plan
- * always contains at least one surviving leg worth its transaction. Idle legs never carry a verdict.
+ * The min-delta firing gate is evaluated on the REALIZED move: each surviving leg's post-move
+ * utilization is derived from its trimmed take and handed back to the classifier, so neither a leg the
+ * budget consumed entirely nor one trimmed down to a dust fragment can arm the plan. Idle legs never
+ * carry a verdict.
  *
  * This is the one place in the bot that builds legs; classifiers never size or trim. A classifier
  * DOES decide the side (`intent`, off its raw bound) and hand over an already-clamped target — see
@@ -72,6 +79,8 @@ const { min } = MathLib
 export const createReconciler = (options: ReconcilerOptions): Strategy => {
   return vaultData => {
     const classify = options.classifierFor(vaultData)
+    // A vault with several zero-collateral markets has only its first (in withdraw-queue order)
+    // treated as the idle market; the rest are left out of the plan entirely.
     const idleMarket =
       options.idle === 'net'
         ? vaultData.marketsData.find(marketData => marketData.isIdle)
@@ -149,7 +158,7 @@ export const createReconciler = (options: ReconcilerOptions): Strategy => {
         const deposit = min(amount, remainingDeposit)
         if (deposit === 0n) continue
         remainingDeposit -= deposit
-        didClearMinDelta ||= clearsMinDelta
+        didClearMinDelta ||= clearsMinDelta(getUtilizationAfter(marketData.state, side, deposit))
         deposits.push({
           marketParams: marketData.params,
           assets: remainingDeposit === 0n ? maxUint256 : marketData.vaultAssets + deposit
@@ -158,7 +167,7 @@ export const createReconciler = (options: ReconcilerOptions): Strategy => {
         const withdrawal = min(amount, remainingWithdrawal)
         if (withdrawal === 0n) continue
         remainingWithdrawal -= withdrawal
-        didClearMinDelta ||= clearsMinDelta
+        didClearMinDelta ||= clearsMinDelta(getUtilizationAfter(marketData.state, side, withdrawal))
         withdrawals.push({
           marketParams: marketData.params,
           assets: marketData.vaultAssets - withdrawal

@@ -77,10 +77,10 @@ export const createApyRangeStrategy = (config: ApyRangeConfig): Strategy =>
         return {
           targetUtilization,
           intent,
-          // Measured against the EFFECTIVE target — the APY move the plan can actually realize, not
-          // the one the unclamped bound advertised.
-          clearsMinDelta:
-            apyDeltaBips(utilization, targetUtilization, rateAtTarget) >
+          // Judged on the utilization the leg actually reaches — the APY move the plan can realize,
+          // not the one the unclamped bound advertised nor the one a trimmed leg falls short of.
+          clearsMinDelta: utilizationAfter =>
+            apyDeltaBips(utilization, utilizationAfter, rateAtTarget) >
             config.minApyDeltaBips(vaultAddress, marketData.id)
         }
       }

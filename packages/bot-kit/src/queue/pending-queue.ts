@@ -72,7 +72,8 @@ export type PendingQueue = {
    * transaction and it is now tracked under its nonce; `false` when the queue refused or the send
    * failed without a nonce (`tx.send_aborted`, `nonce.sync_failed`, `queue.nonce_hole`,
    * `tx.submit_failed`) — a caller counting real broadcasts must not count those. Still throws
-   * `TxSendError` when a first send claimed a nonce but produced no hash, so the tick aborts.
+   * `TxSendError` when a first send claimed a nonce but produced no hash, which surfaces to its
+   * caller.
    *
    * Concurrent calls are serialized end to end (latch checks → `syncNonce` → `send` → tracking), so a
    * pass that submits for several positions at once cannot hand two of them the same nonce and cannot

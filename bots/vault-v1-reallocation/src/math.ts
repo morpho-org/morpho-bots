@@ -37,6 +37,22 @@ export const getUtilization = (state: MarketState): bigint =>
     ? 0n
     : MathLib.wDivDown(state.totalBorrowAssets, state.totalSupplyAssets)
 
+/**
+ * Utilization a market lands at once `take` assets have moved onto (`deposit`) or off (`withdraw`)
+ * its supply side — the realized counterpart of the target the move was sized against, which a
+ * budget-trimmed take falls short of. Empties to 0 like {@link getUtilization}.
+ */
+export const getUtilizationAfter = (
+  state: MarketState,
+  side: 'deposit' | 'withdraw',
+  take: bigint
+): bigint =>
+  getUtilization({
+    ...state,
+    totalSupplyAssets:
+      side === 'withdraw' ? state.totalSupplyAssets - take : state.totalSupplyAssets + take
+  })
+
 const getWithdrawalToUtilization = (state: MarketState, targetUtilization: bigint): bigint =>
   MathLib.wMulDown(
     state.totalSupplyAssets,

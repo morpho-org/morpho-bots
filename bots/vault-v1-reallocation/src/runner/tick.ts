@@ -111,7 +111,8 @@ export const runTick = async (deps: TickDeps): Promise<void> => {
   const started = Date.now()
   const inflight = deps.inflightLabels()
 
-  const settled = await Promise.allSettled(
+  // Never rejects: every mapped element folds its own failure into a counter via `tryCatch`.
+  const perVault = await Promise.all(
     deps.vaults.map(async (vault): Promise<VaultCounters> => {
       if (inflight.has(vault)) {
         deps.logger.debug('vault.inflight', { vault })
@@ -126,9 +127,8 @@ export const runTick = async (deps: TickDeps): Promise<void> => {
     })
   )
 
-  const counters = settled.reduce<VaultCounters>((acc, result) => {
-    if (result.status === 'rejected') return { ...acc, errors: acc.errors + 1 }
-    for (const key of COUNTER_KEYS) acc[key] += result.value[key]
+  const counters = perVault.reduce<VaultCounters>((acc, result) => {
+    for (const key of COUNTER_KEYS) acc[key] += result[key]
     return acc
   }, noCounts())
 

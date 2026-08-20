@@ -5,7 +5,6 @@ import type { Address, Client, Hex, Transport } from 'viem'
 import { getChainAddresses } from '@morpho-org/blue-sdk'
 import { isAddressEqual, zeroAddress } from 'viem'
 
-import { LensReadFailedError } from './lens-read-failed.error'
 import { readVaultV1Lens } from './state/lens.sol'
 
 export type MarketState = {
@@ -70,8 +69,7 @@ const isAdaptiveCurveMarket = (irm: Address, rateAtTarget: bigint, chainId: numb
  * snapshot is coherent across markets and reproducible. The lens accrues each market on-chain inside
  * that call, so there is no client-side accrual and no block-timestamp handling here.
  *
- * Throws {@link LensReadFailedError} when the lens returns no row for `vault` (a malformed or empty
- * response); a revert inside the lens propagates as-is. The tick catches per vault either way.
+ * A revert inside the lens propagates as-is; the tick catches it per vault.
  */
 export const fetchVaultData = async (
   client: Client<Transport<BatchLensTransportType>>,
@@ -85,8 +83,8 @@ export const fetchVaultData = async (
     [{ vault, eoa }],
     blockNumber
   )
-  const row = rows.get(vault.toLowerCase())
-  if (!row) throw new LensReadFailedError(vault)
+  // `readDeploylessBatchLens` returns exactly one row per input element, keyed by this same function.
+  const row = rows.get(vault.toLowerCase())!
 
   // The lens walks `withdrawQueue` in order, so array order is withdraw-queue order.
   const marketsData = row.markets.map(

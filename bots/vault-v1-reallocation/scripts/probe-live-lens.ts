@@ -26,6 +26,7 @@ import { getBlock, getBlockNumber, readContract } from 'viem/actions'
 import { base, mainnet } from 'viem/chains'
 
 import { fetchVaultData } from '../src/vault-data'
+import { InvalidProbeConfigError } from './invalid-probe-config.error'
 
 const CHAINS = { [mainnet.id]: mainnet, [base.id]: base }
 // A few blocks back: a public RPC's archive window always covers the recent past, and pinning off the
@@ -34,7 +35,7 @@ const HEAD_LAG = 8n
 
 const required = (name: string): string => {
   const value = process.env[name]
-  if (!value?.trim()) throw new Error(`Missing required env var: ${name}`)
+  if (!value?.trim()) throw new InvalidProbeConfigError(`Missing required env var: ${name}`)
   return value.trim()
 }
 
@@ -63,7 +64,7 @@ async function main() {
   const rpcUrl = required('RPC_URL')
   const chainId = Number(process.env.CHAIN_ID?.trim() ?? base.id)
   const chain = CHAINS[chainId as keyof typeof CHAINS]
-  if (!chain) throw new Error(`Unsupported CHAIN_ID ${chainId}`)
+  if (!chain) throw new InvalidProbeConfigError(`Unsupported CHAIN_ID ${chainId}`)
   const vault = getAddress(required('VAULT'))
   // Any address works — `isAllocator` is just another field to compare.
   const eoa = getAddress(process.env.EOA?.trim() ?? `0x${'11'.repeat(20)}`)
@@ -112,9 +113,13 @@ async function main() {
     compare('marketCount', BigInt(lensData.marketsData.length), BigInt(accrued.allocations.size))
   ]
 
-  const sdkMarkets = [...accrued.allocations.values()]
+  // Keyed by market id, not paired positionally: if either side ever reorders its markets, this
+  // reports the one market it could not find instead of a wall of field mismatches.
+  const sdkMarkets = new Map(
+    [...accrued.allocations].map(([marketId, allocation]) => [marketId.toLowerCase(), allocation])
+  )
   for (const [index, lensMarket] of lensData.marketsData.entries()) {
-    const allocation = sdkMarkets[index]
+    const allocation = sdkMarkets.get(lensMarket.id.toLowerCase())
     if (!allocation) {
       rows.push(compare(`market[${index}]`, lensMarket.id, '<missing>'))
       continue

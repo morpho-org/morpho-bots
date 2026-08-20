@@ -66,8 +66,6 @@ async function main() {
     dryRun: config.dryRun
   })
 
-  // Every per-pass read goes through the deployless lens (one eth_call per vault), so the HTTP
-  // transport has nothing to batch.
   const client = createDeploylessClient({
     chain: config.chain,
     rpcUrl: config.rpcUrl,

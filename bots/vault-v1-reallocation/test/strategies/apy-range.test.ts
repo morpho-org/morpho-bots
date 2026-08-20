@@ -253,7 +253,9 @@ describe('createApyRangeStrategy', () => {
     it('uses idle market as deposit target for excess withdrawals', () => {
       const strategy = makeStrategy()
       const withdrawalMarket = makeMarket({
-        utilization: apyToUtilization(0.5, RATE_AT_TARGET),
+        // Borrowed, unlike this file's other cold markets: the idle leg carries no min-delta
+        // verdict, so the realized APY move on THIS leg is the only thing that can arm the plan.
+        utilization: apyToUtilization(1.5, RATE_AT_TARGET),
         vaultAssets: parseUnits('20000', 6),
         cap: parseUnits('100000', 6),
         rateAtTarget: RATE_AT_TARGET
@@ -368,7 +370,9 @@ describe('createApyRangeStrategy', () => {
     it('buffers the idle cap like every other deposit target', () => {
       const strategy = makeStrategy()
       const withdrawalMarket = makeMarket({
-        utilization: apyToUtilization(0.5, RATE_AT_TARGET),
+        // Borrowed, unlike this file's other cold markets: the idle leg carries no min-delta
+        // verdict, so the realized APY move on THIS leg is the only thing that can arm the plan.
+        utilization: apyToUtilization(1.5, RATE_AT_TARGET),
         vaultAssets: parseUnits('20000', 6),
         cap: parseUnits('100000', 6),
         rateAtTarget: RATE_AT_TARGET

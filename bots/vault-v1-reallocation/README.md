@@ -58,8 +58,11 @@ markets. Two rules keep that cap from distorting a plan:
   this pass. This is a per-leg rule, not a market-level skip: a dead cold market is still exited in
   full whenever its utilization is below 99.9%.
 
-The min-delta firing thresholds are likewise measured against the clamped target, so a plan is only
-armed by an APY/utilization move it can actually realize.
+The min-delta firing thresholds are measured on the move each leg **realizes**: the reconciler derives
+the post-move utilization from the take that survived budget trimming and asks the strategy to judge
+that, so neither a leg trimmed away nor one trimmed down to a fragment can arm a plan on its full-size
+promise. A withdrawal from a market with no borrows moves no rate at all, so such a leg needs a
+counterpart that clears the threshold on its own.
 
 Assumptions and posture:
 
@@ -92,9 +95,9 @@ Assumptions and posture:
 In-container env vars are unsuffixed. The `_<chainId>` suffix is an operator-side convention used by
 docker-compose and the Railway deploy script, and it covers every per-chain input: `RPC_URL_<id>`,
 `RPC_URL_FALLBACK_<id>`, `VAULT_WHITELIST_<id>`, `STRATEGY_<id>`, `DRY_RUN_<id>`,
-`BETTERSTACK_HEARTBEAT_URL_<id>`, and the four tuning knobs `MIN_APY_DELTA_BIPS_<id>`,
-`MIN_UTILIZATION_DELTA_BIPS_<id>`, `ALLOW_IDLE_REALLOCATION_<id>`, `MAX_FEE_GWEI_<id>` — so chains can
-be tuned independently. `REALLOCATOR_PRIVATE_KEY` may be suffixed per chain or shared unsuffixed. The
+`BETTERSTACK_HEARTBEAT_URL_<id>`, and the five tuning knobs `REALLOCATION_INTERVAL_MS_<id>`,
+`MIN_APY_DELTA_BIPS_<id>`, `MIN_UTILIZATION_DELTA_BIPS_<id>`, `ALLOW_IDLE_REALLOCATION_<id>`,
+`MAX_FEE_GWEI_<id>` — so chains can be tuned independently. `REALLOCATOR_PRIVATE_KEY` may be suffixed per chain or shared unsuffixed. The
 deploy script sets each optional knob when supplied and **deletes** it from the service when not, so
 dropping one from the deploy env returns that chain to the default below rather than leaving a stale
 value on the service.

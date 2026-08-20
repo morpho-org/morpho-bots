@@ -115,7 +115,7 @@ policy change is a reviewed PR plus a redeploy rather than a runtime knob.
 
 The `apy-range` strategy inverts the AdaptiveCurve curve to turn borrow-APY bounds into utilization
 bounds. That inversion is only meaningful for markets on the canonical AdaptiveCurveIRM. A market
-on a foreign IRM has no `rateAtTarget` (the SDK yields `undefined`), and feeding `rateAtTarget = 0n`
+on a foreign IRM has no `rateAtTarget` (the lens yields `0`), and feeding `rateAtTarget = 0n`
 into `AdaptiveCurveIrmLib.getUtilizationAtBorrowRate` returns WAD for **every** rate — so both APY
 bounds collapse to WAD, the market always reads "below range", and the strategy would withdraw the
 vault's entire position out of it with perfectly valid, simulation-passing calldata.
@@ -147,13 +147,18 @@ judgment and no market-level skip:
    span. It is explicitly _not_ a degenerate-market policy skip: a dead cold market is still exited in
    full whenever its utilization sits below 99.9%.
 
-`clearsMinDelta` is likewise computed against the **effective** (clamped) bound, so a plan can only be
-armed by a move it can actually realize — the unclamped bound would over-report the APY delta and fire
-transactions worth less than their gas.
+`clearsMinDelta` is a **function of the realized move**, not a precomputed flag: for each surviving leg
+the reconciler derives `u' = B·WAD/(S − take)` (withdraw) or `B·WAD/(S + take)` (deposit) from the take
+that survived budget trimming, and the classifier judges that in its own units (`apy-range` in APY bips
+off the curve, `equalize-utilizations` in utilization bips). A full-size take reproduces the effective
+(clamped) target exactly, so this only ever removes false positives: the unclamped bound would
+over-report the APY delta, and a flag carried through trimming would let a 1-wei fragment fire a
+transaction worth less than its gas. Corollary: a market with no borrows cannot move its own
+utilization, so a withdrawal from one only ships alongside a leg that clears on its own.
 
 ### One concurrent pass, with mutex-serialized submits
 
-A pass processes every whitelisted vault concurrently (`Promise.allSettled`), so it costs the slowest
+A pass processes every whitelisted vault concurrently (`Promise.all` over per-vault `tryCatch`), so it costs the slowest
 vault rather than the sum. That makes simultaneous submits normal rather than exceptional, and two
 races in the shared runtime became reachable: bot-kit's signer claimed nonces with
 `nextNonce ??= await readPendingNonce()` — a null check that precedes its own await — and the pending
@@ -165,7 +170,7 @@ tracking) through a viem-dlc `createCoalescingMutex()`, used purely for serializ
 queue, one fixed resource key, `collectFollowers` never called. Reusing that primitive rather than
 writing a lock was deliberate. The `pending.size === 0` test sits inside the lock, which is what
 actually closes the rewind. A handler that throws rejects only its own caller and the mutex proceeds to
-the next queued one, so `TxSendError` still aborts the tick that caused it without holding the lock.
+the next queued one, so `TxSendError` still surfaces to its caller without holding the lock.
 
 ### One billed call per vault per pass: a deployless lens
 

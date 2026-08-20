@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest'
 import type { Classify, MoveIntent, ReconcilerOptions } from '../../src/strategies/reconcile'
 import type { VaultMarketData } from '../../src/vault-data'
 
-import { getUtilization } from '../../src/math'
+import { getUtilization, wadToBips } from '../../src/math'
 import { createReconciler } from '../../src/strategies/reconcile'
 import { makeIdleMarket, makeMarket, makeVaultData, RATE_AT_TARGET } from './helpers'
 
@@ -23,7 +23,7 @@ const fixedTarget =
   marketData => ({
     targetUtilization,
     intent: intentFor(marketData, targetUtilization),
-    clearsMinDelta: true
+    clearsMinDelta: () => true
   })
 
 const makeReconciler = (
@@ -136,7 +136,7 @@ describe('createReconciler', () => {
         makeReconciler({ idle: 'ignore' }, marketData => ({
           targetUtilization,
           intent: intentFor(marketData, targetUtilization),
-          clearsMinDelta: clearingMarketIds.includes(marketData.id)
+          clearsMinDelta: () => clearingMarketIds.includes(marketData.id)
         }))(makeVaultData([cold, hot, cappedHot]))
 
       expect(reconcileWith([cappedHot.id])).toBeUndefined()
@@ -156,7 +156,7 @@ describe('createReconciler', () => {
         makeReconciler({ idle: 'ignore' }, marketData => ({
           targetUtilization,
           intent: intentFor(marketData, targetUtilization),
-          clearsMinDelta: marketData.id === hot2.id
+          clearsMinDelta: () => marketData.id === hot2.id
         }))(makeVaultData(markets))
 
       expect(reconcileWith([hot1, hot2, cold])).toBeUndefined()
@@ -164,6 +164,57 @@ describe('createReconciler', () => {
       const funded = reconcileWith([hot1, hot2, cold, cold2])
       expect(funded).toBeDefined()
       expect(funded!.map(leg => leg.marketParams)).toContainEqual(hot2.params)
+    })
+  })
+
+  describe('realized-delta gate', () => {
+    const targetUtilization = (50n * WAD) / 100n
+    // A real classifier's shape: the verdict is a function of the utilization the leg actually
+    // reaches, so a leg the budget trims can no longer arm the plan with its full-size promise.
+    const utilizationDelta =
+      (minBips: number): Classify =>
+      marketData => {
+        const utilization = getUtilization(marketData.state)
+        return {
+          targetUtilization,
+          intent: intentFor(marketData, targetUtilization),
+          clearsMinDelta: utilizationAfter =>
+            Math.abs(wadToBips(utilization - utilizationAfter)) > minBips
+        }
+      }
+
+    // 90% → 50% would be a 4000-bip move; the budget below leaves 1 wei of it.
+    const clearingHot = () => market((90n * WAD) / 100n, 0n)
+
+    it('does not arm the plan from a clearing move trimmed to a dust fragment', () => {
+      const reconcile = makeReconciler({ idle: 'ignore' }, utilizationDelta(100))
+      // The only withdrawable counterpart holds 1 wei, so the whole plan is 1 wei wide.
+      const dustCold = market((25n * WAD) / 100n, 1n)
+
+      expect(reconcile(makeVaultData([clearingHot(), dustCold]))).toBeUndefined()
+    })
+
+    it('fires on the same shape once the counterpart is actually funded', () => {
+      const reconcile = makeReconciler({ idle: 'ignore' }, utilizationDelta(100))
+      const cold = market((25n * WAD) / 100n, parseUnits('20000', 6))
+
+      const result = reconcile(makeVaultData([clearingHot(), cold]))
+
+      expect(result).toBeDefined()
+      expect(result!.map(leg => leg.assets)).toEqual([0n, maxUint256])
+    })
+
+    it('gates a partial trim on the delta that trim realizes, not the full-size one', () => {
+      // A 5k budget moves the hot market 90% → 85.71%, a realized 428 bips of the 4000 the full-size
+      // deposit advertised: it clears a 400-bip threshold and misses a 500-bip one.
+      const partial = (minBips: number) =>
+        makeReconciler(
+          { idle: 'ignore' },
+          utilizationDelta(minBips)
+        )(makeVaultData([clearingHot(), market((25n * WAD) / 100n, parseUnits('5000', 6))]))
+
+      expect(partial(400)).toBeDefined()
+      expect(partial(500)).toBeUndefined()
     })
   })
 

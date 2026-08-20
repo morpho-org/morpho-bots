@@ -55,7 +55,11 @@ type Batch = NonNullable<Parameters<typeof policy>[0]['batch']>
 type BatchGas = NonNullable<Batch['gas']>
 type BatchGasConfig = { default?: BatchGas; overrides?: Record<number, BatchGas> }
 
-type BatchLensFunctionMutability = 'pure' | 'view'
+// `nonpayable` is included on purpose: a lens that calls a state-changing helper (Morpho's
+// `accrueInterest`, say) to snapshot post-accrual state compiles to a nonpayable entrypoint, and
+// `eth_call` discards those writes. `stateMutability` is part of neither the selector nor the
+// encoding — https://docs.soliditylang.org/en/latest/abi-spec.html — so reading one is sound.
+type BatchLensFunctionMutability = 'pure' | 'view' | 'nonpayable'
 
 /**
  * Like `ContractFunctionArgs`, but constrained to be a single array of the same type because

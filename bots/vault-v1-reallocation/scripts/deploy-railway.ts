@@ -8,10 +8,11 @@
  * Required per chain: `RPC_URL_<id>`, `VAULT_WHITELIST_<id>`, and `REALLOCATOR_PRIVATE_KEY_<id>` (or
  * one shared unsuffixed `REALLOCATOR_PRIVATE_KEY`).
  * Optional per chain: `STRATEGY_<id>`, `DRY_RUN_<id>`, `BETTERSTACK_HEARTBEAT_URL_<id>`,
- * `MIN_APY_DELTA_BIPS_<id>`, `MIN_UTILIZATION_DELTA_BIPS_<id>`, `ALLOW_IDLE_REALLOCATION_<id>`,
- * `MAX_FEE_GWEI_<id>`, and `RPC_URL_FALLBACK_<id>` (a secret). The tuning knobs and the fallback
- * endpoint are set when supplied and DELETED from the service when not, so removing one from the
- * deploy env returns the bot to its own default rather than leaving a stale value in place.
+ * `REALLOCATION_INTERVAL_MS_<id>`, `MIN_APY_DELTA_BIPS_<id>`, `MIN_UTILIZATION_DELTA_BIPS_<id>`,
+ * `ALLOW_IDLE_REALLOCATION_<id>`, `MAX_FEE_GWEI_<id>`, and `RPC_URL_FALLBACK_<id>` (a secret). The
+ * tuning knobs and the fallback endpoint are set when supplied and DELETED from the service when not,
+ * so removing one from the deploy env returns the bot to its own default rather than leaving a stale
+ * value in place.
  * Optional, shared across chains: `BETTERSTACK_INGESTING_HOST`, `BETTERSTACK_SOURCE_TOKEN`.
  *
  * The build context MUST be the repo root so the pnpm workspace (packages/*) resolves — the script
@@ -291,6 +292,7 @@ const chainSecrets = CHAINS.map(chain => {
     // and left UNSET when the operator supplies nothing — the bot's own default then applies.
     // Suffixed per chain because thresholds and fee ceilings legitimately differ between chains.
     optional: {
+      REALLOCATION_INTERVAL_MS: suffixed('REALLOCATION_INTERVAL_MS', chain.chainId),
       MIN_APY_DELTA_BIPS: suffixed('MIN_APY_DELTA_BIPS', chain.chainId),
       MIN_UTILIZATION_DELTA_BIPS: suffixed('MIN_UTILIZATION_DELTA_BIPS', chain.chainId),
       ALLOW_IDLE_REALLOCATION: suffixed('ALLOW_IDLE_REALLOCATION', chain.chainId),
