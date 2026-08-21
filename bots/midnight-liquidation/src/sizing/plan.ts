@@ -1,7 +1,7 @@
 import { BPS, ORACLE_PRICE_SCALE, WAD } from '../constants'
 import { lifAt } from './lif'
 import { min, mulDivDown, mulDivUp } from './math'
-import { isRcfExempt, maxRepaidPreMaturity } from './rcf'
+import { isRcfExempt, maxRepaidNormalMode } from './rcf'
 
 /**
  * The fresh, lens-derived inputs the sizing decision depends on. Field names mirror the lens
@@ -123,7 +123,7 @@ function normalModePlan(input: PlanInput, marginBps: number): LiquidationPlan | 
     postMaturityMode: false
   })
   const effectiveDebt = input.debt - input.badDebt
-  const maxRepaid = maxRepaidPreMaturity({
+  const maxRepaid = maxRepaidNormalMode({
     debt: input.debt,
     badDebt: input.badDebt,
     maxDebt: input.maxDebt,

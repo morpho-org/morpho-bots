@@ -2,15 +2,15 @@ import { describe, expect, it } from 'bun:test'
 import { maxUint256 } from 'viem'
 
 import { ORACLE_PRICE_SCALE, WAD } from '../../src/constants'
-import { isRcfExempt, maxRepaidPreMaturity } from '../../src/sizing/rcf'
+import { isRcfExempt, maxRepaidNormalMode } from '../../src/sizing/rcf'
 
 const MAX_LIF = 1036269430051813471n
 const LLTV = 860000000000000000n // 0.86e18
 
-describe('maxRepaidPreMaturity', () => {
+describe('maxRepaidNormalMode', () => {
   it('returns maxUint256 when lltv >= WAD (cap disabled)', () => {
     expect(
-      maxRepaidPreMaturity({
+      maxRepaidNormalMode({
         debt: 1000n * WAD,
         badDebt: 0n,
         maxDebt: 900n * WAD,
@@ -22,7 +22,7 @@ describe('maxRepaidPreMaturity', () => {
 
   it('caps repaid units against (debt - maxDebt) when there is no bad debt', () => {
     expect(
-      maxRepaidPreMaturity({
+      maxRepaidNormalMode({
         debt: 1000n * WAD,
         badDebt: 0n,
         maxDebt: 900n * WAD,
@@ -35,7 +35,7 @@ describe('maxRepaidPreMaturity', () => {
   it('subtracts the bad-debt writeoff from debt before capping', () => {
     // effectiveDebt - maxDebt = (1000 - 50 - 900)e18 = 50e18, half the no-bad-debt numerator.
     expect(
-      maxRepaidPreMaturity({
+      maxRepaidNormalMode({
         debt: 1000n * WAD,
         badDebt: 50n * WAD,
         maxDebt: 900n * WAD,

@@ -157,6 +157,7 @@ async function main() {
     filters: config.markets.apiUrls.map(apiUrl =>
       createListedMarketFilter({ apiUrl, chainId: config.chainId, logger })
     ),
+    chainId: config.chainId,
     maxAgeMs: LISTED_MARKETS_MAX_AGE_MS,
     logger
   })
@@ -252,7 +253,20 @@ async function main() {
     }
     const listed = candidates.filter(candidate => whitelist.isListed(candidate.marketId))
     if (listed.length < candidates.length) {
-      logger.info('discover.filtered', { total: candidates.length, listed: listed.length })
+      // Name the filtered-out markets, not just the counts — "was market X whitelisted at tick T"
+      // must be answerable from this line alone (the whitelist is small, so the id list is cheap).
+      const skippedMarkets = [
+        ...new Set(
+          candidates
+            .filter(candidate => !whitelist.isListed(candidate.marketId))
+            .map(candidate => candidate.marketId)
+        )
+      ]
+      logger.info('discover.filtered', {
+        total: candidates.length,
+        listed: listed.length,
+        skippedMarkets
+      })
     }
     return listed
   }

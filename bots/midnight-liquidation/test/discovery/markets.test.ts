@@ -217,6 +217,7 @@ describe('createListedMarketFilter', () => {
 describe('createUnionListedMarketFilter', () => {
   it('whitelists the union of every fresh source', async () => {
     const union = createUnionListedMarketFilter({
+      chainId: 8453,
       filters: [
         sourceFilter({ host: 'a.example', markets: [LISTED], now: () => 0 }),
         sourceFilter({ host: 'b.example', markets: [OTHER_CHAIN], now: () => 0 })
@@ -243,6 +244,7 @@ describe('createUnionListedMarketFilter', () => {
   it('reports the deduplicated union size on markets.whitelist', async () => {
     const logs = capturingLogger()
     const union = createUnionListedMarketFilter({
+      chainId: 8453,
       filters: [
         sourceFilter({ host: 'a.example', markets: [LISTED, SHARED], now: () => 0 }),
         sourceFilter({ host: 'b.example', markets: [OTHER_CHAIN, SHARED], now: () => 0 })
@@ -253,17 +255,28 @@ describe('createUnionListedMarketFilter', () => {
     })
     await union.refresh()
 
-    expect(logs.find('markets.whitelist')?.fields).toEqual({ markets: 3, sources: 2, fresh: 2 })
+    expect(logs.find('markets.whitelist')?.fields).toEqual({
+      chainId: 8453,
+      markets: 3,
+      sources: 2,
+      fresh: 2
+    })
   })
 
   it('throws rather than silently listing nothing when no source is configured', () => {
     expect(() =>
-      createUnionListedMarketFilter({ filters: [], maxAgeMs: 1_000, logger: NOOP_LOGGER })
+      createUnionListedMarketFilter({
+        chainId: 8453,
+        filters: [],
+        maxAgeMs: 1_000,
+        logger: NOOP_LOGGER
+      })
     ).toThrow(/requires at least one markets source/)
   })
 
   it('is fail-closed before the first refresh (no source has a set yet)', () => {
     const union = createUnionListedMarketFilter({
+      chainId: 8453,
       filters: [sourceFilter({ host: 'a.example', markets: [LISTED] })],
       maxAgeMs: 1_000,
       logger: NOOP_LOGGER,
@@ -279,6 +292,7 @@ describe('createUnionListedMarketFilter', () => {
   it('drops an expired source from the union while a fresh peer keeps working', async () => {
     const logs = capturingLogger()
     const union = createUnionListedMarketFilter({
+      chainId: 8453,
       filters: [
         sourceFilter({ host: 'stale.example', markets: [LISTED], now: () => 0 }),
         sourceFilter({ host: 'fresh.example', markets: [OTHER_CHAIN], now: () => 1_000 })
@@ -294,13 +308,19 @@ describe('createUnionListedMarketFilter', () => {
     expect(whitelist.isListed(OTHER_CHAIN)).toBe(true) // fresh peer still whitelists
     expect(whitelist.fresh).toBe(1)
     expect(logs.find('markets.source_expired')?.fields).toEqual({
+      chainId: 8453,
       expired: [label('stale.example')],
       maxAgeMs: 100,
       detail:
         'markets source older than max age — excluded from the whitelist until a refresh lands'
     })
     // Only the fresh peer's markets count toward the combined size.
-    expect(logs.find('markets.whitelist')?.fields).toEqual({ markets: 1, sources: 2, fresh: 1 })
+    expect(logs.find('markets.whitelist')?.fields).toEqual({
+      chainId: 8453,
+      markets: 1,
+      sources: 2,
+      fresh: 1
+    })
   })
 
   // When EVERY source is stale the union stays silent by design: the caller reports that per tick, so
@@ -308,6 +328,7 @@ describe('createUnionListedMarketFilter', () => {
   it('leaves the all-expired case to the caller rather than warning per refresh', async () => {
     const logs = capturingLogger()
     const union = createUnionListedMarketFilter({
+      chainId: 8453,
       filters: [sourceFilter({ host: 'stale.example', markets: [LISTED], now: () => 0 })],
       maxAgeMs: 100,
       logger: logs.logger,
@@ -326,6 +347,7 @@ describe('createUnionListedMarketFilter', () => {
   it('never throws when a source fails, and still lands the healthy sources', async () => {
     const logs = capturingLogger()
     const union = createUnionListedMarketFilter({
+      chainId: 8453,
       filters: [
         sourceFilter({ host: 'down.example', fail: true, now: () => 0 }),
         sourceFilter({ host: 'up.example', markets: [LISTED], now: () => 0 })
@@ -346,6 +368,7 @@ describe('createUnionListedMarketFilter', () => {
   it('keeps serving a fresh peer across repeated failures of another source', async () => {
     const logs = capturingLogger()
     const union = createUnionListedMarketFilter({
+      chainId: 8453,
       filters: [
         sourceFilter({ host: 'down.example', fail: true, now: () => 0 }),
         sourceFilter({ host: 'up.example', markets: [LISTED], now: () => 0 })

@@ -114,7 +114,9 @@ There is no swap config file. Instead:
   across them. This lets a deployment read an additional list (e.g. one carrying extra shorter-maturity
   markets for testing) without that list becoming the single source of truth for the whole whitelist.
   The combined size is logged once per refresh as `markets.whitelist`; the per-source `markets.listed`
-  lines report each endpoint separately and must not be summed (sources overlap).
+  lines report each endpoint separately and must not be summed (sources overlap). Because the union is
+  additive, **delisting a market takes effect only once every configured source has dropped it** — a
+  market delisted from one endpoint stays in scope while another still lists it.
 
   The max-age staleness rule (`LISTED_MARKETS_MAX_AGE_MS` — a build-time constant of 10 minutes, not an
   environment variable) is applied **per source**, so one endpoint going down or going stale narrows the
@@ -381,8 +383,13 @@ valid && gateAllows && hasDebt && !locked && (block.timestamp > maturity || !hea
 - Pre-maturity unhealthy positions use normal mode with `maxLif` and the Recovery Close Factor cap.
   `maxLif` is derived from the collateral's `liquidationCursor` and `lltv` (`ConstantsLib.maxLif`);
   the lens computes it on-chain and returns it as `bestCollateralMaxLif`.
-- Post-maturity positions use post-maturity mode, where LIF ramps from `1e18` to `maxLif` over 60
-  minutes and the RCF cap is disabled.
+- Post-maturity healthy positions use post-maturity mode, where LIF ramps from `1e18` to `maxLif` over
+  60 minutes and the RCF cap is disabled.
+- Post-maturity **unhealthy** positions open both on-chain gates, so the bot builds both candidate
+  plans and keeps the one with the higher expected surplus. Normal mode pays the full `maxLif`
+  immediately while the post-maturity LIF is still ramping, so `plan.built { postMaturityMode: false }`
+  on a matured position shortly after maturity is expected behavior, not a mode-selection bug; once the
+  ramp completes, ties resolve to post-maturity (its gate cannot close if the price recovers).
 - Every non-bad-debt plan is **seize-exact**: it pins `seizedAssets` (with `repaidUnits = 0`) and lets
   Midnight ceil-derive `repaidUnits`. Midnight transfers exactly `seizedAssets` to the Executor before
   the swap callback, so every venue sells exactly the held balance — no sell-side drift.

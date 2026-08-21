@@ -273,8 +273,8 @@ function ladderEnv(env: Env, name: string, def: string[]): string[] {
 // Parses an optional comma-separated list of endpoint URLs, with a default, de-duplicating while
 // preserving order. Fails loud on an all-empty value or any malformed element rather than silently
 // dropping it — a dropped whitelist source would narrow the market set with no signal at all.
-// De-duplication is on the PARSED URL, so trivially different spellings of one endpoint (a trailing
-// slash, a default port) collapse instead of being polled twice and counted twice.
+// De-duplication is on the PARSED URL, so trivially different spellings of one endpoint (a bare-origin
+// trailing slash, a default port) collapse instead of being polled twice and counted twice.
 function urlListEnv(env: Env, name: string, def: string[]): string[] {
   const raw = env[name]?.trim()
   if (!raw) return def

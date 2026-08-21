@@ -133,7 +133,7 @@ export function createListedMarketFilter(deps: {
 
 /** One source's contribution to the union, as reported by {@link UnionListedMarketFilter.snapshot}. */
 type UnionSourceSnapshot = {
-  /** Host of the endpoint this source reads (see the single-source `source` label). */
+  /** Host + path label of the endpoint this source reads (see the single-source `source` label). */
   source: string
   markets: number
   updatedAt: number | null
@@ -168,7 +168,9 @@ type UnionListedMarketFilter = {
  *
  * Union semantics are additive, so the whitelist is only ever as wide as the sources the operator
  * configured; it stays fail-closed on a cold start (every source has `updatedAt === null` → nothing is
- * listed).
+ * listed). The flip side of additivity: an ACTIVE delisting takes effect only once every configured
+ * source has dropped the market — one endpoint delisting it does not remove it while a peer still
+ * lists it.
  *
  * `refresh` fans out to every source concurrently and NEVER throws: each source's failure is logged
  * (`markets.refresh_failed`, with its source label) and the others still land, because a partial
@@ -186,6 +188,7 @@ type UnionListedMarketFilter = {
  */
 export function createUnionListedMarketFilter(deps: {
   filters: ListedMarketFilter[]
+  chainId: number
   maxAgeMs: number
   logger: Logger
   now?: () => number
@@ -217,6 +220,7 @@ export function createUnionListedMarketFilter(deps: {
     // fresh === 0 is the caller's per-tick signal, not ours — see this factory's JSDoc.
     if (expired.length === 0 || fresh === 0) return
     deps.logger.warn('markets.source_expired', {
+      chainId: deps.chainId,
       expired,
       maxAgeMs: deps.maxAgeMs,
       detail:
@@ -238,6 +242,7 @@ export function createUnionListedMarketFilter(deps: {
           const { error } = await tryCatch(filter.refresh())
           if (error) {
             deps.logger.warn('markets.refresh_failed', {
+              chainId: deps.chainId,
               source: filter.snapshot().source,
               detail: error.message
             })
@@ -246,6 +251,7 @@ export function createUnionListedMarketFilter(deps: {
       )
       const { sources, fresh } = snapshot()
       deps.logger.info('markets.whitelist', {
+        chainId: deps.chainId,
         markets: unionSize(),
         sources: sources.length,
         fresh
