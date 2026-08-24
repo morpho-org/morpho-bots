@@ -358,9 +358,12 @@ catalog, so setup readiness does not depend on a Router API endpoint. `ROUTER_AP
 
 ### Better Stack observability
 
-Set both `BETTERSTACK_SOURCE_TOKEN` and `BETTERSTACK_INGESTING_HOST` to mirror every sanitized CLI
-event and result to Better Stack. Shipping is best-effort and never replaces or suppresses the
-existing stdout/stderr JSON Lines contract. With full shipping configuration, `start`, `bootstrap`,
+Set both `BETTERSTACK_SOURCE_TOKEN` and `BETTERSTACK_INGESTING_HOST` to ship sanitized named
+monitoring records to Better Stack. Only records carrying an `event` are shipped, so the
+`@repo/observability` `bot.action` fallback is unreachable for this bot; the raw cycle arrays and
+terminal monitor reports remain on stdout unchanged, and their content is available as the flat
+`cycle.completed`, `guardrail.halted`, and lifecycle events. Shipping is best-effort and never
+replaces or suppresses the existing stdout/stderr JSON Lines contract. With full shipping configuration, `start`, `bootstrap`,
 and `ladder` automatically enable the existing safe `--verbose` event stream (without adding a
 duplicate flag), so active positions, bootstrap offers, ladder quotes/offers, decisions, and
 submitted/confirmed transactions are available to the log source. Unset shipping variables are
@@ -395,9 +398,11 @@ shipping logger's context (`MONITORING_SCHEMA_VERSION`, currently `1`) rather th
 so every line carries it at zero per-event cost and a consumer can pin the contract. It is bumped
 only on a breaking field rename or removal; adding an optional field is not breaking.
 
-Records are projected from cycle results that are already sanitized — the projections read nothing,
-perform no additional RPC, and never re-classify an error. Only allowlisted `errorName`
-classifications ship; raw error text, provider payloads, and URLs never do.
+Records are projected from cycle results that are already sanitized — the projections read nothing
+and never re-classify an error. Only allowlisted `errorName` classifications ship; raw error text,
+provider payloads, and URLs never do. Fill telemetry reads owned-group consumption, but that request
+is deduplicated against the active-quote read it runs concurrently with, so a verbose cycle issues no
+extra provider round trip.
 
 #### Units
 

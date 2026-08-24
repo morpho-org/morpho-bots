@@ -49,6 +49,16 @@ const failureDetails = (error: unknown) => {
   return undefined
 }
 
+// Shipping only named records is what makes `@repo/observability`'s `bot.action` fallback
+// unreachable for this bot: the raw cycle arrays and terminal reports are nested, unversioned
+// operator output that no metric expression can aggregate. Their content survives as the flat
+// `cycle.completed`, `guardrail.halted`, and lifecycle events. Terminal output is unaffected.
+const shipped = (value: unknown) =>
+  typeof value === 'object' &&
+  value !== null &&
+  !Array.isArray(value) &&
+  typeof (value as { event?: unknown }).event === 'string'
+
 const failureMessage = (error: unknown) => {
   if (
     error instanceof CliUsageError ||
@@ -93,11 +103,10 @@ export const runQuoterBotEntrypoint = async (
     const result = await application.run(argv, {
       ...runtime,
       writeEvent: value => {
-        observability?.record(value)
+        if (shipped(value)) observability?.record(value)
         logger.result(value)
       }
     })
-    observability?.record(result)
     logger.result(result)
     return 0
   } catch (error) {
@@ -107,7 +116,7 @@ export const runQuoterBotEntrypoint = async (
     const details = failureDetails(error)
     if (details === undefined && !(error instanceof MakerAccountError)) {
       observability?.unexpected(error, 'entrypoint')
-    } else if (details !== undefined) observability?.record(details)
+    }
     logger.error(failureMessage(error), details)
     return 1
   }

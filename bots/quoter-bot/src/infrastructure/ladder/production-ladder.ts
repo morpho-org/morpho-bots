@@ -325,12 +325,16 @@ export const createProductionLadderAdapters = (
     strategyMarketIds: config.ladder.map(item => item.marketId)
   })
   const configByMarket = new Map(config.ladder.map(item => [item.marketId, item]))
-  const readGroups = () =>
+  // Concurrent readers within one market check (active-quote reconstruction and consumption
+  // telemetry) must share one request: monitoring may not add a round trip to the quoting path.
+  // Deduplication is concurrent-only, so every fresh call still reads current group state.
+  const readGroups = createRepeatableSingleFlight(() =>
     readBootstrapGroups({
       maker,
       morphoApiBaseUrl: config.morphoApiBaseUrl,
       requestTimeoutMs: config.requestTimeoutMs
     })
+  )
   const readGroupConsumed = (groupId: Hex, blockNumber?: bigint) =>
     client.readContract({
       address: config.setup.midnight,

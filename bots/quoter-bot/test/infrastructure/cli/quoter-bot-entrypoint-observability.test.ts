@@ -9,7 +9,7 @@ import {
 import { MakerAccountError } from '../../../src/infrastructure/make/maker-account.error'
 
 describe('runQuoterBotEntrypoint observability', () => {
-  test('mirrors streamed actions and terminal results while preserving stdout', async () => {
+  test('ships only named records so the bot.action fallback stays unreachable', async () => {
     const stdout: string[] = []
     const stderr: string[] = []
     const record = vi.fn((_value: unknown) => undefined)
@@ -35,7 +35,10 @@ describe('runQuoterBotEntrypoint observability', () => {
       result
     ])
     expect(stderr).toEqual([])
-    expect(record.mock.calls.map(call => call[0])).toEqual([cycle, result])
+    expect(record.mock.calls.map(call => call[0])).toEqual([cycle])
+    expect(
+      record.mock.calls.every(call => typeof (call[0] as { event?: unknown }).event === 'string')
+    ).toBe(true)
   })
 
   test('observes unknown failures by name without leaking their message', async () => {
