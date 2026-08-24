@@ -420,6 +420,14 @@ describe('PositionBootstrapService', () => {
             rateBps: 450n,
             referenceObservationId: 'static:500'
           },
+          diagnostics: {
+            requestedRateBps: 450n,
+            clampedRateBps: 450n,
+            requestedAssets: 500n,
+            cappedAssets: 500n,
+            cap: 'offer-size'
+          },
+          durationMs: expect.any(Number),
           submittedTransactions: [{ operation: 'publish', txHash: publicationHash }],
           stateAfterCheck: {
             status: 'observed',

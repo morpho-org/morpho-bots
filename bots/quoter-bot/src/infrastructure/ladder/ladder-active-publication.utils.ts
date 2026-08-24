@@ -1,5 +1,6 @@
 import type { Hex } from 'viem'
 
+import type { LadderGroupConsumption } from '../../application/ladder/ladder-verbose'
 import type { LadderQuoteSet, LadderRung } from '../../domain/ladder/ladder'
 import type { BootstrapRawGroup } from '../bootstrap/bootstrap-groups.utils'
 import type { OwnedLadderPublication } from './ladder-group-ownership.utils'
@@ -51,6 +52,57 @@ export const reconstructOwnedLadderPublication = (
   const higher = side('higher')
   if (lower.length === 0 && higher.length === 0) return undefined
   return { ...publication.quote, lower, higher }
+}
+
+/**
+ * Joins indexed group consumption to the side and rate each group was published at.
+ * @param publications - Durable reserved and confirmed ladder publication intents.
+ * @param groups - Current maker groups returned by the eventually consistent Morpho API.
+ * @param marketId - Optional strategy market restriction.
+ * @returns One record per owned group the API has indexed, deduplicated by group ID.
+ * @remarks `consumed` is monotonic per group — the strategy's own cancel and republish reserve fresh
+ * group IDs rather than decrementing an existing one — so differences between cycles are taker
+ * fills. Groups absent from the API are omitted rather than reported as unconsumed. `groupRateBps`
+ * is the rate of the group's rung nearest the center, which is exact under `shared-rung` but is only
+ * the best of several shared rates under `per-book`. Rung indexes restart per side, so rates are
+ * resolved within the group's own side.
+ */
+export const ownedLadderGroupConsumption = (
+  publications: readonly OwnedLadderPublication[],
+  groups: readonly BootstrapRawGroup[],
+  marketId?: Hex
+): readonly LadderGroupConsumption[] => {
+  const indexedGroups = distinctIndexedGroups(groups)
+  const consumption = new Map<Hex, LadderGroupConsumption>()
+  for (const publication of publications) {
+    if (marketId !== undefined && publication.marketId !== marketId) continue
+    const rateByIndex = {
+      lower: new Map(publication.quote.lower.map(rung => [rung.index, rung.rateBps])),
+      higher: new Map(publication.quote.higher.map(rung => [rung.index, rung.rateBps]))
+    }
+    for (const reference of publication.groups) {
+      const indexed = indexedGroups.get(reference.groupId)
+      if (!indexed || consumption.has(reference.groupId)) continue
+      const nearestIndex = reference.rungIndexes.reduce<number | undefined>(
+        (lowest, index) => (lowest === undefined || index < lowest ? index : lowest),
+        undefined
+      )
+      const groupRateBps =
+        nearestIndex === undefined ? undefined : rateByIndex[reference.side].get(nearestIndex)
+      if (groupRateBps === undefined) continue
+      consumption.set(reference.groupId, {
+        groupId: reference.groupId,
+        marketId: publication.marketId,
+        side: reference.side,
+        groupRateBps,
+        maxAssets: indexed.maxAssets,
+        consumed: indexed.consumed,
+        remainingAssets:
+          indexed.maxAssets > indexed.consumed ? indexed.maxAssets - indexed.consumed : 0n
+      })
+    }
+  }
+  return [...consumption.values()]
 }
 
 /**

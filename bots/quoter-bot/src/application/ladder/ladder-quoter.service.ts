@@ -3,8 +3,14 @@ import type { Hex } from 'viem'
 
 import { cycleHasFailure, waitForMonitorInterval } from '@repo/monitoring'
 
-import type { LadderConfig, LadderMarketState, LadderQuoteSet } from '../../domain/ladder/ladder'
 import type {
+  LadderConfig,
+  LadderDiagnostics,
+  LadderMarketState,
+  LadderQuoteSet
+} from '../../domain/ladder/ladder'
+import type {
+  LadderGroupConsumption,
   LadderMakeResult,
   LadderSubmittedTransaction,
   LadderTransactionSubmittedEvent,
@@ -13,7 +19,11 @@ import type {
   LadderVerboseState
 } from './ladder-verbose'
 
-import { generateLadder, shouldRecenter, validateLadderConfig } from '../../domain/ladder/ladder'
+import {
+  generateLadderWithDiagnostics,
+  shouldRecenter,
+  validateLadderConfig
+} from '../../domain/ladder/ladder'
 import { LadderConfigurationError } from '../../domain/ladder/ladder-configuration.error'
 import { LadderAdapterError } from '../../infrastructure/ladder/ladder-adapter.error'
 import { operatorErrorName } from '../operator-error-name.utils'
@@ -67,6 +77,17 @@ export interface LadderMakeService {
    * @throws When active roots cannot be loaded or decoded safely.
    */
   readActive(marketId: Hex): Promise<LadderQuoteSet | undefined>
+  /**
+   * Reads monotonic per-group consumption for one market's owned ladder groups.
+   * @param marketId - Canonical market identifier whose owned groups should be reported.
+   * @returns One record per indexed owned group; groups the indexer has not seen are omitted.
+   * @throws When owned groups cannot be read safely.
+   * @remarks Observation-only and optional: quoting never consults it, and adapters that cannot
+   * cheaply expose group consumption omit it, which only suppresses fill telemetry. Consumption is
+   * monotonic per group ID, so cycle-over-cycle growth is taker fills rather than the strategy's own
+   * cancel and republish.
+   */
+  readConsumption?(marketId: Hex): Promise<readonly LadderGroupConsumption[]>
   /**
    * Reconciles one strategy-owned market quote set against fresh active roots.
    * @param parameters - Market, optional exact desired set, stable reason, and submission observer.
@@ -354,6 +375,7 @@ export class LadderQuoterService {
 
     const results: LadderRunResult[] = []
     for (const config of this.configs) {
+      const startedAt = Date.now()
       let active: LadderQuoteSet | undefined
       try {
         active = await this.make.readActive(config.marketId)
@@ -366,10 +388,13 @@ export class LadderQuoterService {
           parameters
         )
         results.push(
-          await this.completeResult(config, result, parameters, {
+          await this.completeResult(
             config,
-            currentState: { status: 'failed', errorName: operatorErrorName(error) }
-          })
+            result,
+            parameters,
+            { config, currentState: { status: 'failed', errorName: operatorErrorName(error) } },
+            startedAt
+          )
         )
         return results
       }
@@ -384,11 +409,17 @@ export class LadderQuoterService {
             ? undefined
             : invalidation.submittedTransactions
         results.push(
-          await this.completeResult(config, result, parameters, {
+          await this.completeResult(
             config,
-            currentState: { status: 'failed', errorName: operatorErrorName(error) },
-            ...(submittedTransactions ? { submittedTransactions } : {})
-          })
+            result,
+            parameters,
+            {
+              config,
+              currentState: { status: 'failed', errorName: operatorErrorName(error) },
+              ...(submittedTransactions ? { submittedTransactions } : {})
+            },
+            startedAt
+          )
         )
         if (result.status === 'halted') return results
         continue
@@ -419,27 +450,30 @@ export class LadderQuoterService {
           parameters
         )
         results.push(
-          await this.completeResult(config, result, parameters, { config, currentState })
+          await this.completeResult(config, result, parameters, { config, currentState }, startedAt)
         )
         return results
       }
 
       let desired: LadderQuoteSet
       let decision: 'publish' | 'recenter' | 'resize' | 'rest'
+      let diagnostics: LadderDiagnostics | undefined
       try {
         const targetRateBps = referenceRateBps + config.quotePremiumBps
         const recenter = active
           ? shouldRecenter(active.centerRateBps, targetRateBps, config.movementToleranceBps)
           : true
-        const generated =
+        const generation =
           active && !recenter
-            ? generateLadder({
+            ? generateLadderWithDiagnostics({
                 config,
                 referenceRateBps,
                 capacities: market,
                 retainedCenterRateBps: active.centerRateBps
               })
-            : generateLadder({ config, referenceRateBps, capacities: market })
+            : generateLadderWithDiagnostics({ config, referenceRateBps, capacities: market })
+        diagnostics = generation.diagnostics
+        const generated = generation.quote
         desired = referenceObservationId ? { ...generated, referenceObservationId } : generated
         if (!active) decision = 'publish'
         else if (sameLadderQuoteSet(active, desired)) decision = 'rest'
@@ -453,12 +487,18 @@ export class LadderQuoterService {
           parameters
         )
         results.push(
-          await this.completeResult(config, result, parameters, {
+          await this.completeResult(
             config,
-            currentState,
-            referenceRateBps,
-            targetRateBps: referenceRateBps + config.quotePremiumBps
-          })
+            result,
+            parameters,
+            {
+              config,
+              currentState,
+              referenceRateBps,
+              targetRateBps: referenceRateBps + config.quotePremiumBps
+            },
+            startedAt
+          )
         )
         return results
       }
@@ -473,7 +513,8 @@ export class LadderQuoterService {
         referenceRateBps,
         targetRateBps: referenceRateBps + config.quotePremiumBps,
         ladderOffer: desired,
-        decision
+        decision,
+        ...(diagnostics ? { diagnostics } : {})
       }
 
       let reconciliation: LadderMakeResult
@@ -508,7 +549,8 @@ export class LadderQuoterService {
               ...(confirmedTransactions.length > 0
                 ? { submittedTransactions: confirmedTransactions }
                 : {})
-            }
+            },
+            startedAt
           )
         )
         continue
@@ -524,7 +566,8 @@ export class LadderQuoterService {
             config,
             { marketId: config.marketId, status: 'observed', action: 'rest' },
             parameters,
-            { ...verbosePlan, ...(submittedTransactions ? { submittedTransactions } : {}) }
+            { ...verbosePlan, ...(submittedTransactions ? { submittedTransactions } : {}) },
+            startedAt
           )
         )
         continue
@@ -539,7 +582,8 @@ export class LadderQuoterService {
             reason: decision
           },
           parameters,
-          { ...verbosePlan, ...(submittedTransactions ? { submittedTransactions } : {}) }
+          { ...verbosePlan, ...(submittedTransactions ? { submittedTransactions } : {}) },
+          startedAt
         )
       )
     }
@@ -593,14 +637,33 @@ export class LadderQuoterService {
     config: LadderConfig,
     result: LadderRunOutcome,
     parameters: LadderRunParameters,
-    verbose: LadderVerbosePlan
+    verbose: LadderVerbosePlan,
+    startedAt?: number
   ): Promise<LadderRunResult> {
     if (parameters.verbose !== true) return result
-    const stateAfterCheck =
+    const [stateAfterCheck, groupConsumption] = await Promise.all([
       verbose.currentState.status === 'not-read'
         ? verbose.currentState
-        : await this.readVerboseState(config.marketId)
-    return { ...result, verbose: { ...verbose, stateAfterCheck } }
+        : this.readVerboseState(config.marketId),
+      this.readGroupConsumption(config.marketId)
+    ])
+    return {
+      ...result,
+      verbose: {
+        ...verbose,
+        stateAfterCheck,
+        ...(groupConsumption ? { groupConsumption } : {}),
+        ...(startedAt === undefined ? {} : { durationMs: Date.now() - startedAt })
+      }
+    }
+  }
+
+  private async readGroupConsumption(marketId: Hex) {
+    try {
+      return await this.make.readConsumption?.(marketId)
+    } catch {
+      return undefined
+    }
   }
 
   private async readVerboseState(marketId: Hex): Promise<LadderVerboseState> {

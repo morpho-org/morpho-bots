@@ -24,7 +24,12 @@ describe('calculateLadderCapacities', () => {
       lowerRateCapacityAssets: 90n,
       higherRateCapacityAssets: 10n,
       targetMarketCapacityAssets: 100n,
-      maximumTotalCapacityAssets: 1_000n
+      maximumTotalCapacityAssets: 1_000n,
+      cashBalanceAssets: 100n,
+      creditAssets: 90n,
+      otherMarketCreditAssets: 0n,
+      reservedAssets: 0n,
+      marketReservedAssets: 0n
     })
   })
 
@@ -44,7 +49,12 @@ describe('calculateLadderCapacities', () => {
       lowerRateCapacityAssets: 0n,
       higherRateCapacityAssets: 40n,
       targetMarketCapacityAssets: 40n,
-      maximumTotalCapacityAssets: 110n
+      maximumTotalCapacityAssets: 110n,
+      cashBalanceAssets: 100n,
+      creditAssets: 20n,
+      otherMarketCreditAssets: 30n,
+      reservedAssets: 40n,
+      marketReservedAssets: 40n
     })
   })
 })

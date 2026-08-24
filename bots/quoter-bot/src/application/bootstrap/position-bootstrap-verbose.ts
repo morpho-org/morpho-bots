@@ -2,6 +2,7 @@ import type { Hex } from 'viem'
 
 import type {
   BootstrapConfig,
+  BootstrapDecisionDiagnostics,
   BootstrapOffer,
   BootstrapPosition,
   BootstrapRate,
@@ -92,4 +93,8 @@ export type BootstrapVerboseDetails = {
   submittedTransactions?: readonly BootstrapSubmittedTransaction[]
   /** Fresh provider state read after the check or mutation completed. */
   stateAfterCheck: BootstrapVerboseState
+  /** Rate-clamp and size-cap observations from derivation, when a rate-derived decision was made. */
+  diagnostics?: BootstrapDecisionDiagnostics
+  /** Wall-clock duration of this market's check, including the post-check verbose re-read. */
+  durationMs?: number
 }

@@ -43,6 +43,10 @@ export type LadderConfig = {
  * that higher-rate exposure-increasing side. `bootstrapBuyRateBps` is the highest live own
  * bootstrap-buy rate; sells quote at least {@link CROSS_BOOK_CLEARANCE_BPS} below it so the ladder
  * cannot cross the own bootstrap offer.
+ *
+ * The trailing fields are observation-only accounting primitives. Generation ignores them entirely;
+ * they exist because the capacities above are saturating minima from which no position value can be
+ * reconstructed downstream.
  */
 export type LadderMarketState = {
   lowerRateCapacityAssets?: bigint
@@ -50,6 +54,12 @@ export type LadderMarketState = {
   targetMarketCapacityAssets?: bigint
   maximumTotalCapacityAssets?: bigint
   bootstrapBuyRateBps?: bigint
+  cashBalanceAssets?: bigint
+  creditAssets?: bigint
+  otherMarketCreditAssets?: bigint
+  reservedAssets?: bigint
+  marketReservedAssets?: bigint
+  maturityTimestamp?: bigint
 }
 
 /** One exact domain rung before protocol-specific tick and buy/sell conversion. */
@@ -261,6 +271,89 @@ export const assertLadderShapeAtReference = (
 }
 
 /**
+ * Guardrail counts observed while generating one ladder side.
+ * @remarks Counts, never per-rung records: a side may hold up to 512 rungs and regenerate every
+ * second, so only aggregates are cheap enough to ship. `clampedToMinimumRungs` and
+ * `clampedToMaximumRungs` are disjoint, and a rung cleared below the own bootstrap buy may also be
+ * clamped, so `clearedRungs` and the clamp counts can both include it.
+ */
+export type LadderSideDiagnostics = {
+  configuredRungs: number
+  fundedRungs: number
+  clampedToMinimumRungs: number
+  clampedToMaximumRungs: number
+  clearedRungs: number
+}
+
+/** Guardrail counts for both sides of one generated quote set. */
+export type LadderDiagnostics = {
+  lower: LadderSideDiagnostics
+  higher: LadderSideDiagnostics
+}
+
+/**
+ * Generates one ladder quote set alongside the guardrail counts that shaped it.
+ * @param parameters - Same inputs as {@link generateLadder}.
+ * @returns The desired quote set and the per-side clamp, clearance, and funding counts.
+ * @throws LadderConfigurationError for an invalid config or negative capacity input.
+ * @remarks Exists so silent rate saturation and cross-book repricing stay observable without a
+ * logger reaching into this pure module; see {@link generateLadder} for the generation contract.
+ */
+export const generateLadderWithDiagnostics = (
+  parameters: GenerateLadderParameters
+): { quote: LadderQuoteSet; diagnostics: LadderDiagnostics } => {
+  const { config, referenceRateBps, capacities = {}, retainedCenterRateBps } = parameters
+  validateLadderConfig(config)
+  const centerRateBps = retainedCenterRateBps ?? referenceRateBps + config.quotePremiumBps
+  const weights = rungWeights(config)
+  const lowerBudget = sideBudget(config.lowerRateBudgetAssets, capacities.lowerRateCapacityAssets)
+  const higherBudget = minimum([
+    sideBudget(config.higherRateBudgetAssets, capacities.higherRateCapacityAssets),
+    aggregateBudget(config, capacities)
+  ])
+  const lowerAllocations = allocateBudget(lowerBudget, weights, config.minimumOfferAssets)
+  const higherAllocations = allocateBudget(higherBudget, weights, config.minimumOfferAssets)
+  const halfSpread = config.spreadBps / 2n
+  const buildRungs = (side: 'lower' | 'higher', allocations: readonly bigint[]) => {
+    const diagnostics: LadderSideDiagnostics = {
+      configuredRungs: config.rungCount,
+      fundedRungs: 0,
+      clampedToMinimumRungs: 0,
+      clampedToMaximumRungs: 0,
+      clearedRungs: 0
+    }
+    const rungs = allocations.flatMap((assets, index) => {
+      if (assets === 0n) return []
+      const offset = halfSpread + BigInt(index) * config.stepBps
+      const shapedRateBps = side === 'lower' ? centerRateBps - offset : centerRateBps + offset
+      const clearedRateBps =
+        side === 'lower'
+          ? clearedSellRateBps(shapedRateBps, capacities.bootstrapBuyRateBps)
+          : shapedRateBps
+      const rateBps = clampRateBps(clearedRateBps, config.minimumRateBps, config.maximumRateBps)
+      diagnostics.fundedRungs += 1
+      if (clearedRateBps !== shapedRateBps) diagnostics.clearedRungs += 1
+      if (clearedRateBps < config.minimumRateBps) diagnostics.clampedToMinimumRungs += 1
+      else if (clearedRateBps > config.maximumRateBps) diagnostics.clampedToMaximumRungs += 1
+      return [{ index, rateBps, assets }]
+    })
+    return { rungs, diagnostics }
+  }
+  const lower = buildRungs('lower', lowerAllocations)
+  const higher = buildRungs('higher', higherAllocations)
+  return {
+    quote: {
+      marketId: config.marketId,
+      centerRateBps,
+      groupMode: config.groupMode,
+      lower: lower.rungs,
+      higher: higher.rungs
+    },
+    diagnostics: { lower: lower.diagnostics, higher: higher.diagnostics }
+  }
+}
+
+/**
  * Generates exact lower/higher rates and deterministic bigint allocations for one market snapshot.
  * @param parameters - Input object: `config` defines the static shape, budgets, cadence, and hard
  * rate range; `referenceRateBps` is the fresh reference in integer basis points; `capacities`
@@ -274,36 +367,10 @@ export const assertLadderShapeAtReference = (
  * settle on `minimumRateBps` and buys on `maximumRateBps`. Sells additionally quote at least
  * {@link CROSS_BOOK_CLEARANCE_BPS} below any live own bootstrap buy so both strategies cannot cross.
  * Saturated neighbouring rungs may share one rate; protocol tick mapping merges equal-tick rungs.
+ * Use {@link generateLadderWithDiagnostics} when those saturations must be observable.
  */
-export const generateLadder = (parameters: GenerateLadderParameters): LadderQuoteSet => {
-  const { config, referenceRateBps, capacities = {}, retainedCenterRateBps } = parameters
-  validateLadderConfig(config)
-  const centerRateBps = retainedCenterRateBps ?? referenceRateBps + config.quotePremiumBps
-  const weights = rungWeights(config)
-  const lowerBudget = sideBudget(config.lowerRateBudgetAssets, capacities.lowerRateCapacityAssets)
-  const higherBudget = minimum([
-    sideBudget(config.higherRateBudgetAssets, capacities.higherRateCapacityAssets),
-    aggregateBudget(config, capacities)
-  ])
-  const lowerAllocations = allocateBudget(lowerBudget, weights, config.minimumOfferAssets)
-  const higherAllocations = allocateBudget(higherBudget, weights, config.minimumOfferAssets)
-  const halfSpread = config.spreadBps / 2n
-  const buildRungs = (side: 'lower' | 'higher', allocations: readonly bigint[]) =>
-    allocations.flatMap((assets, index) => {
-      if (assets === 0n) return []
-      const offset = halfSpread + BigInt(index) * config.stepBps
-      const shapedRateBps = side === 'lower' ? centerRateBps - offset : centerRateBps + offset
-      const clearedRateBps =
-        side === 'lower'
-          ? clearedSellRateBps(shapedRateBps, capacities.bootstrapBuyRateBps)
-          : shapedRateBps
-      const rateBps = clampRateBps(clearedRateBps, config.minimumRateBps, config.maximumRateBps)
-      return [{ index, rateBps, assets }]
-    })
-  const lower = buildRungs('lower', lowerAllocations)
-  const higher = buildRungs('higher', higherAllocations)
-  return { marketId: config.marketId, centerRateBps, groupMode: config.groupMode, lower, higher }
-}
+export const generateLadder = (parameters: GenerateLadderParameters): LadderQuoteSet =>
+  generateLadderWithDiagnostics(parameters).quote
 
 /**
  * Determines whether a retained center must move after a fresh effective-center observation.

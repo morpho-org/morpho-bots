@@ -276,7 +276,11 @@ describe('Cli', () => {
         }
       })
     ).toEqual(report)
-    expect(streamed).toEqual([readyReport])
+    expect(streamed).toEqual([
+      readyReport,
+      { event: 'setup.ready', ready: true },
+      { event: 'cycle.completed', workflow: 'setup-check', status: 'ready' }
+    ])
     expect(runContinuously).toHaveBeenCalledTimes(1)
     expect(assertReady).not.toHaveBeenCalled()
   })
@@ -401,7 +405,16 @@ describe('Cli', () => {
         }
       })
     ).toEqual(report)
-    expect(streamed).toEqual([cycle])
+    expect(streamed).toEqual([
+      cycle,
+      {
+        event: 'cycle.completed',
+        workflow: 'bootstrap',
+        marketId: cycle[0]?.marketId,
+        status: 'observed',
+        action: 'rest'
+      }
+    ])
     expect(runContinuously).toHaveBeenCalledTimes(1)
     expect(runContinuously.mock.calls[0]?.[0]).toMatchObject({ verbose: false })
     expect(runOnce).not.toHaveBeenCalled()
@@ -635,7 +648,14 @@ describe('Cli', () => {
         operation: 'publish',
         txHash
       },
-      cycle
+      cycle,
+      {
+        event: 'cycle.completed',
+        workflow: 'ladder',
+        marketId,
+        status: 'observed',
+        action: 'rest'
+      }
     ])
   })
 
@@ -748,7 +768,11 @@ describe('Cli', () => {
       signal: controller.signal,
       verbose: true
     })
-    expect(streamed).toEqual([event])
+    expect(streamed).toEqual([
+      event,
+      { event: 'setup.ready', ready: true },
+      { event: 'cycle.completed', workflow: 'setup-check', status: 'ready' }
+    ])
   })
 
   test('quoter-bot start rejects a halted combined lifecycle report', async () => {

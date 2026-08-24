@@ -68,7 +68,12 @@ describe('calculateProductionLadderCapacities', () => {
       lowerRateCapacityAssets: 90n,
       higherRateCapacityAssets: 10n,
       targetMarketCapacityAssets: 100n,
-      maximumTotalCapacityAssets: 1_000n
+      maximumTotalCapacityAssets: 1_000n,
+      cashBalanceAssets: 100n,
+      creditAssets: 90n,
+      otherMarketCreditAssets: 0n,
+      reservedAssets: 0n,
+      marketReservedAssets: 0n
     })
   })
 })
@@ -277,6 +282,7 @@ describe('publishLadderPublication', () => {
     const retained = new Set<Hex>()
     const service = new MidnightLadderMakeService({
       readActive: async () => undefined,
+      readConsumption: async () => [],
       listOwnedGroups: async () => [],
       readGroupConsumed: async () => 0n,
       listActiveGroupIds: async () => [],
@@ -320,6 +326,7 @@ describe('publishLadderPublication', () => {
     const retained = new Set<Hex>()
     const service = new MidnightLadderMakeService({
       readActive: async () => undefined,
+      readConsumption: async () => [],
       listOwnedGroups: async () => [],
       readGroupConsumed: async () => 0n,
       listActiveGroupIds: async () => [],

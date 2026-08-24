@@ -427,6 +427,78 @@ normal teardown, and cannot interrupt strategy execution. Create the log source,
 queries, and any dashboard/alerting in Better Stack externally; this repository does not provision
 or claim a deployed dashboard URL.
 
+Every shipped record carries a named top-level `event` and a flat scalar payload, so Better Stack
+metric expressions can group on it; the `bot.action` fallback is unreachable for this bot.
+`schemaVersion` is bound into the logger context of every record (currently `1`), so a consumer can
+pin the contract; it is bumped only on a breaking field rename or removal.
+
+**Units.** Every `*Assets` field is an unsigned raw smallest-unit amount of the configured
+`loanAsset`. Every `*Bps` field is an integer basis-point value. Both serialize as decimal strings
+because the bot-kit logger flattens `bigint` before shipping. The bot never reads token decimals, so
+no field is human-scaled — resolve decimals downstream from the `loanAsset` address in
+`bot.configured`.
+
+| Event                          | Fires when                                                   | Fields                                                                                                                                                                                                                                                                 |
+| ------------------------------ | ------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `bot.configured`               | Once per process start                                       | `marketIds`, `ladderIntervalSeconds`, `bootstrapIntervalSeconds`, `loanAsset`, `referenceMode`, `readOnly`                                                                                                                                                             |
+| `cycle.completed`              | Every market of every setup/bootstrap/ladder cycle           | `workflow`, `marketId?`, `status`, `stage?`, `action?`, `reason?`, `durationMs?`, `errorName?`                                                                                                                                                                         |
+| `guardrail.rate-clamped`       | A cycle clamped rates to a bound (per side, count > 0)       | `workflow`, `marketId`, `side?`, `clampedRungs`, `bound`, `minimumRateBps`, `maximumRateBps`                                                                                                                                                                           |
+| `guardrail.cross-book-cleared` | Cross-book clearance repriced rungs (per side, count > 0)    | `workflow`, `marketId`, `side`, `clearedRungs`, `clearanceBps`                                                                                                                                                                                                         |
+| `guardrail.exposure-capped`    | A bootstrap offer was reduced below its request              | `workflow`, `marketId`, `requestedAssets`, `cappedAssets`, `cap`                                                                                                                                                                                                       |
+| `guardrail.rungs-truncated`    | Funded rungs are fewer than configured (per side)            | `marketId`, `side`, `configuredRungs`, `fundedRungs`                                                                                                                                                                                                                   |
+| `guardrail.spread-rejected`    | A bootstrap result classified as `BootstrapAdapterError`     | `marketId`, `errorName`                                                                                                                                                                                                                                                |
+| `guardrail.halted`             | A cycle halted (offers pulled)                               | `workflow`, `marketId?`, `stage`, `reason`, `strategyInvalidated`                                                                                                                                                                                                      |
+| `reference.observed`           | A verbose cycle read the reference rate                      | `workflow`, `marketId`, `referenceRateBps`, `targetRateBps?`                                                                                                                                                                                                           |
+| `position.observed`            | A verbose ladder cycle observed market state                 | `marketId`, `cashBalanceAssets?`, `creditAssets?`, `otherMarketCreditAssets?`, `reservedAssets?`, `marketReservedAssets?`, `maturityTimestamp?`, `lowerRateCapacityAssets?`, `higherRateCapacityAssets?`, `targetMarketCapacityAssets?`, `maximumTotalCapacityAssets?` |
+| `bootstrap.progress`           | A verbose bootstrap cycle observed position state            | `marketId`, `creditAssets`, `creditTargetAssets`, `shortfallAssets`, `mode`                                                                                                                                                                                            |
+| `book.observed`                | A verbose ladder cycle read the active quote set (per side)  | `marketId`, `side`, `state`, `rungs`, `totalAssets`, `bestRateBps?`, `worstRateBps?`, `centerRateBps`                                                                                                                                                                  |
+| `offer.consumed`               | A group's monotonic `consumed` grew since the previous cycle | `marketId`, `side`, `consumedDeltaAssets`, `groupRateBps`, `remainingAssets`, `groupId` _(trace only)_                                                                                                                                                                 |
+| `transaction.settled`          | A submitted transaction confirmed                            | `workflow`, `marketId?`, `operation`, `status`, `txHash` _(trace only)_                                                                                                                                                                                                |
+| `setup.ready`                  | Every setup check completes                                  | `ready`                                                                                                                                                                                                                                                                |
+| `setup.check-failed`           | One named setup check failed                                 | `check`, `errorName?`                                                                                                                                                                                                                                                  |
+
+`txHash` and `groupId` are unbounded trace-only correlation fields: use them to join records, never
+as grouping dimensions. The safe dimensions are `workflow`, `marketId`, `side`, `status`, `stage`,
+`action`, `reason`, `check`, `bound`, `cap`, `operation`, `mode`, `state`, and `referenceMode`.
+Guardrail records are aggregated per side per cycle and emitted only when the count is non-zero,
+because a side can hold up to 512 rungs and regenerate every second. Error text never ships — only
+allowlisted `errorName` classifications.
+
+Alert recipes:
+
+| Question             | Signal                                                                                        |
+| -------------------- | --------------------------------------------------------------------------------------------- |
+| Crash                | Missed heartbeat, `bot.unexpected-error`, or `bot.stopped` outside a signal teardown          |
+| Halt / guardrail     | `guardrail.halted`; `guardrail.*` counts over a window                                        |
+| Stale reference      | Absence of `reference.observed` per market beyond two `ladderIntervalSeconds`                 |
+| Inventory / exposure | `position.observed` gauges plus `guardrail.exposure-capped` grouped by `cap`                  |
+| Fills                | `offer.consumed`, summing `consumedDeltaAssets` by `marketId` and `side`                      |
+| PnL / losses         | Derived downstream from `offer.consumed`, `position.observed`, and `maturityTimestamp`        |
+| Not quoting          | `book.observed` with `state:"empty"`, or absence of `cycle.completed` for a configured market |
+
+Absence alerts are scoped by `bot.configured`, which names the market set and the cadences.
+
+**Known limits.**
+
+- Everything beyond `cycle.completed`, `guardrail.halted`, and `setup.*` requires `--verbose`. Full
+  shipping configuration auto-enables it; running `start`, `bootstrap`, or `ladder` manually without
+  `--verbose` yields far fewer records.
+- Fills are diffed from monotonic per-group `consumed`. A group first seen establishes a baseline and
+  emits nothing, so a restart loses one cycle of fill telemetry.
+- Under `groupMode: per-book` every rung on a side shares one protocol group, so
+  `offer.consumed.groupRateBps` is the group's best rate, not the rate that executed. Under
+  `shared-rung` it is exact.
+- `position.observed.maturityTimestamp` is projected from maker groups already read this cycle rather
+  than a dedicated market read, so it is absent when the maker holds no indexed group in that market.
+- `guardrail.spread-rejected` keys off the sanitized `BootstrapAdapterError` classification, which
+  collapses the adapter's specific `negative-spread` operation, so it over-reports any bootstrap
+  adapter error.
+- `book.observed.state` is `quoting` or `empty` only: `readActive` reconstructs indexed and
+  not-yet-indexed groups into one quote set, so a pending-index state is not observable at this seam.
+- `cycle.completed.durationMs` covers one market's check including the post-check verbose re-read.
+  Under the combined `start` lifecycle the ladder and bootstrap writers share one mutation queue, so
+  it can include queue wait.
+
 ### YAML schema
 
 The root accepts exactly `chain`, `identity`, `contracts`, `apis`, `markets`, `setup`, `bootstrap`,

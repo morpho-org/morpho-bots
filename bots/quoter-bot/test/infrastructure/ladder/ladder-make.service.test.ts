@@ -29,6 +29,7 @@ const harness = () => {
   const events: string[] = []
   const transport: LadderOfferTransport = {
     readActive: async () => undefined,
+    readConsumption: async () => [],
     listOwnedGroups: async () => [
       { groupId: oldGroup, maxAssets: 10n },
       { groupId: secondGroup, maxAssets: 10n }

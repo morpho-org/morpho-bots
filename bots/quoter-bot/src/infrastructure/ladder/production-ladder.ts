@@ -51,6 +51,7 @@ import { createBlueReferenceReader } from '../reference/blue-reference-reader.ut
 import { mapSelectedMarketItems } from '../selected-market-items.utils'
 import {
   activeOwnedLadderGroupIds,
+  ownedLadderGroupConsumption,
   reconstructOwnedLadderPublication
 } from './ladder-active-publication.utils'
 import { LadderAdapterError } from './ladder-adapter.error'
@@ -59,6 +60,7 @@ import { calculateLadderCapacities } from './ladder-capacity.utils'
 import { ladderCashReservations } from './ladder-cash-reservation.utils'
 import { createLadderGroupOwnership } from './ladder-group-ownership.utils'
 import { MidnightLadderMakeService, type LadderOfferTransport } from './ladder-make.service'
+import { ladderMarketMaturity } from './ladder-maturity.utils'
 import { buildLadderTree } from './ladder-offer.utils'
 import { configuredRatifierType, prepareLadderRatification } from './ladder-ratification.utils'
 import { assertLadderProspectiveSpread } from './ladder-spread.utils'
@@ -422,6 +424,8 @@ export const createProductionLadderAdapters = (
         now: block.timestamp
       })
 
+      const maturityTimestamp = ladderMarketMaturity(groups, marketId)
+
       return {
         ...calculateProductionLadderCapacities({
           marketId,
@@ -432,7 +436,8 @@ export const createProductionLadderAdapters = (
           maximumTotalExposureAssets: selectedConfig.maximumTotalExposureAssets,
           reservations
         }),
-        ...(bootstrapBuyRateBps === undefined ? {} : { bootstrapBuyRateBps })
+        ...(bootstrapBuyRateBps === undefined ? {} : { bootstrapBuyRateBps }),
+        ...(maturityTimestamp === undefined ? {} : { maturityTimestamp })
       }
     }
   }
@@ -540,6 +545,11 @@ export const createProductionLadderAdapters = (
       .find(quote => quote !== undefined)
   }
 
+  const readConsumption = async (marketId: Hex) => {
+    const [groups, publications] = await Promise.all([readGroups(), ladderOwnership.read()])
+    return ownedLadderGroupConsumption(publications, groups, marketId)
+  }
+
   const prepareUnsignedPublication = async (
     quote: LadderQuoteSet,
     bookState?: Awaited<ReturnType<typeof completeBookOffers>>
@@ -590,6 +600,7 @@ export const createProductionLadderAdapters = (
 
   const readOnlyMake: LadderMakeService = {
     readActive,
+    readConsumption,
     reconcile: async () => {
       throw new LadderAdapterError('readonly-mutation')
     },
@@ -627,6 +638,7 @@ export const createProductionLadderAdapters = (
 
   const transport: LadderOfferTransport = {
     readActive,
+    readConsumption,
     listOwnedGroups: async () => ownedGroups(await ladderOwnership.read()),
     readGroupConsumed,
     listActiveGroupIds: async marketId => {

@@ -16,9 +16,13 @@ import type { ConfigService } from './config/config.service'
 import type { TargetRateStrategyConfig } from './domain/target-rate'
 import type { CliRuntimeOptions } from './infrastructure/cli/cli'
 
-import { PositionBootstrapService } from './application/bootstrap/position-bootstrap.service'
+import {
+  BOOTSTRAP_MONITOR_INTERVAL_MS,
+  PositionBootstrapService
+} from './application/bootstrap/position-bootstrap.service'
 import { OfferInvalidationService } from './application/invalidation/offer-invalidation.service'
 import { LadderQuoterService } from './application/ladder/ladder-quoter.service'
+import { botConfiguredEvent } from './application/monitoring/bot-configured.utils'
 import { serializeQuoterBotWrites } from './application/quoter-bot/quoter-bot-mutation.utils'
 import { QuoterBotService } from './application/quoter-bot/quoter-bot.service'
 import { SetupCheckAbortedError } from './application/setup/setup-check-aborted.error'
@@ -328,6 +332,16 @@ export const createApplication = (
         )
       }
       assertReferenceConfigured(config, [...config.bootstrap, ...config.ladder])
+      await options.writeEvent?.(
+        botConfiguredEvent({
+          marketIds: config.setup.marketIds,
+          loanAsset: config.setup.loanAsset,
+          readOnly: config.readOnly,
+          bootstrap: config.bootstrap,
+          ladder: config.ladder,
+          bootstrapIntervalSeconds: BOOTSTRAP_MONITOR_INTERVAL_MS / 1_000
+        })
+      )
       if (options.signal.aborted) throw new SetupCheckAbortedError()
       const ladderAdapters = await (dependencies.createLadderAdapters?.(config) ??
         createProductionLadderAdapters(config))

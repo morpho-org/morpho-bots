@@ -2,6 +2,7 @@ import type { Hex } from 'viem'
 
 import type { LadderMakeService } from '../../application/ladder/ladder-quoter.service'
 import type {
+  LadderGroupConsumption,
   LadderMakeResult,
   LadderSubmittedTransaction,
   LadderTransactionSubmittedObserver
@@ -23,6 +24,8 @@ type LadderOwnedGroup = { groupId: Hex; maxAssets: bigint }
 export interface LadderOfferTransport {
   /** Reconstructs active quote semantics. @param marketId - Selected market. @returns Active quote set or no quote. */
   readActive(marketId: Hex): Promise<LadderQuoteSet | undefined>
+  /** Reports monotonic per-group consumption. @param marketId - Selected market. @returns Indexed owned groups with their consumption. */
+  readConsumption(marketId: Hex): Promise<readonly LadderGroupConsumption[]>
   /** Lists every durably owned group and its exact consumption cap. @returns Groups used for exhaustive cleanup. */
   listOwnedGroups(): Promise<readonly LadderOwnedGroup[]>
   /** Reads authoritative on-chain consumption. @param groupId - Strategy-owned group. @returns Current consumed assets. */
@@ -86,6 +89,17 @@ export class MidnightLadderMakeService implements LadderMakeService {
   /** Reads active quote state. @param marketId - Selected market. @returns Reconstructed quote or no active quote. */
   readActive(marketId: Hex) {
     return this.transport.readActive(marketId)
+  }
+
+  /**
+   * Reads monotonic per-group consumption for one market.
+   * @param marketId - Selected market.
+   * @returns Indexed owned groups with their side, rate, and consumption.
+   * @throws When owned groups or indexed group state cannot be read.
+   * @remarks Observation-only: it takes no mutation queue slot and never changes publication state.
+   */
+  readConsumption(marketId: Hex) {
+    return this.transport.readConsumption(marketId)
   }
 
   /**

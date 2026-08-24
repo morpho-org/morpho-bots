@@ -175,71 +175,131 @@ export const decidePositionBootstrapTransition = ({
   return undefined
 }
 
+/** Which configured limit bound one bootstrap offer's size. */
+export type BootstrapSizeCap =
+  | 'offer-size'
+  | 'credit-target'
+  | 'cash-balance'
+  | 'market-exposure'
+  | 'total-exposure'
+
 /**
- * Computes the deterministic bootstrap action from current chain and Mempool truth.
- * @returns The exact observe, invalidate, rest, replace, or publish action for this snapshot.
- * @throws BootstrapConfigurationError when the static configuration itself is invalid.
- * @remarks A premium-adjusted rate outside the hard range saturates at the nearest bound instead of
- * failing, so a reference-rate excursion can never halt the strategy.
+ * Guardrail observations from one bootstrap derivation.
+ * @remarks `cap` names the binding limit even when nothing was reduced, so a projection must
+ * compare `requestedAssets` against `cappedAssets` before reporting an exposure cap.
  */
-export const decidePositionBootstrap = ({
+export type BootstrapDecisionDiagnostics = {
+  requestedRateBps: bigint
+  clampedRateBps: bigint
+  clampedBound?: 'minimum' | 'maximum'
+  requestedAssets: bigint
+  cappedAssets: bigint
+  cap: BootstrapSizeCap
+}
+
+const SIZE_CAPS: readonly BootstrapSizeCap[] = [
+  'offer-size',
+  'credit-target',
+  'cash-balance',
+  'market-exposure',
+  'total-exposure'
+]
+
+/**
+ * Computes one bootstrap action alongside the guardrail observations that shaped it.
+ * @returns The decision, plus rate-clamp and size-cap diagnostics for a rate-derived decision.
+ * @throws BootstrapConfigurationError when the static configuration itself is invalid.
+ * @remarks Diagnostics are absent for transition decisions, which never reach rate derivation.
+ * Exists so silent rate saturation stays observable without a logger reaching into this pure module.
+ */
+export const decidePositionBootstrapWithDiagnostics = ({
   config,
   position,
   rate,
   activeOffer,
   requiresReconciliation = false,
   initialTargetCompleted
-}: PositionBootstrapParameters): PositionBootstrapDecision => {
+}: PositionBootstrapParameters): {
+  decision: PositionBootstrapDecision
+  diagnostics?: BootstrapDecisionDiagnostics
+} => {
   const transition = decidePositionBootstrapTransition({
     config,
     position,
     activeOffer,
     initialTargetCompleted
   })
-  if (transition) return transition
+  if (transition) return { decision: transition }
 
+  const unclampedRateBps = rate.rateBps + config.premiumBps
   const requestedRateBps = clampRateBps(
-    rate.rateBps + config.premiumBps,
+    unclampedRateBps,
     config.minimumRateBps,
     config.maximumRateBps
   )
 
-  const assets = [
+  const candidates = [
     config.offerSize,
     config.creditTarget - position.credit,
     position.cashBalance,
     config.maximumMarketExposure - position.marketExposure,
     config.maximumTotalExposure - position.totalExposure
-  ].reduce(bigintMin)
-
-  if (assets <= 0n) {
-    if (activeOffer) {
-      return {
-        kind: 'invalidate',
-        reason: 'no-capacity',
-        completesInitialTarget: false
+  ]
+  const assets = candidates.reduce(bigintMin)
+  const diagnostics: BootstrapDecisionDiagnostics = {
+    requestedRateBps: unclampedRateBps,
+    clampedRateBps: requestedRateBps,
+    ...(unclampedRateBps < config.minimumRateBps
+      ? { clampedBound: 'minimum' as const }
+      : unclampedRateBps > config.maximumRateBps
+        ? { clampedBound: 'maximum' as const }
+        : {}),
+    requestedAssets: config.offerSize,
+    cappedAssets: assets,
+    cap: SIZE_CAPS[candidates.indexOf(assets)] ?? 'offer-size'
+  }
+  const decision = (): PositionBootstrapDecision => {
+    if (assets <= 0n) {
+      if (activeOffer) {
+        return { kind: 'invalidate', reason: 'no-capacity', completesInitialTarget: false }
       }
+      return { kind: 'observe', reason: 'no-capacity', assets: 0n }
     }
-    return { kind: 'observe', reason: 'no-capacity', assets: 0n }
+
+    const offer: BootstrapOffer = {
+      marketId: config.marketId,
+      assets,
+      rateBps: requestedRateBps,
+      referenceObservationId: rate.observationId
+    }
+
+    const observationMatches = activeOffer?.referenceObservationId === offer.referenceObservationId
+    if (
+      activeOffer &&
+      !requiresReconciliation &&
+      observationMatches &&
+      sameOffer(activeOffer, offer)
+    ) {
+      return { kind: 'rest', offer: activeOffer }
+    }
+    if (activeOffer) return { kind: 'replace', activeOffer, offer }
+
+    return { kind: 'publish', offer }
   }
 
-  const offer: BootstrapOffer = {
-    marketId: config.marketId,
-    assets,
-    rateBps: requestedRateBps,
-    referenceObservationId: rate.observationId
-  }
-
-  const observationMatches = activeOffer?.referenceObservationId === offer.referenceObservationId
-  if (
-    activeOffer &&
-    !requiresReconciliation &&
-    observationMatches &&
-    sameOffer(activeOffer, offer)
-  ) {
-    return { kind: 'rest', offer: activeOffer }
-  }
-  if (activeOffer) return { kind: 'replace', activeOffer, offer }
-
-  return { kind: 'publish', offer }
+  return { decision: decision(), diagnostics }
 }
+
+/**
+ * Computes the deterministic bootstrap action from current chain and Mempool truth.
+ * @param parameters - Validated configuration, fresh position, reference rate, active offer,
+ * reconciliation requirement, and initial-target completion state.
+ * @returns The exact observe, invalidate, rest, replace, or publish action for this snapshot.
+ * @throws BootstrapConfigurationError when the static configuration itself is invalid.
+ * @remarks A premium-adjusted rate outside the hard range saturates at the nearest bound instead of
+ * failing, so a reference-rate excursion can never halt the strategy. Use
+ * {@link decidePositionBootstrapWithDiagnostics} when that saturation must be observable.
+ */
+export const decidePositionBootstrap = (
+  parameters: PositionBootstrapParameters
+): PositionBootstrapDecision => decidePositionBootstrapWithDiagnostics(parameters).decision

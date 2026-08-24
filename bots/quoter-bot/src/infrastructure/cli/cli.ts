@@ -11,6 +11,7 @@ import type {
 } from '../../application/invalidation/offer-invalidation.service'
 import type { LadderMonitorReport } from '../../application/ladder/ladder-quoter.service'
 import type { LadderTransactionSubmittedEvent } from '../../application/ladder/ladder-verbose'
+import type { MonitoringProjection } from '../../application/monitoring/monitoring-projection.utils'
 import type {
   QuoterBotEvent,
   QuoterBotMonitorReport
@@ -25,6 +26,7 @@ import { PositionBootstrapHaltedError } from '../../application/bootstrap/positi
 import { PositionBootstrapMonitorHaltedError } from '../../application/bootstrap/position-bootstrap-monitor-halted.error'
 import { LadderCycleHaltedError } from '../../application/ladder/ladder-cycle-halted.error'
 import { LadderMonitorHaltedError } from '../../application/ladder/ladder-monitor-halted.error'
+import { createMonitoringProjection } from '../../application/monitoring/monitoring-projection.utils'
 import { QuoterBotMonitorHaltedError } from '../../application/quoter-bot/quoter-bot-monitor-halted.error'
 import { SetupMonitorHaltedError } from '../../application/setup/setup-monitor-halted.error'
 import { CliUsageError } from './cli-usage.error'
@@ -106,6 +108,17 @@ export class Cli {
   private output: unknown
   private hasOutput = false
   private runtime: CliRuntimeOptions = {}
+  private readonly monitoring: MonitoringProjection = createMonitoringProjection()
+
+  // The cycle value keeps its existing shape and ships first; the flat monitoring records derived
+  // from it follow on the same stream, so stdout and any log sink stay identical.
+  private async writeCycle(
+    value: unknown,
+    project: (projection: MonitoringProjection) => readonly unknown[]
+  ) {
+    await this.runtime.writeEvent?.(value)
+    for (const event of project(this.monitoring)) await this.runtime.writeEvent?.(event)
+  }
 
   private get signal() {
     return this.runtime.signal ?? new AbortController().signal
@@ -186,7 +199,7 @@ export class Cli {
         if (!setupService.runContinuously) throw new CliUsageError()
         const result = await setupService.runContinuously({
           signal: this.signal,
-          onCycle: report => this.runtime.writeEvent?.(report)
+          onCycle: report => this.writeCycle(report, monitoring => monitoring.setup(report))
         })
         if (result.status === 'halted') throw new SetupMonitorHaltedError(result)
         this.capture(result)
@@ -218,7 +231,7 @@ export class Cli {
         if (!bootstrapService.runContinuously) throw new CliUsageError()
         const result = await bootstrapService.runContinuously({
           signal: this.signal,
-          onCycle: cycle => this.runtime.writeEvent?.(cycle),
+          onCycle: cycle => this.writeCycle(cycle, monitoring => monitoring.bootstrap(cycle)),
           verbose,
           onTransactionSubmitted
         })
@@ -258,7 +271,7 @@ export class Cli {
         if (!ladderService.runContinuously) throw new CliUsageError()
         const result = await ladderService.runContinuously({
           signal: this.signal,
-          onCycle: cycle => this.runtime.writeEvent?.(cycle),
+          onCycle: cycle => this.writeCycle(cycle, monitoring => monitoring.ladder(cycle)),
           verbose,
           onTransactionSubmitted
         })
@@ -291,7 +304,7 @@ export class Cli {
       })
       const result = await service.runContinuously({
         signal: this.signal,
-        onEvent: event => this.runtime.writeEvent?.(event),
+        onEvent: event => this.writeCycle(event, monitoring => monitoring.combined(event)),
         verbose: startOptions.verbose === true
       })
       if (result.status === 'halted') throw new QuoterBotMonitorHaltedError(result)

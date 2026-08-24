@@ -17,7 +17,10 @@ type LadderCapacityParameters = {
  * This is a pure projection with no side effects. Callers must provide validated, non-negative
  * balances, credits, limits, and reservations; malformed or negative inputs are not rejected.
  * @param parameters - Wallet balance, accrued credit, active reservations, and exposure limits.
- * @returns Fresh side, market, and total capacities.
+ * @returns Fresh side, market, and total capacities, plus the balance and reservation primitives
+ * they were derived from.
+ * @remarks The capacities are saturating minima and cannot be inverted back into a position value,
+ * so the primitives ship alongside them for downstream PnL derivation.
  */
 export const calculateLadderCapacities = (parameters: LadderCapacityParameters) => {
   const reserved = parameters.reservations.reduce((sum, item) => sum + item.assets, 0n)
@@ -47,6 +50,11 @@ export const calculateLadderCapacities = (parameters: LadderCapacityParameters) 
     lowerRateCapacityAssets: credit,
     higherRateCapacityAssets: cash,
     targetMarketCapacityAssets: market,
-    maximumTotalCapacityAssets: total
+    maximumTotalCapacityAssets: total,
+    cashBalanceAssets: parameters.balance,
+    creditAssets: parameters.currentCredit,
+    otherMarketCreditAssets: parameters.otherMarketCredit,
+    reservedAssets: reserved,
+    marketReservedAssets: marketReserved
   }
 }
