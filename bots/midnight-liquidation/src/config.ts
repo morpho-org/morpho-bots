@@ -271,25 +271,26 @@ function ladderEnv(env: Env, name: string, def: string[]): string[] {
 }
 
 // Parses an optional comma-separated list of endpoint URLs, with a default, de-duplicating while
-// preserving order. Fails loud on an all-empty value or any malformed element rather than silently
-// dropping it — a dropped whitelist source would narrow the market set with no signal at all.
-// De-duplication is on the PARSED URL, so trivially different spellings of one endpoint (a bare-origin
-// trailing slash, a default port) collapse instead of being polled twice and counted twice.
+// preserving order. Fails loud on any EMPTY entry (a leading/trailing/repeated comma is usually a
+// misinterpolated env var, i.e. an intended source silently missing — a narrowed whitelist with no
+// signal at all) and on any malformed element. De-duplication is on the PARSED URL with trailing path
+// slashes canonicalized away, so trivially different spellings of one endpoint (a trailing slash, a
+// default port) collapse instead of being polled twice and counted as two independent sources.
 function urlListEnv(env: Env, name: string, def: string[]): string[] {
   const raw = env[name]?.trim()
   if (!raw) return def
-  const urls = raw
-    .split(',')
-    .map(part => part.trim())
-    .filter(part => part.length > 0)
-  if (urls.length === 0) {
-    throw new Error(`${name} must contain at least one URL, got: ${env[name]}`)
+  const urls = raw.split(',').map(part => part.trim())
+  if (urls.some(part => part.length === 0)) {
+    throw new Error(
+      `${name} must not contain empty entries (leading, trailing, or repeated commas), got: ${env[name]}`
+    )
   }
   const normalized = urls.map(url => {
     const parsed = tryCatch(() => new URL(url))
     if (parsed.error) {
       throw new Error(`${name} is not a valid URL: ${url}`)
     }
+    parsed.data.pathname = parsed.data.pathname.replace(/\/+$/, '')
     return parsed.data.toString()
   })
   return [...new Set(normalized)]

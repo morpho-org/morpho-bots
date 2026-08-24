@@ -295,6 +295,22 @@ describe('loadConfig', () => {
     expect(config.markets.apiUrls).toEqual(['https://a.example/markets'])
   })
 
+  it('de-duplicates MARKETS_API_URL entries that differ only by a trailing slash', () => {
+    const config = loadConfig(
+      baseEnv({ MARKETS_API_URL: 'https://a.example/markets,https://a.example/markets/' }),
+      deps
+    )
+    expect(config.markets.apiUrls).toEqual(['https://a.example/markets'])
+  })
+
+  // A trailing/leading/repeated comma usually means a misinterpolated env var — an intended source
+  // silently missing — so it must fail loud rather than start with a narrowed whitelist.
+  it('throws when a MARKETS_API_URL list contains an empty entry', () => {
+    expect(() =>
+      loadConfig(baseEnv({ MARKETS_API_URL: 'https://a.example/markets,' }), deps)
+    ).toThrow(/MARKETS_API_URL must not contain empty entries/)
+  })
+
   it('throws on a malformed MARKETS_API_URL', () => {
     expect(() => loadConfig(baseEnv({ MARKETS_API_URL: 'not a url' }), deps)).toThrow(
       /MARKETS_API_URL is not a valid URL/
@@ -311,7 +327,7 @@ describe('loadConfig', () => {
 
   it('throws when MARKETS_API_URL holds only separators', () => {
     expect(() => loadConfig(baseEnv({ MARKETS_API_URL: ' , ' }), deps)).toThrow(
-      /MARKETS_API_URL must contain at least one URL/
+      /MARKETS_API_URL must not contain empty entries/
     )
   })
 
