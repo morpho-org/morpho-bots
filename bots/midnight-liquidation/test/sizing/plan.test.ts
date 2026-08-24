@@ -170,6 +170,82 @@ describe('plan', () => {
     expect(plan(input, { seizeCapMarginBps: 0 })).toEqual(plan(input))
   })
 
+  // Matured AND unhealthy opens both on-chain gates; the plan must pick the higher-surplus mode.
+  it('prefers normal mode for a matured-and-unhealthy position early in the LIF ramp', () => {
+    // 60s past maturity the post-maturity LIF is ~1.0006 (surplus ≈ 0.6 WAD on a 1000-WAD repay);
+    // normal mode pays the full maxLif immediately (surplus ≈ 36 WAD). The slot is rcf-exempt, so both
+    // modes cap the repay at the same post-writeoff debt — only the LIF differs.
+    expect(
+      plan(
+        baseInput({
+          blockTimestamp: 2060n,
+          maturity: 2000n,
+          bestCollateralAmt: 2000n * WAD,
+          rcfThreshold: 2000n * WAD
+        })
+      )
+    ).toEqual({
+      collateralIndex: 3,
+      seizedAssets: maxSeizeForCap(1000n * WAD, ORACLE_PRICE_SCALE, MAX_LIF),
+      repaidUnits: 0n,
+      postMaturityMode: false
+    })
+  })
+
+  it('prefers normal mode for a matured-and-unhealthy underwater slot during the ramp', () => {
+    // Underwater: both modes seize the whole 500-WAD slot, but normal mode's maxLif makes the contract
+    // derive fewer repaid units for it (~482 vs ~500 WAD) — same seize, higher surplus.
+    expect(
+      plan(baseInput({ blockTimestamp: 2060n, maturity: 2000n, bestCollateralAmt: 500n * WAD }))
+    ).toEqual({
+      collateralIndex: 3,
+      seizedAssets: 500n * WAD,
+      repaidUnits: 0n,
+      postMaturityMode: false
+    })
+  })
+
+  it('prefers post-maturity mode on a surplus tie once the LIF ramp completes', () => {
+    // dt = 4000s > TIME_TO_MAX_LIF: both modes run at maxLif and the exempt slot gives both the same
+    // debt-bound cap, so the surpluses tie — post-maturity wins because its gate (now > maturity)
+    // cannot close between read and exec, while normal mode's (unhealthy) can if the price recovers.
+    expect(
+      plan(
+        baseInput({
+          blockTimestamp: 6000n,
+          maturity: 2000n,
+          bestCollateralAmt: 2000n * WAD,
+          rcfThreshold: 2000n * WAD
+        })
+      )
+    ).toEqual({
+      collateralIndex: 3,
+      seizedAssets: maxSeizeForCap(1000n * WAD, ORACLE_PRICE_SCALE, MAX_LIF),
+      repaidUnits: 0n,
+      postMaturityMode: true
+    })
+  })
+
+  it('prefers post-maturity mode after the ramp when the RCF cap binds normal mode', () => {
+    // Same LIF in both modes after the ramp, but the slot is NOT rcf-exempt: normal mode's repay is
+    // capped at ~919 WAD while post-maturity repays the full 1000-WAD debt — strictly more surplus.
+    expect(
+      plan(
+        baseInput({
+          blockTimestamp: 6000n,
+          maturity: 2000n,
+          bestCollateralAmt: 2000n * WAD,
+          rcfThreshold: WAD
+        })
+      )
+    ).toEqual({
+      collateralIndex: 3,
+      seizedAssets: maxSeizeForCap(1000n * WAD, ORACLE_PRICE_SCALE, MAX_LIF),
+      repaidUnits: 0n,
+      postMaturityMode: true
+    })
+  })
+
   it('skips (returns null) when a cap-binding seize rounds to zero — never a (0,0) bad-debt plan', () => {
     // Post-maturity dust: 1 wei of debt against a high-priced slot. The cap binds, but the largest
     // seize whose derived repaid fits in 1 wei rounds to 0 collateral. The plan must return null, NOT a

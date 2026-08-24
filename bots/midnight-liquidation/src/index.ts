@@ -40,7 +40,7 @@ import {
   discoverBorrowers,
   MAX_DISCOVERY_PAGES
 } from './discovery/borrowers'
-import { createListedMarketFilter } from './discovery/markets'
+import { createListedMarketFilter, createUnionListedMarketFilter } from './discovery/markets'
 import { encodeLiquidationExec } from './execution/encode-call'
 import { composeQuoting } from './quotes'
 import { runTick } from './runner/tick'
@@ -148,12 +148,17 @@ async function main() {
     logger
   })
 
-  // Market whitelist: only listed markets are discovered / probed / liquidated. Refresh once at
+  // Market whitelist: only listed markets are discovered / probed / liquidated. One filter per
+  // configured markets source, unioned — the union applies the max-age rule PER SOURCE, so a source
+  // that goes down or goes stale drops out of the whitelist instead of emptying it. Refresh once at
   // startup (non-fatal — a failed first fetch leaves the set empty = fail-closed, and the timer below
   // retries), then poll on an interval.
-  const listedMarkets = createListedMarketFilter({
-    apiUrl: config.markets.apiUrl,
+  const listedMarkets = createUnionListedMarketFilter({
+    filters: config.markets.apiUrls.map(apiUrl =>
+      createListedMarketFilter({ apiUrl, chainId: config.chainId, logger })
+    ),
     chainId: config.chainId,
+    maxAgeMs: LISTED_MARKETS_MAX_AGE_MS,
     logger
   })
   await tryCatch(listedMarkets.refresh())
@@ -224,31 +229,44 @@ async function main() {
     chainId: config.chainId,
     healthFactorLte: config.discovery.healthFactorLte
   })
-  // Age of the whitelist since its last successful refresh — the caller's staleness signal. `Infinity`
-  // before the first successful fetch (never-refreshed = fail-closed).
-  const whitelistAge = () => {
-    const { updatedAt } = listedMarkets.snapshot()
-    return updatedAt === null ? Infinity : Date.now() - updatedAt
-  }
   // Filter candidates to the market whitelist BEFORE the lens read — a non-listed market is never
-  // touched (fail-closed), and this also shrinks the lens batch. Past the fail-closed max-age (a
-  // sustained markets-API outage the refresh loop could not recover from) the whitelist is treated as
-  // EMPTY so a since-delisted market can never linger in scope on the back of a stale set.
+  // touched (fail-closed), and this also shrinks the lens batch. `current()` freezes the fresh-source
+  // set for the whole pass, excluding any source past the fail-closed max-age (a sustained markets-API
+  // outage the refresh loop could not recover from), so a since-delisted market can never linger in
+  // scope on the back of a stale set.
+  //
+  // The all-sources-expired case is reported HERE, every tick, rather than from the refresh loop: the
+  // whitelist expires on `LISTED_MARKETS_MAX_AGE_MS` but is only re-checked on `MARKETS_REFRESH_MS`, so
+  // a longer refresh interval (or a wedged refresh loop) would otherwise leave a total liquidation halt
+  // unreported for most of each interval — visible only as `discover.filtered` reading `listed: 0`,
+  // which is indistinguishable from "nothing to do".
   const discover = async () => {
     const candidates = await discoverBorrowers(fetchPage, { logger, maxPages: MAX_DISCOVERY_PAGES })
-    const whitelistExpired = whitelistAge() > LISTED_MARKETS_MAX_AGE_MS
-    if (whitelistExpired) {
+    const whitelist = listedMarkets.current()
+    if (whitelist.fresh === 0) {
       logger.warn('markets.whitelist_expired', {
-        ageMs: whitelistAge(),
+        maxAgeMs: LISTED_MARKETS_MAX_AGE_MS,
+        sources: listedMarkets.snapshot().sources,
         detail:
-          'whitelist older than max age — treating as empty (fail-closed) until a refresh lands'
+          'every markets source is older than max age — whitelist is empty (fail-closed) until a refresh lands'
       })
     }
-    const listed = whitelistExpired
-      ? []
-      : candidates.filter(candidate => listedMarkets.isListed(candidate.marketId))
+    const listed = candidates.filter(candidate => whitelist.isListed(candidate.marketId))
     if (listed.length < candidates.length) {
-      logger.info('discover.filtered', { total: candidates.length, listed: listed.length })
+      // Name the filtered-out markets, not just the counts — "was market X whitelisted at tick T"
+      // must be answerable from this line alone (the whitelist is small, so the id list is cheap).
+      const skippedMarkets = [
+        ...new Set(
+          candidates
+            .filter(candidate => !whitelist.isListed(candidate.marketId))
+            .map(candidate => candidate.marketId)
+        )
+      ]
+      logger.info('discover.filtered', {
+        total: candidates.length,
+        listed: listed.length,
+        skippedMarkets
+      })
     }
     return listed
   }
@@ -354,15 +372,18 @@ async function main() {
   runner.start()
 
   // Refresh the market whitelist on an interval, independent of the block loop, via a delay-spaced
-  // self-reschedule (no busy loop). Each round is wrapped so a transient markets-API failure logs and
-  // keeps last-known-good rather than killing the schedule (or emptying the whitelist). Also re-emits
-  // the bad-debt-only health signal while no venue is keyed.
+  // self-reschedule (no busy loop). The union refreshes every source concurrently and reports each
+  // source's failure itself (`markets.refresh_failed`), keeping that source's last-known-good rather
+  // than emptying the whitelist; the tryCatch here is belt-and-braces so nothing can kill the schedule.
+  // Also re-emits the bad-debt-only health signal while no venue is keyed.
   let stopped = false
   const refreshMarketsLoop = async () => {
     await delay(config.markets.refreshMs)
     if (stopped) return
     const { error } = await tryCatch(listedMarkets.refresh())
-    if (error) logger.warn('markets.refresh_failed', { detail: error.message })
+    // `refresh` is contractually non-throwing (it reports each source's failure itself), so reaching
+    // this is a bug in the union, not an API blip — hence `error`, not `warn`.
+    if (error) logger.error('markets.refresh_error', { detail: error.message })
     if (venues.length === 0) {
       logger.warn('quoting.no_routes', { detail: 'still no venue API keys — bad-debt-only' })
     }
