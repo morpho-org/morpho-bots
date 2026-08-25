@@ -42,11 +42,18 @@ jobs:
         uses: ./.github/actions/setup
 
       - name: Install Foundry (includes anvil)
-        uses: foundry-rs/foundry-toolchain@8789b3e21e6c11b2697f5eb56eddae542f746c10 # v1
-        with:
-          # anvil 1.4.4 rejects same-nonce EIP-1559 replacements ("nonce lower than current"), which
-          # breaks the pending-queue bump/replace fork test (real nodes + anvil >=1.5 accept them).
-          version: v1.5.1
+        # anvil 1.4.4 rejects same-nonce EIP-1559 replacements ("nonce lower than current"), which
+        # breaks the pending-queue bump/replace fork test (real nodes + anvil >=1.5 accept them).
+        # The pinned release archive is downloaded directly because the foundry-toolchain action
+        # shells the live foundryup installer, which upstream replaced with a native binary on
+        # 2026-08-25 and broke every `bash foundryup` invocation until the action catches up.
+        run: |
+          curl --fail --silent --show-error --location \
+            https://github.com/foundry-rs/foundry/releases/download/v1.5.1/foundry_v1.5.1_linux_amd64.tar.gz \
+            --output "$RUNNER_TEMP/foundry.tar.gz"
+          sudo tar -xzf "$RUNNER_TEMP/foundry.tar.gz" -C /usr/local/bin
+          forge --version
+          anvil --version
 
       - name: Run contract tests
         run: forge test --root packages/contracts -vv
