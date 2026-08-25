@@ -40,7 +40,7 @@ export type LadderGroupConsumption = {
   marketId: Hex
   /** Rate side the group was published on. */
   side: 'lower' | 'higher'
-  /** Rate of the group's rung nearest the center; exact under `shared-rung` only. */
+  /** Configured rate of the group's rung nearest the center, before tick alignment. */
   groupRateBps: bigint
   /** Protocol consumption cap written onto the group. */
   maxAssets: bigint

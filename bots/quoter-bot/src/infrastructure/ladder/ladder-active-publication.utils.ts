@@ -63,9 +63,10 @@ export const reconstructOwnedLadderPublication = (
  * @remarks `consumed` is monotonic per group — the strategy's own cancel and republish reserve fresh
  * group IDs rather than decrementing an existing one — so differences between cycles are taker
  * fills. Groups absent from the API are omitted rather than reported as unconsumed. `groupRateBps`
- * is the rate of the group's rung nearest the center, which is exact under `shared-rung` but is only
- * the best of several shared rates under `per-book`. Rung indexes restart per side, so rates are
- * resolved within the group's own side.
+ * is the configured rate of the group's rung nearest the center: under `per-book` it is only the
+ * best of several rates sharing the group, and publication aligns a rate to the market tick spacing,
+ * so neither mode reports the executed price. Rung indexes restart per side, so rates are resolved
+ * within the group's own side.
  */
 export const ownedLadderGroupConsumption = (
   publications: readonly OwnedLadderPublication[],

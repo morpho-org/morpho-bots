@@ -446,7 +446,7 @@ no field is human-scaled — resolve decimals downstream from the `loanAsset` ad
 | Event                          | Fires when                                                       | Fields                                                                                                                                                                                                                                                                 |
 | ------------------------------ | ---------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `bot.configured`               | Once per process start                                           | `bootstrapIntervalSeconds`, `loanAsset`, `referenceMode`, `readOnly`                                                                                                                                                                                                   |
-| `market.configured`            | Once per configured market, at startup                           | `marketId`, `ladderIntervalSeconds?`                                                                                                                                                                                                                                   |
+| `market.configured`            | Once per configured market, at startup                           | `marketId`, `ladder`, `bootstrap`, `ladderIntervalSeconds?`                                                                                                                                                                                                            |
 | `bot.failed`                   | A terminal failure stops the process                             | `workflow?`, `reason`, `errorName?`                                                                                                                                                                                                                                    |
 | `cycle.completed`              | Every market of every setup/bootstrap/ladder cycle               | `workflow`, `marketId?`, `status`, `stage?`, `action?`, `reason?`, `durationMs?`, `errorName?`                                                                                                                                                                         |
 | `guardrail.rate-clamped`       | A cycle clamped rates to a bound (per side, count > 0)           | `workflow`, `marketId`, `side?`, `clampedRungs`, `bound`, `minimumRateBps`, `maximumRateBps`                                                                                                                                                                           |
@@ -493,9 +493,10 @@ Absence alerts are scoped per market by `market.configured`, which names the mar
   manually without `--verbose` yields far fewer records.
 - Fills are diffed from monotonic per-group `consumed`. A group first seen establishes a baseline and
   emits nothing, so a restart loses one cycle of fill telemetry.
-- Under `groupMode: per-book` every rung on a side shares one protocol group, so
-  `offer.consumed.groupRateBps` is the group's best rate, not the rate that executed. Under
-  `shared-rung` it is exact.
+- `offer.consumed.groupRateBps` is the configured rate of the group's rung nearest the center, not
+  the rate that executed. Under `groupMode: per-book` every rung on a side shares one protocol group,
+  so it is only the best of several shared rates; and because publication aligns a rate to the
+  market's tick spacing, it can differ slightly from the published rate on either mode.
 - `position.observed.maturityTimestamp` is projected from maker groups already read this cycle rather
   than a dedicated market read, so it is absent when the maker holds no indexed group in that market.
 - `book.observed.state` is `quoting` or `empty` only: `readActive` reconstructs indexed and

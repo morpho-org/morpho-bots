@@ -1,5 +1,3 @@
-import type { Hex } from 'viem'
-
 import type { BootstrapRunResult } from '../bootstrap/position-bootstrap.service'
 import type { LadderRunResult } from '../ladder/ladder-quoter.service'
 import type { QuoterBotEvent } from '../quoter-bot/quoter-bot.service'
@@ -7,7 +5,11 @@ import type { SetupCheckReport } from '../setup/setup-check.service'
 import type { MonitoringEvent } from './monitoring-event'
 
 import { bootstrapMonitoringEvents } from './bootstrap-monitoring.utils'
-import { ladderConsumptionEvents, ladderMonitoringEvents } from './ladder-monitoring.utils'
+import {
+  createLadderConsumptionBaselines,
+  ladderConsumptionEvents,
+  ladderMonitoringEvents
+} from './ladder-monitoring.utils'
 import { setupMonitoringEvents } from './setup-monitoring.utils'
 
 /**
@@ -20,7 +22,7 @@ import { setupMonitoringEvents } from './setup-monitoring.utils'
  * consumption baseline it advances.
  */
 export const createMonitoringProjection = () => {
-  const consumption = new Map<Hex, bigint>()
+  const consumption = createLadderConsumptionBaselines()
 
   /**
    * The monitor ports type their cycle observers structurally, so the concrete result types are

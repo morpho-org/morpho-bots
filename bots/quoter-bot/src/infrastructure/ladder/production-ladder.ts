@@ -122,6 +122,7 @@ export const highestBootstrapBuyRateBps = (parameters: {
 type ProductionLadderCapacityParameters = {
   marketId: Hex
   balance: bigint
+  walletBalance?: bigint
   currentCredit: bigint
   otherMarketCredit: bigint
   targetMarketExposureAssets: bigint
@@ -131,9 +132,11 @@ type ProductionLadderCapacityParameters = {
 
 /**
  * Derives production ladder capacities using accrued credit for credit-reducing sells.
- * @param parameters - Market balance, current and cross-market credit, exposure limits, and durable
- * reservations. Reservations spanning this market reduce available balance exactly once, while
- * current credit funds reduce-only sell-side capacity without allowing the position to enter debt.
+ * @param parameters - Spendable `balance` (wallet holding narrowed by the protocol allowance), the
+ * unnarrowed `walletBalance` accounting primitive, current and cross-market credit, exposure limits,
+ * and durable reservations. Reservations spanning this market reduce available balance exactly once,
+ * while current credit funds reduce-only sell-side capacity without allowing the position to enter
+ * debt.
  * @returns Capacity limits for the lower and higher sides of the requested market.
  * @throws When the shared capacity calculator rejects inconsistent or invalid sizing inputs.
  * @remarks This pure calculation does not read, write, publish, or mutate reservation state.
@@ -434,6 +437,7 @@ export const createProductionLadderAdapters = (
         ...calculateProductionLadderCapacities({
           marketId,
           balance: minimum(cashBalance, allowance),
+          walletBalance: cashBalance,
           currentCredit: selectedPosition.credit,
           otherMarketCredit,
           targetMarketExposureAssets: selectedConfig.targetMarketExposureAssets,

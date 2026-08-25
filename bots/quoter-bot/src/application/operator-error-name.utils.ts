@@ -85,6 +85,18 @@ export const operatorAdapterOperation = (error: unknown): OperatorAdapterOperati
     : undefined
 }
 
+/**
+ * Projects an adapter failure's allowlisted operation into an optional operator-visible field.
+ * @param error - Unknown failure from an injected application or provider port.
+ * @returns `{ adapterOperation }` for an allowlisted reason, or an empty object otherwise.
+ * @remarks Returns a spreadable object so callers never emit an `undefined` `adapterOperation` key.
+ * Sanitization rules are documented on {@link operatorAdapterOperation}.
+ */
+export const adapterOperationField = (error: unknown) => {
+  const adapterOperation = operatorAdapterOperation(error)
+  return adapterOperation ? { adapterOperation } : {}
+}
+
 /** Stable operator-visible error classifications permitted at injected application boundaries. */
 type OperatorErrorName = (typeof KNOWN_NAMES)[number] | 'UnknownError'
 

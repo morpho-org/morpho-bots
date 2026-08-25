@@ -4,6 +4,7 @@ import type { Hex } from 'viem'
 type LadderCapacityParameters = {
   marketId: Hex
   balance: bigint
+  walletBalance?: bigint
   currentCredit: bigint
   otherMarketCredit: bigint
   creditSaleCapacityAssets: bigint
@@ -16,11 +17,14 @@ type LadderCapacityParameters = {
  * Derives market and aggregate ladder capacity without double-reserving replaced groups.
  * This is a pure projection with no side effects. Callers must provide validated, non-negative
  * balances, credits, limits, and reservations; malformed or negative inputs are not rejected.
- * @param parameters - Wallet balance, accrued credit, active reservations, and exposure limits.
+ * @param parameters - Spendable `balance`, the true wallet holding in `walletBalance`, accrued
+ * credit, active reservations, and exposure limits.
  * @returns Fresh side, market, and total capacities, plus the balance and reservation primitives
  * they were derived from.
  * @remarks The capacities are saturating minima and cannot be inverted back into a position value,
- * so the primitives ship alongside them for downstream PnL derivation.
+ * so the primitives ship alongside them for downstream PnL derivation. `balance` is spendable
+ * capacity — production narrows it by the protocol allowance — while `walletBalance` is the
+ * accounting primitive reported as `cashBalanceAssets`, defaulting to `balance` when omitted.
  */
 export const calculateLadderCapacities = (parameters: LadderCapacityParameters) => {
   const reserved = parameters.reservations.reduce((sum, item) => sum + item.assets, 0n)
@@ -51,7 +55,7 @@ export const calculateLadderCapacities = (parameters: LadderCapacityParameters) 
     higherRateCapacityAssets: cash,
     targetMarketCapacityAssets: market,
     maximumTotalCapacityAssets: total,
-    cashBalanceAssets: parameters.balance,
+    cashBalanceAssets: parameters.walletBalance ?? parameters.balance,
     creditAssets: parameters.currentCredit,
     otherMarketCreditAssets: parameters.otherMarketCredit,
     reservedAssets: reserved,

@@ -37,7 +37,13 @@ export type MonitoringEvent =
       referenceMode: 'static' | 'variable' | 'mixed'
       readOnly: boolean
     }
-  | { event: 'market.configured'; marketId: Hex; ladderIntervalSeconds?: number }
+  | {
+      event: 'market.configured'
+      marketId: Hex
+      ladder: boolean
+      bootstrap: boolean
+      ladderIntervalSeconds?: number
+    }
   | {
       event: 'bot.failed'
       workflow?: MonitoringWorkflow

@@ -57,4 +57,30 @@ describe('calculateLadderCapacities', () => {
       marketReservedAssets: 40n
     })
   })
+
+  test('reports the wallet balance while spending only the lower allowance', () => {
+    expect(
+      calculateLadderCapacities({
+        marketId,
+        balance: 500n,
+        walletBalance: 1_000n,
+        currentCredit: 0n,
+        otherMarketCredit: 0n,
+        creditSaleCapacityAssets: 0n,
+        targetMarketExposureAssets: 1_000n,
+        maximumTotalExposureAssets: 1_000n,
+        reservations: []
+      })
+    ).toEqual({
+      lowerRateCapacityAssets: 0n,
+      higherRateCapacityAssets: 500n,
+      targetMarketCapacityAssets: 500n,
+      maximumTotalCapacityAssets: 1_000n,
+      cashBalanceAssets: 1_000n,
+      creditAssets: 0n,
+      otherMarketCreditAssets: 0n,
+      reservedAssets: 0n,
+      marketReservedAssets: 0n
+    })
+  })
 })

@@ -560,6 +560,20 @@ describe('decidePositionBootstrapWithDiagnostics', () => {
     ).toMatchObject({ requestedAssets: 500n, cappedAssets: 300n, cap: 'credit-target' })
   })
 
+  test('floors the reported size at zero while naming the exceeded exposure bound', () => {
+    const { decision, diagnostics } = decidePositionBootstrapWithDiagnostics({
+      ...funding,
+      position: { ...funding.position, marketExposure: 2_500n }
+    })
+
+    expect(diagnostics).toMatchObject({
+      requestedAssets: 500n,
+      cappedAssets: 0n,
+      cap: 'market-exposure'
+    })
+    expect(decision).toEqual({ kind: 'observe', reason: 'no-capacity', assets: 0n })
+  })
+
   test('omits diagnostics for a transition that never derives a rate', () => {
     const { decision, diagnostics } = decidePositionBootstrapWithDiagnostics(parameters)
 

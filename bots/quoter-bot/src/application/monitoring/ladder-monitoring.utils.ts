@@ -26,8 +26,14 @@ const sideBook = (marketId: Hex, side: MonitoringSide, quote?: LadderQuoteSet): 
     ...(rates.length === 0
       ? {}
       : {
-          bestRateBps: rates.reduce((best, rate) => (rate > best ? rate : best)),
-          worstRateBps: rates.reduce((worst, rate) => (rate < worst ? rate : worst))
+          // The rung nearest the center is the competitive one, and the sides run in opposite
+          // directions from it: lower rungs sit below the center, higher rungs above.
+          bestRateBps: rates.reduce((best, rate) =>
+            side === 'lower' ? (rate > best ? rate : best) : rate < best ? rate : best
+          ),
+          worstRateBps: rates.reduce((worst, rate) =>
+            side === 'lower' ? (rate < worst ? rate : worst) : rate > worst ? rate : worst
+          )
         }),
     ...(quote === undefined ? {} : { centerRateBps: quote.centerRateBps })
   }
@@ -121,7 +127,9 @@ const verboseEvents = (
       ...defined('targetMarketCapacityAssets', market.targetMarketCapacityAssets),
       ...defined('maximumTotalCapacityAssets', market.maximumTotalCapacityAssets)
     })
-    const activeQuote = verbose.currentState.activeQuote
+    const observedAfter =
+      verbose.stateAfterCheck.status === 'observed' ? verbose.stateAfterCheck : verbose.currentState
+    const activeQuote = observedAfter.activeQuote
     events.push(...SIDES.map(side => sideBook(marketId, side, activeQuote)))
   }
   if (verbose.diagnostics) {
@@ -187,37 +195,69 @@ export const ladderMonitoringEvents = (
   })
 
 /**
+ * Cycles a baseline is retained for after a group was last seen in the indexed set.
+ * @remarks Sized far beyond the group API's consistency window so a transiently absent group is
+ * never re-baselined, while still bounding memory: reconciliation reserves fresh group IDs on every
+ * recenter and resize, so without eviction the set of observed IDs grows for the process lifetime.
+ */
+const RETAINED_BASELINE_CYCLES = 500
+
+/** Per-group fill baselines carried across ladder cycles. */
+type LadderConsumptionBaselines = {
+  groups: Map<Hex, { consumedAssets: bigint; lastSeenCycle: number }>
+  cycle: number
+}
+
+/**
+ * Creates empty fill baselines for one process.
+ * @returns Baselines holding no groups, positioned before the first cycle.
+ * @remarks In-process only: nothing is persisted, so a restart re-establishes every baseline and the
+ * first cycle after one reports no fills.
+ */
+export const createLadderConsumptionBaselines = (): LadderConsumptionBaselines => ({
+  groups: new Map(),
+  cycle: 0
+})
+
+/**
  * Diffs monotonic per-group consumption against the previous cycle to derive taker fills.
  * @param results - Sanitized per-market outcomes carrying verbose group consumption.
- * @param previous - Consumption observed for each group ID at the end of the previous cycle;
- * mutated in place so the next call diffs against this cycle.
+ * @param baselines - Consumption last observed per group; advanced in place for the next call.
  * @returns One `offer.consumed` record per group whose consumption grew.
  * @remarks Correct where a quote-set diff is not: reconciliation reserves fresh group IDs and
  * invalidates the old ones on every recenter and resize, so the active set churns for reasons
  * unrelated to takers, while a group's `consumed` only ever grows. Two limits are inherent. A group
- * first seen this cycle establishes a baseline and emits nothing, so a restart loses one cycle of
- * fills. And under `per-book` every rung on a side shares one group, so `groupRateBps` is the
- * group's best rate rather than the rate that actually executed.
+ * first seen establishes a baseline and emits nothing, so a restart loses one cycle of fills. And
+ * under `per-book` every rung on a side shares one group, so `groupRateBps` is the group's best rate
+ * rather than the rate that actually executed.
  *
- * Baselines are never dropped for an absent group: the indexer is eventually consistent, so a group
- * missing from one cycle would otherwise re-baseline on return and silently swallow the fill that
- * happened in between. Callers own the map's lifetime and should not share one across markets that
- * can reuse a group ID.
+ * A baseline is never lowered and is not dropped merely because a group is absent for a cycle: the
+ * indexer is eventually consistent, so either would silently swallow a fill. Baselines are instead
+ * evicted after {@link RETAINED_BASELINE_CYCLES} cycles without a sighting, which bounds memory
+ * without reaching the consistency window.
  */
 export const ladderConsumptionEvents = (
   results: readonly LadderRunResult[],
-  previous: Map<Hex, bigint>
+  baselines: LadderConsumptionBaselines
 ): readonly MonitoringEvent[] => {
   const events: MonitoringEvent[] = []
   const seen = new Set<Hex>()
+  baselines.cycle += 1
   const consumption: readonly LadderGroupConsumption[] = results.flatMap(
     result => result.verbose?.groupConsumption ?? []
   )
   for (const group of consumption) {
     if (seen.has(group.groupId)) continue
     seen.add(group.groupId)
-    const before = previous.get(group.groupId)
-    previous.set(group.groupId, group.consumed)
+    const previous = baselines.groups.get(group.groupId)
+    const before = previous?.consumedAssets
+    // Only ever advance. The group API is eventually consistent and can return an older `consumed`
+    // after a newer one; lowering the baseline would re-emit the already-counted portion when the
+    // next fresh value arrives.
+    baselines.groups.set(group.groupId, {
+      consumedAssets: before === undefined || group.consumed > before ? group.consumed : before,
+      lastSeenCycle: baselines.cycle
+    })
     if (before === undefined || group.consumed <= before) continue
     events.push({
       event: 'offer.consumed',
@@ -228,6 +268,11 @@ export const ladderConsumptionEvents = (
       remainingAssets: group.remainingAssets,
       groupId: group.groupId
     })
+  }
+  for (const [groupId, baseline] of baselines.groups) {
+    if (baselines.cycle - baseline.lastSeenCycle > RETAINED_BASELINE_CYCLES) {
+      baselines.groups.delete(groupId)
+    }
   }
   return events
 }

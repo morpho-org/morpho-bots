@@ -377,8 +377,16 @@ export class LadderQuoterService {
     for (const config of this.configs) {
       const startedAt = Date.now()
       let active: LadderQuoteSet | undefined
+      // Sampled here rather than after reconciliation: replacing a quote forgets the old group from
+      // durable ownership, so a fill on it would never be observed on the cycle that replaced it —
+      // which is exactly the cycle a fill causes. Runs with the active read so both share one
+      // deduplicated groups request.
+      let groupConsumption: readonly LadderGroupConsumption[] | undefined
       try {
-        active = await this.make.readActive(config.marketId)
+        ;[active, groupConsumption] = await Promise.all([
+          this.make.readActive(config.marketId),
+          this.readGroupConsumption(config.marketId)
+        ])
       } catch (error) {
         const result = await this.halt(
           config.marketId,
@@ -450,7 +458,13 @@ export class LadderQuoterService {
           parameters
         )
         results.push(
-          await this.completeResult(config, result, parameters, { config, currentState }, startedAt)
+          await this.completeResult(
+            config,
+            result,
+            parameters,
+            { config, currentState, ...(groupConsumption ? { groupConsumption } : {}) },
+            startedAt
+          )
         )
         return results
       }
@@ -495,7 +509,8 @@ export class LadderQuoterService {
               config,
               currentState,
               referenceRateBps,
-              targetRateBps: referenceRateBps + config.quotePremiumBps
+              targetRateBps: referenceRateBps + config.quotePremiumBps,
+              ...(groupConsumption ? { groupConsumption } : {})
             },
             startedAt
           )
@@ -641,18 +656,15 @@ export class LadderQuoterService {
     startedAt?: number
   ): Promise<LadderRunResult> {
     if (parameters.verbose !== true) return result
-    const [stateAfterCheck, groupConsumption] = await Promise.all([
+    const stateAfterCheck =
       verbose.currentState.status === 'not-read'
         ? verbose.currentState
-        : this.readVerboseState(config.marketId),
-      this.readGroupConsumption(config.marketId)
-    ])
+        : await this.readVerboseState(config.marketId)
     return {
       ...result,
       verbose: {
         ...verbose,
         stateAfterCheck,
-        ...(groupConsumption ? { groupConsumption } : {}),
         ...(startedAt === undefined ? {} : { durationMs: Date.now() - startedAt })
       }
     }

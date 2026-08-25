@@ -186,7 +186,8 @@ export type BootstrapSizeCap =
 /**
  * Guardrail observations from one bootstrap derivation.
  * @remarks `cap` names the binding limit even when nothing was reduced, so a projection must
- * compare `requestedAssets` against `cappedAssets` before reporting an exposure cap.
+ * compare `requestedAssets` against `cappedAssets` before reporting an exposure cap. `cappedAssets`
+ * is floored at zero when an already-exceeded bound makes the binding candidate negative.
  */
 export type BootstrapDecisionDiagnostics = {
   requestedRateBps: bigint
@@ -255,7 +256,7 @@ export const decidePositionBootstrapWithDiagnostics = ({
         ? { clampedBound: 'maximum' as const }
         : {}),
     requestedAssets: config.offerSize,
-    cappedAssets: assets,
+    cappedAssets: assets > 0n ? assets : 0n,
     cap: SIZE_CAPS[candidates.indexOf(assets)] ?? 'offer-size'
   }
   const decision = (): PositionBootstrapDecision => {

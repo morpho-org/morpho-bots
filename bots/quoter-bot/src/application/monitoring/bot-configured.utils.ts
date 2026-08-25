@@ -40,7 +40,9 @@ const referenceMode = (
  * markets should be reporting, or how long silence must last before it is a fault. Cadence is
  * per-market rather than one process-wide minimum, because a single shortest interval would make
  * every slower market look overdue. A market configured for bootstrap only carries no
- * `ladderIntervalSeconds`; its cadence is the process-wide `bootstrapIntervalSeconds`. Emitted once
+ * `ladderIntervalSeconds`; its cadence is the process-wide `bootstrapIntervalSeconds`. The `ladder`
+ * and `bootstrap` flags let a consumer tell a market that is missing a cycle from one that never
+ * configured that workflow. Emitted once
  * per process start, so a redeploy re-establishes the scope. Carries no credentials — the loan asset is a public address and the market IDs are the
  * configured allowlist.
  */
@@ -59,6 +61,8 @@ export const botConfiguredEvents = (configured: ConfiguredMarkets): readonly Mon
     return {
       event: 'market.configured',
       marketId,
+      ladder: ladderIntervalSeconds !== undefined,
+      bootstrap: configured.bootstrap.some(market => market.marketId === marketId),
       ...(ladderIntervalSeconds === undefined ? {} : { ladderIntervalSeconds })
     }
   })

@@ -30,7 +30,7 @@ import {
 } from '../../domain/bootstrap/position-bootstrap'
 import { BootstrapAdapterError } from '../../infrastructure/bootstrap/bootstrap-adapter.error'
 import {
-  operatorAdapterOperation,
+  adapterOperationField,
   operatorErrorDetails,
   operatorErrorName
 } from '../operator-error-name.utils'
@@ -38,11 +38,6 @@ import { BootstrapOwnershipCleanupError } from './bootstrap-ownership-cleanup.er
 
 /** Fixed cadence of the bootstrap monitor loop, in milliseconds. */
 export const BOOTSTRAP_MONITOR_INTERVAL_MS = 60_000
-
-const adapterOperationField = (error: unknown) => {
-  const adapterOperation = operatorAdapterOperation(error)
-  return adapterOperation ? { adapterOperation } : {}
-}
 
 type DecisionInvalidationReason = Extract<
   PositionBootstrapDecision,
@@ -222,7 +217,7 @@ type BootstrapRunPlan =
       decision: PositionBootstrapDecision
       plannedOfferAssets?: bigint
       verbose?: BootstrapVerbosePlan
-      startedAt?: number
+      plannedMs: number
     }
   | { result: BootstrapRunResult }
 
@@ -446,7 +441,7 @@ export class PositionBootstrapService {
     const reservedAssetsDeltaByMarket = new Map<Hex, bigint>()
 
     for (const config of this.configs) {
-      const startedAt = Date.now()
+      const plannedAt = Date.now()
       let observedPosition: Awaited<ReturnType<BootstrapPositionService['readPosition']>>
       try {
         observedPosition = await this.positions.readPosition(config.marketId)
@@ -471,7 +466,7 @@ export class PositionBootstrapService {
           },
           true,
           failure.makeResult,
-          startedAt
+          Date.now() - plannedAt
         )
         if (failure.result.status === 'halted') {
           return [...preflightResults(), completedResult]
@@ -631,7 +626,7 @@ export class PositionBootstrapService {
       plans.push({
         config,
         decision,
-        startedAt,
+        plannedMs: Date.now() - plannedAt,
         ...(plannedOfferAssets === undefined ? {} : { plannedOfferAssets }),
         ...(verbose
           ? {
@@ -670,7 +665,9 @@ export class PositionBootstrapService {
         results.push(plan.result)
         continue
       }
-      const { config, decision } = plan
+      const { config, decision, plannedMs } = plan
+      const mutationStartedAt = Date.now()
+      const attributedMs = () => plannedMs + (Date.now() - mutationStartedAt)
 
       if ('completesInitialTarget' in decision && decision.completesInitialTarget) {
         this.completedMarkets.add(config.marketId)
@@ -688,7 +685,7 @@ export class PositionBootstrapService {
             plan.verbose,
             false,
             undefined,
-            plan.startedAt
+            attributedMs()
           )
         )
         continue
@@ -705,7 +702,7 @@ export class PositionBootstrapService {
             plan.verbose,
             false,
             undefined,
-            plan.startedAt
+            attributedMs()
           )
         )
         continue
@@ -722,7 +719,7 @@ export class PositionBootstrapService {
             plan.verbose,
             false,
             undefined,
-            plan.startedAt
+            attributedMs()
           )
         )
         continue
@@ -752,7 +749,7 @@ export class PositionBootstrapService {
                 plan.verbose,
                 true,
                 { submittedTransactions: error.submittedTransactions },
-                plan.startedAt
+                attributedMs()
               )
             )
             return results
@@ -770,7 +767,7 @@ export class PositionBootstrapService {
               plan.verbose,
               true,
               halt.makeResult,
-              plan.startedAt
+              attributedMs()
             )
           )
           return results
@@ -786,7 +783,7 @@ export class PositionBootstrapService {
             plan.verbose,
             false,
             reconciliation,
-            plan.startedAt
+            attributedMs()
           )
         )
         continue
@@ -829,7 +826,7 @@ export class PositionBootstrapService {
             confirmedTransactions.length > 0
               ? { submittedTransactions: confirmedTransactions }
               : undefined,
-            plan.startedAt
+            attributedMs()
           )
         )
         return results
@@ -853,7 +850,7 @@ export class PositionBootstrapService {
           plan.verbose,
           false,
           reconciliation,
-          plan.startedAt
+          attributedMs()
         )
       )
     }
@@ -1017,15 +1014,21 @@ export class PositionBootstrapService {
     }
   }
 
+  /**
+   * `attributedMs` is the time already spent on this market alone — its planning iteration plus its
+   * own mutation segment — and never covers work done for other markets in between the two passes.
+   * The post-check verbose re-read performed here is added to it.
+   */
   private async withVerboseDetails(
     result: BootstrapRunOutcome,
     verbose: boolean,
     details?: BootstrapVerbosePlan,
     forceStateRead = false,
     makeResult?: BootstrapMakeResult,
-    startedAt?: number
+    attributedMs?: number
   ): Promise<BootstrapRunResult> {
     if (!verbose || !details) return result
+    const stateReadStartedAt = Date.now()
     const submittedTransactions = this.submittedTransactions(makeResult)
     return {
       ...result,
@@ -1036,7 +1039,9 @@ export class PositionBootstrapService {
           forceStateRead || details.currentState.status !== 'not-read'
             ? await this.readVerboseState(result.marketId)
             : details.currentState,
-        ...(startedAt === undefined ? {} : { durationMs: Date.now() - startedAt })
+        ...(attributedMs === undefined
+          ? {}
+          : { durationMs: attributedMs + (Date.now() - stateReadStartedAt) })
       }
     }
   }

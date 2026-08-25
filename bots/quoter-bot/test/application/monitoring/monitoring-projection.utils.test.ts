@@ -131,6 +131,98 @@ describe('createMonitoringProjection', () => {
     ])
   })
 
+  test('reports the book as reconciled left it, not as it was before publishing', () => {
+    const published = {
+      marketId,
+      status: 'applied',
+      action: 'publish',
+      verbose: {
+        config: { marketId },
+        currentState: { status: 'observed', market: {} },
+        stateAfterCheck: {
+          status: 'observed',
+          market: {},
+          activeQuote: {
+            marketId,
+            centerRateBps: 500n,
+            groupMode: 'shared-rung',
+            lower: [{ index: 0, rateBps: 450n, assets: 100n }],
+            higher: []
+          }
+        }
+      }
+    }
+
+    expect(
+      createMonitoringProjection()
+        .ladder([published] as readonly { status: string }[])
+        .filter(event => event.event === 'book.observed' && event.side === 'lower')
+    ).toEqual([
+      {
+        event: 'book.observed',
+        marketId,
+        side: 'lower',
+        state: 'quoting',
+        rungs: 1,
+        totalAssets: 100n,
+        bestRateBps: 450n,
+        worstRateBps: 450n,
+        centerRateBps: 500n
+      }
+    ])
+  })
+
+  test('orients best and worst rate toward the center on each side', () => {
+    const quoted = {
+      marketId,
+      status: 'observed',
+      action: 'rest',
+      verbose: {
+        config: { marketId },
+        currentState: { status: 'observed', market: {} },
+        stateAfterCheck: {
+          status: 'observed',
+          market: {},
+          activeQuote: {
+            marketId,
+            centerRateBps: 500n,
+            groupMode: 'shared-rung',
+            lower: [
+              { index: 0, rateBps: 450n, assets: 10n },
+              { index: 1, rateBps: 350n, assets: 10n }
+            ],
+            higher: [
+              { index: 0, rateBps: 550n, assets: 10n },
+              { index: 1, rateBps: 650n, assets: 10n }
+            ]
+          }
+        }
+      }
+    }
+    const books = createMonitoringProjection()
+      .ladder([quoted] as readonly { status: string }[])
+      .filter(event => event.event === 'book.observed')
+
+    expect(books).toContainEqual(
+      expect.objectContaining({ side: 'lower', bestRateBps: 450n, worstRateBps: 350n })
+    )
+    expect(books).toContainEqual(
+      expect.objectContaining({ side: 'higher', bestRateBps: 550n, worstRateBps: 650n })
+    )
+  })
+
+  test('never re-counts a fill when the indexer replays an older consumption value', () => {
+    const projection = createMonitoringProjection()
+    projection.ladder([consumingResult(100n)])
+    expect(projection.ladder([consumingResult(80n)])).not.toContainEqual(
+      expect.objectContaining({ event: 'offer.consumed' })
+    )
+
+    expect(projection.ladder([consumingResult(120n)])).toContainEqual(
+      expect.objectContaining({ event: 'offer.consumed', consumedDeltaAssets: 20n })
+    )
+  })
+
   test('leaves an already-named transaction event to ship unchanged', () => {
     expect(
       createMonitoringProjection().combined({

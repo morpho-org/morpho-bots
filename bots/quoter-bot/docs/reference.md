@@ -444,7 +444,7 @@ human-scaled: a consumer resolves decimals from the `loanAsset` address shipped 
 | Event                          | Fires when                                                                                    | Fields                                                                                                                                                                                                                                                                 |
 | ------------------------------ | --------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `bot.configured`               | Once per process start, from the validated configuration                                      | `bootstrapIntervalSeconds`, `loanAsset`, `referenceMode` (`static` \| `variable` \| `mixed`), `readOnly`                                                                                                                                                               |
-| `market.configured`            | Once per configured market, immediately after `bot.configured`                                | `marketId`, `ladderIntervalSeconds?` (that market's own `loopIntervalSeconds`; absent for a bootstrap-only market, whose cadence is `bootstrapIntervalSeconds`)                                                                                                        |
+| `market.configured`            | Once per configured market, immediately after `bot.configured`                                | `marketId`, `ladder`, `bootstrap` (which workflows the market is configured for), `ladderIntervalSeconds?` (that market's own `loopIntervalSeconds`; absent for a bootstrap-only market, whose cadence is `bootstrapIntervalSeconds`)                                  |
 | `bot.failed`                   | A terminal failure stops the process; one per process, plus one per failed workflow           | `workflow?` (`setup-check` \| `bootstrap` \| `ladder`; absent on the process-level record), `reason`, `errorName?`                                                                                                                                                     |
 | `cycle.completed`              | Once per market per bootstrap/ladder cycle, and once per setup check                          | `workflow` (`setup-check` \| `bootstrap` \| `ladder`), `marketId?` (absent for `setup-check`), `status` (`ready` \| `failed` for `setup-check`), `stage?`, `action?`, `reason?`, `durationMs?`, `errorName?`                                                           |
 | `guardrail.rate-clamped`       | A cycle clamped a rate to its bound; ladder aggregates per side, bootstrap reports one rung   | `workflow`, `marketId`, `side?` (absent for `bootstrap`), `clampedRungs`, `bound` (`minimum` \| `maximum`), `minimumRateBps`, `maximumRateBps`                                                                                                                         |
@@ -503,7 +503,8 @@ operator question at three orders of magnitude less volume.
 Absence alerts are scoped per market by `market.configured`, which names one `marketId` and that
 market's own `ladderIntervalSeconds`, so each market's silence window is its own configured cadence.
 A market configured for bootstrap only carries no `ladderIntervalSeconds`; use
-`bootstrapIntervalSeconds` for it. Both manifest records are emitted by `start`; the standalone
+`bootstrapIntervalSeconds` for it. The `ladder` and `bootstrap` flags distinguish a market that is
+missing a cycle from one that never configured that workflow. Both manifest records are emitted by `start`; the standalone
 `bootstrap` and `ladder` commands are operator tools and emit no manifest, so absence scoping applies
 to the deployed `start` process.
 One process-wide shortest interval made slower markets look overdue. `bot.configured` scopes the
@@ -531,9 +532,13 @@ only and cannot prove a particular market was read or quoted. The per-market `cy
   nothing, so a restart loses one cycle of fill telemetry. A baseline is never dropped for a group
   absent from one cycle, because the indexer is eventually consistent and re-baselining would swallow
   the fill in between.
-- **Group rate fidelity.** Under `groupMode: per-book`, every rung on a side shares one protocol
-  group, so `offer.consumed.groupRateBps` is the group's best rate rather than the rate that actually
-  executed. Under `shared-rung` it is exact. There is no per-rung execution ledger.
+- **Group rate fidelity.** `offer.consumed.groupRateBps` is the _configured_ rate of the group's rung
+  nearest the center, not the rate that executed. Two things separate them. Under
+  `groupMode: per-book` every rung on a side shares one protocol group, so the reported rate is the
+  best of several shared rates. And publication aligns a configured rate to the market's tick
+  spacing, so a rate that is not exactly representable at that spacing is published slightly away
+  from the configured value on either mode. Treat the field as the intended price level rather than
+  an execution price; there is no per-rung execution ledger.
 - **Maturity availability.** `position.observed.maturityTimestamp` is projected from maker groups
   already read this cycle rather than a dedicated market read, so monitoring adds no RPC round trip
   and the field is absent when the maker holds no indexed group in that market.
