@@ -5,7 +5,8 @@
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: {{ include "quoter-bot.fullname" . }}-state
+  # Quoted: a numeric-looking override must stay a YAML string.
+  name: {{ printf "%s-state" (include "quoter-bot.fullname" .) | quote }}
   labels:
     {{- include "quoter-bot.labels" . | nindent 4 }}
   {{- $pvcAnnotations := .Values.persistence.annotations }}

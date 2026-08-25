@@ -41,7 +41,7 @@ would be rejected.
 */}}
 {{- define "quoter-bot.selectorLabels" -}}
 app.kubernetes.io/name: {{ .Chart.Name }}
-app.kubernetes.io/instance: {{ .Release.Name }}
+app.kubernetes.io/instance: {{ .Release.Name | quote }}
 {{- end }}
 
 {{/* Name of the ServiceAccount the pod runs as. */}}

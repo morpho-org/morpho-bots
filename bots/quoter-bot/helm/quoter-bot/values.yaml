@@ -189,17 +189,18 @@ resources: {}
 #     memory: 512Mi
 
 # SIGTERM lets the in-flight cycle finish, then invalidates owned bootstrap and ladder offer
-# groups through the shared serialized operation queue — up to four receipt-bounded waits
-# (an in-flight old-group cancellation, the in-flight replacement publication, then the
-# bootstrap and ladder cleanup batches), each bounded by
+# groups through the shared serialized operation queue — up to five receipt-bounded waits
+# (an in-flight old-group cancellation, a Setter ratification approval, the in-flight
+# replacement publication, then the bootstrap and ladder cleanup batches), each bounded by
 # setup.transactionReceiptTimeoutMs, plus one more wait per additional owned group. Kubernetes'
 # 30-second default would SIGKILL mid-cleanup and leave owned offers on the book. The default
-# covers four waits at the bot's default 180 s timeout with margin, and when the
-# chart-managed `config` declares setup.transactionReceiptTimeoutMs the rendered value is
-# automatically floored to four receipt timeouts plus a two-minute drain buffer. Size this
-# explicitly for many owned groups (multi-market or high rung counts), or when the timeout
-# comes from environment overrides or an existingConfigSecret.
-terminationGracePeriodSeconds: 900
+# covers five waits at the bot's default 180 s timeout, and for a chart-managed `config` the
+# rendered value is automatically floored to five receipt timeouts (the declared
+# setup.transactionReceiptTimeoutMs, or the bot's 180 s default when undeclared) plus a
+# two-minute drain buffer. Size this explicitly for many owned groups (multi-market or high
+# rung counts), or when the timeout comes from environment overrides or an
+# existingConfigSecret.
+terminationGracePeriodSeconds: 1020
 
 podAnnotations: {}
 podLabels: {}

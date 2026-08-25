@@ -61,31 +61,33 @@ describe('quoter-bot Helm chart', () => {
 
     expect(statefulSet).toContain('kind: StatefulSet')
     expect(statefulSet).toContain('replicas: 1')
-    expect(statefulSet).toContain('serviceName: {{ include "quoter-bot.fullname" . }}')
+    expect(statefulSet).toContain('serviceName: {{ include "quoter-bot.fullname" . | quote }}')
     expect(statefulSet).not.toContain('kind: Deployment')
     expect(statefulSet).not.toContain('type: Recreate')
     expect(service).toContain('clusterIP: None')
     expect(service).not.toContain('ports:')
   })
 
-  it('floors the grace period at four receipt-bounded waits plus a drain buffer', async () => {
+  it('floors the grace period at five receipt-bounded waits plus a drain buffer', async () => {
     const [statefulSet, values] = await Promise.all([
       readChartFile('templates/statefulset.yaml'),
       readChartFile('values.yaml')
     ])
 
-    expect(statefulSet).toContain('dig "setup" "transactionReceiptTimeoutMs" 0 .Values.config')
-    expect(statefulSet).toContain('add (mul (div $receiptMs 1000) 4) 120')
+    expect(statefulSet).toContain('dig "setup" "transactionReceiptTimeoutMs" 180000 .Values.config')
+    expect(statefulSet).toContain('add (mul (div $receiptMs 1000) 5) 120')
     expect(statefulSet).toContain('terminationGracePeriodSeconds: {{ $grace }}')
-    expect(values).toContain('terminationGracePeriodSeconds: 900')
+    expect(values).toContain('terminationGracePeriodSeconds: 1020')
   })
 
   it('rejects upgrades that would rename the installed singleton', async () => {
     const statefulSet = await readChartFile('templates/statefulset.yaml')
 
     expect(statefulSet).toContain('lookup "apps/v1" "StatefulSet" .Release.Namespace ""')
+    expect(statefulSet).toContain('.metadata.labels | default dict')
     expect(statefulSet).toContain('(ne .metadata.name $fullname)')
     expect(statefulSet).toContain('{{- fail (printf')
+    expect(statefulSet).toContain('persistence.existingClaim')
   })
 
   it('reserves the PVC retention annotation while retain is enabled', async () => {
@@ -177,6 +179,7 @@ describe('quoter-bot Helm chart', () => {
     expect(statefulSet).toContain(
       'secretName: {{ include "quoter-bot.configSecretName" . | quote }}'
     )
+    expect(statefulSet).toContain('name: {{ include "quoter-bot.fullname" . | quote }}')
     expect(statefulSet).toContain('claimName: {{ .Values.persistence.existingClaim | quote }}')
     expect(statefulSet).toContain(
       'claimName: {{ printf "%s-state" (include "quoter-bot.fullname" .) | quote }}'

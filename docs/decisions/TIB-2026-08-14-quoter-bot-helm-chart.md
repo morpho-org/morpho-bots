@@ -123,7 +123,9 @@ no Kubernetes API access or external writer lock — so "never force delete; fen
 first" is an operator invariant documented in the chart README and install notes. Selector
 labels derive from the chart and release names (never `nameOverride`), and a `lookup`-based
 template guard rejects upgrades that would rename the installed StatefulSet, because Helm
-creates the renamed resource before deleting the old one and would briefly run two writers. The
+creates the renamed resource before deleting the old one and would briefly run two writers; the
+documented migration reinstalls with `persistence.existingClaim` pointing at the kept old state
+claim so ownership records survive the rename. The
 StatefulSet's required headless governing Service is portless (the bot exposes no ports).
 
 **State volume.** `XDG_STATE_HOME` always points at the mount (default `/state`). The PVC
@@ -132,15 +134,15 @@ deleting ownership state makes previously bot-issued groups unknown, which fails
 an operator invalidates or adopts them. A reinstall under the same release name and namespace
 re-adopts the kept claim.
 
-**Shutdown budget.** `terminationGracePeriodSeconds` defaults to 900. SIGTERM shutdown
-serializes up to four receipt-bounded waits through the shared operation queue — an in-flight
-cycle's old-group cancellation, that cycle's replacement publication, then the bootstrap cleanup
-batch and the ladder cleanup batch — each bounded by `TRANSACTION_RECEIPT_TIMEOUT_MS` (default
-180 s, supported up to 900 s), and every additional owned or replaced group adds another bounded
-wait. Kubernetes' 30-second default would SIGKILL mid-cleanup and leave owned offers on the
-book. The template therefore floors the rendered grace period at four chart-managed
-`setup.transactionReceiptTimeoutMs` timeouts plus a two-minute drain buffer
-(900 s timeout → 3 720 s grace). The floor is not a guaranteed upper bound: many owned groups
+**Shutdown budget.** `terminationGracePeriodSeconds` defaults to 1020. SIGTERM shutdown
+serializes up to five receipt-bounded waits through the shared operation queue — an in-flight
+cycle's old-group cancellation, its Setter ratification approval, its replacement publication,
+then the bootstrap cleanup batch and the ladder cleanup batch — each bounded by
+`TRANSACTION_RECEIPT_TIMEOUT_MS` (default 180 s, supported up to 900 s), and every additional
+owned or replaced group adds another bounded wait. Kubernetes' 30-second default would SIGKILL
+mid-cleanup and leave owned offers on the book. For a chart-managed config the template floors
+the rendered grace period at five receipt timeouts (the declared value, or the bot's 180 s
+default when undeclared) plus a two-minute drain buffer (900 s timeout → 4 620 s grace). The floor is not a guaranteed upper bound: many owned groups
 (multi-market, high rung counts) multiply the waits, and timeouts supplied through environment
 overrides or `existingConfigSecret` are invisible to the template — both cases are documented in
 `values.yaml` and the chart README as the operator's explicit sizing responsibility.
