@@ -1,6 +1,9 @@
 import type { Address, Hex } from 'viem'
 
+import { tryCatch } from '@repo/utils'
 import { isAddressEqual } from 'viem'
+
+import { checkMulticall } from './policy-multicall.utils'
 
 /** The only Executor entrypoint the signer authorizes: exec_606BaXt(bytes[]). */
 export const EXECUTOR_SELECTOR = '0x00000001'
@@ -11,15 +14,32 @@ export const DEFAULT_MAX_GAS_LIMIT = 15_000_000n
 /** Default calldata byte ceiling (matches the daemon-era signer policy default). */
 export const DEFAULT_MAX_DATA_BYTES = 65_536
 
-/** One signer authorizes one contract entrypoint on one chain, under fixed fee/gas/size ceilings. */
+/**
+ * Deep authorization for a `multicall(bytes[])` envelope, evaluated declaratively by
+ * {@link evaluatePolicy}: the calldata must decode as a single non-empty `bytes[]`, every inner
+ * call's selector must be listed, and every inner call's FIRST argument (which must be an
+ * address — this rule only suits inner functions shaped like VaultV2's
+ * `allocate/deallocate(address, …)`) must be registered for the transaction's outer target.
+ */
+export type MulticallPolicy = {
+  /** Allowed inner selectors (e.g. allocate/deallocate). */
+  innerSelectors: readonly Hex[]
+  /** Allowed first-argument addresses per outer target (e.g. vault → its adapters). */
+  innerTargetsByOuter: Readonly<Record<Address, readonly Address[]>>
+}
+
+/** One signer authorizes one entrypoint on a fixed target set on one chain, under fixed fee/gas/size ceilings. */
 export type Policy = {
   chainId: number
-  executor: Address
+  /** Allowed target contracts; an empty list denies every transaction. */
+  targets: readonly Address[]
   maxFeePerGasWei: bigint
   maxGasLimit: bigint
   maxDataBytes: number
   /** Allowed outer selector; defaults to Executor.exec_606BaXt. */
   selector?: Hex
+  /** When set, calldata must also satisfy the {@link MulticallPolicy} envelope rules. */
+  multicall?: MulticallPolicy
 }
 
 /** The prepared-transaction fields the pre-broadcast guard evaluates against a {@link Policy}. */
@@ -34,12 +54,13 @@ export type PolicyTx = {
 
 export type PolicyCheck =
   | 'chainId'
-  | 'executor'
+  | 'target'
   | 'value'
   | 'maxFeePerGas'
   | 'gas'
   | 'maxDataBytes'
   | 'selector'
+  | 'data'
 
 export type PolicyDecision = { ok: true } | { ok: false; check: PolicyCheck; message: string }
 
@@ -64,7 +85,9 @@ export class PolicyViolationError extends Error {
  * ever sending value, hitting the wrong contract, or exceeding a ceiling.
  *
  * OUTER-ENVELOPE guard: target, selector, zero value, and fee/gas/size ceilings are pinned. It does
- * not interpret calldata beyond the selector; each bot simulates its exact request before submit.
+ * not interpret calldata beyond the selector — unless a {@link MulticallPolicy} is configured, in
+ * which case the envelope also authorizes each inner call declaratively (still no bot-supplied
+ * code). Each bot simulates its exact request before submit regardless.
  */
 export function evaluatePolicy(policy: Policy, tx: PolicyTx): PolicyDecision {
   const deny = (check: PolicyCheck, message: string): PolicyDecision => ({
@@ -75,8 +98,8 @@ export function evaluatePolicy(policy: Policy, tx: PolicyTx): PolicyDecision {
   if (tx.chainId !== policy.chainId) {
     return deny('chainId', `chainId ${tx.chainId} does not equal ${policy.chainId}`)
   }
-  if (!isAddressEqual(tx.to, policy.executor)) {
-    return deny('executor', `target ${tx.to} is not the configured contract`)
+  if (!policy.targets.some(target => isAddressEqual(tx.to, target))) {
+    return deny('target', `target ${tx.to} is not among the configured targets`)
   }
   if (tx.value !== 0n) return deny('value', 'transaction value must be zero')
   if (tx.maxFeePerGas > policy.maxFeePerGasWei) {
@@ -92,6 +115,13 @@ export function evaluatePolicy(policy: Policy, tx: PolicyTx): PolicyDecision {
   const selector = (policy.selector ?? EXECUTOR_SELECTOR).toLowerCase()
   if (tx.data.slice(0, 10).toLowerCase() !== selector) {
     return deny('selector', `calldata must call configured selector ${selector}`)
+  }
+  const { multicall } = policy
+  if (multicall) {
+    // A throw out of the deep check must never escape the PolicyDecision contract — default-deny.
+    const { data: reason, error } = tryCatch(() => checkMulticall(multicall, tx))
+    if (error) return deny('data', 'multicall authorization threw; denying')
+    if (reason !== undefined) return deny('data', reason)
   }
   return { ok: true }
 }

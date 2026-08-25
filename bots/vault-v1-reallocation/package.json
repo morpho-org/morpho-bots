@@ -1,0 +1,34 @@
+{
+  "name": "@morpho-org/vault-v1-reallocation",
+  "version": "0.1.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "type": "module",
+  "scripts": {
+    "build": "tsx scripts/build.ts",
+    "deploy:railway": "tsx scripts/deploy-railway.ts",
+    "prestart": "pnpm --filter \"{.}...\" --if-present run build",
+    "probe:lens": "pnpm --filter \"{.}...\" --if-present run build && node --env-file-if-exists=.env dist/scripts/probe-live-lens.js",
+    "start": "node --env-file-if-exists=.env dist/src/index.js",
+    "typecheck": "soltag && tsc --noEmit"
+  },
+  "dependencies": {
+    "@morpho-org/blue-sdk": "catalog:",
+    "@morpho-org/blue-sdk-viem": "catalog:",
+    "@repo/bot-kit": "workspace:*",
+    "@repo/utils": "workspace:*",
+    "solc": "catalog:",
+    "soltag": "catalog:",
+    "viem": "catalog:"
+  },
+  "devDependencies": {
+    "@repo/typescript-config": "workspace:*",
+    "@types/node": "catalog:",
+    "esbuild": "catalog:",
+    "execa": "catalog:",
+    "tsx": "catalog:",
+    "typescript": "catalog:",
+    "vite": "catalog:",
+    "vitest": "catalog:"
+  }
+}

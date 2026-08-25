@@ -13,7 +13,7 @@ import { TxSendError } from '../src/tx-error'
 const EXECUTOR = `0x${'11'.repeat(20)}` as const
 const POLICY: Policy = {
   chainId: base.id,
-  executor: EXECUTOR,
+  targets: [EXECUTOR],
   maxFeePerGasWei: 300_000_000_000n,
   maxGasLimit: 15_000_000n,
   maxDataBytes: 65_536
@@ -90,6 +90,33 @@ describe('createSigner', () => {
     // 7 (a future-nonce gap). syncNonce collapses it back to chain truth.
     await syncNonce()
     expect((await send(req)).nonce).toBe(5)
+  })
+
+  it('shares one cursor read across concurrent first sends and claims distinct nonces', async () => {
+    // Defense in depth behind the pending queue's mutex: the lazy cursor init must not double-claim
+    // when two sends race it. Only `eth_getTransactionCount` is counted — the memoized in-flight read
+    // means one round trip, and the post-await `??=` means one nonce each.
+    let counts = 0
+    mockRpc({
+      eth_chainId: `0x${base.id.toString(16)}`,
+      eth_getTransactionCount: () => {
+        counts += 1
+        return '0x5'
+      },
+      eth_estimateGas: '0x5208',
+      eth_getBlockByNumber: { baseFeePerGas: '0x7' },
+      eth_sendRawTransaction: TXHASH
+    })
+    const { send } = createSigner(CONFIG)
+    const req = {
+      to: `0x${'11'.repeat(20)}` as const,
+      data: '0x' as Hex,
+      maxFeePerGas: 1_000_000_000n,
+      maxPriorityFeePerGas: 1_000_000n
+    }
+    const results = await Promise.all([send(req), send(req)])
+    expect(results.map(r => r.nonce).toSorted((a, b) => a - b)).toEqual([5, 6])
+    expect(counts).toBe(1)
   })
 
   it('rolls back the local nonce cursor when raw broadcast fails before returning a hash', async () => {
@@ -199,7 +226,7 @@ describe('createSigner', () => {
       }
     })
     const { send } = createSigner({ ...CONFIG, policy: POLICY })
-    // Target is the wrong contract → policy 'executor' violation, thrown before any raw broadcast.
+    // Target is the wrong contract → policy 'target' violation, thrown before any raw broadcast.
     await expect(
       send({
         to: `0x${'99'.repeat(20)}`,

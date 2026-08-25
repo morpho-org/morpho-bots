@@ -1,5 +1,6 @@
 import type { Address, Hex } from 'viem'
 
+import { createCoalescingMutex } from '@morpho-org/viem-dlc/utils'
 import { tryCatch } from '@repo/utils'
 
 import type { Logger } from '../logger'
@@ -18,6 +19,11 @@ export const MAX_BUMP_ATTEMPTS = 3
  * every 6s — comparable to the daemon-era sweep reconcile (every 3 sweeps at a 2s active cadence).
  */
 export const RECONCILE_EVERY_BLOCKS = 3
+
+// One fixed key: every submit contends for the same resource (the signer's single nonce cursor), so
+// the mutex is used purely to serialize — `collectFollowers` is never called, which keeps each queued
+// caller running its own handler in FIFO order.
+const SUBMIT_RESOURCE_KEY = 'submit'
 
 export type TxRequest = { to: Address; data: Hex }
 
@@ -39,6 +45,15 @@ export type SyncNonce = () => Promise<void>
 /** Reads the EOA's latest (mined) transaction count — the nonce-consumed reconciler's chain truth. */
 export type GetConsumedNonce = () => Promise<number>
 
+/** What a caller hands {@link PendingQueue.submit}. */
+export type SubmitArgs = {
+  request: TxRequest
+  label: string
+  maxFeePerGas: bigint
+  maxPriorityFeePerGas: bigint
+  blockNumber: bigint
+}
+
 /** One tracked tx — the queue's full per-nonce record. */
 type Pending = {
   nonce: number
@@ -52,13 +67,19 @@ type Pending = {
 }
 
 export type PendingQueue = {
-  submit(args: {
-    request: TxRequest
-    label: string
-    maxFeePerGas: bigint
-    maxPriorityFeePerGas: bigint
-    blockNumber: bigint
-  }): Promise<void>
+  /**
+   * Broadcasts `request` and tracks it in flight. Resolves `true` only when `send` accepted the
+   * transaction and it is now tracked under its nonce; `false` when the queue refused or the send
+   * failed without a nonce (`tx.send_aborted`, `nonce.sync_failed`, `queue.nonce_hole`,
+   * `tx.submit_failed`) — a caller counting real broadcasts must not count those. Still throws
+   * `TxSendError` when a first send claimed a nonce but produced no hash, which surfaces to its
+   * caller.
+   *
+   * Concurrent calls are serialized end to end (latch checks → `syncNonce` → `send` → tracking), so a
+   * pass that submits for several positions at once cannot hand two of them the same nonce and cannot
+   * rewind the cursor past an in-flight send.
+   */
+  submit(args: SubmitArgs): Promise<boolean>
   onBlock(blockNumber: bigint): Promise<void>
   readonly size: number
   snapshot(): { nonce: number; txHash: Hex; attempt: number }[]
@@ -88,6 +109,9 @@ export type PendingQueue = {
  * (empty) tracked set against receipts and the consumed nonce. When `syncNonce` is provided and the
  * tracked set is empty, the next first-send re-syncs the cursor so a dropped (never-mined) tx can't
  * strand the cursor above chain truth and turn every later send into an unminable future nonce.
+ *
+ * `submit` is serialized per queue instance by a viem-dlc coalescing mutex, so callers may submit
+ * concurrently (see {@link PendingQueue.submit}).
  */
 export function createPendingQueue({
   send,
@@ -150,6 +174,8 @@ export function createPendingQueue({
   let nonceHoleLow: number | null = null
   let nonceHoleHigh = 0
   let blocksSeen = 0
+  // One mutex per queue instance, one fixed key: the sync→claim→send critical section runs alone.
+  const submitMutex = createCoalescingMutex()
 
   // Records a locally-dropped, not-known-consumed nonce as a hole (or widens the tracked span).
   function latchNonceHole(nonce: number): void {
@@ -183,18 +209,17 @@ export function createPendingQueue({
     }
   }
 
-  async function submit(args: {
-    request: TxRequest
-    label: string
-    maxFeePerGas: bigint
-    maxPriorityFeePerGas: bigint
-    blockNumber: bigint
-  }): Promise<void> {
+  // The nonce-critical section, always entered under `submitMutex`: the latch checks, the empty-queue
+  // `syncNonce`, the `send` that claims a nonce, and the tracking insert must all observe the same
+  // `pending` snapshot. In particular the `pending.size === 0` test has to sit INSIDE the lock — a
+  // slow sync racing a concurrent send would otherwise rewind the cursor onto a nonce already in
+  // flight, and the resulting replacement-underpriced send drops one of the two txs.
+  async function submitLocked(args: SubmitArgs): Promise<boolean> {
     // Latched by a prior hashless send: skip until the next `onBlock` clears it. The signer has
     // rolled its cursor back, so broadcasting again now would race that rollback.
     if (sendAborted) {
       logger.warn('tx.send_aborted', { label: args.label })
-      return
+      return false
     }
     // Nothing in flight → reconcile the cursor with chain before claiming a nonce. A failed sync
     // would leave a stale (possibly runaway) cursor, so skip the send this tick rather than risk a
@@ -206,7 +231,7 @@ export function createPendingQueue({
       const synced = await tryCatch(syncNonce())
       if (synced.error) {
         logger.warn('nonce.sync_failed', { label: args.label, reason: revertReason(synced.error) })
-        return
+        return false
       }
       if (nonceHoleLow !== null) clearNonceHole('sync')
     }
@@ -216,7 +241,7 @@ export function createPendingQueue({
     // sweep clears it once the chain consumes past the hole.
     if (nonceHoleLow !== null) {
       logger.warn('queue.nonce_hole', { label: args.label, nonce: nonceHoleLow })
-      return
+      return false
     }
     const sent = await tryCatch(
       send({
@@ -240,7 +265,7 @@ export function createPendingQueue({
         sendAborted = true
         throw sent.error
       }
-      return
+      return false
     }
     const { nonce, txHash } = sent.data
     pending.set(nonce, {
@@ -260,7 +285,15 @@ export function createPendingQueue({
       maxFee: args.maxFeePerGas,
       priority: args.maxPriorityFeePerGas
     })
+    return true
   }
+
+  // A handler that throws rejects only its own caller and the mutex moves straight to the next queued
+  // one, so `TxSendError` still surfaces to the tick that caused it without wedging the lock.
+  const submit = (args: SubmitArgs): Promise<boolean> =>
+    submitMutex.coalesce<SubmitArgs, boolean>(SUBMIT_RESOURCE_KEY, args, async locked => ({
+      leader: { action: 'resolve', result: await submitLocked(locked) }
+    }))
 
   async function replaceStuck(entry: Pending, blockNumber: bigint, baseFee: bigint): Promise<void> {
     if (entry.attempt >= maxBumpAttempts) {

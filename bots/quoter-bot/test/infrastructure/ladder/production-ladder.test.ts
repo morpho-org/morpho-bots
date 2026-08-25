@@ -53,7 +53,7 @@ const environment = {
 }
 
 describe('calculateProductionLadderCapacities', () => {
-  test('suppresses lower-rate credit sales when no conservative cost basis is available', () => {
+  test('uses existing credit as lower-rate sale capacity', () => {
     expect(
       calculateProductionLadderCapacities({
         marketId,
@@ -65,10 +65,10 @@ describe('calculateProductionLadderCapacities', () => {
         reservations: []
       })
     ).toEqual({
-      lowerRateCapacityAssets: 0n,
+      lowerRateCapacityAssets: 90n,
       higherRateCapacityAssets: 10n,
-      targetMarketCapacityAssets: 10n,
-      maximumTotalCapacityAssets: 910n
+      targetMarketCapacityAssets: 100n,
+      maximumTotalCapacityAssets: 1_000n
     })
   })
 })

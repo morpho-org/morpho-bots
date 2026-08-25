@@ -6,11 +6,36 @@ import { call } from 'viem/actions'
 
 export type SimulateResult = {
   /**
-   * `ok` — the full exec (seize → swap → repay → sweep) succeeds, safe to broadcast. `revert` —
-   * reverted in the exec path (not liquidatable, swap slippage, repay shortfall), do not send.
+   * `ok` — the call succeeds from this EOA, safe to broadcast. `revert` — do not send. Callers gate
+   * on `ok` only; the domain meaning of a revert belongs at the call site.
    */
   status: 'ok' | 'revert'
   reason?: string
+}
+
+/**
+ * Simulates one transaction as an `eth_call` from `eoa`, byte-for-byte what would be broadcast
+ * (`value` included — defaulting to 0n keeps the sim and the send in lockstep). Any revert is
+ * reported as `{ status: 'revert', reason }` rather than thrown; what a revert *means* is the
+ * caller's domain knowledge. No signer; never sends.
+ */
+export const simulateCall = async (
+  client: Client,
+  params: { eoa: Address; to: Address; data: Hex; value?: bigint }
+): Promise<SimulateResult> => {
+  const { error } = await tryCatch(
+    call(client, {
+      account: params.eoa,
+      to: params.to,
+      data: params.data,
+      value: params.value ?? 0n
+    })
+  )
+  if (!error) return { status: 'ok' }
+  return {
+    status: 'revert',
+    reason: error instanceof BaseError ? error.shortMessage : error.message
+  }
 }
 
 /**
@@ -26,23 +51,13 @@ export type SimulateResult = {
  * literal post-tx zero-balance assertion lives in the bots' anvil fork suites — viem 2.47 has no
  * `eth_simulateV1` helper to read post-state balances inline.
  */
-export async function simulateLiquidationExec(
+export const simulateLiquidationExec = (
   client: Client,
   params: { executooor: Address; eoa: Address; data: Hex; value?: bigint }
-): Promise<SimulateResult> {
-  const { error } = await tryCatch(
-    call(client, {
-      account: params.eoa,
-      to: params.executooor,
-      data: params.data,
-      // Match what gets broadcast byte-for-byte, value included. Liquidation execs are value-0, so
-      // this is 0n in practice, but passing it explicitly keeps the sim and the send in lockstep.
-      value: params.value ?? 0n
-    })
-  )
-  if (!error) return { status: 'ok' }
-  return {
-    status: 'revert',
-    reason: error instanceof BaseError ? error.shortMessage : error.message
-  }
-}
+): Promise<SimulateResult> =>
+  simulateCall(client, {
+    eoa: params.eoa,
+    to: params.executooor,
+    data: params.data,
+    value: params.value
+  })

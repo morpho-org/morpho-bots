@@ -128,11 +128,10 @@ type ProductionLadderCapacityParameters = {
 }
 
 /**
- * Derives production ladder capacities while failing closed on credit-reducing sells.
+ * Derives production ladder capacities using accrued credit for credit-reducing sells.
  * @param parameters - Market balance, current and cross-market credit, exposure limits, and durable
- * reservations. Reservations spanning this market reduce available balance exactly once. Until a
- * conservative held-credit cost basis is reconstructed, current credit is excluded from sell-side
- * capacity so the bot cannot quote a potentially loss-making credit reduction.
+ * reservations. Reservations spanning this market reduce available balance exactly once, while
+ * current credit funds reduce-only sell-side capacity without allowing the position to enter debt.
  * @returns Capacity limits for the lower and higher sides of the requested market.
  * @throws When the shared capacity calculator rejects inconsistent or invalid sizing inputs.
  * @remarks This pure calculation does not read, write, publish, or mutate reservation state.
@@ -142,7 +141,7 @@ export const calculateProductionLadderCapacities = (
 ) =>
   calculateLadderCapacities({
     ...parameters,
-    creditSaleCapacityAssets: 0n
+    creditSaleCapacityAssets: parameters.currentCredit
   })
 
 /**

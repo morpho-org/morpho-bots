@@ -554,7 +554,7 @@ describe('nonce-hole latch', () => {
     const sendsAfterDrop = ctx.sends.length
     // A NEW first-send is refused while the hole is latched (nonce 8 still pending → queue not empty,
     // so the empty-queue sync can't clear it).
-    await ctx.submit('c', 6n)
+    expect(await ctx.submit('c', 6n)).toBe(false) // refused → not a real broadcast
     expect(ctx.sends.length).toBe(sendsAfterDrop) // no new broadcast
     expect(ctx.queue.size).toBe(1)
     expect(ctx.events.some(e => e.event === 'queue.nonce_hole' && e.fields?.label === 'c')).toBe(
@@ -619,5 +619,167 @@ describe('nonce-hole latch', () => {
     ctx.consumedRef.value = 9
     await ctx.queue.onBlock(9n)
     expect(ctx.events.some(e => e.event === 'queue.nonce_hole_cleared')).toBe(true)
+  })
+})
+
+// A tick counting "submitted" must count only real broadcasts; every silent refusal resolves false.
+describe('submit outcome', () => {
+  it('resolves true when the send is accepted and tracked', async () => {
+    const { queue } = setup()
+    expect(await submitOne(queue)).toBe(true)
+    expect(queue.size).toBe(1)
+  })
+
+  it('resolves false when the first send fails without a nonce', async () => {
+    const send: SendTx = async () => {
+      throw new Error('rpc down')
+    }
+    const { queue } = setup({ send })
+    expect(await submitOne(queue)).toBe(false)
+  })
+
+  it('resolves false when the empty-queue nonce re-sync throws', async () => {
+    const { queue } = setup({
+      syncNonce: async () => {
+        throw new Error('rpc down')
+      }
+    })
+    expect(await submitOne(queue)).toBe(false)
+  })
+
+  it('resolves false while the send-aborted latch is set', async () => {
+    const send: SendTx = async () => {
+      throw new TxSendError(new Error('broadcast lost'), 7)
+    }
+    const { queue } = setup({ send })
+    await expect(submitOne(queue)).rejects.toThrow() // the latching send itself rethrows
+    expect(await submitOne(queue)).toBe(false)
+  })
+})
+
+// The nonce-critical section is serialized: a pass that plans several vaults/positions submits them
+// concurrently, and without the mutex the signer's `??=`-then-await cursor hands out one nonce twice.
+describe('submit serialization', () => {
+  /** A `send` whose completion each caller controls, so two submits provably overlap in time. */
+  function gatedSend() {
+    const release: (() => void)[] = []
+    const entered: number[] = []
+    let cursor = 100
+    const send: SendTx = async request => {
+      const index = entered.length
+      entered.push(index)
+      await new Promise<void>(resolve => release.push(resolve))
+      const nonce = request.nonce ?? cursor++
+      return { nonce, txHash: hashOf(nonce) }
+    }
+    return { send, release, entered }
+  }
+
+  it('serializes concurrent submits into strictly increasing nonces', async () => {
+    const { send, release, entered } = gatedSend()
+    const { queue } = setup({ send })
+
+    const first = queue.submit({
+      request: REQUEST,
+      label: 'vault:a',
+      maxFeePerGas: 1000n,
+      maxPriorityFeePerGas: 1000n,
+      blockNumber: 1n
+    })
+    const second = queue.submit({
+      request: REQUEST,
+      label: 'vault:b',
+      maxFeePerGas: 1000n,
+      maxPriorityFeePerGas: 1000n,
+      blockNumber: 1n
+    })
+
+    // Only the leader may be inside `send`; the follower is still queued behind the lock. A macrotask
+    // turn is long enough for both submits to reach `send` if they were allowed to run in parallel.
+    await new Promise<void>(resolve => setTimeout(resolve, 5))
+    expect(entered).toHaveLength(1)
+
+    release.shift()?.()
+    expect(await first).toBe(true)
+    release.shift()?.()
+    expect(await second).toBe(true)
+
+    const nonces = queue.snapshot().map(entry => entry.nonce)
+    expect(nonces).toEqual([100, 101])
+    expect(queue.size).toBe(2)
+  })
+
+  it('never re-syncs the cursor past a concurrent in-flight send', async () => {
+    const { send, release } = gatedSend()
+    let syncing = 0
+    let sawSyncDuringSend = false
+    const { queue } = setup({
+      send,
+      // A deliberately slow sync: it must never observe a non-empty queue, because the empty-queue
+      // test that gates it is inside the lock.
+      syncNonce: async () => {
+        syncing += 1
+        if (queue.size > 0) sawSyncDuringSend = true
+        await new Promise<void>(resolve => setTimeout(resolve, 5))
+      }
+    })
+
+    const both = Promise.all([
+      queue.submit({
+        request: REQUEST,
+        label: 'vault:a',
+        maxFeePerGas: 1000n,
+        maxPriorityFeePerGas: 1000n,
+        blockNumber: 1n
+      }),
+      queue.submit({
+        request: REQUEST,
+        label: 'vault:b',
+        maxFeePerGas: 1000n,
+        maxPriorityFeePerGas: 1000n,
+        blockNumber: 1n
+      })
+    ])
+
+    // Drain the two gated sends as they arrive.
+    const drain = setInterval(() => release.shift()?.(), 1)
+    expect(await both).toEqual([true, true])
+    clearInterval(drain)
+
+    // Exactly one sync ran (the first submit, on the empty queue); the second saw size 1 and skipped.
+    expect(syncing).toBe(1)
+    expect(sawSyncDuringSend).toBe(false)
+    expect(queue.snapshot().map(entry => entry.nonce)).toEqual([100, 101])
+  })
+
+  it('propagates a locked-section throw to that caller only and releases the lock', async () => {
+    let calls = 0
+    const send: SendTx = async request => {
+      calls += 1
+      if (calls === 1) throw new TxSendError(new Error('broadcast lost'), 7)
+      return { nonce: request.nonce ?? 8, txHash: hashOf(8) }
+    }
+    const { queue } = setup({ send })
+
+    const first = queue.submit({
+      request: REQUEST,
+      label: 'vault:a',
+      maxFeePerGas: 1000n,
+      maxPriorityFeePerGas: 1000n,
+      blockNumber: 1n
+    })
+    const second = queue.submit({
+      request: REQUEST,
+      label: 'vault:b',
+      maxFeePerGas: 1000n,
+      maxPriorityFeePerGas: 1000n,
+      blockNumber: 1n
+    })
+
+    await expect(first).rejects.toBeInstanceOf(TxSendError)
+    // The lock was released, so the follower ran — and hit the send-aborted latch the leader set,
+    // which is the queue's own refusal (false), not a hang or a shared rejection.
+    expect(await second).toBe(false)
+    expect(queue.size).toBe(0)
   })
 })

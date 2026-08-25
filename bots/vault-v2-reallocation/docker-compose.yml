@@ -1,0 +1,56 @@
+# Runs the per-chain vault-v2-reallocation bots. All data comes over RPC, so there is no indexer or
+# database to run. The bots' build context is the repo root so the pnpm workspace (packages/*)
+# resolves — see Dockerfile. Set the chainId-suffixed RPCs/whitelists (RPC_URL_1, VAULT_WHITELIST_1,
+# …) and a REALLOCATOR_PRIVATE_KEY holding the allocator role on every whitelisted vault. The tuning
+# knobs are chainId-suffixed too (REALLOCATION_INTERVAL_MS_1, MAX_FEE_GWEI_8453, …) so chains can differ;
+# leave one unset to take the bot's own default.
+services:
+  bot-mainnet:
+    build:
+      context: ../..
+      dockerfile: bots/vault-v2-reallocation/Dockerfile
+    environment:
+      CHAIN_ID: '1'
+      RPC_URL: ${RPC_URL_1:?set RPC_URL_1}
+      RPC_URL_FALLBACK: ${RPC_URL_FALLBACK_1:-}
+      REALLOCATOR_PRIVATE_KEY: ${REALLOCATOR_PRIVATE_KEY:?set REALLOCATOR_PRIVATE_KEY}
+      VAULT_WHITELIST: ${VAULT_WHITELIST_1:?set VAULT_WHITELIST_1}
+      STRATEGY: ${STRATEGY_1:-equalize-utilizations}
+      REALLOCATION_INTERVAL_MS: ${REALLOCATION_INTERVAL_MS_1:-}
+      MIN_APY_DELTA_BIPS: ${MIN_APY_DELTA_BIPS_1:-}
+      MIN_UTILIZATION_DELTA_BIPS: ${MIN_UTILIZATION_DELTA_BIPS_1:-}
+      ALLOW_IDLE_REALLOCATION: ${ALLOW_IDLE_REALLOCATION_1:-}
+      MAX_FEE_GWEI: ${MAX_FEE_GWEI_1:-}
+      # Start new deployments in dry-run: read/plan/simulate and log, never submit. Flip to false
+      # once the logged reallocation.dry_run plans look right.
+      DRY_RUN: ${DRY_RUN_1:-true}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      # Optional BetterStack log shipping (in-process loglayer transport). Empty = disabled; the bot
+      # ships its structured logs only when BOTH are set (host also required).
+      BETTERSTACK_SOURCE_TOKEN: ${BETTERSTACK_SOURCE_TOKEN:-}
+      BETTERSTACK_INGESTING_HOST: ${BETTERSTACK_INGESTING_HOST:-}
+      BETTERSTACK_HEARTBEAT_URL: ${BETTERSTACK_HEARTBEAT_URL_1:-}
+    restart: unless-stopped
+
+  bot-base:
+    build:
+      context: ../..
+      dockerfile: bots/vault-v2-reallocation/Dockerfile
+    environment:
+      CHAIN_ID: '8453'
+      RPC_URL: ${RPC_URL_8453:?set RPC_URL_8453}
+      RPC_URL_FALLBACK: ${RPC_URL_FALLBACK_8453:-}
+      REALLOCATOR_PRIVATE_KEY: ${REALLOCATOR_PRIVATE_KEY:?set REALLOCATOR_PRIVATE_KEY}
+      VAULT_WHITELIST: ${VAULT_WHITELIST_8453:?set VAULT_WHITELIST_8453}
+      STRATEGY: ${STRATEGY_8453:-equalize-utilizations}
+      REALLOCATION_INTERVAL_MS: ${REALLOCATION_INTERVAL_MS_8453:-}
+      MIN_APY_DELTA_BIPS: ${MIN_APY_DELTA_BIPS_8453:-}
+      MIN_UTILIZATION_DELTA_BIPS: ${MIN_UTILIZATION_DELTA_BIPS_8453:-}
+      ALLOW_IDLE_REALLOCATION: ${ALLOW_IDLE_REALLOCATION_8453:-}
+      MAX_FEE_GWEI: ${MAX_FEE_GWEI_8453:-}
+      DRY_RUN: ${DRY_RUN_8453:-true}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      BETTERSTACK_SOURCE_TOKEN: ${BETTERSTACK_SOURCE_TOKEN:-}
+      BETTERSTACK_INGESTING_HOST: ${BETTERSTACK_INGESTING_HOST:-}
+      BETTERSTACK_HEARTBEAT_URL: ${BETTERSTACK_HEARTBEAT_URL_8453:-}
+    restart: unless-stopped

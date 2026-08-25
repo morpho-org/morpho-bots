@@ -23,6 +23,12 @@
     "bots/blue-liquidation": {
       "entry": ["src/index.ts", "scripts/probe-live-lens.ts"]
     },
+    "bots/vault-v1-reallocation": {
+      "entry": ["src/index.ts", "scripts/probe-live-lens.ts"]
+    },
+    "bots/vault-v2-reallocation": {
+      "entry": ["src/index.ts", "scripts/probe-live-lens.ts"]
+    },
     "bots/midnight-crossed-books": {
       "ignore": ["src/infrastructure/*/generated/**"]
     },
