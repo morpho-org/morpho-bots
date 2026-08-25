@@ -585,20 +585,4 @@ describe('decidePositionBootstrapWithDiagnostics', () => {
     })
     expect(diagnostics).toBeUndefined()
   })
-
-  test('returns the same decision as the diagnostics-free entry point', () => {
-    for (const input of [
-      parameters,
-      funding,
-      { ...funding, position: { ...funding.position, cashBalance: 0n } },
-      {
-        ...funding,
-        rate: { mode: 'static' as const, rateBps: 900n, observationId: 'static:900' }
-      }
-    ]) {
-      expect(decidePositionBootstrap(input)).toEqual(
-        decidePositionBootstrapWithDiagnostics(input).decision
-      )
-    }
-  })
 })

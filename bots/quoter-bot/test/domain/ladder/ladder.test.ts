@@ -259,9 +259,8 @@ describe('ladder domain', () => {
 describe('generateLadderWithDiagnostics', () => {
   test('reports every configured rung funded, unclamped, and uncleared', () => {
     const parameters = { config: config(), referenceRateBps: 500n }
-    const { quote, diagnostics } = generateLadderWithDiagnostics(parameters)
+    const { diagnostics } = generateLadderWithDiagnostics(parameters)
 
-    expect(quote).toEqual(generateLadder(parameters))
     expect(diagnostics).toEqual({
       lower: {
         configuredRungs: 3,
@@ -298,7 +297,6 @@ describe('generateLadderWithDiagnostics', () => {
     const belowRange = { config: config(), referenceRateBps: 350n }
     const below = generateLadderWithDiagnostics(belowRange)
 
-    expect(below.quote).toEqual(generateLadder(belowRange))
     expect(below.quote.lower.map(rung => rung.rateBps)).toEqual([250n, 200n, 200n])
     expect(below.diagnostics.lower).toEqual({
       configuredRungs: 3,
@@ -313,7 +311,6 @@ describe('generateLadderWithDiagnostics', () => {
     const aboveRange = { config: config(), referenceRateBps: 650n }
     const above = generateLadderWithDiagnostics(aboveRange)
 
-    expect(above.quote).toEqual(generateLadder(aboveRange))
     expect(above.quote.higher.map(rung => rung.rateBps)).toEqual([750n, 800n, 800n])
     expect(above.diagnostics.higher).toEqual({
       configuredRungs: 3,

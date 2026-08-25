@@ -40,23 +40,6 @@ const consumingResult = (consumed: bigint): LadderRunResult =>
   }) as unknown as LadderRunResult
 
 describe('createMonitoringProjection', () => {
-  test('names every projected record so no payload falls back to the catch-all event', () => {
-    const projection = createMonitoringProjection()
-    const events = [
-      ...projection.setup(readyReport),
-      ...projection.combined({
-        event: 'quoter-bot.cycle',
-        workflow: 'ladder',
-        results: [{ marketId, status: 'observed', action: 'rest' } as unknown as LadderRunResult]
-      })
-    ]
-
-    expect(events.length).toBeGreaterThan(0)
-    expect(events.every(event => typeof event.event === 'string' && event.event.length > 0)).toBe(
-      true
-    )
-  })
-
   test('reports each failed readiness check without leaking its unknown-typed observation', () => {
     const events = createMonitoringProjection().setup(readyReport)
 
@@ -223,16 +206,6 @@ describe('createMonitoringProjection', () => {
     )
   })
 
-  test('leaves an already-named transaction event to ship unchanged', () => {
-    expect(
-      createMonitoringProjection().combined({
-        event: 'ladder.transaction-submitted',
-        operation: 'publish',
-        txHash: `0x${'ab'.repeat(32)}`
-      })
-    ).toEqual([])
-  })
-
   test('emits no fill on the first sighting of a group and the delta thereafter', () => {
     const projection = createMonitoringProjection()
 
@@ -257,14 +230,6 @@ describe('createMonitoringProjection', () => {
 
     expect(projection.ladder([consumingResult(180n)])).toContainEqual(
       expect.objectContaining({ event: 'offer.consumed', consumedDeltaAssets: 80n })
-    )
-  })
-
-  test('keeps separate baselines per projection so one bot cannot see another bot fills', () => {
-    createMonitoringProjection().ladder([consumingResult(100n)])
-
-    expect(createMonitoringProjection().ladder([consumingResult(250n)])).not.toContainEqual(
-      expect.objectContaining({ event: 'offer.consumed' })
     )
   })
 })

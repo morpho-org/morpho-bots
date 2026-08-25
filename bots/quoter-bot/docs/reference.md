@@ -416,8 +416,8 @@ lost: the same content ships flat as `cycle.completed`, `guardrail.*`, and `bot.
 The allowlist scopes the CLI event writer only. `bot.started`, `bot.stopped`,
 `bot.unexpected-error`, and `heartbeat.failed` are emitted straight through the shipping logger by
 `@repo/observability` and `@repo/bot-kit`, bypassing this boundary entirely — so they are present
-in the log source while absent from `MONITORING_EVENT_NAMES`. `bot.unexpected-error` in particular is
-the only shipped signal for an entrypoint failure that no reported error classifies.
+in the log source while absent from `MONITORING_EVENT_NAMES`. `bot.unexpected-error` in particular
+is the only shipped signal for an entrypoint failure that no reported error classifies.
 
 #### Event contract
 
@@ -430,9 +430,9 @@ breaking.
 
 `adapterOperation` is not a shipped field. Bootstrap failure and halt results carry it internally:
 an allowlisted reason such as `negative-spread` or `transaction-policy`, withheld when
-unrecognized. The projection reads it solely to decide whether to emit `guardrail.spread-rejected`, which the
-collapsed `errorName` classification could not distinguish. It appears on no `MonitoringEvent`
-variant, so it is not available as a grouping dimension in the log source.
+unrecognized. The projection reads it solely to decide whether to emit
+`guardrail.spread-rejected`, which the collapsed `errorName` classification could not distinguish.
+It appears on no `MonitoringEvent` variant, so it is not a grouping dimension in the log source.
 
 Records are projected from cycle results that are already sanitized — the projections read nothing
 and never re-classify an error. Only allowlisted `errorName` classifications ship; raw error text,
@@ -560,8 +560,8 @@ only and cannot prove a particular market was read or quoted. The per-market `cy
   decision before any reference-rate derivation once the credit target is reached, or once the
   initial target completed with `autoRefill` off — and `reference.observed` is emitted only when a
   verbose cycle actually holds a reference rate. For a bootstrap-only market, absence therefore
-  means "no reference was needed" at least as often as "the reference went stale". A ladder market reads a
-  reference every cycle, so the staleness recipe is sound there.
+  means "no reference was needed" at least as often as "the reference went stale". A ladder market
+  reads a reference every cycle, so the staleness recipe is sound there.
 - **Monitoring cannot halt quoting.** Records are derived and written inside the monitored cycle's
   own callback, but `writeCycle` swallows any failure raised while projecting or writing them. A
   broken projection or a failing writer loses telemetry silently; it can never stop a cycle.
