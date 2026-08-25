@@ -65,6 +65,7 @@ const environmentKeys = [
   'KEYSTORE_INTERACTIVE',
   'AWS_KMS_KEY_ID',
   'AWS_REGION',
+  'QUOTER_SIGNER_LAMBDA_ARN',
   'MAKER_ADDRESS',
   'MIDNIGHT_ADDRESS',
   'LOAN_ASSET_ADDRESS',
@@ -91,7 +92,8 @@ const yamlKeys = {
     'keystorePassword',
     'keystoreInteractive',
     'awsKmsKeyId',
-    'awsRegion'
+    'awsRegion',
+    'quoterSignerLambdaArn'
   ],
   contracts: ['midnightAddress', 'loanAssetAddress', 'ratifierAddress'],
   apis: ['morphoBaseUrl', 'routerBaseUrl'],
@@ -238,7 +240,8 @@ const yamlSource = (input: unknown, readOnly: boolean): ConfigurationSource => {
           keystorePassword: 'KEYSTORE_PASSWORD',
           keystoreInteractive: 'KEYSTORE_INTERACTIVE',
           awsKmsKeyId: 'AWS_KMS_KEY_ID',
-          awsRegion: 'AWS_REGION'
+          awsRegion: 'AWS_REGION',
+          quoterSignerLambdaArn: 'QUOTER_SIGNER_LAMBDA_ARN'
         }
   )
   mapGroup('contracts', {
@@ -358,6 +361,7 @@ const yamlEnvironmentPaths: Partial<
   KEYSTORE_INTERACTIVE: ['identity', 'keystoreInteractive'],
   AWS_KMS_KEY_ID: ['identity', 'awsKmsKeyId'],
   AWS_REGION: ['identity', 'awsRegion'],
+  QUOTER_SIGNER_LAMBDA_ARN: ['identity', 'quoterSignerLambdaArn'],
   MAKER_ADDRESS: ['identity', 'makerAddress'],
   MIDNIGHT_ADDRESS: ['contracts', 'midnightAddress'],
   LOAN_ASSET_ADDRESS: ['contracts', 'loanAssetAddress'],
@@ -381,6 +385,7 @@ type SignerEnvironmentKey =
   | 'KEYSTORE_INTERACTIVE'
   | 'AWS_KMS_KEY_ID'
   | 'AWS_REGION'
+  | 'QUOTER_SIGNER_LAMBDA_ARN'
 
 const signerEnvironmentKeys = new Set<SignerEnvironmentKey>([
   'MAKER_PRIVATE_KEY',
@@ -389,7 +394,8 @@ const signerEnvironmentKeys = new Set<SignerEnvironmentKey>([
   'KEYSTORE_PASSWORD',
   'KEYSTORE_INTERACTIVE',
   'AWS_KMS_KEY_ID',
-  'AWS_REGION'
+  'AWS_REGION',
+  'QUOTER_SIGNER_LAMBDA_ARN'
 ])
 
 const hasSignerEnvironmentOverride = (environment: Environment, key: SignerEnvironmentKey) => {
@@ -401,28 +407,30 @@ const hasSignerEnvironmentOverride = (environment: Environment, key: SignerEnvir
   return value.trim().length > 0
 }
 
+const signerMethodSelectors: readonly (readonly [SignerEnvironmentKey, string])[] = [
+  ['MAKER_PRIVATE_KEY', 'private-key'],
+  ['KEYSTORE_PATH', 'keystore'],
+  ['AWS_KMS_KEY_ID', 'aws'],
+  ['QUOTER_SIGNER_LAMBDA_ARN', 'middleware']
+]
+
+const retainedIdentityKeysByMethod: Readonly<Record<string, readonly string[]>> = {
+  'private-key': ['makerAddress', 'makerPrivateKey'],
+  keystore: ['makerAddress', 'keystorePath', 'keystorePassword', 'keystoreInteractive'],
+  aws: ['makerAddress', 'awsKmsKeyId', 'awsRegion'],
+  middleware: ['makerAddress', 'quoterSignerLambdaArn']
+}
+
 const removeOverriddenYamlValues = (input: unknown, environment: Environment) => {
   if (typeof input !== 'object' || input === null || Array.isArray(input)) return
   const root = input as Record<string, unknown>
   const environmentMethod = hasSignerEnvironmentOverride(environment, 'KEY_STORAGE_METHOD')
     ? environment.KEY_STORAGE_METHOD!.trim()
-    : hasSignerEnvironmentOverride(environment, 'MAKER_PRIVATE_KEY')
-      ? 'private-key'
-      : hasSignerEnvironmentOverride(environment, 'KEYSTORE_PATH')
-        ? 'keystore'
-        : hasSignerEnvironmentOverride(environment, 'AWS_KMS_KEY_ID')
-          ? 'aws'
-          : undefined
+    : signerMethodSelectors.find(([key]) => hasSignerEnvironmentOverride(environment, key))?.[1]
   if (environmentMethod !== undefined) {
     const identity = root.identity
     if (typeof identity === 'object' && identity !== null && !Array.isArray(identity)) {
-      const retained = new Set(
-        environmentMethod === 'private-key'
-          ? ['makerAddress', 'makerPrivateKey']
-          : environmentMethod === 'keystore'
-            ? ['makerAddress', 'keystorePath', 'keystorePassword', 'keystoreInteractive']
-            : ['makerAddress', 'awsKmsKeyId', 'awsRegion']
-      )
+      const retained = new Set(retainedIdentityKeysByMethod[environmentMethod] ?? ['makerAddress'])
       for (const key of yamlKeys.identity) {
         if (!retained.has(key)) delete (identity as Record<string, unknown>)[key]
       }

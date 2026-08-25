@@ -1,7 +1,10 @@
-import type { QuoterSignerResponse } from './intent.utils'
+import type { QuoterSignerResponse } from './response.utils'
 
-import { buildNotImplementedDenial, classifyIntentKind } from './intent.utils'
+import { classifyIntentKind, parseQuoterSignerIntent } from './intent.utils'
 import { emitJsonLine } from './log.utils'
+import { MalformedIntentError } from './malformed-intent.error'
+import { buildDenialResponse } from './response.utils'
+import { SigningNotImplementedError } from './signing-not-implemented.error'
 
 /**
  * Structural slice of the AWS Lambda context consumed by the handler. A local structural type
@@ -14,15 +17,19 @@ export type LambdaContextLike = {
 }
 
 /**
- * AWS Lambda entrypoint for the quoter-signer image (TIB-2026-08-12 delivery skeleton).
+ * AWS Lambda entrypoint for the quoter-signer image (TIB-2026-08-12).
  *
- * Fail-closed by construction: no signing surface is implemented, the execution role needs no KMS
- * access, and every invocation — whatever its payload — is denied with a typed
- * `SigningNotImplementedError` envelope. Each invocation emits the TIB's
- * `middleware.intent_received` and `middleware.intent_denied` JSON log lines to stdout
- * (CloudWatch Logs); only allowlisted intent kinds and middleware-owned values are logged, never
- * caller-supplied data. The handler never throws on any payload shape.
- * @param event - Raw, untrusted invocation payload; inspected only to classify the intent kind.
+ * The v1 wire contract is enforced at this boundary: the payload must parse as one versioned
+ * structured intent (quote, ratify, revoke, or setup-remediation — see `intent.utils.ts`), and
+ * the return value is always a versioned approval-or-denial envelope (see `response.utils.ts`).
+ * This build remains fail-closed by construction: no signing surface is implemented, the
+ * execution role needs no KMS access, and every invocation is denied — payloads outside the
+ * contract with a typed `MalformedIntentError`, well-formed intents with a typed
+ * `SigningNotImplementedError`. Each invocation emits the TIB's `middleware.intent_received` and
+ * `middleware.intent_denied` JSON log lines to stdout (CloudWatch Logs); only allowlisted intent
+ * kinds, denial class names, and middleware-owned values are logged, never caller-supplied data.
+ * The handler never throws on any payload shape.
+ * @param event - Raw, untrusted invocation payload validated against the v1 intent contract.
  * @param context - Lambda context; only `awsRequestId` is read, for log correlation.
  * @returns The versioned fail-closed denial envelope.
  */
@@ -33,7 +40,18 @@ export const handler = async (
   const awsRequestId = context?.awsRequestId
   const intentKind = classifyIntentKind(event)
   emitJsonLine({ event: 'middleware.intent_received', intentKind, awsRequestId })
-  const response = buildNotImplementedDenial()
+  let denial: MalformedIntentError | SigningNotImplementedError
+  try {
+    parseQuoterSignerIntent(event)
+    denial = new SigningNotImplementedError()
+  } catch (error) {
+    // The parser only throws MalformedIntentError; anything else still fails closed as malformed.
+    denial =
+      error instanceof MalformedIntentError
+        ? error
+        : new MalformedIntentError('intent', 'wrong-type')
+  }
+  const response = buildDenialResponse(denial)
   emitJsonLine({
     event: 'middleware.intent_denied',
     intentKind,

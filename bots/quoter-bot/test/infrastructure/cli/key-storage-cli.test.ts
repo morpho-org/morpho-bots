@@ -91,12 +91,25 @@ describe('maker key storage CLI options', () => {
     })
   })
 
+  test('passes --middleware selection while the Lambda ARN remains config-driven', async () => {
+    expect(await captured(['--middleware', 'setup-check'])).toMatchObject({
+      signerEnvironment: { KEY_STORAGE_METHOD: 'middleware' }
+    })
+  })
+
+  test('rejects simultaneous --aws and --middleware backend selection', async () => {
+    await expect(createCli().run(['--aws', '--middleware', 'setup-check'])).rejects.toBeInstanceOf(
+      CliUsageError
+    )
+  })
+
   test.each([
     ['private key', ['--private-key', `0x${'11'.repeat(32)}`]],
     ['keystore', ['--keystore', '/secure/maker.json']],
     ['password', ['--password', 'not-reported']],
     ['interactive', ['--interactive']],
-    ['AWS', ['--aws']]
+    ['AWS', ['--aws']],
+    ['middleware', ['--middleware']]
   ])('rejects explicit --readonly combined with %s signer options', async (_name, signerArgs) => {
     await expect(
       createCli().run(['--readonly', ...signerArgs, 'setup-check'])

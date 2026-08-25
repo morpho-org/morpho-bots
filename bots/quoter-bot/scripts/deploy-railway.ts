@@ -71,10 +71,10 @@ const runtimeVariables = (): RuntimeVariable[] => {
   const method =
     process.env.KEY_STORAGE_METHOD?.trim() ||
     (process.env.MAKER_PRIVATE_KEY?.trim() ? 'private-key' : '')
-  if (!['private-key', 'keystore', 'aws'].includes(method)) {
+  if (!['private-key', 'keystore', 'aws', 'middleware'].includes(method)) {
     throw new RailwayDeploymentError('KEY_STORAGE_METHOD must select exactly one signer')
   }
-  assertFullRailwaySignerProvisioning(method as 'private-key' | 'keystore' | 'aws')
+  assertFullRailwaySignerProvisioning(method as 'private-key' | 'keystore' | 'aws' | 'middleware')
   const signerValues: Record<string, string> = {
     KEY_STORAGE_METHOD: method,
     MAKER_PRIVATE_KEY: ' ',
@@ -82,14 +82,17 @@ const runtimeVariables = (): RuntimeVariable[] => {
     KEYSTORE_PASSWORD: ' ',
     KEYSTORE_INTERACTIVE: 'false',
     AWS_KMS_KEY_ID: ' ',
-    AWS_REGION: ' '
+    AWS_REGION: ' ',
+    QUOTER_SIGNER_LAMBDA_ARN: ' '
   }
   const signerRequired =
     method === 'private-key'
       ? ['MAKER_PRIVATE_KEY']
       : method === 'keystore'
         ? ['KEYSTORE_PATH', 'KEYSTORE_PASSWORD']
-        : ['AWS_KMS_KEY_ID', 'AWS_REGION']
+        : method === 'aws'
+          ? ['AWS_KMS_KEY_ID', 'AWS_REGION']
+          : ['QUOTER_SIGNER_LAMBDA_ARN']
   for (const name of signerRequired) {
     const value = process.env[name]?.trim()
     if (!value) throw new RailwayDeploymentError(`Missing required environment variable: ${name}`)
