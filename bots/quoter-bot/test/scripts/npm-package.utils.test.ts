@@ -11,12 +11,17 @@ import {
 } from '../../scripts/npm-package.utils'
 
 describe('assertPublishableVersion', () => {
-  test.each([['0.1.0'], ['1.2.3'], ['10.20.30'], ['1.2.3-rc.1'], ['1.2.3-beta-4.5']])(
-    'accepts plain (pre)release semver %s',
-    version => {
-      expect(assertPublishableVersion(version)).toBe(version)
-    }
-  )
+  test.each([
+    ['0.1.0'],
+    ['1.2.3'],
+    ['10.20.30'],
+    ['1.2.3-rc.1'],
+    ['1.2.3-beta-4.5'],
+    ['1.2.3-0'],
+    ['1.2.3-alpha.0a1']
+  ])('accepts plain (pre)release semver %s', version => {
+    expect(assertPublishableVersion(version)).toBe(version)
+  })
 
   test.each([
     ['missing', undefined],
@@ -26,7 +31,12 @@ describe('assertPublishableVersion', () => {
     ['incomplete', '1.2'],
     ['build metadata', '1.2.3+build.7'],
     ['surrounding whitespace', ' 1.2.3'],
-    ['range', '^1.2.3']
+    ['range', '^1.2.3'],
+    ['leading-zero major', '01.2.3'],
+    ['leading-zero minor', '1.02.3'],
+    ['leading-zero patch', '1.2.03'],
+    ['leading-zero numeric prerelease', '1.2.3-01'],
+    ['leading-zero dotted numeric prerelease', '1.2.3-rc.01']
   ])('rejects %s versions', (_name, version) => {
     expect(() => assertPublishableVersion(version)).toThrow(NpmPackFailedError)
   })

@@ -1,10 +1,10 @@
 name: Publish quoter-bot npm
 
 # Publish-only job for quoter-bot's public npm package (`@morpho-org/quoter`, command
-# `morpho-quoter`). It runs when the Deploy production pipeline completes and publishes only when
-# the built commit carries a `quoter-bot-*` release tag — that tag exists only after the Railway
-# deploy succeeded and the GitHub release was cut, so npm can never ship a build production did not
-# accept. The artifact is staged by `pnpm --filter @morpho-org/quoter-bot run npm:pack`: one
+# `morpho-quoter`). It runs when the Deploy production pipeline completes and publishes only a
+# main-history commit carrying a `quoter-bot-*` release tag — that tag exists only after the
+# Railway deploy succeeded and the GitHub release was cut, so npm can never ship a build production
+# did not accept. The artifact is staged by `pnpm --filter @morpho-org/quoter-bot run npm:pack`: one
 # self-contained bundle plus a generated dependency-free manifest
 # (bots/quoter-bot/scripts/pack-npm.ts).
 #
@@ -47,8 +47,11 @@ jobs:
     # the real filter: the tag exists only when the quoter-bot deploy and release succeeded, even if
     # an unrelated job (another bot's release, the Docker Hub push) failed the overall run — so only
     # cancelled runs are excluded here. A publish missed for any other reason is recoverable with
-    # workflow_dispatch.
-    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion != 'cancelled' }}
+    # workflow_dispatch. The main-ref guard makes a manual dispatch from a non-main branch inert in
+    # the workflow itself, independent of the environment's deployment-branch policy existing.
+    if: >-
+      ${{ github.ref == 'refs/heads/main' &&
+          (github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion != 'cancelled') }}
     # Holds no secrets, but scopes the OIDC token subject and carries a main-only deployment branch
     # policy, mirroring the quoter-bot-dockerhub environment. The npm trusted publisher config must
     # reference this environment name.
@@ -62,59 +65,66 @@ jobs:
       group: publish-quoter-bot-npm
       cancel-in-progress: false
     steps:
-      # Manual-dispatch hardening: a free-form ref input would let a dispatcher execute non-main
-      # code (the setup composite action, package scripts) inside this environment's
-      # `id-token: write` job — the environment's main-only branch policy protects the run's ref,
-      # not the checkout ref. The dispatch input is therefore a release *tag name*, constrained to
-      # the pipeline-owned `quoter-bot-*` namespace and resolved to a commit through the GitHub API
-      # before any checkout, so the job only ever executes commits the production pipeline tagged.
-      # (A tag ruleset restricting `quoter-bot-*` creation to CI closes the remaining
-      # write-access-pushes-a-fake-tag vector; that is organization configuration, not workflow
-      # code.)
-      - name: Resolve dispatch tag
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.tag != '' }}
-        id: dispatch
+      # Always check out trusted main first — never a caller-supplied ref. The job later executes
+      # code from the working tree (the setup composite action, package scripts), so the commit it
+      # switches to must be proven production-owned before any of that runs.
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          # Full history and tags: the release gates and latest-tag gate need tags and ancestry.
+          fetch-depth: 0
+
+      # Select and validate the commit to publish using only plain git against the just-fetched
+      # origin refs — no working-tree code executes before this gate. The commit must be an ancestor
+      # of main AND carry a `quoter-bot-*` release tag; the tag exists only when that commit's
+      # Railway deploy succeeded and its GitHub release was cut, and main ancestry means a forged
+      # tag can at worst point at already-reviewed main history, whose republication the registry
+      # immutability gate below turns into a no-op. Every other completed pipeline (other bots,
+      # no-release merges) ends here as a successful no-op. (A tag ruleset restricting
+      # `quoter-bot-*` creation to CI would also close the forged-tag vector at the source; that is
+      # repository configuration, not workflow code.)
+      - name: Select and gate the release commit
+        id: release
         env:
-          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
           TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
-          case "$TAG" in
-            quoter-bot-*) ;;
-            *)
-              echo "::error::tag must be a quoter-bot-* release tag"
+          if [ "$EVENT_NAME" = 'workflow_run' ]; then
+            sha="$HEAD_SHA"
+          elif [ -n "$TAG" ]; then
+            case "$TAG" in
+              quoter-bot-*) ;;
+              *)
+                echo "::error::tag must be a quoter-bot-* release tag"
+                exit 1
+                ;;
+            esac
+            if ! sha="$(git rev-parse --verify --quiet "refs/tags/${TAG}^{commit}")"; then
+              echo "::error::tag ${TAG} does not exist on origin"
               exit 1
-              ;;
-          esac
-          object="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${TAG}" --jq '.object.type + " " + .object.sha')"
-          sha="${object#* }"
-          # An annotated tag ref points at a tag object; peel it to the tagged commit.
-          if [ "${object%% *}" = "tag" ]; then
-            sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${sha}" --jq '.object.sha')"
+            fi
+          else
+            sha="$(git rev-parse HEAD)"
           fi
-          echo "resolved ${TAG} to ${sha}"
-          echo "sha=${sha}" >> "$GITHUB_OUTPUT"
-
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
-        with:
-          # workflow_run: the exact commit the completed pipeline built. Dispatch: the API-resolved
-          # release tag above, or the dispatching main ref's HEAD when no tag is supplied.
-          ref: ${{ github.event.workflow_run.head_sha || steps.dispatch.outputs.sha || github.sha }}
-          # Full history and tags: the release gate and latest-tag gate need tags and ancestry.
-          fetch-depth: 0
-
-      # Publish only commits that shipped as a quoter-bot release. Every other completed pipeline
-      # (other bots, no-release merges) ends here as a successful no-op.
-      - name: Check release tag
-        id: release
-        run: |
-          set -euo pipefail
-          tag="$(git tag --points-at HEAD --list 'quoter-bot-*' | head -n 1 || true)"
+          if ! git merge-base --is-ancestor "$sha" "$(git rev-parse HEAD)"; then
+            if [ "$EVENT_NAME" = 'workflow_dispatch' ]; then
+              echo "::error::${sha} is not in main history; refusing to publish it"
+              exit 1
+            fi
+            # A Deploy production run dispatched from a non-main branch completes with a non-main
+            # head_sha; it cannot have cut a release, so skip quietly instead of failing red.
+            echo "::notice::${sha} is not in main history; skipping npm publish"
+            echo "release=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          tag="$(git tag --points-at "$sha" --list 'quoter-bot-*' | head -n 1 || true)"
           if [ -z "$tag" ]; then
-            echo "::notice::no quoter-bot release tag points at $(git rev-parse HEAD); skipping npm publish"
+            echo "::notice::no quoter-bot release tag points at ${sha}; skipping npm publish"
             echo "release=false" >> "$GITHUB_OUTPUT"
           else
             echo "publishing release ${tag}"
+            git checkout --quiet --force "$sha"
             echo "release=true" >> "$GITHUB_OUTPUT"
           fi
 
@@ -123,6 +133,21 @@ jobs:
         uses: ./.github/actions/setup
         with:
           build-contracts: 'false'
+
+      # Trusted publishing requires npm >= 11.5.1; the pinned Node's bundled npm can lag behind
+      # that. Without it, `npm publish` silently skips the OIDC exchange and fails — so upgrade
+      # (major-pinned) only when the bundled npm is too old.
+      - name: Ensure trusted-publishing-capable npm
+        if: ${{ steps.release.outputs.release == 'true' }}
+        run: |
+          set -euo pipefail
+          minimum='11.5.1'
+          current="$(npm --version)"
+          if [ "$(printf '%s\n%s\n' "$minimum" "$current" | sort -V | head -n 1)" != "$minimum" ]; then
+            echo "npm ${current} predates trusted publishing support; upgrading"
+            npm install -g npm@11
+          fi
+          npm --version
 
       - name: Stage npm package
         if: ${{ steps.release.outputs.release == 'true' }}
@@ -165,13 +190,26 @@ jobs:
             fi
             exit 1
           fi
-          published="$(npm view "@morpho-org/quoter@${VERSION}" version 2>/dev/null || true)"
-          if [ "$published" = "$VERSION" ]; then
-            echo "::notice::@morpho-org/quoter@${VERSION} is already published; bump bots/quoter-bot/package.json#version to publish the next release"
-            echo "exists=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "exists=false" >> "$GITHUB_OUTPUT"
+          # The version lookup must fail closed: a transient registry/DNS failure here must not be
+          # read as "unpublished", or a rerun's no-op would become a doomed republish attempt.
+          # Depending on npm version, a missing version yields success with empty output or an
+          # E404; anything else is an unexpected failure.
+          if published="$(npm view "@morpho-org/quoter@${VERSION}" version 2>"$view_error")"; then
+            if [ "$published" = "$VERSION" ]; then
+              echo "::notice::@morpho-org/quoter@${VERSION} is already published; bump bots/quoter-bot/package.json#version to publish the next release"
+              echo "exists=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            if [ -n "$published" ]; then
+              echo "::error::unexpected registry response for @morpho-org/quoter@${VERSION}: ${published}"
+              exit 1
+            fi
+          elif ! grep -q 'E404' "$view_error"; then
+            echo '::error::unexpected npm registry failure while checking the version'
+            cat "$view_error"
+            exit 1
           fi
+          echo "exists=false" >> "$GITHUB_OUTPUT"
 
       # `latest` must only move forward. A rerun may legitimately backfill an older release's
       # version, but when another quoter-bot release tag descends from the built commit a newer
@@ -206,5 +244,5 @@ jobs:
         env:
           DIST_TAG: ${{ steps.tags.outputs.dist_tag }}
         # Provenance links the published package to this workflow run; access comes from the staged
-        # manifest's publishConfig. Requires npm >= 11.5.1 (Node 24 ships 11.6+).
+        # manifest's publishConfig. Requires npm >= 11.5.1, ensured by the upgrade step above.
         run: npm publish --provenance --tag "$DIST_TAG"

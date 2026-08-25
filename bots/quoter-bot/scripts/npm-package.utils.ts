@@ -12,8 +12,13 @@ export const NPM_BUNDLE_FILENAME = `${NPM_BIN_NAME}.js`
 /** Shebang the staged bundle must open with so npm bin installation produces a runnable command. */
 const NPM_BUNDLE_SHEBANG = '#!/usr/bin/env node\n'
 
-/** Release or prerelease semver without build metadata, e.g. `1.2.3` or `1.2.3-rc.1`. */
-const SEMVER_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/
+/**
+ * Release or prerelease semver without build metadata, e.g. `1.2.3` or `1.2.3-rc.1`. Per the
+ * SemVer grammar, numeric identifiers must not carry leading zeroes (npm rejects `01.2.3` and
+ * `1.2.3-01` at publish time, so staging rejects them too).
+ */
+const SEMVER_PATTERN =
+  /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*)?$/
 
 /**
  * Validates the workspace manifest version that stamps the published package.
