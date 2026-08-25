@@ -31,8 +31,8 @@ on:
     types: [completed]
   workflow_dispatch:
     inputs:
-      ref:
-        description: Git SHA/ref of a quoter-bot release commit to publish
+      tag:
+        description: quoter-bot-* release tag to publish (defaults to the main HEAD release)
         required: false
         type: string
 
@@ -62,11 +62,44 @@ jobs:
       group: publish-quoter-bot-npm
       cancel-in-progress: false
     steps:
+      # Manual-dispatch hardening: a free-form ref input would let a dispatcher execute non-main
+      # code (the setup composite action, package scripts) inside this environment's
+      # `id-token: write` job — the environment's main-only branch policy protects the run's ref,
+      # not the checkout ref. The dispatch input is therefore a release *tag name*, constrained to
+      # the pipeline-owned `quoter-bot-*` namespace and resolved to a commit through the GitHub API
+      # before any checkout, so the job only ever executes commits the production pipeline tagged.
+      # (A tag ruleset restricting `quoter-bot-*` creation to CI closes the remaining
+      # write-access-pushes-a-fake-tag vector; that is organization configuration, not workflow
+      # code.)
+      - name: Resolve dispatch tag
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.tag != '' }}
+        id: dispatch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          case "$TAG" in
+            quoter-bot-*) ;;
+            *)
+              echo "::error::tag must be a quoter-bot-* release tag"
+              exit 1
+              ;;
+          esac
+          object="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${TAG}" --jq '.object.type + " " + .object.sha')"
+          sha="${object#* }"
+          # An annotated tag ref points at a tag object; peel it to the tagged commit.
+          if [ "${object%% *}" = "tag" ]; then
+            sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${sha}" --jq '.object.sha')"
+          fi
+          echo "resolved ${TAG} to ${sha}"
+          echo "sha=${sha}" >> "$GITHUB_OUTPUT"
+
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
-          # workflow_run: the exact commit the completed pipeline built. Dispatch: the explicit
-          # input, or the dispatching ref's HEAD when omitted.
-          ref: ${{ github.event.workflow_run.head_sha || inputs.ref || github.sha }}
+          # workflow_run: the exact commit the completed pipeline built. Dispatch: the API-resolved
+          # release tag above, or the dispatching main ref's HEAD when no tag is supplied.
+          ref: ${{ github.event.workflow_run.head_sha || steps.dispatch.outputs.sha || github.sha }}
           # Full history and tags: the release gate and latest-tag gate need tags and ancestry.
           fetch-depth: 0
 
