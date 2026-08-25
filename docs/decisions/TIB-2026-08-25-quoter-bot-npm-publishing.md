@@ -107,9 +107,11 @@ check fails loud with the bootstrap instructions instead of dying inside the OID
 
 **Gates.** Four, in order:
 
-- _Release tag:_ publish only when a `quoter-bot-*` release tag points at the built commit. The
-  tag exists only after the Railway deploy succeeded and the release was cut, so npm can never
-  ship a build production did not accept; every other completed pipeline no-ops.
+- _Verified release commit:_ publish only a commit that is main history, carries a `quoter-bot-*`
+  release tag, and has a Deploy production run on exactly that SHA whose `Release-quoter-bot` job
+  succeeded (checked through the Actions API before any working-tree code executes). Tags are
+  pushable by any write collaborator; the main-owned pipeline's run history is not — so npm can
+  never ship a build production did not accept, and every other completed pipeline no-ops.
 - _Smoke test:_ the staged CLI must run and report exactly the staged manifest's version before it
   may be published.
 - _Immutability no-op:_ published npm versions are immutable, so an already-published version
