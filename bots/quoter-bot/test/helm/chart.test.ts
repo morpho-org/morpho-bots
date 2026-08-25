@@ -87,13 +87,15 @@ describe('quoter-bot Helm chart', () => {
     expect(values).toContain('terminationGracePeriodSeconds: 1020')
   })
 
-  it('reuses a kept state claim instead of re-creating it', async () => {
+  it('reuses a kept state claim on reinstall while keeping upgrades managed', async () => {
     const pvc = await readChartFile('templates/pvc.yaml')
 
     expect(pvc).toContain(
       'lookup "v1" "PersistentVolumeClaim" .Release.Namespace (include "quoter-bot.stateClaimName" .)'
     )
-    expect(pvc).toContain('(not $existingState)')
+    expect(pvc).toContain('{{- $suppressForAdoption := and .Release.IsInstall $existingState }}')
+    expect(pvc).toContain('(not $suppressForAdoption)')
+    expect(pvc).not.toContain('(not $existingState)')
   })
 
   it('pins scheduling to the published image architecture', async () => {
