@@ -179,8 +179,11 @@ to the entire pipeline file instead of the narrow publish workflow.
   there (maintainer accounts, trusted-publisher settings) controls publishing — that npm admin
   surface is now release-critical, like the Docker org's OIDC connection.
 - **`id-token: write` is job-scoped**; the workflow default stays `contents: read`.
-- **Provenance attestations** publicly link every published version to its source commit and
-  workflow run, letting consumers verify what they install.
+- **Provenance attestations** publicly link normal-path published versions to their source commit
+  and workflow run, letting consumers verify what they install. GitHub fixes `GITHUB_SHA` to the
+  event commit and npm's generator records it verbatim, so a recovery publish whose event SHA is
+  not the release commit (main advanced mid-pipeline, or a dispatch of an older release) publishes
+  without provenance rather than attesting the wrong commit.
 - **Only the bot ships.** The staged directory contains the self-contained bundle, the generated
   manifest, LICENSE, and the CLI README — no workspace source, no other bots' code, no workspace
   manifest. All runtime configuration, including keys, comes from the operator's environment;

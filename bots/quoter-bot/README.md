@@ -350,8 +350,11 @@ completes, the **Publish quoter-bot npm** workflow — a `workflow_run` chain ke
 because npm trusted publishing validates the top-level workflow filename — verifies that a
 `quoter-bot-*` release tag points at the built commit, stages the package with
 `pnpm --filter @morpho-org/quoter-bot run npm:pack`, smoke-tests that the staged CLI reports the
-staged manifest version, and publishes through npm trusted publishing (OIDC) with provenance
-attestation, so CI stores no npm token.
+staged manifest version, and publishes through npm trusted publishing (OIDC), so CI stores no npm
+token. Provenance attestation is attached whenever the run's event commit is the release commit —
+the normal path. A recovery publish whose event SHA differs (main advanced mid-pipeline, or a
+dispatch selected an older release tag) publishes without provenance instead of attesting a commit
+that did not produce the bundle; the run emits a warning when that happens.
 
 The staged package (`dist/npm/`) contains exactly the self-contained bundle renamed to
 `morpho-quoter.js`, a generated dependency-free manifest, the repository LICENSE, and

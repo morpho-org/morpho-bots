@@ -141,10 +141,11 @@ jobs:
           # third-party diagnostic text on a public log, so it is discarded — an API failure just
           # leaves the run list empty and fails closed through the fixed error below.
           released='false'
-          for run_id in $(gh api \
-            "repos/${GITHUB_REPOSITORY}/actions/workflows/deploy-production.yml/runs?head_sha=${sha}&per_page=20" \
+          for run_id in $(gh api --paginate \
+            "repos/${GITHUB_REPOSITORY}/actions/workflows/deploy-production.yml/runs?head_sha=${sha}&per_page=100" \
             --jq '.workflow_runs[].id' 2>/dev/null); do
-            if gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/jobs?filter=all&per_page=100" \
+            if gh api --paginate \
+              "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/jobs?filter=all&per_page=100" \
               --jq '.jobs[] | select(.name == "Release-quoter-bot") | .conclusion' 2>/dev/null \
               | grep -qx 'success'; then
               released='true'
@@ -266,10 +267,11 @@ jobs:
           # commit (same Actions API evidence as the release gate, stderr discarded from the public
           # log); a forged or unreleased descendant tag cannot demote a genuine release.
           released_from() {
-            for run_id in $(gh api \
-              "repos/${GITHUB_REPOSITORY}/actions/workflows/deploy-production.yml/runs?head_sha=$1&per_page=20" \
+            for run_id in $(gh api --paginate \
+              "repos/${GITHUB_REPOSITORY}/actions/workflows/deploy-production.yml/runs?head_sha=$1&per_page=100" \
               --jq '.workflow_runs[].id' 2>/dev/null); do
-              if gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/jobs?filter=all&per_page=100" \
+              if gh api --paginate \
+                "repos/${GITHUB_REPOSITORY}/actions/runs/$run_id/jobs?filter=all&per_page=100" \
                 --jq '.jobs[] | select(.name == "Release-quoter-bot") | .conclusion' 2>/dev/null \
                 | grep -qx 'success'; then
                 return 0
