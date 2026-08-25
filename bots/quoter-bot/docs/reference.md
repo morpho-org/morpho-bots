@@ -398,6 +398,11 @@ shipping logger's context (`MONITORING_SCHEMA_VERSION`, currently `1`) rather th
 so every line carries it at zero per-event cost and a consumer can pin the contract. It is bumped
 only on a breaking field rename or removal; adding an optional field is not breaking.
 
+Bootstrap failure and halt results additionally carry `adapterOperation`, an allowlisted reason such
+as `negative-spread` or `transaction-policy` that distinguishes failures the `errorName`
+classification collapses into one class. Unrecognized operation values are withheld, so the field can
+never carry provider text and is safe as a grouping dimension.
+
 Records are projected from cycle results that are already sanitized — the projections read nothing
 and never re-classify an error. Only allowlisted `errorName` classifications ship; raw error text,
 provider payloads, and URLs never do. Fill telemetry reads owned-group consumption, but that request
@@ -424,7 +429,7 @@ shipped in `bot.configured`.
 | `guardrail.cross-book-cleared` | Cross-book clearance repriced at least one rung on a side                                     | `workflow`, `marketId`, `side`, `clearedRungs`, `clearanceBps` (`CROSS_BOOK_CLEARANCE_BPS`)                                                                                                                                                                            |
 | `guardrail.exposure-capped`    | A bootstrap offer was sized below its request by an inventory limit                           | `workflow`, `marketId`, `requestedAssets`, `cappedAssets`, `cap` (`offer-size` \| `credit-target` \| `cash-balance` \| `market-exposure` \| `total-exposure`)                                                                                                          |
 | `guardrail.rungs-truncated`    | A side funded fewer rungs than configured                                                     | `marketId`, `side`, `configuredRungs`, `fundedRungs`                                                                                                                                                                                                                   |
-| `guardrail.spread-rejected`    | A bootstrap result carries `errorName: "BootstrapAdapterError"`                               | `marketId`, `errorName`                                                                                                                                                                                                                                                |
+| `guardrail.spread-rejected`    | A bootstrap result carries `adapterOperation: "negative-spread"`                              | `marketId`, `errorName`                                                                                                                                                                                                                                                |
 | `guardrail.halted`             | A bootstrap or ladder cycle halted, pulling offers                                            | `workflow`, `marketId?`, `stage`, `reason`, `strategyInvalidated`                                                                                                                                                                                                      |
 | `reference.observed`           | A verbose bootstrap or ladder cycle read a reference rate; event time is the staleness anchor | `workflow`, `marketId`, `referenceRateBps`, `targetRateBps?`                                                                                                                                                                                                           |
 | `position.observed`            | A verbose ladder cycle observed market state                                                  | `marketId`, `cashBalanceAssets?`, `creditAssets?`, `otherMarketCreditAssets?`, `reservedAssets?`, `marketReservedAssets?`, `maturityTimestamp?`, `lowerRateCapacityAssets?`, `higherRateCapacityAssets?`, `targetMarketCapacityAssets?`, `maximumTotalCapacityAssets?` |
@@ -492,9 +497,6 @@ only and cannot prove a particular market was read or quoted. The per-market `cy
 - **Maturity availability.** `position.observed.maturityTimestamp` is projected from maker groups
   already read this cycle rather than a dedicated market read, so monitoring adds no RPC round trip
   and the field is absent when the maker holds no indexed group in that market.
-- **Spread rejection is coarse.** `guardrail.spread-rejected` keys off the sanitized
-  `BootstrapAdapterError` classification, which collapses the adapter's specific `negative-spread`
-  operation. It over-reports any bootstrap adapter error rather than missing a negative spread.
 - **Book state is binary.** `book.observed.state` is `quoting` or `empty` only. `readActive`
   reconstructs indexed and not-yet-indexed groups into a single quote set, so a pending-index state is
   not observable at this seam.

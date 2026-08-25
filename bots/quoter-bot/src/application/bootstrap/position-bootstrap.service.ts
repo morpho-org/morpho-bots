@@ -29,11 +29,20 @@ import {
   validateBootstrapConfig
 } from '../../domain/bootstrap/position-bootstrap'
 import { BootstrapAdapterError } from '../../infrastructure/bootstrap/bootstrap-adapter.error'
-import { operatorErrorDetails, operatorErrorName } from '../operator-error-name.utils'
+import {
+  operatorAdapterOperation,
+  operatorErrorDetails,
+  operatorErrorName
+} from '../operator-error-name.utils'
 import { BootstrapOwnershipCleanupError } from './bootstrap-ownership-cleanup.error'
 
 /** Fixed cadence of the bootstrap monitor loop, in milliseconds. */
 export const BOOTSTRAP_MONITOR_INTERVAL_MS = 60_000
+
+const adapterOperationField = (error: unknown) => {
+  const adapterOperation = operatorAdapterOperation(error)
+  return adapterOperation ? { adapterOperation } : {}
+}
 
 type DecisionInvalidationReason = Extract<
   PositionBootstrapDecision,
@@ -161,6 +170,7 @@ type BootstrapRunOutcome =
       invalidated: boolean
       invalidationLogged?: boolean
       errorName: string
+      adapterOperation?: string
       minimumAssets?: string
       invalidationErrorName?: string
       ownershipCleanupErrorName?: string
@@ -173,6 +183,7 @@ type BootstrapRunOutcome =
       strategyInvalidated: boolean
       strategyInvalidationLogged?: boolean
       errorName: string
+      adapterOperation?: string
       invalidationErrorName?: string
     }
   | {
@@ -959,7 +970,8 @@ export class PositionBootstrapService {
           stage,
           strategyInvalidated: invalidation !== 'logged',
           ...(invalidation === 'logged' ? { strategyInvalidationLogged: true } : {}),
-          errorName: operatorErrorName(failure)
+          errorName: operatorErrorName(failure),
+          ...adapterOperationField(failure)
         },
         makeResult: invalidation
       }
@@ -971,6 +983,7 @@ export class PositionBootstrapService {
           stage,
           strategyInvalidated: false,
           errorName: operatorErrorName(failure),
+          ...adapterOperationField(failure),
           invalidationErrorName: operatorErrorName(invalidationError)
         }
       }

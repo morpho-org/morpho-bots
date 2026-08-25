@@ -66,6 +66,29 @@ describe('createMonitoringProjection', () => {
     expect(JSON.stringify(events)).not.toContain('required')
   })
 
+  test('reports a spread rejection only for an actual cross-book rejection', () => {
+    const failure = (adapterOperation?: string) => [
+      {
+        marketId,
+        status: 'failed',
+        stage: 'make',
+        invalidated: false,
+        errorName: 'BootstrapAdapterError',
+        ...(adapterOperation === undefined ? {} : { adapterOperation })
+      }
+    ]
+    const spreadRejections = (adapterOperation?: string) =>
+      createMonitoringProjection()
+        .bootstrap(failure(adapterOperation) as readonly { status: string }[])
+        .filter(event => event.event === 'guardrail.spread-rejected')
+
+    expect(spreadRejections('negative-spread')).toEqual([
+      { event: 'guardrail.spread-rejected', marketId, errorName: 'BootstrapAdapterError' }
+    ])
+    expect(spreadRejections('transaction-policy')).toEqual([])
+    expect(spreadRejections()).toEqual([])
+  })
+
   test('leaves an already-named transaction event to ship unchanged', () => {
     expect(
       createMonitoringProjection().combined({

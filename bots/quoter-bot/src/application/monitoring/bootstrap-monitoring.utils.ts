@@ -94,11 +94,10 @@ const verboseEvents = (result: BootstrapRunResult): readonly MonitoringEvent[] =
  * @returns Monitoring events in stable per-result order: cycle completion, guardrail signals, then
  * verbose reference, progress, clamp, cap, and settled-transaction records.
  * @remarks Pure projection: it never re-classifies errors, and passes each arm's already-sanitized
- * `errorName` through unchanged. `guardrail.spread-rejected` is a coarse signal — the make adapter's
- * `negative-spread` rejection is indistinguishable from any other `BootstrapAdapterError` once the
- * message has been reduced to that classification, so this over-reports rather than missing one.
- * Guardrail, reference, and progress records require verbose results; a non-verbose cycle yields
- * only completion and halt records.
+ * `errorName` through unchanged. `guardrail.spread-rejected` keys on the allowlisted
+ * `adapterOperation` rather than the collapsed `errorName`, so it fires only on an actual cross-book
+ * rejection and not on every adapter failure. Guardrail, reference, and progress records require
+ * verbose results; a non-verbose cycle yields only completion and halt records.
  */
 export const bootstrapMonitoringEvents = (
   results: readonly BootstrapRunResult[]
@@ -117,7 +116,7 @@ export const bootstrapMonitoringEvents = (
           }
         ] as const)
       : []),
-    ...('errorName' in result && result.errorName === 'BootstrapAdapterError'
+    ...('adapterOperation' in result && result.adapterOperation === 'negative-spread'
       ? ([
           {
             event: 'guardrail.spread-rejected',
