@@ -1,6 +1,7 @@
 packages:
   - bots/*
   - packages/*
+  - services/*
 
 engineStrict: true
 saveExact: true

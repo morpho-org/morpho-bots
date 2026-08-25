@@ -35,6 +35,9 @@
     "bots/quoter-bot": {
       "entry": ["src/index.ts", "playground/app.tsx"],
       "ignoreDependencies": ["@repo/bot-kit"]
+    },
+    "services/quoter-signer": {
+      "entry": ["src/index.ts"]
     }
   }
 }

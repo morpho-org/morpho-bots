@@ -21,6 +21,14 @@ Quick navigation for the morpho-bots documentation.
 
 ---
 
+## Services
+
+| Service                                     | Description                                                                       | Docs                                          |
+| ------------------------------------------- | --------------------------------------------------------------------------------- | --------------------------------------------- |
+| [quoter-signer](../services/quoter-signer/) | KMS signing policy middleware Lambda image (fail-closed skeleton, TIB-2026-08-12) | [README](../services/quoter-signer/README.md) |
+
+---
+
 ## Packages
 
 | Package                                                   | Description                                                                  | Docs |

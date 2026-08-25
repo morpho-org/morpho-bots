@@ -178,6 +178,13 @@ This is a **pnpm workspaces monorepo** housing off-chain Morpho curator bots:
   batch projection and negative-spread/crossed-book checks),
   `@repo/utils`, and `@repo/typescript-config`. A bot assembles its behavior from `@repo/bot-kit`
   and `@repo/swaps` rather than forking a monolith.
+- `/services/` — deployable non-bot services. `services/quoter-signer` is the quoter-bot KMS
+  signing policy middleware
+  ([TIB-2026-08-12](./docs/decisions/TIB-2026-08-12-quoter-bot-kms-signing-middleware.md)): an AWS
+  Lambda container image published to Docker Hub (`morphoorg/quoter-signer`), currently a
+  fail-closed skeleton — every intent is denied until the TIB's policy surfaces land. Because
+  services are workspace members, every bot `Dockerfile` copies `services/` alongside `packages/`
+  and `bots/` so `pnpm install --frozen-lockfile` sees the full importer set.
 
 Cross-tick state (the pending-tx queue, nonce cursor, cooldowns) is in-process memory only — nothing
 is persisted to disk. Chain truth wins on restart: a redeploy re-derives the nonce cursor from

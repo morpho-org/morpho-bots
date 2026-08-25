@@ -1294,6 +1294,32 @@ bot. The bot host holds only invoke-scoped AWS credentials — no `kms:Sign`, no
 - [AWS KMS Sign API](https://docs.aws.amazon.com/kms/latest/APIReference/API_Sign.html)
 - [AWS Lambda container images](https://docs.aws.amazon.com/lambda/latest/dg/images-create.html)
 
+## Addendum A (2026-08-25) — delivery skeleton: workspace home and public image
+
+Implementation starts with the deployable skeleton, ahead of any policy surface:
+
+- **Open Question 1 is settled as proposed**: the middleware lives at `services/quoter-signer`
+  under the new top-level `services/` directory, as workspace package
+  `@morpho-org/quoter-signer`. Because the frozen lockfile validates the full workspace importer
+  set, every bot `Dockerfile` now copies `services/` alongside `packages/` and `bots/`.
+- **Image distribution**: the image builds from `services/quoter-signer/Dockerfile` (repo-root
+  context; workspace build stage → AWS Lambda Node.js 24 base runtime stage that receives only the
+  self-contained handler bundle) and publishes publicly to Docker Hub as
+  `morphoorg/quoter-signer`, extending the
+  [TIB-2026-08-14](./TIB-2026-08-14-quoter-bot-dockerhub-publishing.md) third-party
+  reproducibility posture to the middleware. ECR remains the deployment registry — AWS Lambda
+  pulls container images only from a private ECR repository in the function's region (same-account
+  is the simple path; cross-account needs an ECR repository policy) — so operators copy the
+  published image into their own ECR; the package
+  [README](../../services/quoter-signer/README.md) documents the full build → verify → publish →
+  Lambda flow. CI publishing is not wired yet; the README's manual push is the interim channel.
+- **v0 image behavior**: the handler is a fail-closed skeleton — it holds no KMS access,
+  implements no signing surface, and answers every invocation with a typed
+  `SigningNotImplementedError` denial while emitting the `middleware.intent_received` /
+  `middleware.intent_denied` JSON-line events with only allowlist-classified intent kinds. The
+  signing surfaces, policy checks, reservation ledger, IAM topology, and bot-side intent ports
+  land in later increments of this TIB.
+
 <!--
 TIB conventions:
 - Once accepted, do not substantively edit this TIB. If the decision needs to change,
