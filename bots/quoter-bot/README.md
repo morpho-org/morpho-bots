@@ -358,8 +358,9 @@ The staged package (`dist/npm/`) contains exactly the self-contained bundle rena
 [`docs/npm-README.md`](./docs/npm-README.md); the private workspace manifest never reaches the
 registry. Published versions are immutable: a release whose version already exists on the registry
 completes as a no-op, so bumping `version` in the release PR is what opts a release into an npm
-publish. `latest` only moves forward — when a newer `quoter-bot-*` release tag descends from the
-built commit, a rerun publishes the older version under the `backfill` dist-tag instead.
+publish. `latest` only moves forward: prerelease versions publish under the `next` dist-tag, a
+rerun whose commit has a newer descendant release tag publishes under `backfill`, and a stable
+version additionally must be semver-greater than the registry's current `latest` to take the tag.
 
 One-time setup: npm cannot create a brand-new package through trusted publishing, so a maintainer
 bootstraps the first publish manually

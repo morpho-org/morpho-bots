@@ -146,9 +146,7 @@ describe('Cli', () => {
     expect(error).toEqual(
       expect.objectContaining({ name: 'CliUsageError', code: 'INVALID_USAGE', kind: 'usage' })
     )
-    expect((error as Error).message).toBe(
-      'Invalid command-line usage; run `morpho-quoter --help` for usage'
-    )
+    expect((error as Error).message).toBe('Invalid command-line usage; rerun with --help for usage')
     expect(error).not.toHaveProperty('cause')
     expect(error).not.toHaveProperty('command')
   })
@@ -163,9 +161,7 @@ describe('Cli', () => {
       code: 'INVALID_USAGE',
       kind: 'usage'
     })
-    expect((error as Error).message).toBe(
-      'Invalid command-line usage; run `morpho-quoter --help` for usage'
-    )
+    expect((error as Error).message).toBe('Invalid command-line usage; rerun with --help for usage')
     expect(error).not.toHaveProperty('cause')
     expect(error).not.toHaveProperty('command')
   })
@@ -192,9 +188,7 @@ describe('Cli', () => {
     const { exitCode, output } = await runEntrypoint(argv)
 
     expect(exitCode).toBe(1)
-    expect(output.trim()).toBe(
-      'Error: Invalid command-line usage; run `morpho-quoter --help` for usage'
-    )
+    expect(output.trim()).toBe('Error: Invalid command-line usage; rerun with --help for usage')
     for (const marker of markers) expect(output).not.toContain(marker)
   })
 
@@ -991,9 +985,7 @@ describe('Cli', () => {
     const { exitCode, output } = await runEntrypoint(['invalidate', '--', '--json'])
 
     expect(exitCode).toBe(1)
-    expect(output.trim()).toBe(
-      'Error: Invalid command-line usage; run `morpho-quoter --help` for usage'
-    )
+    expect(output.trim()).toBe('Error: Invalid command-line usage; rerun with --help for usage')
   })
 
   test('entrypoint emits a halted report and returns a non-zero exit code', async () => {

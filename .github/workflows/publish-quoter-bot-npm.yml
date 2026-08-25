@@ -204,12 +204,13 @@ jobs:
           set -euo pipefail
           view_error="$(mktemp)"
           trap 'rm -f "$view_error"' EXIT
+          # Registry stderr is third-party diagnostic text (it can carry registry URLs and proxy
+          # details) and this log is public — branch on it, never print it.
           if ! npm view '@morpho-org/quoter' name >/dev/null 2>"$view_error"; then
             if grep -q 'E404' "$view_error"; then
               echo "::error::@morpho-org/quoter does not exist on the registry. Trusted publishing cannot create a package; bootstrap once manually: pnpm --filter @morpho-org/quoter-bot run npm:pack && npm publish bots/quoter-bot/dist/npm"
             else
-              echo '::error::unexpected npm registry failure while checking the package'
-              cat "$view_error"
+              echo '::error::unexpected npm registry failure while checking the package; rerun after checking registry status'
             fi
             exit 1
           fi
@@ -224,26 +225,36 @@ jobs:
               exit 0
             fi
             if [ -n "$published" ]; then
-              echo "::error::unexpected registry response for @morpho-org/quoter@${VERSION}: ${published}"
+              echo "::error::unexpected registry response while checking the staged version"
               exit 1
             fi
           elif ! grep -q 'E404' "$view_error"; then
-            echo '::error::unexpected npm registry failure while checking the version'
-            cat "$view_error"
+            echo '::error::unexpected npm registry failure while checking the version; rerun after checking registry status'
             exit 1
           fi
           echo "exists=false" >> "$GITHUB_OUTPUT"
 
-      # `latest` must only move forward. A rerun may legitimately backfill an older release's
-      # version, but when another quoter-bot release tag descends from the built commit a newer
-      # release already shipped — publish under the `backfill` dist-tag and leave `latest` alone.
-      # Release tags are cut by deploy-production.yml, whose concurrency group serializes release
-      # runs, so the newest release cannot change mid-run.
+      # `latest` must only move forward, because npm resolves bare installs from it and never
+      # orders dist-tags itself. Three gates: prereleases always publish under `next`; when another
+      # quoter-bot release tag descends from the built commit a newer release already shipped, so a
+      # rerun backfills without touching `latest`; and the candidate must be semver-greater than
+      # the registry's current `latest` (fail closed on lookup failure). Release tags are cut by
+      # deploy-production.yml, whose concurrency group serializes release runs, so the newest
+      # release cannot change mid-run.
       - name: Gate the latest tag
         if: ${{ steps.release.outputs.release == 'true' && steps.registry.outputs.exists != 'true' }}
         id: tags
+        env:
+          VERSION: ${{ steps.staged.outputs.version }}
         run: |
           set -euo pipefail
+          case "$VERSION" in
+            *-*)
+              echo "::notice::${VERSION} is a prerelease; publishing under the next dist-tag"
+              echo "dist_tag=next" >> "$GITHUB_OUTPUT"
+              exit 0
+              ;;
+          esac
           commit="$(git rev-parse HEAD)"
           newer=''
           for tag in $(git tag --list 'quoter-bot-*'); do
@@ -256,6 +267,16 @@ jobs:
           done
           if [ -n "$newer" ]; then
             echo "::notice::release ${newer} descends from ${commit}; publishing under the backfill dist-tag"
+            echo "dist_tag=backfill" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if ! current_latest="$(npm view '@morpho-org/quoter' dist-tags.latest 2>/dev/null)"; then
+            echo '::error::could not read the registry current latest dist-tag; rerun after checking registry status'
+            exit 1
+          fi
+          if [ -n "$current_latest" ] \
+            && [ "$(printf '%s\n%s\n' "$current_latest" "$VERSION" | sort -V | tail -n 1)" != "$VERSION" ]; then
+            echo "::notice::${VERSION} does not advance the current latest ${current_latest}; publishing under the backfill dist-tag"
             echo "dist_tag=backfill" >> "$GITHUB_OUTPUT"
           else
             echo "dist_tag=latest" >> "$GITHUB_OUTPUT"

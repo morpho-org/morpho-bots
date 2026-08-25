@@ -46,17 +46,23 @@ const readme = readRequired(
   'docs/npm-README.md is missing; it ships as the published package README'
 )
 
-rmSync(STAGE_DIR, { recursive: true, force: true })
-mkdirSync(STAGE_DIR, { recursive: true })
-const bundlePath = join(STAGE_DIR, NPM_BUNDLE_FILENAME)
-writeFileSync(bundlePath, bundle)
-chmodSync(bundlePath, 0o755)
-writeFileSync(join(STAGE_DIR, 'LICENSE'), license)
-writeFileSync(join(STAGE_DIR, 'README.md'), readme)
-writeFileSync(
-  join(STAGE_DIR, 'package.json'),
-  `${JSON.stringify(buildNpmPackageManifest(version), null, 2)}\n`
-)
+try {
+  rmSync(STAGE_DIR, { recursive: true, force: true })
+  mkdirSync(STAGE_DIR, { recursive: true })
+  const bundlePath = join(STAGE_DIR, NPM_BUNDLE_FILENAME)
+  writeFileSync(bundlePath, bundle)
+  chmodSync(bundlePath, 0o755)
+  writeFileSync(join(STAGE_DIR, 'LICENSE'), license)
+  writeFileSync(join(STAGE_DIR, 'README.md'), readme)
+  writeFileSync(
+    join(STAGE_DIR, 'package.json'),
+    `${JSON.stringify(buildNpmPackageManifest(version), null, 2)}\n`
+  )
+} catch {
+  throw new NpmPackFailedError(
+    'failed to stage the npm package under dist/npm; check filesystem permissions and free space'
+  )
+}
 
 console.log(`Staged ${NPM_PACKAGE_NAME}@${version} at ${STAGE_DIR}`)
 console.log(`Verify with: node ${join(STAGE_DIR, NPM_BUNDLE_FILENAME)} --version`)
