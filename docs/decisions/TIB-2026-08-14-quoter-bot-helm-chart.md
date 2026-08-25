@@ -131,8 +131,10 @@ that window, the template floors the rendered grace period at the chart-managed
 environment overrides or `existingConfigSecret` are invisible to the template, so those
 operators size the grace period themselves (documented in `values.yaml` and the chart README).
 
-**No probes, no Service.** The bot exposes no ports. It fails loud and exits non-zero; the
-restart policy plus JSON Lines logs and Better Stack shipping are the observability story.
+**No probes, no serving endpoint.** The bot exposes no ports. The only Service is the
+StatefulSet's required portless headless governing Service, which serves no traffic. The bot
+fails loud and exits non-zero; the restart policy plus JSON Lines logs and Better Stack shipping
+are the observability story.
 
 **Tooling.** oxfmt cannot parse Go-templated YAML, so `.oxfmtrc.json` `ignorePatterns` gains
 `**/helm/**/templates/**`; `Chart.yaml`, `values.yaml`, and the chart README stay
