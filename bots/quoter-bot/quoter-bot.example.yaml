@@ -19,6 +19,9 @@ identity:
   # AWS KMS alternatives remain blank while private-key is selected. KMS signing is remote.
   awsKmsKeyId: ''
   awsRegion: ''
+  # Quoter-signer middleware alternative (TIB-2026-08-12): alias-qualified production-alias
+  # Lambda ARN; the region is derived from the ARN.
+  quoterSignerLambdaArn: ''
 
 contracts:
   midnightAddress: '0x2222222222222222222222222222222222222222'

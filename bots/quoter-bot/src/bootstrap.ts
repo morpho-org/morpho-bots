@@ -200,18 +200,35 @@ export const createApplication = (
         'KEYSTORE_PASSWORD',
         'KEYSTORE_INTERACTIVE',
         'AWS_KMS_KEY_ID',
-        'AWS_REGION'
+        'AWS_REGION',
+        'QUOTER_SIGNER_LAMBDA_ARN'
       ])
         delete effectiveEnvironment[key]
     } else if (method === 'keystore') {
-      for (const key of ['MAKER_PRIVATE_KEY', 'AWS_KMS_KEY_ID', 'AWS_REGION'])
+      for (const key of [
+        'MAKER_PRIVATE_KEY',
+        'AWS_KMS_KEY_ID',
+        'AWS_REGION',
+        'QUOTER_SIGNER_LAMBDA_ARN'
+      ])
         delete effectiveEnvironment[key]
     } else if (method === 'aws') {
       for (const key of [
         'MAKER_PRIVATE_KEY',
         'KEYSTORE_PATH',
         'KEYSTORE_PASSWORD',
-        'KEYSTORE_INTERACTIVE'
+        'KEYSTORE_INTERACTIVE',
+        'QUOTER_SIGNER_LAMBDA_ARN'
+      ])
+        delete effectiveEnvironment[key]
+    } else if (method === 'middleware') {
+      for (const key of [
+        'MAKER_PRIVATE_KEY',
+        'KEYSTORE_PATH',
+        'KEYSTORE_PASSWORD',
+        'KEYSTORE_INTERACTIVE',
+        'AWS_KMS_KEY_ID',
+        'AWS_REGION'
       ])
         delete effectiveEnvironment[key]
     }

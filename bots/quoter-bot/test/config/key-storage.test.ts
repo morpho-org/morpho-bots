@@ -131,6 +131,49 @@ describe('maker key storage configuration', () => {
     expect(config.privateKey).toBeUndefined()
   })
 
+  test('selects the quoter-signer middleware when only its Lambda ARN is configured', () => {
+    const functionArn = 'arn:aws:lambda:eu-west-1:123456789012:function:quoter-signer-routine:prod'
+    const config = ConfigService.from({
+      ...baseEnvironment,
+      QUOTER_SIGNER_LAMBDA_ARN: functionArn
+    })
+    expect(config.keyStorageMethod).toBe('middleware')
+    expect(config.identity).toMatchObject({
+      method: 'middleware',
+      functionArn,
+      region: 'eu-west-1'
+    })
+    expect(config.privateKey).toBeUndefined()
+  })
+
+  test('derives the middleware region from the alias ARN, ignoring the ambient AWS region', () => {
+    const config = ConfigService.from({
+      ...baseEnvironment,
+      KEY_STORAGE_METHOD: 'middleware',
+      QUOTER_SIGNER_LAMBDA_ARN:
+        'arn:aws:lambda:ap-southeast-2:123456789012:function:quoter_signer:prod-2',
+      AWS_REGION: 'us-east-1'
+    })
+    expect(config.identity).toMatchObject({ method: 'middleware', region: 'ap-southeast-2' })
+  })
+
+  test.each([
+    ['a truncated ARN', 'arn:aws:lambda:eu-west-1:123456789012:function'],
+    ['a non-Lambda ARN', 'arn:aws:kms:eu-west-1:123456789012:key/quoter'],
+    ['a $LATEST qualifier', 'arn:aws:lambda:eu-west-1:123456789012:function:quoter-signer:$LATEST'],
+    ['an unqualified function ARN', 'arn:aws:lambda:eu-west-1:123456789012:function:quoter-signer'],
+    [
+      'a published-version qualifier',
+      'arn:aws:lambda:eu-west-1:123456789012:function:quoter-signer:3'
+    ],
+    ['a malformed account id', 'arn:aws:lambda:eu-west-1:12345:function:quoter-signer:prod'],
+    ['a bare function name', 'quoter-signer-routine']
+  ])('rejects %s as the middleware Lambda ARN', (_name, value) => {
+    expect(() =>
+      ConfigService.from({ ...baseEnvironment, QUOTER_SIGNER_LAMBDA_ARN: value })
+    ).toThrow(expect.objectContaining({ field: 'QUOTER_SIGNER_LAMBDA_ARN', reason: 'invalid-arn' }))
+  })
+
   test('ignores ambient AWS region and blank companion sentinels outside KMS mode', () => {
     const config = ConfigService.from({
       ...baseEnvironment,
@@ -180,6 +223,41 @@ describe('maker key storage configuration', () => {
     ['missing keystore password mode', { KEYSTORE_PATH: '/secure/maker.json' }],
     ['missing AWS key id', { KEY_STORAGE_METHOD: 'aws', AWS_REGION: 'eu-west-1' }],
     ['missing AWS region', { KEY_STORAGE_METHOD: 'aws', AWS_KMS_KEY_ID: 'alias/maker' }],
+    [
+      'missing middleware Lambda ARN',
+      { KEY_STORAGE_METHOD: 'middleware', AWS_REGION: 'eu-west-1' }
+    ],
+    [
+      'conflicting private key and middleware sources',
+      {
+        MAKER_PRIVATE_KEY: privateKey,
+        QUOTER_SIGNER_LAMBDA_ARN: 'arn:aws:lambda:eu-west-1:123456789012:function:quoter-signer'
+      }
+    ],
+    [
+      'conflicting keystore and middleware sources',
+      {
+        KEYSTORE_PATH: '/secure/maker.json',
+        KEYSTORE_PASSWORD: 'pw',
+        QUOTER_SIGNER_LAMBDA_ARN: 'arn:aws:lambda:eu-west-1:123456789012:function:quoter-signer'
+      }
+    ],
+    [
+      'conflicting AWS KMS and middleware sources',
+      {
+        AWS_KMS_KEY_ID: 'alias/maker',
+        AWS_REGION: 'eu-west-1',
+        QUOTER_SIGNER_LAMBDA_ARN: 'arn:aws:lambda:eu-west-1:123456789012:function:quoter-signer'
+      }
+    ],
+    [
+      'a declared middleware method with an interactive keystore sentinel',
+      {
+        KEY_STORAGE_METHOD: 'middleware',
+        QUOTER_SIGNER_LAMBDA_ARN: 'arn:aws:lambda:eu-west-1:123456789012:function:quoter-signer',
+        KEYSTORE_INTERACTIVE: 'true'
+      }
+    ],
     ['missing every source', {}]
   ])('rejects %s', (_name, values) => {
     expect(() => ConfigService.from({ ...baseEnvironment, ...values })).toThrow(
@@ -209,6 +287,31 @@ describe('maker key storage configuration', () => {
     expect(config.rpcUrl).toBe('https://env-rpc.example')
   })
 
+  test('an environment middleware Lambda ARN overrides a YAML AWS KMS identity', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'quoter-bot-key-storage-middleware-'))
+    directories.push(directory)
+    const path = join(directory, 'operator.yaml')
+    await writeFile(
+      path,
+      configurationYaml(
+        `  makerAddress: ${baseEnvironment.MAKER_ADDRESS}\n  keyStorageMethod: aws\n  awsKmsKeyId: alias/yaml-maker\n  awsRegion: eu-west-1`
+      )
+    )
+    const functionArn = 'arn:aws:lambda:us-east-2:123456789012:function:quoter-signer-routine:prod'
+
+    const config = await ConfigService.load(
+      { QUOTER_SIGNER_LAMBDA_ARN: functionArn },
+      { configPath: path }
+    )
+
+    expect(config.keyStorageMethod).toBe('middleware')
+    expect(config.identity).toMatchObject({
+      method: 'middleware',
+      functionArn,
+      region: 'us-east-2'
+    })
+  })
+
   test.each([
     [
       'private-key',
@@ -232,6 +335,16 @@ describe('maker key storage configuration', () => {
       `  makerAddress: ${baseEnvironment.MAKER_ADDRESS}\n  keyStorageMethod: aws\n  awsKmsKeyId: alias/yaml-maker\n  awsRegion: eu-west-1`,
       { KEY_STORAGE_METHOD: '\n', AWS_KMS_KEY_ID: ' \t', AWS_REGION: '  ' },
       { method: 'aws', keyId: 'alias/yaml-maker', region: 'eu-west-1' }
+    ],
+    [
+      'middleware',
+      `  makerAddress: ${baseEnvironment.MAKER_ADDRESS}\n  keyStorageMethod: middleware\n  quoterSignerLambdaArn: arn:aws:lambda:eu-west-1:123456789012:function:quoter-signer:prod`,
+      { KEY_STORAGE_METHOD: '', QUOTER_SIGNER_LAMBDA_ARN: ' \t ' },
+      {
+        method: 'middleware',
+        functionArn: 'arn:aws:lambda:eu-west-1:123456789012:function:quoter-signer:prod',
+        region: 'eu-west-1'
+      }
     ]
   ])(
     'blank environment signer selectors do not override valid YAML %s configuration',
