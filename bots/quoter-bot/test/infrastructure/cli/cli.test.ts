@@ -243,6 +243,46 @@ describe('Cli', () => {
     expect(assertReady).toHaveBeenCalledWith(controller.signal)
   })
 
+  test('never lets a failing monitoring write stop a monitored cycle', async () => {
+    const report = {
+      status: 'stopped' as const,
+      reason: 'signal' as const,
+      cycles: 1
+    }
+    const runContinuously = vi.fn(
+      async (parameters: {
+        signal: AbortSignal
+        onCycle?: (result: typeof readyReport) => void | Promise<void>
+      }) => {
+        await parameters.onCycle?.(readyReport)
+        return report
+      }
+    )
+    const written: unknown[] = []
+    const application = new Cli(
+      new VersionService(),
+      () => ({ assertReady: async () => readyReport, runContinuously }),
+      () => ({ runOnce: async () => [] }),
+      () => ({ runOnce: async () => [] })
+    )
+
+    expect(
+      await application.run(['setup-check', '--monitor'], {
+        signal: new AbortController().signal,
+        writeEvent: value => {
+          written.push(value)
+          if ((value as { event?: string }).event === 'cycle.completed') {
+            throw new Error('sink unavailable')
+          }
+        }
+      })
+    ).toEqual(report)
+    expect(runContinuously).toHaveBeenCalledTimes(1)
+    expect(written).toContainEqual(
+      expect.objectContaining({ event: 'cycle.completed', workflow: 'setup-check' })
+    )
+  })
+
   test('quoter-bot setup-check --monitor streams readiness reports until shutdown', async () => {
     const report = {
       status: 'stopped' as const,

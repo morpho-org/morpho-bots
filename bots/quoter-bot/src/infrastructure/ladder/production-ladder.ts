@@ -543,20 +543,25 @@ export const createProductionLadderAdapters = (
     }
   }
 
-  const readActive = async (marketId: Hex) => {
+  // The quote and its groups' consumption are derived from ONE groups read rather than two
+  // concurrent readers sharing a single-flight slot: that slot is released as soon as the first
+  // request settles, so deduplication there is timing-dependent and monitoring could add a real
+  // round trip to the quoting path.
+  const readActiveState = async (marketId: Hex) => {
     await cleanupRemovedMarkets()
     const [groups, publications] = await Promise.all([readGroups(), ladderOwnership.read()])
-    return publications
+    const quote = publications
       .filter(item => item.marketId === marketId)
       .toReversed()
       .map(publication => reconstructOwnedLadderPublication(publication, groups))
-      .find(quote => quote !== undefined)
+      .find(item => item !== undefined)
+    return {
+      ...(quote === undefined ? {} : { quote }),
+      consumption: ownedLadderGroupConsumption(publications, groups, marketId)
+    }
   }
 
-  const readConsumption = async (marketId: Hex) => {
-    const [groups, publications] = await Promise.all([readGroups(), ladderOwnership.read()])
-    return ownedLadderGroupConsumption(publications, groups, marketId)
-  }
+  const readActive = async (marketId: Hex) => (await readActiveState(marketId)).quote
 
   const prepareUnsignedPublication = async (
     quote: LadderQuoteSet,
@@ -608,7 +613,7 @@ export const createProductionLadderAdapters = (
 
   const readOnlyMake: LadderMakeService = {
     readActive,
-    readConsumption,
+    readActiveState,
     reconcile: async () => {
       throw new LadderAdapterError('readonly-mutation')
     },
@@ -646,7 +651,7 @@ export const createProductionLadderAdapters = (
 
   const transport: LadderOfferTransport = {
     readActive,
-    readConsumption,
+    readActiveState,
     listOwnedGroups: async () => ownedGroups(await ladderOwnership.read()),
     readGroupConsumed,
     listActiveGroupIds: async marketId => {

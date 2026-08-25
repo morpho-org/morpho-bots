@@ -78,16 +78,20 @@ export interface LadderMakeService {
    */
   readActive(marketId: Hex): Promise<LadderQuoteSet | undefined>
   /**
-   * Reads monotonic per-group consumption for one market's owned ladder groups.
-   * @param marketId - Canonical market identifier whose owned groups should be reported.
-   * @returns One record per indexed owned group; groups the indexer has not seen are omitted.
-   * @throws When owned groups cannot be read safely.
-   * @remarks Observation-only and optional: quoting never consults it, and adapters that cannot
-   * cheaply expose group consumption omit it, which only suppresses fill telemetry. Consumption is
-   * monotonic per group ID, so cycle-over-cycle growth is taker fills rather than the strategy's own
-   * cancel and republish.
+   * Reads the active quote and its groups' consumption from one snapshot.
+   * @param marketId - Canonical market identifier whose active roots must be reconstructed.
+   * @returns The active quote when roots remain live, and one consumption record per indexed owned
+   * group; groups the indexer has not seen are omitted.
+   * @throws When active roots cannot be loaded or decoded safely.
+   * @remarks Optional; an adapter that cannot report consumption omits it, which only suppresses
+   * fill telemetry. Both values must come from a SINGLE provider read: deriving them from separate
+   * reads would put a monitoring round trip on the quoting path. Consumption is monotonic per group
+   * ID, so cycle-over-cycle growth is taker fills rather than the strategy's own cancel and
+   * republish — and it must be sampled before reconciliation, which forgets replaced groups.
    */
-  readConsumption?(marketId: Hex): Promise<readonly LadderGroupConsumption[]>
+  readActiveState?(
+    marketId: Hex
+  ): Promise<{ quote?: LadderQuoteSet; consumption: readonly LadderGroupConsumption[] }>
   /**
    * Reconciles one strategy-owned market quote set against fresh active roots.
    * @param parameters - Market, optional exact desired set, stable reason, and submission observer.
@@ -383,10 +387,11 @@ export class LadderQuoterService {
       // deduplicated groups request.
       let groupConsumption: readonly LadderGroupConsumption[] | undefined
       try {
-        ;[active, groupConsumption] = await Promise.all([
-          this.make.readActive(config.marketId),
-          this.readGroupConsumption(config.marketId)
-        ])
+        const state = this.make.readActiveState
+          ? await this.make.readActiveState(config.marketId)
+          : { quote: await this.make.readActive(config.marketId), consumption: undefined }
+        active = state.quote
+        groupConsumption = state.consumption
       } catch (error) {
         const result = await this.halt(
           config.marketId,
@@ -529,7 +534,8 @@ export class LadderQuoterService {
         targetRateBps: referenceRateBps + config.quotePremiumBps,
         ladderOffer: desired,
         decision,
-        ...(diagnostics ? { diagnostics } : {})
+        ...(diagnostics ? { diagnostics } : {}),
+        ...(groupConsumption ? { groupConsumption } : {})
       }
 
       let reconciliation: LadderMakeResult
@@ -667,14 +673,6 @@ export class LadderQuoterService {
         stateAfterCheck,
         ...(startedAt === undefined ? {} : { durationMs: Date.now() - startedAt })
       }
-    }
-  }
-
-  private async readGroupConsumption(marketId: Hex) {
-    try {
-      return await this.make.readConsumption?.(marketId)
-    } catch {
-      return undefined
     }
   }
 

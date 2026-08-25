@@ -303,6 +303,33 @@ has no single cross-bot convention to converge on.
 - A Better Stack dashboard and alert set built against this contract, exportable as JSON so a fork
   can import it, is deliberately out of scope here.
 
+## Addendum A (2026-08-25) — the shipped vocabulary as implemented
+
+The decision is unchanged. Implementation and two review rounds moved the vocabulary away from the
+table above; `bots/quoter-bot/docs/reference.md` is now the authoritative event contract, and this
+records the deltas.
+
+| Change                                                                                                               | Reason                                                                                                   |
+| -------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| `bot.configured.marketIds` and `.ladderIntervalSeconds` removed                                                      | One process-wide cadence made slower markets look overdue; both move to `market.configured`              |
+| `market.configured` added (`marketId`, `ladder`, `bootstrap`, `ladderIntervalSeconds?`)                              | Per-market absence scoping, and it distinguishes a market missing a cycle from one never configured      |
+| `bot.failed` added (`workflow?`, `reason`, `errorName?`)                                                             | Covers a startup readiness failure and the fail-together halt, which no cycle record can describe        |
+| `guardrail.cross-book-cleared.clearanceBps` removed                                                                  | `CROSS_BOOK_CLEARANCE_BPS` is a code constant, not an observation                                        |
+| `bootstrap.progress.shortfallAssets` removed                                                                         | Exactly `max(creditTargetAssets - creditAssets, 0)` over two shipped fields                              |
+| `bootstrap.progress.mode` removed                                                                                    | `initialTargetCompleted` is an internal latch; `cycle.completed.action` already shows the transition     |
+| `setup.ready` removed                                                                                                | Restates `cycle.completed { workflow: "setup-check" }.status` once a minute                              |
+| `transaction.settled.status` and `errorName?` removed                                                                | A settled transaction is confirmed by definition; the pre-receipt `*.transaction-submitted` names remain |
+| `guardrail.spread-rejected.errorName` removed                                                                        | The event name is the signal, and the paired `cycle.completed` carries the classification                |
+| `setup.check-failed.errorName` removed                                                                               | `SetupCheck` carries no error classification; `observed`/`required` are `unknown` and not flat scalars   |
+| `reference.observed` gained `workflow`; `cycle.completed.marketId` and `guardrail.rate-clamped.side` became optional | Bootstrap shares both projections and reports one rung with no side                                      |
+
+Two deviations from the table remain, both structural rather than deliberate simplifications.
+`book.observed.state` is `quoting` or `empty` rather than `indexed` / `pending-index` / `empty`,
+because `readActive` reconstructs indexed and not-yet-indexed groups into one quote set and a
+pending-index state is not observable at that seam. `reference.observed` carries no `referenceMode`,
+because `LadderConfig` does not declare `targetRate`: the strategy is applied above the domain
+type the projection reads.
+
 ## References
 
 - [MKT-1785 — Monitoring & alerting spec](https://linear.app/morpho-labs/issue/MKT-1785)

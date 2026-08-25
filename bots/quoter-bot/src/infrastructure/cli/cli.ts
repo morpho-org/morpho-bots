@@ -111,13 +111,22 @@ export class Cli {
   private readonly monitoring: MonitoringProjection = createMonitoringProjection()
 
   // The cycle value keeps its existing shape and ships first; the flat monitoring records derived
-  // from it follow on the same stream, so stdout and any log sink stay identical.
+  // from it follow on the same stream.
+  //
+  // Monitor loops await this callback while holding the combined writer queue, so a throwing
+  // projection would surface as a failed cycle and stop the bot. Deriving and writing the extra
+  // records is therefore isolated: telemetry may be lost, but it can never halt quoting. The cycle
+  // value itself keeps its original unguarded write so genuine output failures still surface.
   private async writeCycle(
     value: unknown,
     project: (projection: MonitoringProjection) => readonly unknown[]
   ) {
     await this.runtime.writeEvent?.(value)
-    for (const event of project(this.monitoring)) await this.runtime.writeEvent?.(event)
+    try {
+      for (const event of project(this.monitoring)) await this.runtime.writeEvent?.(event)
+    } catch {
+      return
+    }
   }
 
   private get signal() {

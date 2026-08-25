@@ -363,8 +363,9 @@ monitoring records to Better Stack. Shipping is best-effort and never replaces o
 existing stdout/stderr JSON Lines contract. With full shipping configuration, `start`, `bootstrap`,
 and `ladder` automatically enable the existing safe `--verbose` event stream (without adding a
 duplicate flag), so active positions, bootstrap offers, ladder quotes/offers, decisions, and
-submitted/confirmed transactions are available to the log source. Unset shipping variables are
-inert; partial configuration fails loud locally and does not enable verbose diagnostics.
+submitted/confirmed transactions are available to the log source. With the shipping variables unset
+no log record leaves the process; partial configuration fails loud locally and does not enable
+verbose diagnostics.
 
 Every record carries `bot: "quoter-bot"`, `chainId: 8453`, and available Railway deployment
 context. Nested `status: "failed"`, `status: "halted"`, and `errorName` values are emitted at error
@@ -380,34 +381,43 @@ Useful Better Stack source queries/filters include:
 - market state: `bot:quoter-bot AND event:(position.observed OR book.observed OR offer.consumed)`;
 - failures: `bot:quoter-bot AND level:error`, optionally grouped by `event` and `errorName`.
 
-`BETTERSTACK_HEARTBEAT_URL` is independent and optional. It starts with the process, stops during
-normal teardown, and cannot interrupt strategy execution. Create the log source, heartbeat, saved
+`BETTERSTACK_HEARTBEAT_URL` is optional and is configured independently of the shipping opt-in.
+Whenever it is set the heartbeat pings on a wall-clock interval whether or not
+`BETTERSTACK_SOURCE_TOKEN` and `BETTERSTACK_INGESTING_HOST` are configured, so "shipping unset"
+means no log records are sent, not that the process makes no network calls. The heartbeat starts
+with the process, stops during normal teardown, and cannot interrupt strategy execution. Create the
+log source, heartbeat, saved
 queries, and any dashboard/alerting in Better Stack externally; this repository does not provision
 or claim a deployed dashboard URL.
 
 #### Shipping allowlist
 
-Shipping is an explicit allowlist, not "any record carrying an `event`". `isShippableRecord` admits
-exactly the names in `MONITORING_EVENT_NAMES` — the `MonitoringEvent` union tabulated below, which a
-compile-time assertion keeps in sync with that list — plus the three pre-receipt transaction names
+Records written through the CLI event writer pass an explicit allowlist, not "any record carrying an
+`event`". `isShippableRecord` admits exactly the names in `MONITORING_EVENT_NAMES` — the
+`MonitoringEvent` union tabulated below, which a compile-time assertion keeps in sync with that list
+— plus the three pre-receipt transaction names
 `ladder.transaction-submitted`, `bootstrap.transaction-submitted`, and
 `offer-invalidation.transaction-submitted`, which are already flat and version alongside their
 `transaction.settled` counterparts.
 
-Everything else written to stdout stays local:
+Everything else the CLI writes stays local:
 
-| Record                                                 | Why it is stdout-only                                                                  |
-| ------------------------------------------------------ | -------------------------------------------------------------------------------------- |
-| `quoter-bot.cycle`                                     | A named envelope wrapping a nested, unversioned per-workflow cycle report              |
-| `readonly.make`                                        | A named envelope wrapping a nested, unversioned mutation request                       |
-| Terminal monitor and cycle reports, `quoter-bot.error` | Written by the CLI presenter after the run, never routed through the shipping boundary |
+| Record                                                 | Where it goes, and why it is not shipped                                                                               |
+| ------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------- |
+| `quoter-bot.cycle`                                     | stdout; a named envelope wrapping a nested, unversioned per-workflow cycle report                                      |
+| `readonly.make`                                        | stdout; a named envelope wrapping a nested, unversioned mutation request                                               |
+| Terminal monitor and cycle reports, `quoter-bot.error` | stdout on success, stderr on the failure path (the report rides `quoter-bot.error`); never routed through the boundary |
 
 A nested unversioned shape cannot be grouped on by a metric expression and cannot be pinned by
 `schemaVersion`, so admitting it would put an unmaintainable surface in the log source. Nothing is
 lost: the same content ships flat as `cycle.completed`, `guardrail.*`, and `bot.failed`. The
-`@repo/observability` `bot.action` fallback is therefore unreachable for this bot, and the lifecycle
-records `bot.started`, `bot.stopped`, `bot.unexpected-error`, and `heartbeat.failed` ship from the
-observability layer rather than through this boundary.
+`@repo/observability` `bot.action` fallback is therefore unreachable for this bot.
+
+The allowlist scopes the CLI event writer only. `bot.started`, `bot.stopped`,
+`bot.unexpected-error`, and `heartbeat.failed` are emitted straight through the shipping logger by
+`@repo/observability` and `@repo/bot-kit`, bypassing this boundary entirely — so they are present
+in the log source while absent from `MONITORING_EVENT_NAMES`. `bot.unexpected-error` in particular is
+the only shipped signal for an entrypoint failure that no reported error classifies.
 
 #### Event contract
 
@@ -418,10 +428,11 @@ than onto each record, so every line carries it at zero per-event cost and a con
 contract. It is bumped only on a breaking field rename or removal; adding an optional field is not
 breaking.
 
-Bootstrap failure and halt results additionally carry `adapterOperation`, an allowlisted reason such
-as `negative-spread` or `transaction-policy` that distinguishes failures the `errorName`
-classification collapses into one class. Unrecognized operation values are withheld, so the field can
-never carry provider text and is safe as a grouping dimension.
+`adapterOperation` is not a shipped field. Bootstrap failure and halt results carry it internally:
+an allowlisted reason such as `negative-spread` or `transaction-policy`, withheld when
+unrecognized. The projection reads it solely to decide whether to emit `guardrail.spread-rejected`, which the
+collapsed `errorName` classification could not distinguish. It appears on no `MonitoringEvent`
+variant, so it is not available as a grouping dimension in the log source.
 
 Records are projected from cycle results that are already sanitized — the projections read nothing
 and never re-classify an error. Only allowlisted `errorName` classifications ship; raw error text,
@@ -490,15 +501,15 @@ operator question at three orders of magnitude less volume.
 
 #### Alert recipes
 
-| Question             | Signal                                                                                                                                                                                        |
-| -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Crash / halt         | Any `bot.failed`. The process-level record carries no `workflow`; group the accompanying records by `workflow` to name the half that broke, and by `reason` and `errorName` to classify it    |
-| Halt / guardrail     | Any `guardrail.halted` (alert on `strategyInvalidated: true` first); `guardrail.rate-clamped`, `guardrail.cross-book-cleared`, and `guardrail.rungs-truncated` counts sustained over a window |
-| Stale reference      | Absence of `reference.observed` for a `marketId` beyond two of that market's `ladderIntervalSeconds`                                                                                          |
-| Inventory / exposure | `position.observed` balance and capacity gauges; `guardrail.exposure-capped` grouped by `cap` names the limit that actually bound                                                             |
-| Fills                | `offer.consumed`, summing `consumedDeltaAssets` by `marketId` and `side`                                                                                                                      |
-| PnL / losses         | Derived downstream from `offer.consumed`, `position.observed` balances, and `maturityTimestamp` — the bot emits primitives, not attribution                                                   |
-| Not quoting          | `book.observed` with `state: "empty"`. Both sides are emitted on every observed cycle, including when no quote is active at all, so "not quoting" is a positive signal rather than silence    |
+| Question             | Signal                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Crash / halt         | `bot.failed` OR `bot.unexpected-error`, plus a missed heartbeat. `bot.failed` covers a classified failure — the process-level record carries no `workflow`; group the accompanying records by `workflow` to name the half that broke, and by `reason` and `errorName` to classify it. An unclassified entrypoint failure emits `bot.unexpected-error` (with `origin` and `errorName`) and **no** `bot.failed`, so alerting on `bot.failed` alone misses it. A hard process death emits neither; the missed heartbeat is the only signal |
+| Halt / guardrail     | Any `guardrail.halted` (alert on `strategyInvalidated: true` first); `guardrail.rate-clamped`, `guardrail.cross-book-cleared`, and `guardrail.rungs-truncated` counts sustained over a window                                                                                                                                                                                                                                                                                                                                           |
+| Stale reference      | Absence of `reference.observed` for a `marketId` beyond two of that market's `ladderIntervalSeconds`. Sound for a ladder market, which reads a reference every cycle. Scope the alert to `market.configured` with `ladder: true`: a bootstrap-only market can legitimately go silent (see Known limits)                                                                                                                                                                                                                                 |
+| Inventory / exposure | `position.observed` balance and capacity gauges; `guardrail.exposure-capped` grouped by `cap` names the limit that actually bound                                                                                                                                                                                                                                                                                                                                                                                                       |
+| Fills                | `offer.consumed`, summing `consumedDeltaAssets` by `marketId` and `side`                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| PnL / losses         | Derived downstream from `offer.consumed`, `position.observed` balances, and `maturityTimestamp` — the bot emits primitives, not attribution                                                                                                                                                                                                                                                                                                                                                                                             |
+| Not quoting          | `book.observed` with `state: "empty"`. Both sides are emitted on every observed cycle, including when no quote is active at all, so "not quoting" is a positive signal rather than silence                                                                                                                                                                                                                                                                                                                                              |
 
 Absence alerts are scoped per market by `market.configured`, which names one `marketId` and that
 market's own `ladderIntervalSeconds`, so each market's silence window is its own configured cadence.
@@ -545,6 +556,15 @@ only and cannot prove a particular market was read or quoted. The per-market `cy
 - **Book state is binary.** `book.observed.state` is `quoting` or `empty` only. `readActive`
   reconstructs indexed and not-yet-indexed groups into a single quote set, so a pending-index state is
   not observable at this seam.
+- **Reference reads are conditional for bootstrap.** `decidePositionBootstrapTransition` returns a
+  decision before any reference-rate derivation once the credit target is reached, or once the
+  initial target completed with `autoRefill` off — and `reference.observed` is emitted only when a
+  verbose cycle actually holds a reference rate. For a bootstrap-only market, absence therefore
+  means "no reference was needed" at least as often as "the reference went stale". A ladder market reads a
+  reference every cycle, so the staleness recipe is sound there.
+- **Monitoring cannot halt quoting.** Records are derived and written inside the monitored cycle's
+  own callback, but `writeCycle` swallows any failure raised while projecting or writing them. A
+  broken projection or a failing writer loses telemetry silently; it can never stop a cycle.
 - **Duration scope.** `cycle.completed.durationMs` covers one market's check including the post-check
   verbose re-read. Under the combined `start` lifecycle the ladder and bootstrap writers share one
   mutation queue, so it can include queue wait as well as work.

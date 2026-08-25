@@ -24,8 +24,10 @@ type LadderOwnedGroup = { groupId: Hex; maxAssets: bigint }
 export interface LadderOfferTransport {
   /** Reconstructs active quote semantics. @param marketId - Selected market. @returns Active quote set or no quote. */
   readActive(marketId: Hex): Promise<LadderQuoteSet | undefined>
-  /** Reports monotonic per-group consumption. @param marketId - Selected market. @returns Indexed owned groups with their consumption. */
-  readConsumption(marketId: Hex): Promise<readonly LadderGroupConsumption[]>
+  /** Reads the active quote and its groups' consumption from one snapshot. @param marketId - Selected market. @returns Active quote and indexed owned group consumption. */
+  readActiveState(
+    marketId: Hex
+  ): Promise<{ quote?: LadderQuoteSet; consumption: readonly LadderGroupConsumption[] }>
   /** Lists every durably owned group and its exact consumption cap. @returns Groups used for exhaustive cleanup. */
   listOwnedGroups(): Promise<readonly LadderOwnedGroup[]>
   /** Reads authoritative on-chain consumption. @param groupId - Strategy-owned group. @returns Current consumed assets. */
@@ -92,14 +94,15 @@ export class MidnightLadderMakeService implements LadderMakeService {
   }
 
   /**
-   * Reads monotonic per-group consumption for one market.
+   * Reads the active quote and its groups' consumption from one snapshot.
    * @param marketId - Selected market.
-   * @returns Indexed owned groups with their side, rate, and consumption.
-   * @throws When owned groups or indexed group state cannot be read.
-   * @remarks Observation-only: it takes no mutation queue slot and never changes publication state.
+   * @returns Active quote when roots remain live, plus indexed owned group consumption.
+   * @throws When active roots or indexed group state cannot be read.
+   * @remarks Observation-only for the consumption half: it takes no mutation queue slot and never
+   * changes publication state. One read backs both values so monitoring adds no round trip.
    */
-  readConsumption(marketId: Hex) {
-    return this.transport.readConsumption(marketId)
+  readActiveState(marketId: Hex) {
+    return this.transport.readActiveState(marketId)
   }
 
   /**
