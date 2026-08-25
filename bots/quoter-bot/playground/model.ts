@@ -11,6 +11,7 @@ import {
 } from '../src/config/market-collections'
 import { clampRateBps } from '../src/domain/cross-book'
 import { generateLadder, offerMaxAssetsByRung } from '../src/domain/ladder/ladder'
+import { highestReachableMaturityPremiumBps } from '../src/domain/maturity-premium'
 import { CollectionImportError } from './collection-import.error'
 import { CollectionValidationError } from './collection-validation.error'
 import { FragmentCodecError } from './fragment-codec.error'
@@ -254,21 +255,27 @@ export const deriveBootstrapGraphicModels = (items: BootstrapInput[]): Bootstrap
         ? BigInt(item.targetRate.hardcodedRateBps)
         : (minimum + maximum) / 2n - premium
     const baseQuoted = reference + premium
-    // With a maturity premium the runtime quote spans [base, base + cap] before clamping, and the
-    // collection parser already rejected rates pinned outside the bounds at every maturity, so the
-    // preview renders the clamped reachable range instead of validating the premium-free base.
+    // With a maturity premium the runtime quote spans the reachable envelope (bounded by the cap
+    // and the protocol's 100-year maturity horizon) before clamping, and the collection parser
+    // already rejected rates pinned outside the bounds at every protocol-permitted maturity, so
+    // the preview renders the clamped reachable range instead of validating the premium-free base.
     const quoted =
       item.maturityPremium === undefined ? baseQuoted : clampRateBps(baseQuoted, minimum, maximum)
     const maximumQuoted =
       item.maturityPremium === undefined
         ? undefined
-        : item.maturityPremium.maximumPremiumBps === undefined
-          ? maximum
-          : clampRateBps(
-              baseQuoted + BigInt(item.maturityPremium.maximumPremiumBps),
-              minimum,
-              maximum
-            )
+        : clampRateBps(
+            baseQuoted +
+              highestReachableMaturityPremiumBps({
+                shape: 'linear',
+                premiumPerYearBps: BigInt(item.maturityPremium.premiumPerYearBps),
+                ...(item.maturityPremium.maximumPremiumBps === undefined
+                  ? {}
+                  : { maximumPremiumBps: BigInt(item.maturityPremium.maximumPremiumBps) })
+              }),
+            minimum,
+            maximum
+          )
     if (
       reference <= 0n ||
       (item.targetRate.strategy !== 'hardcoded' && (reference < minimum || reference > maximum)) ||

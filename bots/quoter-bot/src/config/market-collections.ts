@@ -10,6 +10,7 @@ import { validateBootstrapConfig } from '../domain/bootstrap/position-bootstrap'
 import { isBytes32, normalizeBytes32 } from '../domain/bytes32'
 import { assertLadderShapeAtReference, validateLadderConfig } from '../domain/ladder/ladder'
 import { LadderConfigurationError } from '../domain/ladder/ladder-configuration.error'
+import { highestReachableMaturityPremiumBps } from '../domain/maturity-premium'
 import { ConfigValidationError } from './config-validation.error'
 
 /** Minimal string environment shape used by pure market-id parsing. */
@@ -327,20 +328,16 @@ export const bootstrapConfigsValue = (
     try {
       validateBootstrapConfig(config)
       if (config.targetRate.strategy === 'hardcoded') {
-        // A maturity premium moves the requested rate along [base, base + cap] (uncapped: no upper
-        // end), so load-time rejection is reserved for rates pinned outside the bounds at every
-        // possible maturity; a transiently clamped rate is documented runtime behavior.
+        // A maturity premium moves the requested rate along a reachable envelope bounded by the
+        // configured cap and the protocol's 100-year maturity horizon, so load-time rejection is
+        // reserved for rates pinned outside the bounds at every protocol-permitted maturity; a
+        // transiently clamped rate is documented runtime behavior.
         const requestedRateBps = config.targetRate.hardcodedRateBps + config.premiumBps
         const highestRequestedRateBps =
           config.maturityPremium === undefined
             ? requestedRateBps
-            : config.maturityPremium.maximumPremiumBps === undefined
-              ? undefined
-              : requestedRateBps + config.maturityPremium.maximumPremiumBps
-        if (
-          highestRequestedRateBps !== undefined &&
-          highestRequestedRateBps < config.minimumRateBps
-        ) {
+            : requestedRateBps + highestReachableMaturityPremiumBps(config.maturityPremium)
+        if (highestRequestedRateBps < config.minimumRateBps) {
           throw new BootstrapConfigurationError(
             'requestedRateBps',
             'must be at least minimumRateBps'

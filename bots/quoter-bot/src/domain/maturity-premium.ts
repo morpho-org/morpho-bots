@@ -2,6 +2,13 @@
 export const MATURITY_PREMIUM_YEAR_SECONDS = 31_536_000n
 
 /**
+ * Longest protocol-permitted time to maturity, bounding every reachable maturity premium.
+ * @remarks Midnight's `touchMarket` rejects `maturity > block.timestamp + 100 * 365 days`
+ * (`MaturityTooFar`), so no fresh observation can exceed one hundred 365-day years.
+ */
+export const MATURITY_PREMIUM_MAX_MATURITY_SECONDS = 100n * MATURITY_PREMIUM_YEAR_SECONDS
+
+/**
  * Operator-selected premium function of time to maturity added on top of a static premium.
  * @remarks `linear` is the initial shape: `premiumPerYearBps` scales with time to maturity and an
  * optional inclusive `maximumPremiumBps` caps the result. Additional shapes extend this tagged
@@ -53,3 +60,17 @@ export const resolveMaturityPremiumBps = (
   }
   return premiumBps
 }
+
+/**
+ * Resolves the highest premium any protocol-permitted maturity can produce.
+ * @param config - Validated maturity-premium configuration selecting the function shape.
+ * @returns The inclusive premium ceiling in integer basis points: the configured cap when it
+ * binds, otherwise the premium resolved at the protocol's furthest permitted maturity.
+ * @remarks Bounds the reachability envelope used by load-time validation and previews. The
+ * envelope's endpoints (zero and this ceiling) are attainable premiums, but integer flooring makes
+ * intermediate premiums a step function — a slope above one BPS per second (`premiumPerYearBps`
+ * greater than {@link MATURITY_PREMIUM_YEAR_SECONDS}) skips individual integer values — so callers
+ * must treat this as an envelope bound, never a claim that every intermediate value is attainable.
+ */
+export const highestReachableMaturityPremiumBps = (config: MaturityPremiumConfig): bigint =>
+  resolveMaturityPremiumBps(config, MATURITY_PREMIUM_MAX_MATURITY_SECONDS)

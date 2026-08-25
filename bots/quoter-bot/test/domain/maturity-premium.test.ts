@@ -2,7 +2,9 @@ import { Time } from '@morpho-org/morpho-ts'
 import { describe, expect, test } from 'vitest'
 
 import {
+  MATURITY_PREMIUM_MAX_MATURITY_SECONDS,
   MATURITY_PREMIUM_YEAR_SECONDS,
+  highestReachableMaturityPremiumBps,
   maturityPremiumConfigIssue,
   resolveMaturityPremiumBps
 } from '../../src/domain/maturity-premium'
@@ -12,6 +14,40 @@ const DAY_SECONDS = 86_400n
 describe('MATURITY_PREMIUM_YEAR_SECONDS', () => {
   test('matches the SDK annualization used by APR and tick derivation', () => {
     expect(MATURITY_PREMIUM_YEAR_SECONDS).toBe(Time.s.from.y(1n))
+  })
+})
+
+describe('MATURITY_PREMIUM_MAX_MATURITY_SECONDS', () => {
+  test('matches the protocol MaturityTooFar horizon of one hundred 365-day years', () => {
+    expect(MATURITY_PREMIUM_MAX_MATURITY_SECONDS).toBe(Time.s.from.y(100n))
+  })
+})
+
+describe('highestReachableMaturityPremiumBps', () => {
+  test('resolves the premium at the protocol horizon without a cap', () => {
+    expect(highestReachableMaturityPremiumBps({ shape: 'linear', premiumPerYearBps: 120n })).toBe(
+      12_000n
+    )
+  })
+
+  test('returns a binding cap below the horizon premium', () => {
+    expect(
+      highestReachableMaturityPremiumBps({
+        shape: 'linear',
+        premiumPerYearBps: 120n,
+        maximumPremiumBps: 300n
+      })
+    ).toBe(300n)
+  })
+
+  test('ignores a cap the horizon premium never reaches', () => {
+    expect(
+      highestReachableMaturityPremiumBps({
+        shape: 'linear',
+        premiumPerYearBps: 1n,
+        maximumPremiumBps: 300n
+      })
+    ).toBe(100n)
   })
 })
 
