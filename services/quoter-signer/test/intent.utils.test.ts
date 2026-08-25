@@ -9,7 +9,6 @@ import type {
   RevokeIntent,
   RevokeOperation,
   SetupRemediationIntent,
-  SignedDecimal,
   UnsignedDecimal
 } from '../src/intent.utils'
 import type { MalformedIntentReason } from '../src/malformed-intent.error'
@@ -26,7 +25,6 @@ import {
 import { MalformedIntentError } from '../src/malformed-intent.error'
 
 const wei = (value: bigint): UnsignedDecimal => value.toString()
-const tick = (value: bigint): SignedDecimal => value.toString()
 const bytes32 = (byte: string) => `0x${byte.repeat(32)}` as const
 
 const maker = '0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A'
@@ -44,7 +42,7 @@ const offer = (overrides: Partial<IntentOffer> = {}): IntentOffer => ({
   buy: true,
   start: wei(1_700_000_000n),
   expiry: wei(1_700_003_600n),
-  tick: tick(-120n),
+  tick: wei(120n),
   group: bytes32('66'),
   callback: zeroAddress,
   callbackData: '0x',
@@ -152,8 +150,8 @@ describe('parseQuoterSignerIntent', () => {
 
   it('accepts the extreme in-range decimal boundaries', () => {
     const boundary = offer({
-      maxAssets: (2n ** 256n - 1n).toString(),
-      tick: (-(2n ** 255n)).toString()
+      maxAssets: (2n ** 128n - 1n).toString(),
+      tick: (2n ** 256n - 1n).toString()
     })
     expect(parseQuoterSignerIntent({ ...quoteIntent, offers: [boundary] })).toBeDefined()
   })
@@ -194,13 +192,25 @@ describe('parseQuoterSignerIntent', () => {
     ],
     [
       'a decimal above the uint256 ceiling',
-      { ...quoteIntent, offers: [offer({ maxAssets: (2n ** 256n).toString() })] },
+      { ...quoteIntent, offers: [offer({ start: (2n ** 256n).toString() })] },
+      'offers[0].start',
+      'out-of-range'
+    ],
+    [
+      'a maxAssets above the uint128 struct width',
+      { ...quoteIntent, offers: [offer({ maxAssets: (2n ** 128n).toString() })] },
       'offers[0].maxAssets',
       'out-of-range'
     ],
     [
-      'a tick below the int256 floor',
-      { ...quoteIntent, offers: [offer({ tick: (-(2n ** 255n) - 1n).toString() })] },
+      'a negative tick',
+      { ...quoteIntent, offers: [offer({ tick: '-120' })] },
+      'offers[0].tick',
+      'invalid-decimal'
+    ],
+    [
+      'a tick above the uint256 ceiling',
+      { ...quoteIntent, offers: [offer({ tick: (2n ** 256n).toString() })] },
       'offers[0].tick',
       'out-of-range'
     ],

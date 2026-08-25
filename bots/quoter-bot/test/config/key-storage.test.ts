@@ -146,11 +146,12 @@ describe('maker key storage configuration', () => {
     expect(config.privateKey).toBeUndefined()
   })
 
-  test('derives the middleware region from an unqualified function ARN under a declared method', () => {
+  test('derives the middleware region from the alias ARN, ignoring the ambient AWS region', () => {
     const config = ConfigService.from({
       ...baseEnvironment,
       KEY_STORAGE_METHOD: 'middleware',
-      QUOTER_SIGNER_LAMBDA_ARN: 'arn:aws:lambda:ap-southeast-2:123456789012:function:quoter_signer',
+      QUOTER_SIGNER_LAMBDA_ARN:
+        'arn:aws:lambda:ap-southeast-2:123456789012:function:quoter_signer:prod-2',
       AWS_REGION: 'us-east-1'
     })
     expect(config.identity).toMatchObject({ method: 'middleware', region: 'ap-southeast-2' })
@@ -160,7 +161,12 @@ describe('maker key storage configuration', () => {
     ['a truncated ARN', 'arn:aws:lambda:eu-west-1:123456789012:function'],
     ['a non-Lambda ARN', 'arn:aws:kms:eu-west-1:123456789012:key/quoter'],
     ['a $LATEST qualifier', 'arn:aws:lambda:eu-west-1:123456789012:function:quoter-signer:$LATEST'],
-    ['a malformed account id', 'arn:aws:lambda:eu-west-1:12345:function:quoter-signer'],
+    ['an unqualified function ARN', 'arn:aws:lambda:eu-west-1:123456789012:function:quoter-signer'],
+    [
+      'a published-version qualifier',
+      'arn:aws:lambda:eu-west-1:123456789012:function:quoter-signer:3'
+    ],
+    ['a malformed account id', 'arn:aws:lambda:eu-west-1:12345:function:quoter-signer:prod'],
     ['a bare function name', 'quoter-signer-routine']
   ])('rejects %s as the middleware Lambda ARN', (_name, value) => {
     expect(() =>

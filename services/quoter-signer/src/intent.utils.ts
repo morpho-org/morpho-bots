@@ -30,17 +30,13 @@ export const MAX_INTENT_MARKETS = 7
 
 /**
  * Canonical unsigned decimal integer string: base-10 digits with no sign, no leading zeros, and a
- * value within uint256 range. JSON cannot carry bigint, so every uint256-range value on the wire
- * — wei, assets, ticks, timestamps, fees, gas — is a canonical decimal string; small protocol
- * integers (`chainId`, transaction nonces) stay JSON numbers.
+ * value within uint256 range (narrower where the protocol field is narrower, such as the uint128
+ * offer caps). JSON cannot carry bigint, so every uint-range value on the wire — wei, assets,
+ * ticks, timestamps, fees, gas — is a canonical decimal string; small protocol integers
+ * (`chainId`, transaction nonces) stay JSON numbers. Every Midnight `Offer` numeric field is
+ * unsigned, so the wire carries no signed values.
  */
 export type UnsignedDecimal = string
-
-/**
- * Canonical decimal integer string with an optional leading minus: no `-0`, no leading zeros, and
- * a value within int256 range.
- */
-export type SignedDecimal = string
 
 /**
  * Caller-supplied EIP-1559 liveness parameters for every transaction-signing intent. They never
@@ -74,8 +70,8 @@ export type IntentOffer = {
   readonly start: UnsignedDecimal
   /** Expiry timestamp in unix seconds; policy caps it at `min(maturity, signing freshness)`. */
   readonly expiry: UnsignedDecimal
-  /** Midnight price tick. */
-  readonly tick: SignedDecimal
+  /** Midnight price tick (uint256; the protocol offer struct carries no signed fields). */
+  readonly tick: UnsignedDecimal
   /** Explicit consumption-group id (bytes32); must fall in the maker-owned group namespace. */
   readonly group: Hex
   /** Maker callback contract; policy pins the expected value. */
@@ -90,7 +86,7 @@ export type IntentOffer = {
   readonly reduceOnly: boolean
   /** Contract v1 accepts only asset-denominated caps, so `maxUnits` is pinned to zero. */
   readonly maxUnits: '0'
-  /** Maximum buyer or seller assets depending on side; must be non-zero. */
+  /** Maximum buyer or seller assets depending on side; non-zero and uint128-wide per the struct. */
   readonly maxAssets: UnsignedDecimal
   /** Maximum market continuous fee accepted; policy caps it at the snapshot market fee. */
   readonly continuousFeeCap: UnsignedDecimal
@@ -219,12 +215,10 @@ export const classifyIntentKind = (event: unknown): ClassifiedIntentKind => {
 }
 
 const UNSIGNED_DECIMAL_PATTERN = /^(0|[1-9]\d{0,77})$/
-const SIGNED_DECIMAL_PATTERN = /^(0|-?[1-9]\d{0,77})$/
 const IDEMPOTENCY_KEY_PATTERN = /^[A-Za-z0-9._-]{1,128}$/
 const REMEDIATION_VARIANT_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/
 const MAX_UINT256 = 2n ** 256n - 1n
-const MIN_INT256 = -(2n ** 255n)
-const MAX_INT256 = 2n ** 255n - 1n
+const MAX_UINT128 = 2n ** 128n - 1n
 
 const plainObject = (value: unknown, field: string): Record<string, unknown> => {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
@@ -278,13 +272,9 @@ const unsignedDecimalValue = (value: unknown, field: string): UnsignedDecimal =>
   return text
 }
 
-const signedDecimalValue = (value: unknown, field: string): SignedDecimal => {
-  const text = stringValue(value, field)
-  if (!SIGNED_DECIMAL_PATTERN.test(text)) throw new MalformedIntentError(field, 'invalid-decimal')
-  const parsed = BigInt(text)
-  if (parsed < MIN_INT256 || parsed > MAX_INT256) {
-    throw new MalformedIntentError(field, 'out-of-range')
-  }
+const uint128DecimalValue = (value: unknown, field: string): UnsignedDecimal => {
+  const text = unsignedDecimalValue(value, field)
+  if (BigInt(text) > MAX_UINT128) throw new MalformedIntentError(field, 'out-of-range')
   return text
 }
 
@@ -338,14 +328,14 @@ const offerValue = (value: unknown, field: string): IntentOffer => {
   )
   const maxUnits = unsignedDecimalValue(record.maxUnits, `${field}.maxUnits`)
   if (maxUnits !== '0') throw new MalformedIntentError(`${field}.maxUnits`, 'out-of-range')
-  const maxAssets = unsignedDecimalValue(record.maxAssets, `${field}.maxAssets`)
+  const maxAssets = uint128DecimalValue(record.maxAssets, `${field}.maxAssets`)
   if (maxAssets === '0') throw new MalformedIntentError(`${field}.maxAssets`, 'out-of-range')
   return {
     marketId: bytes32Value(record.marketId, `${field}.marketId`),
     buy: booleanValue(record.buy, `${field}.buy`),
     start: unsignedDecimalValue(record.start, `${field}.start`),
     expiry: unsignedDecimalValue(record.expiry, `${field}.expiry`),
-    tick: signedDecimalValue(record.tick, `${field}.tick`),
+    tick: unsignedDecimalValue(record.tick, `${field}.tick`),
     group: bytes32Value(record.group, `${field}.group`),
     callback: addressValue(record.callback, `${field}.callback`),
     callbackData: hexValue(record.callbackData, `${field}.callbackData`),
