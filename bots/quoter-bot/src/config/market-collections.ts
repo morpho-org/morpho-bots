@@ -2,6 +2,7 @@ import type { Hex } from 'viem'
 
 import type { BootstrapConfig } from '../domain/bootstrap/position-bootstrap'
 import type { LadderConfig } from '../domain/ladder/ladder'
+import type { MaturityPremiumConfig } from '../domain/maturity-premium'
 import type { TargetRateConfigured, TargetRateStrategyConfig } from '../domain/target-rate'
 
 import { BootstrapConfigurationError } from '../domain/bootstrap/bootstrap-configuration.error'
@@ -78,6 +79,7 @@ export const BOOTSTRAP_MARKET_FIELDS = [
   'acceptanceAssets',
   'offerSize',
   'premiumBps',
+  'maturityPremium',
   'maximumMarketExposure',
   'maximumTotalExposure',
   'minimumRateBps',
@@ -176,6 +178,53 @@ const targetRateStrategyValue = (value: unknown, field: string): TargetRateStrat
   return { strategy: 'hardcoded', hardcodedRateBps }
 }
 
+const maturityPremiumValue = (value: unknown, field: string): MaturityPremiumConfig | undefined => {
+  if (value === undefined) return undefined
+  const maturityPremium = plainRecord(value, field)
+  if (
+    Object.keys(maturityPremium).some(
+      key => key !== 'shape' && key !== 'premiumPerYearBps' && key !== 'maximumPremiumBps'
+    )
+  ) {
+    throw new ConfigValidationError(field, 'unknown-key', `${field} contains an unsupported key`)
+  }
+  if (typeof maturityPremium.shape !== 'string') {
+    throw new ConfigValidationError(
+      `${field}.shape`,
+      'wrong-type',
+      `${field}.shape must be a string`
+    )
+  }
+  if (maturityPremium.shape !== 'linear') {
+    throw new ConfigValidationError(
+      `${field}.shape`,
+      'invalid-shape',
+      `${field}.shape must be linear`
+    )
+  }
+  if (maturityPremium.premiumPerYearBps === undefined) {
+    throw new ConfigValidationError(
+      `${field}.premiumPerYearBps`,
+      'missing',
+      `${field}.premiumPerYearBps is required`
+    )
+  }
+  const premiumPerYearBps = integerBigInt(
+    maturityPremium.premiumPerYearBps,
+    `${field}.premiumPerYearBps`,
+    false
+  )
+  const maximumPremiumBps =
+    maturityPremium.maximumPremiumBps === undefined
+      ? undefined
+      : integerBigInt(maturityPremium.maximumPremiumBps, `${field}.maximumPremiumBps`, false)
+  return {
+    shape: 'linear',
+    premiumPerYearBps,
+    ...(maximumPremiumBps === undefined ? {} : { maximumPremiumBps })
+  }
+}
+
 const exactRecord = <Field extends string>(
   value: unknown,
   prefix: string,
@@ -218,7 +267,10 @@ export const bootstrapConfigsValue = (
   }
   const configs = value.map((item, index) => {
     const prefix = `bootstrap[${index}]`
-    const record = exactRecord(item, prefix, BOOTSTRAP_MARKET_FIELDS, ['targetRate'])
+    const record = exactRecord(item, prefix, BOOTSTRAP_MARKET_FIELDS, [
+      'targetRate',
+      'maturityPremium'
+    ])
     const required = (name: (typeof BOOTSTRAP_MARKET_FIELDS)[number]) => record[name]
     const marketValue = required('marketId')
     if (typeof marketValue !== 'string') {
@@ -228,6 +280,10 @@ export const bootstrapConfigsValue = (
         `${prefix}.marketId must be a string`
       )
     }
+    const maturityPremium = maturityPremiumValue(
+      record.maturityPremium,
+      `${prefix}.maturityPremium`
+    )
     const config: TargetRateConfigured<BootstrapConfig> = {
       marketId: parseBytes32(marketValue, `${prefix}.marketId`),
       targetRate: targetRateStrategyValue(record.targetRate, `${prefix}.targetRate`),
@@ -239,6 +295,7 @@ export const bootstrapConfigsValue = (
       ),
       offerSize: integerBigInt(required('offerSize'), `${prefix}.offerSize`, false),
       premiumBps: integerBigInt(required('premiumBps'), `${prefix}.premiumBps`, true),
+      ...(maturityPremium === undefined ? {} : { maturityPremium }),
       maximumMarketExposure: integerBigInt(
         required('maximumMarketExposure'),
         `${prefix}.maximumMarketExposure`,

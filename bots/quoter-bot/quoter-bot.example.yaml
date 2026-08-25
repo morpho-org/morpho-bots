@@ -66,6 +66,14 @@ bootstrap:
     acceptanceAssets: '50000000'
     offerSize: '250000000'
     premiumBps: 0
+    # Optional term structure: quote = reference + premiumBps +
+    # min(floor(premiumPerYearBps * secondsToMaturity / 31536000), maximumPremiumBps).
+    # Omit maximumPremiumBps for an uncapped linear premium; omit the whole block to
+    # keep the static premium only.
+    maturityPremium:
+      shape: 'linear'
+      premiumPerYearBps: '120'
+      maximumPremiumBps: '300'
     maximumMarketExposure: '10000000000'
     maximumTotalExposure: '30000000000'
     minimumRateBps: 200

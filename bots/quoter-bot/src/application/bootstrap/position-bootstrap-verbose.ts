@@ -82,6 +82,8 @@ export type BootstrapVerboseDetails = {
   effectiveState?: BootstrapVerbosePosition
   /** Reference-rate observation used for rate derivation, when required. */
   referenceRate?: BootstrapRate
+  /** Resolved time-to-maturity premium included in `targetRateBps`, when configured. */
+  maturityPremiumBps?: bigint
   /** Premium-adjusted target rate used to build or compare the bootstrap offer. */
   targetRateBps?: bigint
   /** Deterministic decision derived from the effective state and reference rate. */

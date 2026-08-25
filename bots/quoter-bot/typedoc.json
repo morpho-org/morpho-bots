@@ -36,6 +36,7 @@
     "src/domain/cross-book.ts",
     "src/domain/ladder/ladder-configuration.error.ts",
     "src/domain/ladder/ladder.ts",
+    "src/domain/maturity-premium.ts",
     "src/infrastructure/bootstrap/bootstrap-hard-halt.error.ts",
     "src/infrastructure/bootstrap/bootstrap-exposure.utils.ts",
     "src/infrastructure/bootstrap/bootstrap-make.service.ts",

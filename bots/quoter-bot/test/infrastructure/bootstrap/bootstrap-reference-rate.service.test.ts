@@ -62,6 +62,66 @@ describe('StrategyBootstrapReferenceRateService', () => {
     expect(variableReads).toEqual([marketId])
   })
 
+  test('extends both strategy observations with fresh seconds to maturity when configured', async () => {
+    const service = new StrategyBootstrapReferenceRateService(
+      new Map([
+        [marketId, { strategy: 'variable_rate_avg' }],
+        [secondMarketId, { strategy: 'hardcoded', hardcodedRateBps: 400n }]
+      ]),
+      { readRate: async () => ({ mode: 'variable', rateBps: 525n, observationId: 'hour:2' }) },
+      new Map([
+        [marketId, async () => 1_000_000n],
+        [secondMarketId, async () => 2_000_000n]
+      ])
+    )
+
+    expect(await service.readRate(marketId)).toEqual({
+      mode: 'variable',
+      rateBps: 525n,
+      observationId: 'hour:2',
+      secondsToMaturity: 1_000_000n
+    })
+    expect(await service.readRate(secondMarketId)).toMatchObject({
+      mode: 'static',
+      rateBps: 400n,
+      secondsToMaturity: 2_000_000n
+    })
+  })
+
+  test('omits seconds to maturity for markets without a configured maturity read', async () => {
+    const service = new StrategyBootstrapReferenceRateService(
+      new Map([[marketId, { strategy: 'variable_rate_avg' }]]),
+      { readRate: async () => ({ mode: 'variable', rateBps: 525n, observationId: 'hour:2' }) },
+      new Map([[secondMarketId, async () => 1_000_000n]])
+    )
+
+    expect(await service.readRate(marketId)).toEqual({
+      mode: 'variable',
+      rateBps: 525n,
+      observationId: 'hour:2'
+    })
+  })
+
+  test('propagates a failed maturity read instead of quoting without the premium input', async () => {
+    const service = new StrategyBootstrapReferenceRateService(
+      new Map([[marketId, { strategy: 'hardcoded', hardcodedRateBps: 400n }]]),
+      { readRate: async () => ({ mode: 'variable', rateBps: 525n, observationId: 'hour:2' }) },
+      new Map([
+        [
+          marketId,
+          async () => {
+            throw new BootstrapAdapterError('reference-checkpoint')
+          }
+        ]
+      ])
+    )
+
+    const error = await service.readRate(marketId).catch(value => value)
+
+    expect(error).toBeInstanceOf(BootstrapAdapterError)
+    expect(error).toMatchObject({ operation: 'reference-checkpoint' })
+  })
+
   test('changes a hardcoded observation when its hourly refresh bucket advances', async () => {
     const service = new StrategyBootstrapReferenceRateService(
       new Map([[marketId, { strategy: 'hardcoded', hardcodedRateBps: 400n }]]),

@@ -19,10 +19,18 @@ import { StrictJsonError } from './strict-json.error'
 export type TargetRateInput =
   | { strategy: 'variable_rate_avg' }
   | { strategy: 'hardcoded'; hardcodedRateBps: string }
+export type MaturityPremiumInput = {
+  shape: 'linear'
+  premiumPerYearBps: string
+  maximumPremiumBps?: string
+}
 export type BootstrapInput = Record<
-  Exclude<(typeof BOOTSTRAP_MARKET_FIELDS)[number], 'autoRefill' | 'targetRate'>,
+  Exclude<
+    (typeof BOOTSTRAP_MARKET_FIELDS)[number],
+    'autoRefill' | 'targetRate' | 'maturityPremium'
+  >,
   string
-> & { autoRefill: boolean; targetRate: TargetRateInput }
+> & { autoRefill: boolean; targetRate: TargetRateInput; maturityPremium?: MaturityPremiumInput }
 export type LadderInput = Record<
   Exclude<(typeof LADDER_MARKET_FIELDS)[number], 'targetRate'>,
   string
@@ -46,6 +54,24 @@ export const BOOTSTRAP_FIELDS = [
   ['acceptanceAssets', 'Completion threshold', 'Allowed target shortfall', 'number'],
   ['offerSize', 'Pending-offer cap', 'Maximum desired offer assets', 'number'],
   ['premiumBps', 'Quote premium (BPS)', 'Zero or negative reference offset', 'number'],
+  [
+    'maturityPremium.shape',
+    'Maturity premium',
+    'Optional premium function of time to maturity',
+    'maturity-premium-select'
+  ],
+  [
+    'maturityPremium.premiumPerYearBps',
+    'Premium slope (BPS/year)',
+    'Positive premium per year to maturity',
+    'maturity-premium-number'
+  ],
+  [
+    'maturityPremium.maximumPremiumBps',
+    'Premium cap (BPS)',
+    'Optional positive inclusive maturity-premium cap',
+    'maturity-premium-number'
+  ],
   ['maximumMarketExposure', 'Market exposure cap', 'Positive raw assets', 'number'],
   ['maximumTotalExposure', 'Total exposure cap', 'Positive raw assets', 'number'],
   ['minimumRateBps', 'Minimum rate (BPS)', 'Inclusive quote floor', 'number'],
@@ -124,6 +150,16 @@ const targetRateInput = (config: TargetRateConfigured<unknown>['targetRate']): T
     ? { strategy: 'hardcoded', hardcodedRateBps: String(config.hardcodedRateBps) }
     : { strategy: 'variable_rate_avg' }
 
+const maturityPremiumInput = (
+  config: NonNullable<BootstrapConfig['maturityPremium']>
+): MaturityPremiumInput => ({
+  shape: config.shape,
+  premiumPerYearBps: String(config.premiumPerYearBps),
+  ...(config.maximumPremiumBps === undefined
+    ? {}
+    : { maximumPremiumBps: String(config.maximumPremiumBps) })
+})
+
 const bootstrapInput = (config: TargetRateConfigured<BootstrapConfig>): BootstrapInput => ({
   marketId: config.marketId,
   targetRate: targetRateInput(config.targetRate),
@@ -131,6 +167,9 @@ const bootstrapInput = (config: TargetRateConfigured<BootstrapConfig>): Bootstra
   acceptanceAssets: String(config.acceptanceAssets),
   offerSize: String(config.offerSize),
   premiumBps: String(config.premiumBps),
+  ...(config.maturityPremium === undefined
+    ? {}
+    : { maturityPremium: maturityPremiumInput(config.maturityPremium) }),
   maximumMarketExposure: String(config.maximumMarketExposure),
   maximumTotalExposure: String(config.maximumTotalExposure),
   minimumRateBps: String(config.minimumRateBps),
@@ -239,6 +278,18 @@ export const deriveBootstrapGraphicModels = (items: BootstrapInput[]): Bootstrap
             ? 'Auto-refill enabled after completion'
             : 'One-shot; observe after completion'
         },
+        ...(item.maturityPremium
+          ? [
+              {
+                label: 'Maturity premium',
+                value: `Linear +${item.maturityPremium.premiumPerYearBps} BPS per year to maturity${
+                  item.maturityPremium.maximumPremiumBps === undefined
+                    ? ''
+                    : `, capped at ${item.maturityPremium.maximumPremiumBps} BPS`
+                }; the runtime adds it to the quoted rate from live time to maturity`
+              }
+            ]
+          : []),
         { label: 'Cadence', value: '60 seconds (fixed bootstrap monitor cadence)' },
         { label: 'Movement tolerance', value: '0 BPS; changed valid terms are reconciled' },
         { label: 'Pending-offer cap', value: `${item.offerSize} assets before live capacity caps` },

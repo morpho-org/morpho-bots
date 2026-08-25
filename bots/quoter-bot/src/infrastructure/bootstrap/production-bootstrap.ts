@@ -443,9 +443,21 @@ export const createProductionBootstrapAdapters = (
       referenceClient as HistoricalBlockReader
     )
   )
+  const readSecondsToMaturity = async (marketId: Hex) => {
+    const [market, block] = await Promise.all([
+      midnight.getMarketData(marketId),
+      client.getBlock({ blockTag: 'latest' })
+    ])
+    return market.timeToMaturity(block.timestamp)
+  }
   const rates = new StrategyBootstrapReferenceRateService(
     new Map(config.bootstrap.map(item => [item.marketId, item.targetRate] as const)),
-    blueRates
+    blueRates,
+    new Map(
+      config.bootstrap
+        .filter(item => item.maturityPremium !== undefined)
+        .map(item => [item.marketId, () => readSecondsToMaturity(item.marketId)] as const)
+    )
   )
   const completeBookOffers = async (marketId: Hex) => {
     const [groups, ladderPublications, wholeBook, ownedBootstrapIds] = await Promise.all([
