@@ -9,7 +9,7 @@ import type {
   SetupRemediation
 } from './setup-check.service'
 
-import { BASE_CHAIN_ID } from '../../config/config.utils'
+import { isSupportedChainId } from '../../config/supported-chains.utils'
 import { SafeProviderError } from './safe-provider.error'
 
 const SAFE_ERROR_NAMES = new Set([
@@ -268,9 +268,10 @@ const isTransientFailedCheck = (check: SetupCheck) => {
 
   if (check.name === 'chain') {
     if (!isRecord(check.observed) || !Array.isArray(check.observed.errors)) return false
-    const configuredMatches = check.observed.configured === BASE_CHAIN_ID
+    const configured = check.observed.configured
+    const configuredMatches = typeof configured === 'number' && isSupportedChainId(configured)
     const connectedMatches =
-      check.observed.connected === undefined || check.observed.connected === BASE_CHAIN_ID
+      check.observed.connected === undefined || check.observed.connected === configured
     const deploymentMatches =
       check.observed.midnightCode === undefined || check.observed.midnightCode === 'deployed'
     return (
@@ -351,7 +352,7 @@ export const chainCheck = (
   chainId: Captured<number>,
   midnightCode: Captured<`0x${string}` | undefined>
 ) => {
-  const required = { chainId: BASE_CHAIN_ID, midnightCode: 'deployed' }
+  const required = { chainId: config.chainId, midnightCode: 'deployed' }
   const deployed = midnightCode.ok
     ? midnightCode.value !== undefined && midnightCode.value !== '0x'
     : undefined
@@ -367,9 +368,9 @@ export const chainCheck = (
   }
   const ready =
     errors.length === 0 &&
-    config.chainId === BASE_CHAIN_ID &&
+    isSupportedChainId(config.chainId) &&
     chainId.ok &&
-    chainId.value === BASE_CHAIN_ID &&
+    chainId.value === config.chainId &&
     deployed === true
   return setupResult('chain', ready, observed, required)
 }

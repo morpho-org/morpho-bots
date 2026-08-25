@@ -33,21 +33,29 @@ const environment = {
 
 describe('ConfigService', () => {
   test.each([
-    ['8453', true],
-    ['0008453', true],
-    ['  0008453\t', true],
-    ['+8453', false],
-    ['8453.0', false],
-    ['8.453e3', false],
-    ['-8453', false],
-    ['0', false],
-    ['8454', false],
-    ['9007199254740992', false]
-  ] as const)('parses CHAIN_ID=%j with exact Base decimal semantics', (value, accepted) => {
-    const load = () => ConfigService.from({ ...environment, CHAIN_ID: value })
-    if (accepted) expect(load().setup.chainId).toBe(8453)
-    else expect(load).toThrow('Unsupported CHAIN_ID; supported: 8453')
-  })
+    ['8453', 8453],
+    ['0008453', 8453],
+    ['  0008453\t', 8453],
+    ['1', 1],
+    ['0001', 1],
+    ['  1\t', 1],
+    ['+8453', undefined],
+    ['8453.0', undefined],
+    ['8.453e3', undefined],
+    ['-8453', undefined],
+    ['+1', undefined],
+    ['0', undefined],
+    ['8454', undefined],
+    ['10', undefined],
+    ['9007199254740992', undefined]
+  ] as const)(
+    'parses CHAIN_ID=%j with exact supported-chain decimal semantics',
+    (value, expected) => {
+      const load = () => ConfigService.from({ ...environment, CHAIN_ID: value })
+      if (expected !== undefined) expect(load().setup.chainId).toBe(expected)
+      else expect(load).toThrow('Unsupported CHAIN_ID; supported: 1, 8453')
+    }
+  )
 
   test('loads and normalizes setup-check configuration', () => {
     const config = ConfigService.from(environment)

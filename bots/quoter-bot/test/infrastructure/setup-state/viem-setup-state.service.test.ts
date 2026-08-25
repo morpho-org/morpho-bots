@@ -7,6 +7,7 @@ import { readFile } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { bytesToHex, hexToBytes, keccak256, zeroHash } from 'viem'
+import { base } from 'viem/chains'
 import { describe, expect, test } from 'vitest'
 
 import { SafeProviderError } from '../../../src/application/setup/safe-provider.error'
@@ -190,6 +191,7 @@ const createState = (
     requestBudgets,
     referenceAbis,
     state: new ViemSetupStateService(chain, reference, request, {
+      chainId: base.id,
       ...(overrides.readOnly
         ? { readOnly: true as const }
         : { readOnly: false as const, privateKey: `0x${'11'.repeat(32)}` }),
@@ -323,6 +325,7 @@ describe('ViemSetupStateService', () => {
               data: []
             })
       const state = new ViemSetupStateService(chain, reference, request, {
+        chainId: base.id,
         privateKey: `0x${'11'.repeat(32)}`,
         midnight,
         loanAsset,

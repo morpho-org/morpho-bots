@@ -6,10 +6,11 @@ import {
   setterRatifierAbi,
   type Tree
 } from '@morpho-org/midnight-sdk'
-import { getChainAddress } from '@morpho-org/morpho-ts'
 import { encodeFunctionData, isAddressEqual } from 'viem'
-import { base } from 'viem/chains'
 
+import type { SupportedChainId } from '../../config/supported-chains.utils'
+
+import { chainAddress } from '../../config/supported-chains.utils'
 import { LadderAdapterError } from './ladder-adapter.error'
 import { signLadderTree } from './ladder-signature.utils'
 
@@ -24,14 +25,20 @@ type PrepareLadderRatificationParameters = {
 }
 
 /**
- * Classifies a configured canonical Base ratifier address.
+ * Classifies a configured canonical ratifier address for one chain.
  * @param ratifier - Canonical SDK ratifier configured on every generated offer.
- * @returns The ratifier kind selected by the canonical Base deployment address.
- * @throws `LadderAdapterError` when the address is not a supported canonical Base ratifier.
+ * @param chainId - Configured chain whose canonical ratifier addresses are compared.
+ * @returns The ratifier kind selected by that chain's canonical deployment address.
+ * @throws `LadderAdapterError` when the address is not a canonical ratifier on the given chain.
+ * @remarks Ratifier addresses differ per chain, so a ratifier canonical on another chain is
+ * rejected here rather than silently accepted.
  */
-export const configuredRatifierType = (ratifier: Address): RatifierType => {
-  if (isAddressEqual(ratifier, getChainAddress(base.id, 'setterRatifier'))) return 'setter'
-  if (isAddressEqual(ratifier, getChainAddress(base.id, 'ecrecoverRatifier'))) return 'ecrecover'
+export const configuredRatifierType = (
+  ratifier: Address,
+  chainId: SupportedChainId
+): RatifierType => {
+  if (isAddressEqual(ratifier, chainAddress(chainId, 'setterRatifier'))) return 'setter'
+  if (isAddressEqual(ratifier, chainAddress(chainId, 'ecrecoverRatifier'))) return 'ecrecover'
   throw new LadderAdapterError('unsupported-ratifier')
 }
 

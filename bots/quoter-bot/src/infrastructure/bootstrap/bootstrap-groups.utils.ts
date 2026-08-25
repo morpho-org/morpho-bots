@@ -36,6 +36,7 @@ export type BootstrapRawGroup = {
 }
 
 type BootstrapGroupsConfig = {
+  chainId: number
   maker: Address
   requestTimeoutMs: number
   morphoApiBaseUrl?: string
@@ -172,7 +173,10 @@ export const readBootstrapGroups = async (
     const remainingMs = Math.floor(deadline - now())
     if (remainingMs <= 0) throw new BootstrapAdapterError('offer-groups-timeout')
     pageCount += 1
-    const query = new URLSearchParams({ chain_ids: '8453', limit: String(PAGE_SIZE) })
+    const query = new URLSearchParams({
+      chain_ids: String(config.chainId),
+      limit: String(PAGE_SIZE)
+    })
     if (cursor) query.set('cursor', cursor)
     const rawResponse = await request(
       `${config.morphoApiBaseUrl ?? ''}/v0/midnight/users/${config.maker}/offer-groups?${query.toString()}`,
@@ -193,7 +197,7 @@ export const readBootstrapGroups = async (
       if (typeof rawGroup.chain_id !== 'number' || !Number.isSafeInteger(rawGroup.chain_id)) {
         throw new BootstrapAdapterError('offer-groups-response')
       }
-      if (rawGroup.chain_id !== 8453) continue
+      if (rawGroup.chain_id !== config.chainId) continue
       const rawOffers = rawGroup.offers
       if (!Array.isArray(rawOffers)) throw new BootstrapAdapterError('offer-groups-response')
       itemCount += rawOffers.length

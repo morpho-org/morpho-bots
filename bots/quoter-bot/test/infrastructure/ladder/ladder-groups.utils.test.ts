@@ -1,5 +1,6 @@
 import type { Address, Hex } from 'viem'
 
+import { base } from 'viem/chains'
 import { describe, expect, test } from 'vitest'
 
 import { readLadderGroups } from '../../../src/infrastructure/ladder/ladder-groups.utils'
@@ -13,6 +14,7 @@ describe('readLadderGroups', () => {
     const urls: string[] = []
     const groups = await readLadderGroups({
       baseUrl: 'https://router.invalid',
+      chainId: base.id,
       maker,
       timeoutMs: 1_000,
       request: async url => {
@@ -59,6 +61,7 @@ describe('readLadderGroups', () => {
     await expect(
       readLadderGroups({
         baseUrl: 'https://router.invalid',
+        chainId: base.id,
         maker,
         timeoutMs: 1_000,
         request: async () => ({ data: [], cursor: '' })

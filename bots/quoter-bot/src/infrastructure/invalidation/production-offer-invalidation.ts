@@ -1,10 +1,10 @@
 import { morphoViemExtension } from '@morpho-org/morpho-sdk'
 import { createPublicClient, createWalletClient, http, isAddressEqual, publicActions } from 'viem'
-import { base } from 'viem/chains'
 
 import type { OfferInvalidationPort } from '../../application/invalidation/offer-invalidation.service'
 import type { ConfigService } from '../../config/config.service'
 
+import { supportedChain } from '../../config/supported-chains.utils'
 import { createBootstrapGroupOwnership } from '../bootstrap/bootstrap-group-ownership.utils'
 import { readBootstrapGroups } from '../bootstrap/bootstrap-groups.utils'
 import { createLadderGroupOwnership } from '../ladder/ladder-group-ownership.utils'
@@ -42,10 +42,10 @@ export const createProductionOfferInvalidationPort = (
 ): OfferInvalidationPort | Promise<OfferInvalidationPort> => {
   const maker = config.identity.maker
   const client = createPublicClient({
-    chain: base,
+    chain: supportedChain(config.chainId),
     transport: http(config.rpcUrl, { timeout: config.requestTimeoutMs })
   }).extend(morphoViemExtension({ supportSignature: true, supportDeployless: true }))
-  const midnight = client.morpho.midnight(base.id)
+  const midnight = client.morpho.midnight(config.chainId)
   const bootstrapOwnership = createBootstrapGroupOwnership({
     maker,
     marketIds: config.setup.marketIds,
@@ -66,7 +66,7 @@ export const createProductionOfferInvalidationPort = (
           : client.getBalance({ address: maker })
       ])
       if (
-        chainId !== base.id ||
+        chainId !== config.chainId ||
         code === undefined ||
         code === '0x' ||
         nativeBalance < config.setup.nativeReserve
@@ -79,6 +79,7 @@ export const createProductionOfferInvalidationPort = (
     providerOperation('offer-groups-read', async () => {
       const [groups, bootstrapGroupIds, ladderGroupIds] = await Promise.all([
         readBootstrapGroups({
+          chainId: config.chainId,
           maker,
           morphoApiBaseUrl: config.morphoApiBaseUrl,
           requestTimeoutMs: config.requestTimeoutMs
@@ -109,7 +110,7 @@ export const createProductionOfferInvalidationPort = (
   }
   const wallet = createWalletClient({
     account,
-    chain: base,
+    chain: supportedChain(config.chainId),
     transport: http(config.rpcUrl, { timeout: config.requestTimeoutMs })
   }).extend(publicActions)
 

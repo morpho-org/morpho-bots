@@ -2,6 +2,8 @@ import type { Address, Hex } from 'viem'
 
 import { waitForMonitorInterval } from '@repo/monitoring'
 
+import type { SupportedChainId } from '../../config/supported-chains.utils'
+
 import { operatorErrorName } from '../operator-error-name.utils'
 import { SetupCheckAbortedError } from './setup-check-aborted.error'
 import {
@@ -93,10 +95,10 @@ export type SetupCheckMonitorReport =
       lastReport: SetupCheckReport
     }
 
-/** Validated configuration required to evaluate quoter readiness on Base. */
+/** Validated configuration required to evaluate quoter readiness on a supported chain. */
 export type SetupCheckConfig = {
-  /** Configured EVM chain identifier; V0 requires Base (`8453`). */
-  chainId: number
+  /** Configured EVM chain identifier, narrowed to a chain the bot supports. */
+  chainId: SupportedChainId
   /** Expected maker derived from the configured signing key. */
   maker: Address
   /** Expected Midnight singleton address. */

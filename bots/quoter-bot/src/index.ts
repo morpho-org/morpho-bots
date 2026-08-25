@@ -6,7 +6,7 @@ import {
 
 import { operatorErrorName } from './application/operator-error-name.utils'
 import { createApplication } from './bootstrap'
-import { BASE_CHAIN_ID } from './config/config.utils'
+import { observabilityChainId } from './config/supported-chains.utils'
 import {
   QUOTER_BOT_VERBOSE_COMMANDS,
   runQuoterBotEntrypoint
@@ -27,7 +27,7 @@ process.once('SIGTERM', requestShutdown)
 
 const observability = createBotObservability({
   bot: 'quoter-bot',
-  chainId: BASE_CHAIN_ID,
+  chainId: observabilityChainId(process.env),
   errorName: operatorErrorName
 })
 const removeProcessObservers = installProcessObservers(observability)

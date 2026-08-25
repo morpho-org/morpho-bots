@@ -127,12 +127,17 @@ const defaultState = async (config: ConfigService, ignoredOfferGroupIds: readonl
   })
 
   return new ViemSetupStateService(
-    createChainReader(config.rpcUrl, config.requestTimeoutMs),
-    createChainReader(config.referenceRpcUrl ?? config.rpcUrl, config.requestTimeoutMs),
+    createChainReader(config.rpcUrl, config.requestTimeoutMs, config.chainId),
+    createChainReader(
+      config.referenceRpcUrl ?? config.rpcUrl,
+      config.requestTimeoutMs,
+      config.chainId
+    ),
     (url, provider, timeoutMs) =>
       requestJson(url, provider, Math.min(config.requestTimeoutMs, timeoutMs ?? Infinity)),
     {
       ...identityOptions,
+      chainId: config.chainId,
       midnight: config.setup.midnight,
       loanAsset: config.setup.loanAsset,
       morphoApiBaseUrl: config.morphoApiBaseUrl,
