@@ -53,9 +53,13 @@ app.kubernetes.io/instance: {{ .Release.Name | quote }}
 {{- end }}
 {{- end }}
 
-{{/* Resolved image reference; the tag falls back to the chart appVersion. */}}
+{{/*
+Resolved image reference; the tag falls back to the chart appVersion. toString keeps
+numeric-looking repositories or tags (for example an all-digit commit tag) from reaching
+printf as parsed YAML numbers.
+*/}}
 {{- define "quoter-bot.image" -}}
-{{- printf "%s:%s" .Values.image.repository (default .Chart.AppVersion .Values.image.tag) }}
+{{- printf "%s:%s" (.Values.image.repository | toString) (default .Chart.AppVersion .Values.image.tag | toString) }}
 {{- end }}
 
 {{/* Whether any configuration file is mounted and passed through --config. */}}

@@ -83,11 +83,19 @@ describe('quoter-bot Helm chart', () => {
   it('rejects upgrades that would rename the installed singleton', async () => {
     const statefulSet = await readChartFile('templates/statefulset.yaml')
 
-    expect(statefulSet).toContain('lookup "apps/v1" "StatefulSet" .Release.Namespace ""')
-    expect(statefulSet).toContain('.metadata.labels | default dict')
-    expect(statefulSet).toContain('(ne .metadata.name $fullname)')
+    const releaseFullname = await readChartFile('templates/release-fullname.yaml')
+
+    expect(statefulSet).toContain(
+      'lookup "v1" "ConfigMap" .Release.Namespace (printf "%s-quoter-bot-fullname" .Release.Name)'
+    )
+    expect(statefulSet).not.toContain('lookup "apps/v1" "StatefulSet"')
     expect(statefulSet).toContain('{{- fail (printf')
+    expect(statefulSet).toContain('helm uninstall --wait')
     expect(statefulSet).toContain('persistence.existingClaim')
+    expect(releaseFullname).toContain(
+      'name: {{ printf "%s-quoter-bot-fullname" .Release.Name | quote }}'
+    )
+    expect(releaseFullname).toContain('fullname: {{ include "quoter-bot.fullname" . | quote }}')
   })
 
   it('reserves the PVC retention annotation while retain is enabled', async () => {
@@ -181,9 +189,14 @@ describe('quoter-bot Helm chart', () => {
     )
     expect(statefulSet).toContain('name: {{ include "quoter-bot.fullname" . | quote }}')
     expect(statefulSet).toContain('claimName: {{ .Values.persistence.existingClaim | quote }}')
+    expect(statefulSet).toContain('priorityClassName: {{ . | quote }}')
     expect(statefulSet).toContain(
       'claimName: {{ printf "%s-state" (include "quoter-bot.fullname" .) | quote }}'
     )
+
+    const helpers = await readChartFile('templates/_helpers.tpl')
+    expect(helpers).toContain('(.Values.image.repository | toString)')
+    expect(helpers).toContain('(default .Chart.AppVersion .Values.image.tag | toString)')
   })
 
   it('documents the force-deletion exception to the singleton guarantee', async () => {

@@ -202,11 +202,16 @@ files over `--set` for the `config` block for the same reason.
   failed node first, then let the controller replace the pod. Selector identity is pinned to
   the chart and release names, so `nameOverride`/`fullnameOverride` changes cannot invalidate
   the immutable selector — and an upgrade that would _rename_ the StatefulSet is rejected by a
-  template guard, because Helm creates the new name before deleting the old one and would
-  briefly run two writers; to rename, uninstall (the state claim is kept) and reinstall with
-  `persistence.existingClaim` pointing at the kept `<old-fullname>-state` claim, so durable
-  offer-group ownership survives the migration. The portless headless Service exists solely to
-  govern the StatefulSet.
+  template guard (a release-name-keyed ConfigMap pins the installed name, read back with a
+  name-scoped get, so no StatefulSet list permission is needed), because Helm creates the new
+  name before deleting the old one and would briefly run two writers. To rename: run
+  `helm uninstall --wait` with `--timeout` beyond `terminationGracePeriodSeconds` — a plain
+  uninstall returns while the old pod is still draining — confirm the pod is gone
+  (`kubectl wait --for=delete pod/<old-fullname>-0 --timeout=30m`), then reinstall, keeping
+  your `persistence.existingClaim` unchanged if you configured one, or setting it to the kept
+  `<old-fullname>-state` claim for a chart-created claim, so durable offer-group ownership
+  survives the migration. The portless headless Service exists solely to govern the
+  StatefulSet.
 - **State volume.** Losing `/state` makes previously bot-issued offer groups unknown, which
   fails readiness until an operator invalidates or adopts them — hence `persistence.retain`
   defaulting to `true`. Chain truth wins for everything else on restart.

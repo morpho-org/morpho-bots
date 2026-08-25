@@ -2,18 +2,16 @@
 Renaming the singleton is rejected: on an installed release a changed nameOverride or
 fullnameOverride would make Helm create the newly named StatefulSet before deleting the old
 one, briefly running two writers against the same maker (and, with existingClaim, the same
-ownership state). lookup returns nothing under `helm template`, so the guard only acts inside
-a real install/upgrade. Migration path: uninstall (the state claim is kept), then reinstall.
+ownership state). The installed name is pinned by the release-fullname ConfigMap (keyed by the
+immutable release name), so this is a name-scoped get — no StatefulSet list permission is
+required, and lookup returns nothing under `helm template`, keeping the guard inert outside a
+real install/upgrade.
 */}}
 {{- $fullname := include "quoter-bot.fullname" . }}
-{{- range (lookup "apps/v1" "StatefulSet" .Release.Namespace "").items }}
-{{- $existingLabels := .metadata.labels | default dict }}
-{{- if and
-  (eq (index $existingLabels "app.kubernetes.io/instance" | default "") $.Release.Name)
-  (eq (index $existingLabels "app.kubernetes.io/name" | default "") $.Chart.Name)
-  (ne .metadata.name $fullname) }}
-{{- fail (printf "quoter-bot: this release already runs StatefulSet %q; renaming it to %q via nameOverride/fullnameOverride would start a second writer. Uninstall first, then reinstall under the new name with persistence.existingClaim set to the kept %s-state claim so durable offer-group ownership is preserved." .metadata.name $fullname .metadata.name) }}
-{{- end }}
+{{- $identity := lookup "v1" "ConfigMap" .Release.Namespace (printf "%s-quoter-bot-fullname" .Release.Name) }}
+{{- $installedFullname := dig "fullname" $fullname (($identity | default dict).data | default dict) }}
+{{- if ne $installedFullname $fullname }}
+{{- fail (printf "quoter-bot: this release was installed as StatefulSet %q; renaming it to %q via nameOverride/fullnameOverride would start a second writer. To rename: run `helm uninstall --wait` with a timeout beyond terminationGracePeriodSeconds, confirm the old pod is fully deleted, then reinstall — keeping your persistence.existingClaim unchanged if you configured one, or setting it to the kept %s-state claim for a chart-created claim, so durable offer-group ownership is preserved." $installedFullname $fullname $installedFullname) }}
 {{- end }}
 apiVersion: apps/v1
 kind: StatefulSet
@@ -91,7 +89,8 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       {{- with .Values.priorityClassName }}
-      priorityClassName: {{ . }}
+      # Quoted: a numeric-looking name must stay a YAML string.
+      priorityClassName: {{ . | quote }}
       {{- end }}
       {{- with .Values.podSecurityContext }}
       securityContext:

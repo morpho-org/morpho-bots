@@ -121,11 +121,15 @@ no workload controller closes: force deletion (`kubectl delete pod --force --gra
 force-deleting a partitioned Node) skips termination confirmation, and the bot deliberately has
 no Kubernetes API access or external writer lock — so "never force delete; fence failed nodes
 first" is an operator invariant documented in the chart README and install notes. Selector
-labels derive from the chart and release names (never `nameOverride`), and a `lookup`-based
-template guard rejects upgrades that would rename the installed StatefulSet, because Helm
-creates the renamed resource before deleting the old one and would briefly run two writers; the
-documented migration reinstalls with `persistence.existingClaim` pointing at the kept old state
-claim so ownership records survive the rename. The
+labels derive from the chart and release names (never `nameOverride`), and a template guard
+rejects upgrades that would rename the installed StatefulSet, because Helm creates the renamed
+resource before deleting the old one and would briefly run two writers. The installed name is
+pinned in a release-name-keyed ConfigMap and read back with a name-scoped `lookup` get, so
+least-privilege deployers need no StatefulSet list permission. The documented migration
+uninstalls with `--wait` (and a timeout beyond the grace period, because a plain uninstall
+returns while the pod is still draining), confirms the old pod is deleted, then reinstalls —
+keeping a pre-configured `persistence.existingClaim` unchanged, or selecting the kept
+chart-created state claim — so ownership records survive the rename. The
 StatefulSet's required headless governing Service is portless (the bot exposes no ports).
 
 **State volume.** `XDG_STATE_HOME` always points at the mount (default `/state`). The PVC
