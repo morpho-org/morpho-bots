@@ -164,6 +164,12 @@ main {
   left: -0.35rem;
   color: #ff87a5;
 }
+.quote-marker--maximum {
+  opacity: 0.55;
+}
+.quote-marker--maximum::before {
+  content: '○';
+}
 .range-label {
   position: absolute;
   font-size: 0.72rem;

@@ -148,7 +148,11 @@ const BootstrapGraphic = ({
   const maximum = BigInt(graphic.maximumRateBps)
   const range = maximum - minimum || 1n
   const position = (value: string) => Number(((BigInt(value) - minimum) * 10_000n) / range) / 100
-  const description = `${title}, market ${graphic.marketId}. Configured range ${graphic.minimumRateBps} to ${graphic.maximumRateBps} BPS. Deterministic reference ${graphic.referenceRateBps} BPS produces quote ${graphic.quotedRateBps} BPS. Credit target ${graphic.creditTarget}, completion threshold ${graphic.acceptedCredit}, pending-offer cap ${graphic.offerSize}. ${graphic.callouts.map(item => `${item.label}: ${item.value}.`).join(' ')} Explicitly no live offers or balances.`
+  const quoteText =
+    graphic.maximumQuotedRateBps === undefined
+      ? `quote ${graphic.quotedRateBps} BPS`
+      : `quote range ${graphic.quotedRateBps} to ${graphic.maximumQuotedRateBps} BPS across maturities`
+  const description = `${title}, market ${graphic.marketId}. Configured range ${graphic.minimumRateBps} to ${graphic.maximumRateBps} BPS. Deterministic reference ${graphic.referenceRateBps} BPS produces ${quoteText}. Credit target ${graphic.creditTarget}, completion threshold ${graphic.acceptedCredit}, pending-offer cap ${graphic.offerSize}. ${graphic.callouts.map(item => `${item.label}: ${item.value}.`).join(' ')} Explicitly no live offers or balances.`
   return (
     <article className="preview-card bootstrap-preview" data-preview="bootstrap">
       <h3 id={`bootstrap-title-${index}`}>{title}</h3>
@@ -162,9 +166,19 @@ const BootstrapGraphic = ({
             style={{ left: `${position(graphic.referenceRateBps)}%` }}
           />
           <i className="quote-marker" style={{ left: `${position(graphic.quotedRateBps)}%` }} />
+          {graphic.maximumQuotedRateBps === undefined ? null : (
+            <i
+              className="quote-marker quote-marker--maximum"
+              style={{ left: `${position(graphic.maximumQuotedRateBps)}%` }}
+            />
+          )}
         </div>
         <figcaption>
-          Reference {graphic.referenceRateBps} BPS ◆ Quote {graphic.quotedRateBps} BPS ●
+          Reference {graphic.referenceRateBps} BPS ◆ Quote {graphic.quotedRateBps}
+          {graphic.maximumQuotedRateBps === undefined
+            ? ''
+            : `–${graphic.maximumQuotedRateBps}`} BPS
+          ●
         </figcaption>
       </figure>
       <dl className="callouts">

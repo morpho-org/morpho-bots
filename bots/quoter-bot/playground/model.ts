@@ -9,6 +9,7 @@ import {
   ladderConfigsValue,
   parseBytes32
 } from '../src/config/market-collections'
+import { clampRateBps } from '../src/domain/cross-book'
 import { generateLadder, offerMaxAssetsByRung } from '../src/domain/ladder/ladder'
 import { CollectionImportError } from './collection-import.error'
 import { CollectionValidationError } from './collection-validation.error'
@@ -229,6 +230,8 @@ export type BootstrapGraphicModel = {
   marketId: string
   referenceRateBps: string
   quotedRateBps: string
+  /** Far-maturity end of the clamped quote range, present only with a maturity premium. */
+  maximumQuotedRateBps?: string
   minimumRateBps: string
   maximumRateBps: string
   creditTarget: string
@@ -237,7 +240,10 @@ export type BootstrapGraphicModel = {
   callouts: { label: string; value: string }[]
 }
 
-/** Derives a synthetic reference whose premium-adjusted quote is the integer midpoint of the bounds. */
+/**
+ * Derives a synthetic reference whose premium-adjusted quote is the integer midpoint of the bounds;
+ * a maturity premium additionally renders the clamped quote range reachable across maturities.
+ */
 export const deriveBootstrapGraphicModels = (items: BootstrapInput[]): BootstrapGraphicModel[] =>
   parseBootstrap(items).map(item => {
     const minimum = BigInt(item.minimumRateBps)
@@ -247,7 +253,22 @@ export const deriveBootstrapGraphicModels = (items: BootstrapInput[]): Bootstrap
       item.targetRate.strategy === 'hardcoded'
         ? BigInt(item.targetRate.hardcodedRateBps)
         : (minimum + maximum) / 2n - premium
-    const quoted = reference + premium
+    const baseQuoted = reference + premium
+    // With a maturity premium the runtime quote spans [base, base + cap] before clamping, and the
+    // collection parser already rejected rates pinned outside the bounds at every maturity, so the
+    // preview renders the clamped reachable range instead of validating the premium-free base.
+    const quoted =
+      item.maturityPremium === undefined ? baseQuoted : clampRateBps(baseQuoted, minimum, maximum)
+    const maximumQuoted =
+      item.maturityPremium === undefined
+        ? undefined
+        : item.maturityPremium.maximumPremiumBps === undefined
+          ? maximum
+          : clampRateBps(
+              baseQuoted + BigInt(item.maturityPremium.maximumPremiumBps),
+              minimum,
+              maximum
+            )
     if (
       reference <= 0n ||
       (item.targetRate.strategy !== 'hardcoded' && (reference < minimum || reference > maximum)) ||
@@ -262,6 +283,7 @@ export const deriveBootstrapGraphicModels = (items: BootstrapInput[]): Bootstrap
       marketId: item.marketId,
       referenceRateBps: String(reference),
       quotedRateBps: String(quoted),
+      ...(maximumQuoted === undefined ? {} : { maximumQuotedRateBps: String(maximumQuoted) }),
       minimumRateBps: item.minimumRateBps,
       maximumRateBps: item.maximumRateBps,
       creditTarget: item.creditTarget,
@@ -286,7 +308,7 @@ export const deriveBootstrapGraphicModels = (items: BootstrapInput[]): Bootstrap
                   item.maturityPremium.maximumPremiumBps === undefined
                     ? ''
                     : `, capped at ${item.maturityPremium.maximumPremiumBps} BPS`
-                }; the runtime adds it to the quoted rate from live time to maturity`
+                }; the preview quote range spans the clamped rates reachable from live time to maturity`
               }
             ]
           : []),
