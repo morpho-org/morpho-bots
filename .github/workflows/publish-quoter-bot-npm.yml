@@ -150,6 +150,7 @@ jobs:
           echo "publishing release ${tag}"
           git checkout --quiet --force "$sha"
           echo "release=true" >> "$GITHUB_OUTPUT"
+          echo "sha=${sha}" >> "$GITHUB_OUTPUT"
 
       - name: Setup
         if: ${{ steps.release.outputs.release == 'true' }}
@@ -267,6 +268,8 @@ jobs:
             echo "dist_tag=backfill" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+          # `sort -V` natural-sorts nonnumeric prerelease identifiers against SemVer precedence,
+          # so both registry comparisons go through the dependency-free SemVer comparator.
           case "$VERSION" in
             *-*)
               # `next` must also only move forward: a chronologically newer commit can still carry
@@ -276,7 +279,7 @@ jobs:
                 exit 1
               fi
               if [ -n "$current_next" ] \
-                && [ "$(printf '%s\n%s\n' "$current_next" "$VERSION" | sort -V | tail -n 1)" != "$VERSION" ]; then
+                && [ "$(node bots/quoter-bot/scripts/semver-precedence.mjs "$current_next" "$VERSION")" != 'ascending' ]; then
                 echo "::notice::${VERSION} does not advance the current next ${current_next}; publishing under the backfill dist-tag"
                 echo "dist_tag=backfill" >> "$GITHUB_OUTPUT"
               else
@@ -291,7 +294,7 @@ jobs:
             exit 1
           fi
           if [ -n "$current_latest" ] \
-            && [ "$(printf '%s\n%s\n' "$current_latest" "$VERSION" | sort -V | tail -n 1)" != "$VERSION" ]; then
+            && [ "$(node bots/quoter-bot/scripts/semver-precedence.mjs "$current_latest" "$VERSION")" != 'ascending' ]; then
             echo "::notice::${VERSION} does not advance the current latest ${current_latest}; publishing under the backfill dist-tag"
             echo "dist_tag=backfill" >> "$GITHUB_OUTPUT"
           else
@@ -303,6 +306,12 @@ jobs:
         working-directory: bots/quoter-bot/dist/npm
         env:
           DIST_TAG: ${{ steps.tags.outputs.dist_tag }}
+          # npm's provenance generator records env GITHUB_SHA as the source commit, and for
+          # workflow_run events GitHub sets that to the default branch's head at event time — not
+          # the gated commit this job built when main advanced mid-pipeline or a dispatch selected
+          # an older release. Pin it to the built commit so the attestation can never name an
+          # unrelated commit; on the common non-raced path this equals the event SHA exactly.
+          GITHUB_SHA: ${{ steps.release.outputs.sha }}
         # Provenance links the published package to this workflow run; access comes from the staged
         # manifest's publishConfig. Requires npm >= 11.5.1, ensured by the upgrade step above.
         run: npm publish --provenance --tag "$DIST_TAG"
