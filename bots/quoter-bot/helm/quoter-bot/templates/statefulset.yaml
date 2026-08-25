@@ -44,17 +44,19 @@ spec:
     spec:
       # The bot never talks to the Kubernetes API.
       automountServiceAccountToken: false
-      # SIGTERM cleanup waits on transaction receipts, so the grace period must cover the
-      # configured receipt timeout. When the chart-managed config raises
-      # setup.transactionReceiptTimeoutMs, the grace period is floored to that timeout plus a
-      # two-minute drain buffer; operators configuring the timeout through environment
-      # variables or existingConfigSecret must size terminationGracePeriodSeconds themselves.
+      # SIGTERM shutdown serializes up to three receipt-bounded waits through the shared
+      # operation queue — the in-flight cycle's transaction, then the bootstrap cleanup batch,
+      # then the ladder cleanup batch — so when the chart-managed config declares
+      # setup.transactionReceiptTimeoutMs, the grace period is floored to three receipt
+      # timeouts plus a two-minute drain buffer. Each additional owned group adds another
+      # bounded wait, and environment-supplied or existingConfigSecret timeouts are invisible
+      # here: size terminationGracePeriodSeconds explicitly for those workloads.
       {{- $receiptMs := 0 }}
       {{- if and .Values.config (not .Values.existingConfigSecret) }}
       {{- $receiptMs = int (dig "setup" "transactionReceiptTimeoutMs" 0 .Values.config) }}
       {{- end }}
       {{- $grace := int .Values.terminationGracePeriodSeconds }}
-      {{- $graceFloor := add (div $receiptMs 1000) 120 }}
+      {{- $graceFloor := add (mul (div $receiptMs 1000) 3) 120 }}
       {{- if and (gt $receiptMs 0) (lt $grace $graceFloor) }}
       {{- $grace = $graceFloor }}
       {{- end }}
@@ -73,7 +75,10 @@ spec:
       {{- if .Values.volumePermissions.enabled }}
       initContainers:
         # Mirrors the image's railway-entrypoint.sh chown without changing state-file modes.
-        # The runtime container itself never runs as root.
+        # The runtime container itself never runs as root. Root plus CHOWN/DAC_OVERRIDE (to
+        # change ownership and traverse 0700 state directories) is the minimum this needs, so
+        # the default chart fits the Baseline Pod Security Standard, not Restricted — see the
+        # chart README for the Restricted-compatible pre-owned-volume path.
         - name: volume-permissions
           image: {{ include "quoter-bot.image" . | quote }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
@@ -86,6 +91,13 @@ spec:
             runAsNonRoot: false
             runAsUser: 0
             runAsGroup: 0
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+              add:
+                - CHOWN
+                - DAC_OVERRIDE
           volumeMounts:
             - name: state
               mountPath: {{ .Values.persistence.mountPath | quote }}
@@ -108,10 +120,18 @@ spec:
             - {{ . | quote }}
             {{- end }}
           env:
-            # Durable offer-group ownership state lives on the state volume.
+            # Durable offer-group ownership state lives on the state volume. The variable name
+            # is reserved: custom `env` entries with this name are filtered out so state cannot
+            # be silently detached from the retained PVC.
             - name: XDG_STATE_HOME
               value: {{ .Values.persistence.mountPath | quote }}
-            {{- with .Values.env }}
+            {{- $extraEnv := list }}
+            {{- range .Values.env }}
+            {{- if ne .name "XDG_STATE_HOME" }}
+            {{- $extraEnv = append $extraEnv . }}
+            {{- end }}
+            {{- end }}
+            {{- with $extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
           {{- with .Values.envFrom }}

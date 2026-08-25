@@ -13,6 +13,12 @@ registry yet. All commands below run from the repository root.
 
 - Helm 3.8+ (Helm 4 works too) and a Kubernetes cluster.
 - A PersistentVolume provisioner (or a pre-created claim) for the `/state` volume.
+- The default `volumePermissions` init container runs as root (with capabilities reduced to
+  `CHOWN` + `DAC_OVERRIDE`), which fits the **Baseline** Pod Security Standard but is rejected
+  by **Restricted** namespaces. Under Restricted, set `volumePermissions.enabled=false` and
+  provide a volume already owned by uid/gid 1000 (a provisioner or storage class that sets
+  ownership, or a one-time privileged job outside the namespace) — do not substitute
+  `fsGroup`, whose permission-bit changes the bot's state readers reject.
 
 ## Quickstart
 
@@ -139,30 +145,30 @@ files over `--set` for the `config` block for the same reason.
 
 ### Image and workload
 
-| Key                                         | Default                                           | Meaning                                                                                                                                                 |
-| ------------------------------------------- | ------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `image.repository`                          | `morphoorg/quoter`                                | Public Docker Hub repository published on every production release.                                                                                     |
-| `image.tag`                                 | `''` (chart `appVersion`, `latest`)               | Pin an immutable release commit-hash tag for reproducible deployments.                                                                                  |
-| `image.pullPolicy`                          | `Always`                                          | Safe default while the tag is `latest`; use `IfNotPresent` with a pinned tag.                                                                           |
-| `imagePullSecrets`                          | `[]`                                              | Pull secrets for private mirrors.                                                                                                                       |
-| `command`                                   | `[node, /repo/bots/quoter-bot/dist/src/index.js]` | Runs the bundle directly as the unprivileged `node` user, bypassing the root-only Railway entrypoint.                                                   |
-| `args`                                      | `[start, --verbose]`                              | Root flags and command after the chart-managed `--config` pair, e.g. `['--readonly', 'start', '--verbose']` or `[setup-check, --monitor]`.              |
-| `resources`                                 | `{}`                                              | CPU/memory requests and limits.                                                                                                                         |
-| `terminationGracePeriodSeconds`             | `600`                                             | Shutdown invalidates owned offer groups and waits for receipts; automatically floored to a chart-managed `setup.transactionReceiptTimeoutMs` plus 120s. |
-| `forceRestartOnUpgrade`                     | `false`                                           | Stamps an upgrade-time annotation so every `helm upgrade` rolls the pod — the way to re-pull a moved `latest` tag.                                      |
-| `podAnnotations` / `podLabels`              | `{}`                                              | Extra pod metadata.                                                                                                                                     |
-| `nodeSelector` / `tolerations` / `affinity` | `{}` / `[]` / `{}`                                | Standard scheduling controls.                                                                                                                           |
-| `priorityClassName`                         | `''`                                              | Optional pod priority class.                                                                                                                            |
-| `nameOverride` / `fullnameOverride`         | `''`                                              | Standard naming overrides.                                                                                                                              |
+| Key                                         | Default                                           | Meaning                                                                                                                                                                                                                                                          |
+| ------------------------------------------- | ------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `image.repository`                          | `morphoorg/quoter`                                | Public Docker Hub repository published on every production release.                                                                                                                                                                                              |
+| `image.tag`                                 | `''` (chart `appVersion`, `latest`)               | Pin an immutable release commit-hash tag for reproducible deployments.                                                                                                                                                                                           |
+| `image.pullPolicy`                          | `Always`                                          | Safe default while the tag is `latest`; use `IfNotPresent` with a pinned tag.                                                                                                                                                                                    |
+| `imagePullSecrets`                          | `[]`                                              | Pull secrets for private mirrors.                                                                                                                                                                                                                                |
+| `command`                                   | `[node, /repo/bots/quoter-bot/dist/src/index.js]` | Runs the bundle directly as the unprivileged `node` user, bypassing the root-only Railway entrypoint.                                                                                                                                                            |
+| `args`                                      | `[start, --verbose]`                              | Root flags and command after the chart-managed `--config` pair, e.g. `['--readonly', 'start', '--verbose']` or `[setup-check, --monitor]`.                                                                                                                       |
+| `resources`                                 | `{}`                                              | CPU/memory requests and limits.                                                                                                                                                                                                                                  |
+| `terminationGracePeriodSeconds`             | `900`                                             | Shutdown serializes up to three receipt-bounded waits (in-flight, bootstrap cleanup, ladder cleanup); automatically floored to 3× a chart-managed `setup.transactionReceiptTimeoutMs` plus 120s. Size explicitly for many owned groups or env-supplied timeouts. |
+| `forceRestartOnUpgrade`                     | `false`                                           | Stamps an upgrade-time annotation so every `helm upgrade` rolls the pod — the way to re-pull a moved `latest` tag.                                                                                                                                               |
+| `podAnnotations` / `podLabels`              | `{}`                                              | Extra pod metadata.                                                                                                                                                                                                                                              |
+| `nodeSelector` / `tolerations` / `affinity` | `{}` / `[]` / `{}`                                | Standard scheduling controls.                                                                                                                                                                                                                                    |
+| `priorityClassName`                         | `''`                                              | Optional pod priority class.                                                                                                                                                                                                                                     |
+| `nameOverride` / `fullnameOverride`         | `''`                                              | Standard naming overrides.                                                                                                                                                                                                                                       |
 
 ### Configuration
 
-| Key                    | Default | Meaning                                                                                          |
-| ---------------------- | ------- | ------------------------------------------------------------------------------------------------ |
-| `config`               | `{}`    | Complete bot YAML configuration, rendered verbatim into a Secret and passed via `--config`.      |
-| `existingConfigSecret` | `''`    | Pre-created Secret with the full file under key `quoter-bot.yaml`; replaces the rendered Secret. |
-| `env`                  | `[]`    | Extra `EnvVar` objects; environment overrides YAML (signer secret, `BETTERSTACK_*`).             |
-| `envFrom`              | `[]`    | Extra `EnvFromSource` objects for whole Secrets/ConfigMaps of overrides.                         |
+| Key                    | Default | Meaning                                                                                                                             |
+| ---------------------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `config`               | `{}`    | Complete bot YAML configuration, rendered verbatim into a Secret and passed via `--config`.                                         |
+| `existingConfigSecret` | `''`    | Pre-created Secret with the full file under key `quoter-bot.yaml`; replaces the rendered Secret.                                    |
+| `env`                  | `[]`    | Extra `EnvVar` objects; environment overrides YAML (signer secret, `BETTERSTACK_*`). `XDG_STATE_HOME` is reserved and filtered out. |
+| `envFrom`              | `[]`    | Extra `EnvFromSource` objects for whole Secrets/ConfigMaps of overrides.                                                            |
 
 ### Persistence and security
 

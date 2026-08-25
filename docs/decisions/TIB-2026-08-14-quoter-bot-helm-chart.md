@@ -121,15 +121,17 @@ deleting ownership state makes previously bot-issued groups unknown, which fails
 an operator invalidates or adopts them. A reinstall under the same release name and namespace
 re-adopts the kept claim.
 
-**Shutdown budget.** `terminationGracePeriodSeconds` defaults to 600. SIGTERM drains the
-in-flight cycle, then invalidates owned offer groups and waits for receipts — bounded per
-transaction by `TRANSACTION_RECEIPT_TIMEOUT_MS` (default 180 s, supported up to 900 s) — so
-shutdown legitimately takes minutes. Kubernetes' 30-second default would SIGKILL mid-cleanup and
-leave owned offers on the book. Because a receipt timeout above the grace period would reopen
-that window, the template floors the rendered grace period at the chart-managed
-`setup.transactionReceiptTimeoutMs` plus a two-minute drain buffer; timeouts supplied through
-environment overrides or `existingConfigSecret` are invisible to the template, so those
-operators size the grace period themselves (documented in `values.yaml` and the chart README).
+**Shutdown budget.** `terminationGracePeriodSeconds` defaults to 900. SIGTERM shutdown
+serializes up to three receipt-bounded waits through the shared operation queue — the in-flight
+cycle's transaction, the bootstrap cleanup batch, and the ladder cleanup batch — each bounded by
+`TRANSACTION_RECEIPT_TIMEOUT_MS` (default 180 s, supported up to 900 s), and every additional
+owned group adds another bounded wait. Kubernetes' 30-second default would SIGKILL mid-cleanup
+and leave owned offers on the book. The template therefore floors the rendered grace period at
+three chart-managed `setup.transactionReceiptTimeoutMs` timeouts plus a two-minute drain buffer
+(900 s timeout → 2 820 s grace). The floor is not a guaranteed upper bound: many owned groups
+(multi-market, high rung counts) multiply the waits, and timeouts supplied through environment
+overrides or `existingConfigSecret` are invisible to the template — both cases are documented in
+`values.yaml` and the chart README as the operator's explicit sizing responsibility.
 
 **No probes, no serving endpoint.** The bot exposes no ports. The only Service is the
 StatefulSet's required portless headless governing Service, which serves no traffic. The bot
@@ -199,7 +201,12 @@ container starts, without changing restored state-file modes.
   signer keeps the key out of both the values and the rendered Secret.
 - Default pod posture: non-root uid 1000, seccomp `RuntimeDefault`, no privilege escalation, all
   capabilities dropped, read-only root filesystem, no service-account token. The chown-only
-  `volumePermissions` init container is the only root surface and exits before the bot starts.
+  `volumePermissions` init container is the only root surface and exits before the bot starts;
+  its capabilities are reduced to `CHOWN` + `DAC_OVERRIDE` with `allowPrivilegeEscalation:
+false`. That still fits only the Baseline Pod Security Standard — Restricted namespaces must
+  set `volumePermissions.enabled=false` and pre-own the volume at the storage layer (never via
+  `fsGroup`, whose permission-bit changes the state readers reject), as documented in the chart
+  README prerequisites.
 
 ## Observability
 

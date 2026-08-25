@@ -105,7 +105,8 @@ existingConfigSecret: ''
 # Extra environment variables (list of EnvVar objects). Environment values override their YAML
 # counterparts, so this is the place for the signer secret and for the environment-only Better
 # Stack settings (BETTERSTACK_SOURCE_TOKEN, BETTERSTACK_INGESTING_HOST,
-# BETTERSTACK_HEARTBEAT_URL).
+# BETTERSTACK_HEARTBEAT_URL). XDG_STATE_HOME is chart-managed and reserved: entries with that
+# name are ignored so durable ownership state cannot be detached from the retained PVC.
 env: []
 # env:
 #   - name: MAKER_PRIVATE_KEY
@@ -175,14 +176,17 @@ resources: {}
 #   limits:
 #     memory: 512Mi
 
-# SIGTERM lets the in-flight cycle finish, then invalidates owned offer groups and waits for
-# transaction receipts (bounded by transactionReceiptTimeoutMs per transaction), so shutdown
-# legitimately takes minutes. Kubernetes' 30-second default would SIGKILL mid-cleanup and
-# leave owned offers on the book. When the chart-managed `config` raises
-# setup.transactionReceiptTimeoutMs, the rendered grace period is automatically floored to
-# that timeout plus a two-minute drain buffer; when the timeout comes from environment
-# overrides or an existingConfigSecret, size this value to cover it yourself.
-terminationGracePeriodSeconds: 600
+# SIGTERM lets the in-flight cycle finish, then invalidates owned bootstrap and ladder offer
+# groups through the shared serialized operation queue — up to three receipt-bounded waits
+# (in-flight transaction, bootstrap cleanup batch, ladder cleanup batch), each bounded by
+# setup.transactionReceiptTimeoutMs, plus one more wait per additional owned group. Kubernetes'
+# 30-second default would SIGKILL mid-cleanup and leave owned offers on the book. The default
+# covers three waits at the bot's default 180 s timeout with margin, and when the
+# chart-managed `config` declares setup.transactionReceiptTimeoutMs the rendered value is
+# automatically floored to three receipt timeouts plus a two-minute drain buffer. Size this
+# explicitly for many owned groups (multi-market or high rung counts), or when the timeout
+# comes from environment overrides or an existingConfigSecret.
+terminationGracePeriodSeconds: 900
 
 podAnnotations: {}
 podLabels: {}

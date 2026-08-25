@@ -26,9 +26,9 @@ Operational notes:
   - The bot is a singleton writer; the chart runs a one-replica StatefulSet so a replacement
     pod is never created until the old one has fully terminated. Never scale it or run a
     second release against the same maker.
-  - Shutdown drains the in-flight cycle, then invalidates owned offer groups and waits for
-    receipts; the pod may legitimately take minutes to stop (the grace period covers the
-    configured receipt timeout).
+  - Shutdown drains the in-flight cycle, then invalidates owned bootstrap and ladder groups
+    serially, each wait bounded by the receipt timeout; the pod may legitimately take minutes
+    to stop (the grace period budgets three receipt-bounded waits for a chart-managed config).
   - The image is only re-pulled when the pod template changes: after a mutable tag such as
     `latest` moves, roll the pod with `kubectl rollout restart`, or set
     forceRestartOnUpgrade=true to roll on every `helm upgrade`.

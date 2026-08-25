@@ -68,12 +68,36 @@ describe('quoter-bot Helm chart', () => {
     expect(service).not.toContain('ports:')
   })
 
-  it('floors the grace period at the chart-managed receipt timeout plus a drain buffer', async () => {
-    const statefulSet = await readChartFile('templates/statefulset.yaml')
+  it('floors the grace period at three receipt-bounded waits plus a drain buffer', async () => {
+    const [statefulSet, values] = await Promise.all([
+      readChartFile('templates/statefulset.yaml'),
+      readChartFile('values.yaml')
+    ])
 
     expect(statefulSet).toContain('dig "setup" "transactionReceiptTimeoutMs" 0 .Values.config')
-    expect(statefulSet).toContain('add (div $receiptMs 1000) 120')
+    expect(statefulSet).toContain('add (mul (div $receiptMs 1000) 3) 120')
     expect(statefulSet).toContain('terminationGracePeriodSeconds: {{ $grace }}')
+    expect(values).toContain('terminationGracePeriodSeconds: 900')
+  })
+
+  it('reserves XDG_STATE_HOME against custom env overrides', async () => {
+    const statefulSet = await readChartFile('templates/statefulset.yaml')
+
+    expect(statefulSet).toContain('{{- if ne .name "XDG_STATE_HOME" }}')
+    expect(statefulSet).toContain('{{- $extraEnv = append $extraEnv . }}')
+  })
+
+  it('limits the root init container to chown-scoped capabilities', async () => {
+    const statefulSet = await readChartFile('templates/statefulset.yaml')
+    const initSection = statefulSet.slice(
+      statefulSet.indexOf('initContainers:'),
+      statefulSet.indexOf('containers:')
+    )
+
+    expect(initSection).toContain('allowPrivilegeEscalation: false')
+    expect(initSection).toContain('- CHOWN')
+    expect(initSection).toContain('- DAC_OVERRIDE')
+    expect(initSection).toContain('- ALL')
   })
 
   it('offers an upgrade-time restart annotation for mutable image tags', async () => {
