@@ -221,10 +221,10 @@ describe('quoter-bot Helm chart', () => {
     const helpers = await readChartFile('templates/_helpers.tpl')
 
     expect(helpers).toContain(
-      `{{- printf "%s-state" (include "quoter-bot.fullname" . | trunc 57 | trimSuffix "-") }}`
+      `{{- printf "%s-%s-state" ($fullname | trunc 48 | trimSuffix "-") (sha256sum $fullname | trunc 8) }}`
     )
     expect(helpers).toContain(
-      `{{- printf "%s-config" (include "quoter-bot.fullname" . | trunc 56 | trimSuffix "-") }}`
+      `{{- printf "%s-%s-config" ($fullname | trunc 47 | trimSuffix "-") (sha256sum $fullname | trunc 8) }}`
     )
     expect(helpers).toContain(
       `{{- printf "%s-%s-quoter-bot-fullname" (.Release.Name | trunc 34 | trimSuffix "-") (sha256sum .Release.Name | trunc 8) }}`

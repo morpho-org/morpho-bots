@@ -63,11 +63,17 @@ printf as parsed YAML numbers.
 {{- end }}
 
 {{/*
-State-claim name, bounded to the 63-character DNS label limit: the base is truncated so the
-"-state" suffix always fits, keeping valid long release names installable.
+State-claim name, bounded to the 63-character DNS label limit. Short fullnames keep the plain
+"<fullname>-state" shape; longer ones embed an 8-character hash of the complete fullname before
+truncating, so distinct releases sharing a truncated prefix never collide on the claim.
 */}}
 {{- define "quoter-bot.stateClaimName" -}}
-{{- printf "%s-state" (include "quoter-bot.fullname" . | trunc 57 | trimSuffix "-") }}
+{{- $fullname := include "quoter-bot.fullname" . }}
+{{- if gt (len $fullname) 57 }}
+{{- printf "%s-%s-state" ($fullname | trunc 48 | trimSuffix "-") (sha256sum $fullname | trunc 8) }}
+{{- else }}
+{{- printf "%s-state" $fullname }}
+{{- end }}
 {{- end }}
 
 {{/*
@@ -89,7 +95,12 @@ pin unique even when long release names share their truncated prefix.
 {{- if .Values.existingConfigSecret }}
 {{- .Values.existingConfigSecret }}
 {{- else }}
-{{- printf "%s-config" (include "quoter-bot.fullname" . | trunc 56 | trimSuffix "-") }}
+{{- $fullname := include "quoter-bot.fullname" . }}
+{{- if gt (len $fullname) 56 }}
+{{- printf "%s-%s-config" ($fullname | trunc 47 | trimSuffix "-") (sha256sum $fullname | trunc 8) }}
+{{- else }}
+{{- printf "%s-config" $fullname }}
+{{- end }}
 {{- end }}
 {{- end }}
 

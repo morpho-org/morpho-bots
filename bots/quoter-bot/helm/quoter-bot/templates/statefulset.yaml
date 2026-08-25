@@ -11,7 +11,7 @@ real install/upgrade.
 {{- $identity := lookup "v1" "ConfigMap" .Release.Namespace (include "quoter-bot.releaseFullnameConfigMapName" .) }}
 {{- $installedFullname := dig "fullname" $fullname (($identity | default dict).data | default dict) }}
 {{- if ne $installedFullname $fullname }}
-{{- fail (printf "quoter-bot: this release was installed as StatefulSet %q; renaming it to %q via nameOverride/fullnameOverride would start a second writer. To rename: run `helm uninstall --wait` with a timeout beyond terminationGracePeriodSeconds, confirm the old pod is fully deleted, then reinstall — keeping your persistence.existingClaim unchanged if you configured one, or setting it to the kept %s-state claim for a chart-created claim, so durable offer-group ownership is preserved." $installedFullname $fullname ($installedFullname | trunc 57 | trimSuffix "-")) }}
+{{- fail (printf "quoter-bot: this release was installed as StatefulSet %q; renaming it to %q via nameOverride/fullnameOverride would start a second writer. To rename: run `helm uninstall --wait` with a timeout beyond terminationGracePeriodSeconds, confirm the old pod is fully deleted, then reinstall — keeping your persistence.existingClaim unchanged if you configured one, or setting it to the kept chart-created state claim (its name ends in -state; kubectl get pvc), so durable offer-group ownership is preserved." $installedFullname $fullname) }}
 {{- end }}
 apiVersion: apps/v1
 kind: StatefulSet
@@ -83,8 +83,11 @@ spec:
       # is floored to that many receipt timeouts (the declared
       # setup.transactionReceiptTimeoutMs, or the bot's 180 s default when undeclared) plus a
       # two-minute drain buffer. Environment-supplied or existingConfigSecret timeouts and
-      # market lists are invisible here: size terminationGracePeriodSeconds explicitly for
-      # those workloads.
+      # market lists are invisible here — size terminationGracePeriodSeconds explicitly for
+      # those workloads — and so are groups persisted from a PREVIOUS configuration: startup
+      # cleanup cancels each removed-market group serially, so before removing markets or
+      # reducing rung counts, invalidate the affected groups first (quoter-bot invalidate — a
+      # single maker-wide multicall) or temporarily raise this value for that upgrade.
       {{- $receiptMs := 0 }}
       {{- $bootstrapCount := 0 }}
       {{- $ladderCount := 0 }}

@@ -211,7 +211,11 @@ resources: {}
 # batches — times the receipt timeout rounded up to whole seconds (the declared value, or the
 # bot's 180 s default), plus a two-minute drain buffer. Apply the same formula yourself when
 # the market lists or timeout come from environment overrides or an existingConfigSecret,
-# which the template cannot see.
+# which the template cannot see. Groups persisted from a PREVIOUS configuration are also
+# invisible: a shrinking upgrade (removed markets, reduced rung counts) triggers one serial
+# cleanup wait per removed group at startup, so invalidate those groups first
+# (`quoter-bot invalidate` — a single maker-wide multicall) or temporarily raise this value
+# for that upgrade.
 terminationGracePeriodSeconds: 1020
 
 podAnnotations: {}
