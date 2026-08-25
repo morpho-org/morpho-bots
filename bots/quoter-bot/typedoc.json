@@ -95,7 +95,9 @@
     "src/infrastructure/selected-market-items.utils.ts",
     "src/infrastructure/tick-window.utils.ts",
     "scripts/js-doc-validation.error.ts",
-    "scripts/bundle-failed.error.ts"
+    "scripts/bundle-failed.error.ts",
+    "scripts/npm-pack-failed.error.ts",
+    "scripts/npm-package.utils.ts"
   ],
   "tsconfig": "tsconfig.json",
   "out": "build/jsdoc",
