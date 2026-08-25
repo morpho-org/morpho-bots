@@ -237,10 +237,11 @@ jobs:
       # `latest` and `next` must only move forward, because npm resolves installs from dist-tags
       # and never orders them itself. Three gates, in order: when another quoter-bot release tag
       # descends from the built commit a newer release already shipped, so the rerun — stable or
-      # prerelease — backfills without touching either tag; remaining prereleases publish under
-      # `next`; and a stable candidate must be semver-greater than the registry's current `latest`
-      # (fail closed on lookup failure). Release tags are cut by deploy-production.yml, whose
-      # concurrency group serializes release runs, so the newest release cannot change mid-run.
+      # prerelease — backfills without touching either tag; a remaining prerelease takes `next`
+      # only when it semver-advances the registry's current `next`; and a stable candidate must be
+      # semver-greater than the registry's current `latest` (fail closed on lookup failures).
+      # Release tags are cut by deploy-production.yml, whose concurrency group serializes release
+      # runs, so the newest release cannot change mid-run.
       - name: Gate the latest tag
         if: ${{ steps.release.outputs.release == 'true' && steps.registry.outputs.exists != 'true' }}
         id: tags
@@ -268,8 +269,20 @@ jobs:
           fi
           case "$VERSION" in
             *-*)
-              echo "::notice::${VERSION} is a prerelease; publishing under the next dist-tag"
-              echo "dist_tag=next" >> "$GITHUB_OUTPUT"
+              # `next` must also only move forward: a chronologically newer commit can still carry
+              # a semver-lower prerelease. Fail closed on lookup failure.
+              if ! current_next="$(npm view '@morpho-org/quoter' dist-tags.next 2>/dev/null)"; then
+                echo '::error::could not read the registry current next dist-tag; rerun after checking registry status'
+                exit 1
+              fi
+              if [ -n "$current_next" ] \
+                && [ "$(printf '%s\n%s\n' "$current_next" "$VERSION" | sort -V | tail -n 1)" != "$VERSION" ]; then
+                echo "::notice::${VERSION} does not advance the current next ${current_next}; publishing under the backfill dist-tag"
+                echo "dist_tag=backfill" >> "$GITHUB_OUTPUT"
+              else
+                echo "::notice::${VERSION} is a prerelease; publishing under the next dist-tag"
+                echo "dist_tag=next" >> "$GITHUB_OUTPUT"
+              fi
               exit 0
               ;;
           esac

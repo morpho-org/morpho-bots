@@ -30,8 +30,13 @@ const readRequired = (path: string, missingHint: string): string => {
   }
 }
 
-const workspaceManifest = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')) as {
-  version?: string
+let workspaceManifest: { version?: string }
+try {
+  workspaceManifest = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')) as {
+    version?: string
+  }
+} catch {
+  throw new NpmPackFailedError('package.json could not be read or parsed for the publish version')
 }
 const version = assertPublishableVersion(workspaceManifest.version)
 const bundle = assertBinBundle(

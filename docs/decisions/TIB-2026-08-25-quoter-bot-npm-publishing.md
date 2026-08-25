@@ -120,11 +120,11 @@ check fails loud with the bootstrap instructions instead of dying inside the OID
   release tags.
 - _Dist-tags only move forward:_ npm resolves installs from dist-tags and never orders them
   itself, so a commit with a newer descendant release tag publishes under `backfill` (a rerun
-  backfilling an older release, stable or prerelease), remaining prereleases publish under `next`,
-  and a stable version must additionally be semver-greater than the registry's current `latest` to
-  take that tag — mirroring the Docker Hub latest gate. (`npm publish` always assigns a dist-tag,
-  so skipping the tag — the Docker Hub behavior — is not an option; `next`/`backfill` are the npm
-  equivalent.)
+  backfilling an older release, stable or prerelease), a remaining prerelease takes `next` only
+  when it semver-advances the registry's current `next`, and a stable version must be
+  semver-greater than the registry's current `latest` to take that tag — mirroring the Docker Hub
+  latest gate. (`npm publish` always assigns a dist-tag, so skipping the tag — the Docker Hub
+  behavior — is not an option; `next`/`backfill` are the npm equivalent.)
 
 ## Considered Alternatives
 

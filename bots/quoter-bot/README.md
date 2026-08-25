@@ -359,9 +359,10 @@ The staged package (`dist/npm/`) contains exactly the self-contained bundle rena
 registry. Published versions are immutable: a release whose version already exists on the registry
 completes as a no-op, so bumping `version` in the release PR is what opts a release into an npm
 publish. Dist-tags only move forward: a rerun whose commit has a newer descendant release tag
-publishes under `backfill` (stable or prerelease), remaining prerelease versions publish under
-`next`, and a stable version additionally must be semver-greater than the registry's current
-`latest` to take that tag.
+publishes under `backfill` (stable or prerelease), a remaining prerelease takes the `next`
+dist-tag only when it semver-advances the registry's current `next`, and a stable version must be
+semver-greater than the registry's current `latest` to take that tag; non-advancing versions
+publish under `backfill`.
 
 One-time setup: npm cannot create a brand-new package through trusted publishing, so a maintainer
 bootstraps the first publish manually
