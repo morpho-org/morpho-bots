@@ -112,7 +112,9 @@ const verboseEvents = (
     })
   }
   if (verbose.currentState.status === 'observed') {
-    const market = verbose.currentState.market
+    const observedAfter =
+      verbose.stateAfterCheck.status === 'observed' ? verbose.stateAfterCheck : verbose.currentState
+    const market = observedAfter.market
     events.push({
       event: 'position.observed',
       marketId,
@@ -127,8 +129,6 @@ const verboseEvents = (
       ...defined('targetMarketCapacityAssets', market.targetMarketCapacityAssets),
       ...defined('maximumTotalCapacityAssets', market.maximumTotalCapacityAssets)
     })
-    const observedAfter =
-      verbose.stateAfterCheck.status === 'observed' ? verbose.stateAfterCheck : verbose.currentState
     const activeQuote = observedAfter.activeQuote
     events.push(...SIDES.map(side => sideBook(marketId, side, activeQuote)))
   }
@@ -156,9 +156,11 @@ const verboseEvents = (
  * settled-transaction record derivable from the attached verbose diagnostics.
  * @remarks A pure projection: it reads nothing and performs no provider calls. Everything beyond
  * `cycle.completed` and `guardrail.halted` requires `--verbose`, which shipping auto-enables.
- * `position.observed` reports both the saturating capacities and the balance primitives they were
- * derived from, because the capacities alone cannot be inverted into a position value. Fill records are not produced here — see `ladderConsumptionEvents`, which needs
- * the previous cycle's consumption to compute a delta.
+ * `position.observed` and `book.observed` describe the post-check snapshot when that read succeeded
+ * and fall back to the pre-decision read otherwise. The position record reports both the saturating
+ * capacities and the balance primitives they were derived from, because the capacities alone cannot
+ * be inverted into a position value. Fill records are not produced here — see
+ * `ladderConsumptionEvents`, which needs the previous cycle's consumption to compute a delta.
  */
 export const ladderMonitoringEvents = (
   results: readonly LadderRunResult[]

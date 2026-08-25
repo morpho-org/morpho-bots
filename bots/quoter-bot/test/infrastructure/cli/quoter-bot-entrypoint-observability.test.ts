@@ -65,6 +65,7 @@ describe('runQuoterBotEntrypoint observability', () => {
 
   test('surfaces sanitized maker-account failures without reporting them as unexpected', async () => {
     const stderr: string[] = []
+    const record = vi.fn((_value: unknown) => undefined)
     const unexpected = vi.fn((_error: unknown, _origin: 'entrypoint') => undefined)
     const error = new MakerAccountError('keystore-decrypt')
 
@@ -73,11 +74,14 @@ describe('runQuoterBotEntrypoint observability', () => {
       ['setup-check'],
       { writeOut: () => undefined, writeError: value => stderr.push(value) },
       {},
-      { record: vi.fn(() => undefined), unexpected }
+      { record, unexpected }
     )
 
     expect(exitCode).toBe(1)
     expect(stderr).toEqual(['Error: Maker account keystore-decrypt failed'])
+    expect(record.mock.calls).toEqual([
+      [{ event: 'bot.failed', reason: 'maker-account', errorName: 'MakerAccountError' }]
+    ])
     expect(unexpected).toHaveBeenCalledTimes(0)
   })
 

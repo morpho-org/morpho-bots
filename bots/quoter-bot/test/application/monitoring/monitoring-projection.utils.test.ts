@@ -155,6 +155,86 @@ describe('createMonitoringProjection', () => {
     ])
   })
 
+  test('projects position observations from the successful post-check snapshot', () => {
+    const observed = {
+      marketId,
+      status: 'applied',
+      action: 'publish',
+      verbose: {
+        config: { marketId },
+        currentState: {
+          status: 'observed',
+          market: {
+            cashBalanceAssets: 10n,
+            reservedAssets: 20n,
+            lowerRateCapacityAssets: 30n,
+            higherRateCapacityAssets: 40n
+          }
+        },
+        stateAfterCheck: {
+          status: 'observed',
+          market: {
+            cashBalanceAssets: 100n,
+            reservedAssets: 200n,
+            lowerRateCapacityAssets: 300n,
+            higherRateCapacityAssets: 400n
+          }
+        }
+      }
+    }
+
+    expect(
+      createMonitoringProjection()
+        .ladder([observed] as readonly { status: string }[])
+        .filter(event => event.event === 'position.observed')
+    ).toEqual([
+      {
+        event: 'position.observed',
+        marketId,
+        cashBalanceAssets: 100n,
+        reservedAssets: 200n,
+        lowerRateCapacityAssets: 300n,
+        higherRateCapacityAssets: 400n
+      }
+    ])
+  })
+
+  test('falls back to the pre-decision position observation when the post-check read fails', () => {
+    const observed = {
+      marketId,
+      status: 'applied',
+      action: 'publish',
+      verbose: {
+        config: { marketId },
+        currentState: {
+          status: 'observed',
+          market: {
+            cashBalanceAssets: 10n,
+            reservedAssets: 20n,
+            lowerRateCapacityAssets: 30n,
+            higherRateCapacityAssets: 40n
+          }
+        },
+        stateAfterCheck: { status: 'failed', errorName: 'ProviderError' }
+      }
+    }
+
+    expect(
+      createMonitoringProjection()
+        .ladder([observed] as readonly { status: string }[])
+        .filter(event => event.event === 'position.observed')
+    ).toEqual([
+      {
+        event: 'position.observed',
+        marketId,
+        cashBalanceAssets: 10n,
+        reservedAssets: 20n,
+        lowerRateCapacityAssets: 30n,
+        higherRateCapacityAssets: 40n
+      }
+    ])
+  })
+
   test('orients best and worst rate toward the center on each side', () => {
     const quoted = {
       marketId,

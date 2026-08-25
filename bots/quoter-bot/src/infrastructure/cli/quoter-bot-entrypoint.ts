@@ -1,5 +1,6 @@
 import { createCliLogger } from '@repo/logging'
 
+import type { MonitoringEvent } from '../../application/monitoring/monitoring-event'
 import type { CliRuntimeOptions } from './cli'
 
 import { PositionBootstrapHaltedError } from '../../application/bootstrap/position-bootstrap-halted.error'
@@ -106,12 +107,19 @@ export const runQuoterBotEntrypoint = async (
       return 0
     }
     const details = failureDetails(error)
-    if (details === undefined && !(error instanceof MakerAccountError)) {
-      observability?.unexpected(error, 'entrypoint')
-    } else if (details !== undefined) {
+    if (details !== undefined) {
       for (const event of terminalMonitoringEvents(details, operatorErrorName(error))) {
         observability?.record(event)
       }
+    } else if (error instanceof MakerAccountError) {
+      const event = {
+        event: 'bot.failed',
+        reason: 'maker-account',
+        errorName: operatorErrorName(error)
+      } satisfies MonitoringEvent
+      observability?.record(event)
+    } else {
+      observability?.unexpected(error, 'entrypoint')
     }
     logger.error(failureMessage(error), details)
     return 1
