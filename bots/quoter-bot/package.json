@@ -1,10 +1,10 @@
 {
   "name": "@morpho-org/quoter-bot",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "license": "Apache-2.0",
   "bin": {
-    "quoter-bot": "./dist/src/index.js"
+    "morpho-quoter": "./dist/src/index.js"
   },
   "type": "module",
   "scripts": {
@@ -12,6 +12,8 @@
     "deploy:railway": "tsx scripts/deploy-railway.ts",
     "jsdoc:build": "pnpm run jsdoc:check && typedoc --options typedoc.json",
     "jsdoc:check": "tsx scripts/check-jsdoc.ts",
+    "prenpm:pack": "pnpm --filter \"{.}...\" --if-present run build",
+    "npm:pack": "tsx scripts/pack-npm.ts",
     "prestart": "pnpm --filter \"{.}...\" --if-present run build",
     "playground:build": "node scripts/playground-build.mjs",
     "playground:serve": "node scripts/playground-serve.mjs",

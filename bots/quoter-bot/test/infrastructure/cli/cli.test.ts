@@ -71,15 +71,15 @@ const expectHumanFailure = (stderr: string[], message: string, details: unknown)
 }
 
 describe('Cli', () => {
-  test('quoter-bot --version returns 0.0.0', async () => {
-    expect(await cli().run(['--version'])).toBe('0.0.0')
+  test('morpho-quoter --version returns the dev placeholder on unbundled runs', async () => {
+    expect(await cli().run(['--version'])).toBe('0.0.0-dev')
   })
 
   test('entrypoint --version succeeds without loading runtime setup environment', async () => {
     const { exitCode, stdout, stderr } = await runEntrypointWith(['--version'])
 
     expect(exitCode).toBe(0)
-    expect(stdout.trim()).toBe('0.0.0')
+    expect(stdout.trim()).toBe('0.0.0-dev')
     expect(stderr).toBe('')
   })
 
@@ -87,7 +87,7 @@ describe('Cli', () => {
     const { exitCode, stdout, stderr } = await runEntrypointWith(['--json', '--version'])
 
     expect(exitCode).toBe(0)
-    expect(JSON.parse(stdout)).toBe('0.0.0')
+    expect(JSON.parse(stdout)).toBe('0.0.0-dev')
     expect(stderr).toBe('')
   })
 
@@ -133,8 +133,8 @@ describe('Cli', () => {
     for (const marker of markers) expect(output).not.toContain(marker)
   })
 
-  test('quoter-bot -v is an alias for --version', async () => {
-    expect(await cli().run(['-v'])).toBe('0.0.0')
+  test('morpho-quoter -v is an alias for --version', async () => {
+    expect(await cli().run(['-v'])).toBe('0.0.0-dev')
   })
 
   test('rejects an unknown command', async () => {
@@ -146,7 +146,7 @@ describe('Cli', () => {
     expect(error).toEqual(
       expect.objectContaining({ name: 'CliUsageError', code: 'INVALID_USAGE', kind: 'usage' })
     )
-    expect((error as Error).message).toBe('Invalid command-line usage')
+    expect((error as Error).message).toBe('Invalid command-line usage; rerun with --help for usage')
     expect(error).not.toHaveProperty('cause')
     expect(error).not.toHaveProperty('command')
   })
@@ -161,7 +161,7 @@ describe('Cli', () => {
       code: 'INVALID_USAGE',
       kind: 'usage'
     })
-    expect((error as Error).message).toBe('Invalid command-line usage')
+    expect((error as Error).message).toBe('Invalid command-line usage; rerun with --help for usage')
     expect(error).not.toHaveProperty('cause')
     expect(error).not.toHaveProperty('command')
   })
@@ -188,7 +188,7 @@ describe('Cli', () => {
     const { exitCode, output } = await runEntrypoint(argv)
 
     expect(exitCode).toBe(1)
-    expect(output.trim()).toBe('Error: Invalid command-line usage')
+    expect(output.trim()).toBe('Error: Invalid command-line usage; rerun with --help for usage')
     for (const marker of markers) expect(output).not.toContain(marker)
   })
 
@@ -985,7 +985,7 @@ describe('Cli', () => {
     const { exitCode, output } = await runEntrypoint(['invalidate', '--', '--json'])
 
     expect(exitCode).toBe(1)
-    expect(output.trim()).toBe('Error: Invalid command-line usage')
+    expect(output.trim()).toBe('Error: Invalid command-line usage; rerun with --help for usage')
   })
 
   test('entrypoint emits a halted report and returns a non-zero exit code', async () => {

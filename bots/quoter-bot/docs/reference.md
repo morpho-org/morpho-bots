@@ -285,8 +285,9 @@ Configuration can come from environment variables, a YAML file, or both. YAML fi
 1. `--config <path>` selects that exact `.yaml` or `.yml` file. Other path extensions and a missing,
    unreadable, empty, oversized, malformed, symlinked, or non-regular explicitly named file fail
    startup. Default-discovered symlinks are rejected as unreadable too.
-2. Without `--config`, the CLI searches the process working directory from which `quoter-bot` was invoked.
-   It checks `quoter-bot.yaml` first, then `quoter-bot.yml`. If both exist, `.yaml` wins.
+2. Without `--config`, the CLI searches the process working directory from which `morpho-quoter`
+   was invoked. It checks `quoter-bot.yaml` first, then `quoter-bot.yml`. If both exist, `.yaml`
+   wins.
 3. If neither default file exists, environment-only startup remains supported.
 4. Every supplied environment variable overrides the corresponding YAML value. CLI signer flags
    override environment and YAML signer selection. A higher-precedence signer selection discards
@@ -502,14 +503,14 @@ ladder:
     targetRate: { strategy: 'hardcoded', hardcodedRateBps: '400' }
 ```
 
-`quoter-bot setup-check --monitor` repeats non-overlapping read-only readiness observations every minute
-until its shutdown signal or the first failed report after transient-provider retry tolerance.
-`quoter-bot bootstrap` first runs the same one-shot readiness gate as `setup-check`, then executes exactly
-one position-bootstrap cycle and prints its
-bigint-safe JSON result. `quoter-bot bootstrap --monitor` uses the same gate, repeats non-overlapping cycles
-every minute, and performs owned-group cleanup after its shutdown signal. `quoter-bot bootstrap --verbose`
-adds safe rate, offer, transaction-hash, configuration, and before/after position diagnostics to
-each result. `quoter-bot ladder --monitor` similarly repeats at the shortest configured ladder cadence,
+`morpho-quoter setup-check --monitor` repeats non-overlapping read-only readiness observations every
+minute until its shutdown signal or the first failed report after transient-provider retry tolerance.
+`morpho-quoter bootstrap` first runs the same one-shot readiness gate as `setup-check`, then executes
+exactly one position-bootstrap cycle and prints its
+bigint-safe JSON result. `morpho-quoter bootstrap --monitor` uses the same gate, repeats non-overlapping
+cycles every minute, and performs owned-group cleanup after its shutdown signal.
+`morpho-quoter bootstrap --verbose` adds safe rate, offer, transaction-hash, configuration, and
+before/after position diagnostics to each result. `morpho-quoter ladder --monitor` similarly repeats at the shortest configured ladder cadence,
 streams cycles, and cleans active owned ladder groups after shutdown; `--verbose` adds safe
 configuration, rate, quote, transaction-hash, and before/after capacity diagnostics. Version output,
 setup monitoring, and invalid usage never start either writer.
