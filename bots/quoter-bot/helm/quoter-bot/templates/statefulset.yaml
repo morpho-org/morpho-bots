@@ -7,11 +7,14 @@ metadata:
 spec:
   # The bot is a singleton writer: its nonce cursor, serialized mutation queue, and durable
   # offer-group ownership state are per-instance, so two replicas against one maker would race
-  # nonces and fight over the offer book. A StatefulSet enforces at-most-one across every
-  # replacement path — rollouts, manual pod deletion, and eviction — because it never creates
-  # the replacement pod until the old one is confirmed fully terminated, which matters during
-  # the deliberately long SIGTERM offer-cleanup drain. A Deployment (even with Recreate) only
-  # guarantees termination-before-creation for template rollouts.
+  # nonces and fight over the offer book. A StatefulSet enforces at-most-one across rollouts,
+  # graceful pod deletion, and eviction, because it never creates the replacement pod until the
+  # old one is confirmed fully terminated — which matters during the deliberately long SIGTERM
+  # offer-cleanup drain. A Deployment (even with Recreate) only guarantees that for rollouts.
+  # Kubernetes documents one escape hatch that breaks this guarantee: force deletion
+  # (kubectl delete pod --force --grace-period=0, or force-deleting a partitioned Node). The
+  # bot deliberately has no Kubernetes API access or external writer lock, so never force
+  # delete; fence a failed node before letting the controller replace the pod.
   replicas: 1
   serviceName: {{ include "quoter-bot.fullname" . }}
   selector:
@@ -42,8 +45,10 @@ spec:
         {{- end }}
         {{- include "quoter-bot.selectorLabels" . | nindent 8 }}
     spec:
-      # The bot never talks to the Kubernetes API.
+      # The bot never talks to the Kubernetes API; cloud workload-identity webhooks (IRSA, EKS
+      # Pod Identity) inject their own projected tokens independently of this flag.
       automountServiceAccountToken: false
+      serviceAccountName: {{ include "quoter-bot.serviceAccountName" . | quote }}
       # SIGTERM shutdown serializes up to three receipt-bounded waits through the shared
       # operation queue — the in-flight cycle's transaction, then the bootstrap cleanup batch,
       # then the ladder cleanup batch — so when the chart-managed config declares
@@ -167,10 +172,11 @@ spec:
         - name: state
           {{- if and .Values.persistence.enabled .Values.persistence.existingClaim }}
           persistentVolumeClaim:
-            claimName: {{ .Values.persistence.existingClaim }}
+            # Quoted: a numeric-looking name must stay a YAML string.
+            claimName: {{ .Values.persistence.existingClaim | quote }}
           {{- else if .Values.persistence.enabled }}
           persistentVolumeClaim:
-            claimName: {{ include "quoter-bot.fullname" . }}-state
+            claimName: {{ printf "%s-state" (include "quoter-bot.fullname" .) | quote }}
           {{- else }}
           emptyDir: {}
           {{- end }}
@@ -179,7 +185,8 @@ spec:
         {{- if include "quoter-bot.hasConfigFile" . }}
         - name: config
           secret:
-            secretName: {{ include "quoter-bot.configSecretName" . }}
+            # Quoted: a numeric-looking name must stay a YAML string.
+            secretName: {{ include "quoter-bot.configSecretName" . | quote }}
         {{- end }}
         {{- with .Values.extraVolumes }}
         {{- toYaml . | nindent 8 }}

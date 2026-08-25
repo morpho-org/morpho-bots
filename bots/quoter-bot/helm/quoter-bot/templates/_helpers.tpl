@@ -32,10 +32,25 @@ app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
 app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- end }}
 
-{{/* Immutable selector labels shared by the Deployment selector and pod template. */}}
+{{/*
+Immutable selector labels shared by the StatefulSet selector and pod template. Deliberately
+derived from .Chart.Name and the release name — never nameOverride — because
+.spec.selector.matchLabels is immutable: an override change on an installed release would
+otherwise patch the pod template labels while the resource name stays put and the upgrade
+would be rejected.
+*/}}
 {{- define "quoter-bot.selectorLabels" -}}
-app.kubernetes.io/name: {{ include "quoter-bot.name" . }}
+app.kubernetes.io/name: {{ .Chart.Name }}
 app.kubernetes.io/instance: {{ .Release.Name }}
+{{- end }}
+
+{{/* Name of the ServiceAccount the pod runs as. */}}
+{{- define "quoter-bot.serviceAccountName" -}}
+{{- if .Values.serviceAccount.create }}
+{{- default (include "quoter-bot.fullname" .) .Values.serviceAccount.name }}
+{{- else }}
+{{- default "default" .Values.serviceAccount.name }}
+{{- end }}
 {{- end }}
 
 {{/* Resolved image reference; the tag falls back to the chart appVersion. */}}

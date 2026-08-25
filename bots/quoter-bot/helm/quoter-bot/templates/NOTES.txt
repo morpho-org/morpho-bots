@@ -24,8 +24,10 @@ Follow the JSON Lines log stream:
 
 Operational notes:
   - The bot is a singleton writer; the chart runs a one-replica StatefulSet so a replacement
-    pod is never created until the old one has fully terminated. Never scale it or run a
-    second release against the same maker.
+    pod is never created until the old one has fully terminated. Never scale it, never run a
+    second release against the same maker, and never force delete the pod or its Node
+    (kubectl delete --force / --grace-period=0) — force deletion is Kubernetes' documented
+    exception to StatefulSet at-most-one semantics. Fence a failed node before replacement.
   - Shutdown drains the in-flight cycle, then invalidates owned bootstrap and ladder groups
     serially, each wait bounded by the receipt timeout; the pod may legitimately take minutes
     to stop (the grace period budgets three receipt-bounded waits for a chart-managed config).

@@ -125,6 +125,55 @@ describe('quoter-bot Helm chart', () => {
     expect(statefulSet).not.toContain('.Values.podSecurityContext.fsGroup')
   })
 
+  it('pins selector identity to the chart name so overrides cannot break the selector', async () => {
+    const helpers = await readChartFile('templates/_helpers.tpl')
+    const selectorBlock = helpers.slice(
+      helpers.indexOf('define "quoter-bot.selectorLabels"'),
+      helpers.indexOf('define "quoter-bot.serviceAccountName"')
+    )
+
+    expect(selectorBlock).toContain('app.kubernetes.io/name: {{ .Chart.Name }}')
+    expect(selectorBlock).not.toContain('quoter-bot.name')
+  })
+
+  it('supports a dedicated service account for workload-identity signers', async () => {
+    const [statefulSet, serviceAccount, values] = await Promise.all([
+      readChartFile('templates/statefulset.yaml'),
+      readChartFile('templates/serviceaccount.yaml'),
+      readChartFile('values.yaml')
+    ])
+
+    expect(values).toContain('serviceAccount:\n  create: false')
+    expect(statefulSet).toContain(
+      'serviceAccountName: {{ include "quoter-bot.serviceAccountName" . | quote }}'
+    )
+    expect(statefulSet).toContain('automountServiceAccountToken: false')
+    expect(serviceAccount).toContain('{{- if .Values.serviceAccount.create }}')
+    expect(serviceAccount).toContain('automountServiceAccountToken: false')
+  })
+
+  it('quotes externally supplied resource names', async () => {
+    const statefulSet = await readChartFile('templates/statefulset.yaml')
+
+    expect(statefulSet).toContain(
+      'secretName: {{ include "quoter-bot.configSecretName" . | quote }}'
+    )
+    expect(statefulSet).toContain('claimName: {{ .Values.persistence.existingClaim | quote }}')
+    expect(statefulSet).toContain(
+      'claimName: {{ printf "%s-state" (include "quoter-bot.fullname" .) | quote }}'
+    )
+  })
+
+  it('documents the force-deletion exception to the singleton guarantee', async () => {
+    const [readme, notes] = await Promise.all([
+      readChartFile('README.md'),
+      readChartFile('templates/NOTES.txt')
+    ])
+
+    expect(readme).toContain('--grace-period=0')
+    expect(notes).toContain('--grace-period=0')
+  })
+
   it('renders custom pod annotations before the reserved config checksum', async () => {
     const statefulSet = await readChartFile('templates/statefulset.yaml')
     const customAnnotations = statefulSet.indexOf('{{- toYaml . | nindent 8 }}')

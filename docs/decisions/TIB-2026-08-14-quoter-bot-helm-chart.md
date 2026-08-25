@@ -85,7 +85,11 @@ StatefulSet pod template carries a `checksum/config` annotation that rolls the p
 precedence), so the chart's `env`/`envFrom` parameters are the intended carrier for
 `MAKER_PRIVATE_KEY` — or the keystore/AWS alternatives from
 [TIB-2026-08-12](./TIB-2026-08-12-quoter-bot-kms-signing-middleware.md) — and for the
-environment-only `BETTERSTACK_*` variables. Alternatively, `existingConfigSecret` keeps the whole
+environment-only `BETTERSTACK_*` variables. For the `aws` method under workload identity (IRSA,
+EKS Pod Identity), the `serviceAccount` values create and select a dedicated annotated
+ServiceAccount; the pod keeps `automountServiceAccountToken: false` because the credential
+webhooks inject their own projected tokens and the bot never calls the Kubernetes API.
+`XDG_STATE_HOME` is a reserved name filtered from custom `env` entries. Alternatively, `existingConfigSecret` keeps the whole
 file out of Helm values and release storage. Verified end to end: the chart-rendered Secret
 content was decoded and loaded through `ConfigService.load` in read-only and write mode, with the
 env-injected private key resolving to signing method `private-key`.
@@ -108,12 +112,16 @@ state files that would be rejected if `fsGroup` handling added group access.
 **Singleton semantics.** A StatefulSet hardcoding `replicas: 1`, using the chart-managed PVC as
 a plain volume rather than `volumeClaimTemplates`. The nonce cursor, serialized mutation queue,
 and durable offer-group ownership state are per-instance: two replicas against one maker would
-race nonces and fight over the offer book. Only a StatefulSet enforces at-most-one across every
-replacement path — it never creates the replacement pod until the old one is confirmed fully
-terminated, which matters when a pod is manually deleted or evicted during the deliberately long
-SIGTERM offer-cleanup drain. A Deployment with `strategy: Recreate` guarantees
-termination-before-creation only for template rollouts. The StatefulSet's required headless
-governing Service is portless (the bot exposes no ports).
+race nonces and fight over the offer book. Only a StatefulSet enforces at-most-one across the
+controller-managed replacement paths — it never creates the replacement pod until the old one is
+confirmed fully terminated, which matters when a pod is gracefully deleted or evicted during the
+deliberately long SIGTERM offer-cleanup drain. A Deployment with `strategy: Recreate` guarantees
+termination-before-creation only for template rollouts. Kubernetes documents one exception that
+no workload controller closes: force deletion (`kubectl delete pod --force --grace-period=0`, or
+force-deleting a partitioned Node) skips termination confirmation, and the bot deliberately has
+no Kubernetes API access or external writer lock — so "never force delete; fence failed nodes
+first" is an operator invariant documented in the chart README and install notes. The
+StatefulSet's required headless governing Service is portless (the bot exposes no ports).
 
 **State volume.** `XDG_STATE_HOME` always points at the mount (default `/state`). The PVC
 `<fullname>-state` carries `helm.sh/resource-policy: keep` by default (`persistence.retain`):

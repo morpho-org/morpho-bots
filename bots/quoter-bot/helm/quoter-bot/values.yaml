@@ -25,6 +25,18 @@ fullnameOverride: ''
 # `kubectl rollout restart statefulset/<release-name>` after the tag moves.
 forceRestartOnUpgrade: false
 
+# Dedicated ServiceAccount, primarily for workload-identity signers — with the `aws`
+# key-storage method under AWS IRSA or EKS Pod Identity, set create: true and the provider
+# annotation (for example eks.amazonaws.com/role-arn) so the pod carries the dedicated IAM
+# identity instead of the namespace default account. The pod keeps
+# automountServiceAccountToken: false: the bot never calls the Kubernetes API, and the cloud
+# credential webhooks inject their own projected token volumes regardless of that flag.
+serviceAccount:
+  create: false
+  # Existing account to use when create is false; empty selects the namespace default.
+  name: ''
+  annotations: {}
+
 # Entrypoint for the bot process. The chart deliberately bypasses the image's
 # railway-entrypoint.sh (which requires starting as root to chown the Railway volume) and runs
 # the bundle directly as the image's unprivileged `node` user; the init container below handles
