@@ -3,7 +3,7 @@ import type { MaturityPremiumInput, TargetRateInput } from './model'
 export type FieldDefinition = readonly [string, string, string, string]
 
 /** Slope preselected when an editor enables the linear maturity premium, in BPS per year. */
-export const DEFAULT_MATURITY_PREMIUM_PER_YEAR_BPS = '100'
+const DEFAULT_MATURITY_PREMIUM_PER_YEAR_BPS = '100'
 
 /**
  * Filters an editor's field definitions down to the rows valid for one market item.

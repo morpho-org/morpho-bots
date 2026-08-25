@@ -327,8 +327,20 @@ export const bootstrapConfigsValue = (
     try {
       validateBootstrapConfig(config)
       if (config.targetRate.strategy === 'hardcoded') {
+        // A maturity premium moves the requested rate along [base, base + cap] (uncapped: no upper
+        // end), so load-time rejection is reserved for rates pinned outside the bounds at every
+        // possible maturity; a transiently clamped rate is documented runtime behavior.
         const requestedRateBps = config.targetRate.hardcodedRateBps + config.premiumBps
-        if (requestedRateBps < config.minimumRateBps) {
+        const highestRequestedRateBps =
+          config.maturityPremium === undefined
+            ? requestedRateBps
+            : config.maturityPremium.maximumPremiumBps === undefined
+              ? undefined
+              : requestedRateBps + config.maturityPremium.maximumPremiumBps
+        if (
+          highestRequestedRateBps !== undefined &&
+          highestRequestedRateBps < config.minimumRateBps
+        ) {
           throw new BootstrapConfigurationError(
             'requestedRateBps',
             'must be at least minimumRateBps'
