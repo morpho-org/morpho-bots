@@ -226,7 +226,7 @@ describe('quoter-bot Helm chart', () => {
       `{{- printf "%s-config" (include "quoter-bot.fullname" . | trunc 56 | trimSuffix "-") }}`
     )
     expect(helpers).toContain(
-      `{{- printf "%s-quoter-bot-fullname" (.Release.Name | trunc 43 | trimSuffix "-") }}`
+      `{{- printf "%s-%s-quoter-bot-fullname" (.Release.Name | trunc 34 | trimSuffix "-") (sha256sum .Release.Name | trunc 8) }}`
     )
   })
 

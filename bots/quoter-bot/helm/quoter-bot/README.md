@@ -208,7 +208,7 @@ files over `--set` for the `config` block for the same reason.
   name before deleting the old one and would briefly run two writers. To rename: run
   `helm uninstall --wait` with `--timeout` beyond `terminationGracePeriodSeconds` — a plain
   uninstall returns while the old pod is still draining — confirm the pod is gone
-  (`kubectl wait --for=delete pod/<old-fullname>-0 --timeout=30m`), then reinstall, keeping
+  (`kubectl --namespace <release-namespace> wait --for=delete pod/<old-fullname>-0 --timeout=30m`), then reinstall, keeping
   your `persistence.existingClaim` unchanged if you configured one, or setting it to the kept
   `<old-fullname>-state` claim for a chart-created claim, so durable offer-group ownership
   survives the migration. The portless headless Service exists solely to govern the

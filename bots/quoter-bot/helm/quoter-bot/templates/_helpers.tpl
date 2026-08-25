@@ -72,12 +72,11 @@ State-claim name, bounded to the 63-character DNS label limit: the base is trunc
 
 {{/*
 Name of the release-name-keyed ConfigMap pinning the installed fullname. Bounded to the
-63-character DNS label limit: the release name is truncated so the suffix always fits (releases
-sharing the first 43 characters within one namespace would share this pin, which the guard
-tolerates only when their fullnames also match).
+63-character DNS label limit, with an 8-character hash of the complete release name keeping the
+pin unique even when long release names share their truncated prefix.
 */}}
 {{- define "quoter-bot.releaseFullnameConfigMapName" -}}
-{{- printf "%s-quoter-bot-fullname" (.Release.Name | trunc 43 | trimSuffix "-") }}
+{{- printf "%s-%s-quoter-bot-fullname" (.Release.Name | trunc 34 | trimSuffix "-") (sha256sum .Release.Name | trunc 8) }}
 {{- end }}
 
 {{/* Whether any configuration file is mounted and passed through --config. */}}
