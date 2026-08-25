@@ -42,7 +42,11 @@ jobs:
         uses: ./.github/actions/setup
 
       - name: Install Foundry (includes anvil)
-        uses: foundry-rs/foundry-toolchain@8789b3e21e6c11b2697f5eb56eddae542f746c10 # v1
+        # v1.9.1 pins the foundryup installer to a fixed foundry-rs/foundryup commit and executes
+        # the installed foundryup natively; older releases ran `bash foundryup`, which broke
+        # repo-wide on 2026-08-25 once the live installer began shipping foundryup as a compiled
+        # binary ("cannot execute binary file").
+        uses: foundry-rs/foundry-toolchain@908c540300062bd5a7e473851cdb4282204cee09 # v1.9.1
         with:
           # anvil 1.4.4 rejects same-nonce EIP-1559 replacements ("nonce lower than current"), which
           # breaks the pending-queue bump/replace fork test (real nodes + anvil >=1.5 accept them).
