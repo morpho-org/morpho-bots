@@ -118,12 +118,13 @@ check fails loud with the bootstrap instructions instead of dying inside the OID
   completes as a no-op. Bumping `bots/quoter-bot/package.json#version` in the release PR is what
   opts a release into an npm publish — versions are deliberate semver, not derived from the CalVer
   release tags.
-- _`latest` only moves forward:_ npm resolves bare installs from `latest` and never orders
-  dist-tags itself, so prereleases publish under `next`, a commit with a newer descendant release
-  tag publishes under `backfill` (a rerun backfilling an older release), and a stable version must
-  additionally be semver-greater than the registry's current `latest` to take the tag — mirroring
-  the Docker Hub latest gate. (`npm publish` always assigns a dist-tag, so skipping the tag — the
-  Docker Hub behavior — is not an option; `next`/`backfill` are the npm equivalent.)
+- _Dist-tags only move forward:_ npm resolves installs from dist-tags and never orders them
+  itself, so a commit with a newer descendant release tag publishes under `backfill` (a rerun
+  backfilling an older release, stable or prerelease), remaining prereleases publish under `next`,
+  and a stable version must additionally be semver-greater than the registry's current `latest` to
+  take that tag — mirroring the Docker Hub latest gate. (`npm publish` always assigns a dist-tag,
+  so skipping the tag — the Docker Hub behavior — is not an option; `next`/`backfill` are the npm
+  equivalent.)
 
 ## Considered Alternatives
 

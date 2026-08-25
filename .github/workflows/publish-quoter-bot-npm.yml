@@ -234,13 +234,13 @@ jobs:
           fi
           echo "exists=false" >> "$GITHUB_OUTPUT"
 
-      # `latest` must only move forward, because npm resolves bare installs from it and never
-      # orders dist-tags itself. Three gates: prereleases always publish under `next`; when another
-      # quoter-bot release tag descends from the built commit a newer release already shipped, so a
-      # rerun backfills without touching `latest`; and the candidate must be semver-greater than
-      # the registry's current `latest` (fail closed on lookup failure). Release tags are cut by
-      # deploy-production.yml, whose concurrency group serializes release runs, so the newest
-      # release cannot change mid-run.
+      # `latest` and `next` must only move forward, because npm resolves installs from dist-tags
+      # and never orders them itself. Three gates, in order: when another quoter-bot release tag
+      # descends from the built commit a newer release already shipped, so the rerun — stable or
+      # prerelease — backfills without touching either tag; remaining prereleases publish under
+      # `next`; and a stable candidate must be semver-greater than the registry's current `latest`
+      # (fail closed on lookup failure). Release tags are cut by deploy-production.yml, whose
+      # concurrency group serializes release runs, so the newest release cannot change mid-run.
       - name: Gate the latest tag
         if: ${{ steps.release.outputs.release == 'true' && steps.registry.outputs.exists != 'true' }}
         id: tags
@@ -248,13 +248,9 @@ jobs:
           VERSION: ${{ steps.staged.outputs.version }}
         run: |
           set -euo pipefail
-          case "$VERSION" in
-            *-*)
-              echo "::notice::${VERSION} is a prerelease; publishing under the next dist-tag"
-              echo "dist_tag=next" >> "$GITHUB_OUTPUT"
-              exit 0
-              ;;
-          esac
+          # Historical reruns are classified first so neither `latest` nor `next` can move
+          # backward: when any release tag descends from this commit, a newer release already
+          # shipped, and the recovered version — stable or prerelease — publishes under `backfill`.
           commit="$(git rev-parse HEAD)"
           newer=''
           for tag in $(git tag --list 'quoter-bot-*'); do
@@ -270,6 +266,13 @@ jobs:
             echo "dist_tag=backfill" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+          case "$VERSION" in
+            *-*)
+              echo "::notice::${VERSION} is a prerelease; publishing under the next dist-tag"
+              echo "dist_tag=next" >> "$GITHUB_OUTPUT"
+              exit 0
+              ;;
+          esac
           if ! current_latest="$(npm view '@morpho-org/quoter' dist-tags.latest 2>/dev/null)"; then
             echo '::error::could not read the registry current latest dist-tag; rerun after checking registry status'
             exit 1

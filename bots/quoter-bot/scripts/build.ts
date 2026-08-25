@@ -12,8 +12,11 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const DIST_DIR = join(ROOT, 'dist')
 rmSync(DIST_DIR, { recursive: true, force: true })
 
-const manifest = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')) as {
-  version?: string
+let manifest: { version?: string }
+try {
+  manifest = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')) as { version?: string }
+} catch {
+  throw new BundleFailedError('package.json could not be read or parsed for version stamping')
 }
 
 try {
