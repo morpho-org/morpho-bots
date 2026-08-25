@@ -68,16 +68,51 @@ describe('quoter-bot Helm chart', () => {
     expect(service).not.toContain('ports:')
   })
 
-  it('floors the grace period at five receipt-bounded waits plus a drain buffer', async () => {
+  it('derives the grace floor from the configured group counts', async () => {
     const [statefulSet, values] = await Promise.all([
       readChartFile('templates/statefulset.yaml'),
       readChartFile('values.yaml')
     ])
 
     expect(statefulSet).toContain('dig "setup" "transactionReceiptTimeoutMs" 180000 .Values.config')
-    expect(statefulSet).toContain('add (mul (div $receiptMs 1000) 5) 120')
+    expect(statefulSet).toContain('{{- range (dig "bootstrap" (list) .Values.config) }}')
+    expect(statefulSet).toContain('{{- range (dig "ladder" (list) .Values.config) }}')
+    expect(statefulSet).toContain('{{- $groups = mul 2 (int (dig "rungCount" 1 .)) }}')
+    expect(statefulSet).toContain(
+      '{{- $waits := add 2 $bootstrapCount $ladderMaxGroups $ladderTotalGroups }}'
+    )
+    expect(statefulSet).toContain('{{- if lt $waits 5 }}{{- $waits = 5 }}{{- end }}')
+    expect(statefulSet).toContain('add (mul (div $receiptMs 1000) $waits) 120')
     expect(statefulSet).toContain('terminationGracePeriodSeconds: {{ $grace }}')
     expect(values).toContain('terminationGracePeriodSeconds: 1020')
+  })
+
+  it('reuses a kept state claim instead of re-creating it', async () => {
+    const pvc = await readChartFile('templates/pvc.yaml')
+
+    expect(pvc).toContain(
+      'lookup "v1" "PersistentVolumeClaim" .Release.Namespace (include "quoter-bot.stateClaimName" .)'
+    )
+    expect(pvc).toContain('(not $existingState)')
+  })
+
+  it('pins scheduling to the published image architecture', async () => {
+    const [statefulSet, values] = await Promise.all([
+      readChartFile('templates/statefulset.yaml'),
+      readChartFile('values.yaml')
+    ])
+
+    expect(values).toContain('architecture: amd64')
+    expect(statefulSet).toContain('omit $nodeSelector "kubernetes.io/arch"')
+    expect(statefulSet).toContain('kubernetes.io/arch: {{ . | quote }}')
+  })
+
+  it('rolls the pod when chart-managed service-account annotations change', async () => {
+    const statefulSet = await readChartFile('templates/statefulset.yaml')
+
+    expect(statefulSet).toContain(
+      'checksum/serviceaccount: {{ .Values.serviceAccount.annotations | toYaml | sha256sum }}'
+    )
   })
 
   it('rejects upgrades that would rename the installed singleton', async () => {

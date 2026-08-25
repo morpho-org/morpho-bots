@@ -13,6 +13,10 @@ image:
   # `Always` is the safe default while the tag is `latest`; switch to `IfNotPresent` when
   # pinning an immutable commit tag.
   pullPolicy: Always
+  # The published image is amd64-only, so the pod is pinned to amd64 nodes through a
+  # kubernetes.io/arch nodeSelector entry (reserved against custom nodeSelector values). Clear
+  # this only once a multi-architecture image exists.
+  architecture: amd64
 
 imagePullSecrets: []
 nameOverride: ''
@@ -31,6 +35,9 @@ forceRestartOnUpgrade: false
 # identity instead of the namespace default account. The pod keeps
 # automountServiceAccountToken: false: the bot never calls the Kubernetes API, and the cloud
 # credential webhooks inject their own projected token volumes regardless of that flag.
+# Changing these annotations rolls the pod through a checksum (identity webhooks act at pod
+# admission); annotation changes on an externally managed account require a manual
+# `kubectl rollout restart`.
 serviceAccount:
   create: false
   # Existing account to use when create is false; empty selects the namespace default.
@@ -189,17 +196,17 @@ resources: {}
 #     memory: 512Mi
 
 # SIGTERM lets the in-flight cycle finish, then invalidates owned bootstrap and ladder offer
-# groups through the shared serialized operation queue — up to five receipt-bounded waits
-# (an in-flight old-group cancellation, a Setter ratification approval, the in-flight
-# replacement publication, then the bootstrap and ladder cleanup batches), each bounded by
-# setup.transactionReceiptTimeoutMs, plus one more wait per additional owned group. Kubernetes'
-# 30-second default would SIGKILL mid-cleanup and leave owned offers on the book. The default
-# covers five waits at the bot's default 180 s timeout, and for a chart-managed `config` the
-# rendered value is automatically floored to five receipt timeouts (the declared
-# setup.transactionReceiptTimeoutMs, or the bot's 180 s default when undeclared) plus a
-# two-minute drain buffer. Size this explicitly for many owned groups (multi-market or high
-# rung counts), or when the timeout comes from environment overrides or an
-# existingConfigSecret.
+# groups through the shared serialized operation queue; every wait is bounded by
+# setup.transactionReceiptTimeoutMs, and an in-flight ladder replacement cancels each of one
+# market's groups serially before awaiting the Setter ratification and publication. Kubernetes'
+# 30-second default would SIGKILL mid-cleanup and leave owned offers on the book. For a
+# chart-managed `config` the rendered value is automatically floored to a wait count derived
+# from the configured workload — 2 (ratify + publish) + one per bootstrap market + the largest
+# ladder market's group count + the total ladder group count, with shared-rung markets
+# contributing two groups per rung and per-book markets two — times the receipt timeout (the
+# declared value, or the bot's 180 s default), plus a two-minute drain buffer. Size this
+# explicitly when the market lists or timeout come from environment overrides or an
+# existingConfigSecret, which the template cannot see.
 terminationGracePeriodSeconds: 1020
 
 podAnnotations: {}

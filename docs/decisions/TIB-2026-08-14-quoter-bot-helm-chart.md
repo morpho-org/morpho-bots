@@ -139,14 +139,17 @@ an operator invalidates or adopts them. A reinstall under the same release name 
 re-adopts the kept claim.
 
 **Shutdown budget.** `terminationGracePeriodSeconds` defaults to 1020. SIGTERM shutdown
-serializes up to five receipt-bounded waits through the shared operation queue — an in-flight
-cycle's old-group cancellation, its Setter ratification approval, its replacement publication,
-then the bootstrap cleanup batch and the ladder cleanup batch — each bounded by
-`TRANSACTION_RECEIPT_TIMEOUT_MS` (default 180 s, supported up to 900 s), and every additional
-owned or replaced group adds another bounded wait. Kubernetes' 30-second default would SIGKILL
-mid-cleanup and leave owned offers on the book. For a chart-managed config the template floors
-the rendered grace period at five receipt timeouts (the declared value, or the bot's 180 s
-default when undeclared) plus a two-minute drain buffer (900 s timeout → 4 620 s grace). The floor is not a guaranteed upper bound: many owned groups
+serializes receipt-bounded waits through the shared operation queue: an in-flight ladder
+replacement cancels each of one market's old groups serially, awaits a Setter ratification
+approval and the replacement publication, and cleanup then invalidates every owned bootstrap
+and ladder group — each wait bounded by `TRANSACTION_RECEIPT_TIMEOUT_MS` (default 180 s,
+supported up to 900 s). Kubernetes' 30-second default would SIGKILL mid-cleanup and leave owned
+offers on the book. For a chart-managed config the template derives the wait count from the
+configured workload — 2 (ratify + publish) + one per bootstrap market + the largest ladder
+market's group count + the total ladder group count, where shared-rung markets contribute two
+groups per rung and per-book markets two — and floors the rendered grace period at that many
+receipt timeouts (declared, or the bot's 180 s default) plus a two-minute drain buffer; the
+quickstart configuration renders 2 820 s. The floor is not a guaranteed upper bound: many owned groups
 (multi-market, high rung counts) multiply the waits, and timeouts supplied through environment
 overrides or `existingConfigSecret` are invisible to the template — both cases are documented in
 `values.yaml` and the chart README as the operator's explicit sizing responsibility.
@@ -217,6 +220,13 @@ container starts, without changing restored state-file modes.
 - The rendered configuration lives in a Secret, but Helm release storage still holds the values
   it came from; `existingConfigSecret` keeps the file out of Helm entirely, and the env-injected
   signer keeps the key out of both the values and the rendered Secret.
+- The published `morphoorg/quoter` image is amd64-only (the Docker Hub workflow builds without
+  a `platforms` matrix), so `image.architecture: amd64` pins scheduling through a reserved
+  `kubernetes.io/arch` nodeSelector entry until a multi-architecture image exists.
+- A kept state claim survives uninstall unmanaged; the PVC template suppresses re-rendering
+  when a name-scoped lookup finds the orphan, so same-name reinstalls mount it instead of
+  colliding, and chart-managed `serviceAccount.annotations` changes roll the pod through a
+  checksum because identity webhooks act at pod admission.
 - Default pod posture: non-root uid 1000, seccomp `RuntimeDefault`, no privilege escalation, all
   capabilities dropped, read-only root filesystem, no service-account token. The chown-only
   `volumePermissions` init container is the only root surface and exits before the bot starts;

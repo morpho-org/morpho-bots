@@ -40,7 +40,8 @@ spec:
     metadata:
       {{- $chartManagedConfig := and .Values.config (not .Values.existingConfigSecret) }}
       {{- $podAnnotations := omit .Values.podAnnotations "checksum/config" }}
-      {{- if or $chartManagedConfig $podAnnotations .Values.forceRestartOnUpgrade }}
+      {{- $saAnnotations := and .Values.serviceAccount.create .Values.serviceAccount.annotations }}
+      {{- if or $chartManagedConfig $podAnnotations .Values.forceRestartOnUpgrade $saAnnotations }}
       annotations:
         {{- with $podAnnotations }}
         {{- toYaml . | nindent 8 }}
@@ -48,6 +49,11 @@ spec:
         {{- if .Values.forceRestartOnUpgrade }}
         # Changes on every upgrade so a moved image tag (e.g. `latest`) is re-pulled.
         quoter-bot.morpho.org/restarted-at: {{ now | date "2006-01-02T15:04:05Z07:00" | quote }}
+        {{- end }}
+        {{- if and .Values.serviceAccount.create .Values.serviceAccount.annotations }}
+        # Workload-identity webhooks (IRSA, EKS Pod Identity) act at pod admission, so an
+        # annotation change on the chart-managed ServiceAccount must roll the pod.
+        checksum/serviceaccount: {{ .Values.serviceAccount.annotations | toYaml | sha256sum }}
         {{- end }}
         {{- if $chartManagedConfig }}
         # Configuration is read once at startup and the file is mounted through subPath, so a
@@ -65,21 +71,41 @@ spec:
       # Pod Identity) inject their own projected tokens independently of this flag.
       automountServiceAccountToken: false
       serviceAccountName: {{ include "quoter-bot.serviceAccountName" . | quote }}
-      # SIGTERM shutdown serializes up to five receipt-bounded waits through the shared
-      # operation queue — the in-flight cycle can await an old-group cancellation, a Setter
-      # ratification approval, and the replacement publication before the bootstrap cleanup
-      # batch and the ladder cleanup batch run — so for a chart-managed config the grace
-      # period is floored to five receipt timeouts (the declared
+      # SIGTERM shutdown serializes receipt-bounded waits through the shared operation queue:
+      # an in-flight ladder replacement can cancel every old group of one market serially,
+      # await a Setter ratification approval and the replacement publication, and cleanup then
+      # invalidates every owned bootstrap and ladder group. For a chart-managed config the
+      # wait count is derived from the configured workload — 2 (ratify + publish) + one per
+      # bootstrap market + the largest single ladder market's group count (in-flight
+      # cancellations) + the total ladder group count (cleanup), where shared-rung markets
+      # contribute two groups per rung and per-book markets two groups — and the grace period
+      # is floored to that many receipt timeouts (the declared
       # setup.transactionReceiptTimeoutMs, or the bot's 180 s default when undeclared) plus a
-      # two-minute drain buffer. Each additional owned or replaced group adds another bounded
-      # wait, and environment-supplied or existingConfigSecret timeouts are invisible here:
-      # size terminationGracePeriodSeconds explicitly for those workloads.
+      # two-minute drain buffer. Environment-supplied or existingConfigSecret timeouts and
+      # market lists are invisible here: size terminationGracePeriodSeconds explicitly for
+      # those workloads.
       {{- $receiptMs := 0 }}
+      {{- $bootstrapCount := 0 }}
+      {{- $ladderTotalGroups := 0 }}
+      {{- $ladderMaxGroups := 0 }}
       {{- if and .Values.config (not .Values.existingConfigSecret) }}
       {{- $receiptMs = int (dig "setup" "transactionReceiptTimeoutMs" 180000 .Values.config) }}
+      {{- range (dig "bootstrap" (list) .Values.config) }}
+      {{- $bootstrapCount = add1 $bootstrapCount }}
       {{- end }}
+      {{- range (dig "ladder" (list) .Values.config) }}
+      {{- $groups := 2 }}
+      {{- if ne (dig "groupMode" "shared-rung" . | toString) "per-book" }}
+      {{- $groups = mul 2 (int (dig "rungCount" 1 .)) }}
+      {{- end }}
+      {{- $ladderTotalGroups = add $ladderTotalGroups $groups }}
+      {{- if gt $groups $ladderMaxGroups }}{{- $ladderMaxGroups = $groups }}{{- end }}
+      {{- end }}
+      {{- end }}
+      {{- $waits := add 2 $bootstrapCount $ladderMaxGroups $ladderTotalGroups }}
+      {{- if lt $waits 5 }}{{- $waits = 5 }}{{- end }}
       {{- $grace := int .Values.terminationGracePeriodSeconds }}
-      {{- $graceFloor := add (mul (div $receiptMs 1000) 5) 120 }}
+      {{- $graceFloor := add (mul (div $receiptMs 1000) $waits) 120 }}
       {{- if and (gt $receiptMs 0) (lt $grace $graceFloor) }}
       {{- $grace = $graceFloor }}
       {{- end }}
@@ -210,9 +236,20 @@ spec:
         {{- with .Values.extraVolumes }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
-      {{- with .Values.nodeSelector }}
+      {{- $nodeSelector := .Values.nodeSelector }}
+      {{- if .Values.image.architecture }}
+      {{- $nodeSelector = omit $nodeSelector "kubernetes.io/arch" }}
+      {{- end }}
+      {{- if or $nodeSelector .Values.image.architecture }}
       nodeSelector:
+        {{- with $nodeSelector }}
         {{- toYaml . | nindent 8 }}
+        {{- end }}
+        {{- with .Values.image.architecture }}
+        # The published morphoorg/quoter image is amd64-only; clear image.architecture only
+        # once a multi-architecture image exists.
+        kubernetes.io/arch: {{ . | quote }}
+        {{- end }}
       {{- end }}
       {{- with .Values.affinity }}
       affinity:
