@@ -201,16 +201,17 @@ resources: {}
 
 # SIGTERM lets the in-flight cycle finish, then invalidates owned bootstrap and ladder offer
 # groups through the shared serialized operation queue; every wait is bounded by
-# setup.transactionReceiptTimeoutMs, and an in-flight ladder replacement cancels each of one
-# market's groups serially before awaiting the Setter ratification and publication. Kubernetes'
-# 30-second default would SIGKILL mid-cleanup and leave owned offers on the book. For a
-# chart-managed `config` the rendered value is automatically floored to a wait count derived
-# from the configured workload — 2 (ratify + publish) + one per bootstrap market + the largest
-# ladder market's group count + the total ladder group count, with shared-rung markets
-# contributing two groups per rung and per-book markets two — times the receipt timeout (the
-# declared value, or the bot's 180 s default), plus a two-minute drain buffer. Size this
-# explicitly when the market lists or timeout come from environment overrides or an
-# existingConfigSecret, which the template cannot see.
+# setup.transactionReceiptTimeoutMs, and an in-flight cycle continues serially through every
+# configured market before cleanup runs. Kubernetes' 30-second default would SIGKILL
+# mid-cleanup and leave owned offers on the book. For a chart-managed `config` the rendered
+# value is automatically floored to a wait count derived from the configured workload — three
+# per bootstrap market (cancellation, Setter ratification, publication) + two per ladder
+# market (ratification, publication) + the total ladder group count (in-flight cancellations;
+# shared-rung markets contribute two groups per rung, per-book markets two) + two cleanup
+# batches — times the receipt timeout rounded up to whole seconds (the declared value, or the
+# bot's 180 s default), plus a two-minute drain buffer. Apply the same formula yourself when
+# the market lists or timeout come from environment overrides or an existingConfigSecret,
+# which the template cannot see.
 terminationGracePeriodSeconds: 1020
 
 podAnnotations: {}

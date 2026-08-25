@@ -345,8 +345,10 @@ pod is never created until the old one has fully terminated, across rollouts, ma
 and eviction alike. It mounts a persistent volume at `/state` for durable offer-group ownership
 state (kept on uninstall by default), runs the bundle directly as the image's unprivileged
 `node` user instead of the root-only Railway entrypoint, and sizes the termination grace period
-(1020 seconds by default, automatically floored to five chart-managed receipt timeouts plus a
-drain buffer) so shutdown cleanup can invalidate owned groups and wait for receipts. An upgrade that
+(1020 seconds by default, automatically floored for a chart-managed configuration to one
+receipt timeout per serialized shutdown wait — three per bootstrap market, two per ladder
+market, one per ladder group, and two cleanup batches — plus a drain buffer) so shutdown
+cleanup can invalidate owned groups and wait for receipts. An upgrade that
 changes `config` rolls the pod automatically. See the
 [chart README](./helm/quoter-bot/README.md) for the full parameter reference, a complete values
 example, and secret-handling options.

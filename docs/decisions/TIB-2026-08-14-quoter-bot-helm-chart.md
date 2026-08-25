@@ -145,11 +145,12 @@ approval and the replacement publication, and cleanup then invalidates every own
 and ladder group — each wait bounded by `TRANSACTION_RECEIPT_TIMEOUT_MS` (default 180 s,
 supported up to 900 s). Kubernetes' 30-second default would SIGKILL mid-cleanup and leave owned
 offers on the book. For a chart-managed config the template derives the wait count from the
-configured workload — 2 (ladder ratify + publish) + three per bootstrap market (cancellation,
-ratification, publication) + the largest ladder market's group count + the total ladder group
-count, where shared-rung markets contribute two groups per rung and per-book markets two — and
-floors the rendered grace period at that many receipt timeouts (declared, or the bot's 180 s
-default) plus a two-minute drain buffer; the quickstart configuration renders 3 180 s. The floor is not a guaranteed upper bound: many owned groups
+configured workload — three per bootstrap market (cancellation, Setter ratification,
+publication) + two per ladder market (ratification, publication) + the total ladder group count
+(in-flight cancellations; shared-rung markets contribute two groups per rung, per-book markets
+two) + two cleanup batches — and floors the rendered grace period at that many receipt timeouts
+(declared or the bot's 180 s default, rounded up to whole seconds) plus a two-minute drain
+buffer; the quickstart configuration renders 2 460 s. The floor is not a guaranteed upper bound: many owned groups
 (multi-market, high rung counts) multiply the waits, and timeouts supplied through environment
 overrides or `existingConfigSecret` are invisible to the template — both cases are documented in
 `values.yaml` and the chart README as the operator's explicit sizing responsibility.

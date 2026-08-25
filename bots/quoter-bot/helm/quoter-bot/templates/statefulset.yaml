@@ -72,15 +72,14 @@ spec:
       automountServiceAccountToken: false
       serviceAccountName: {{ include "quoter-bot.serviceAccountName" . | quote }}
       # SIGTERM shutdown serializes receipt-bounded waits through the shared operation queue:
-      # an in-flight ladder replacement can cancel every old group of one market serially,
-      # await a Setter ratification approval and the replacement publication, a bootstrap
-      # cycle continues serially through every planned market with up to a cancellation,
-      # ratification, and publication wait each, and cleanup then invalidates every owned
-      # bootstrap and ladder group. For a chart-managed config the wait count is derived from
-      # the configured workload — 2 (ladder ratify + publish) + three per bootstrap market +
-      # the largest single ladder market's group count (in-flight cancellations) + the total
-      # ladder group count (cleanup), where shared-rung markets contribute two groups per rung
-      # and per-book markets two groups — and the grace period
+      # an in-flight cycle continues serially through every configured market: each bootstrap
+      # market's replacement can await a cancellation, Setter ratification, and publication,
+      # and each ladder market's replacement can await all of its old-group cancellations plus
+      # its own ratification and publication, before the two shutdown cleanup batches run. For
+      # a chart-managed config the wait count is derived from the configured workload —
+      # three per bootstrap market + two per ladder market (ratify + publish) + the total
+      # ladder group count (in-flight cancellations; shared-rung markets contribute two groups
+      # per rung, per-book markets two groups) + two cleanup batches — and the grace period
       # is floored to that many receipt timeouts (the declared
       # setup.transactionReceiptTimeoutMs, or the bot's 180 s default when undeclared) plus a
       # two-minute drain buffer. Environment-supplied or existingConfigSecret timeouts and
@@ -88,26 +87,26 @@ spec:
       # those workloads.
       {{- $receiptMs := 0 }}
       {{- $bootstrapCount := 0 }}
+      {{- $ladderCount := 0 }}
       {{- $ladderTotalGroups := 0 }}
-      {{- $ladderMaxGroups := 0 }}
       {{- if and .Values.config (not .Values.existingConfigSecret) }}
       {{- $receiptMs = int (dig "setup" "transactionReceiptTimeoutMs" 180000 .Values.config) }}
       {{- range (dig "bootstrap" (list) .Values.config) }}
       {{- $bootstrapCount = add1 $bootstrapCount }}
       {{- end }}
       {{- range (dig "ladder" (list) .Values.config) }}
+      {{- $ladderCount = add1 $ladderCount }}
       {{- $groups := 2 }}
       {{- if ne (dig "groupMode" "shared-rung" . | toString) "per-book" }}
       {{- $groups = mul 2 (int (dig "rungCount" 1 .)) }}
       {{- end }}
       {{- $ladderTotalGroups = add $ladderTotalGroups $groups }}
-      {{- if gt $groups $ladderMaxGroups }}{{- $ladderMaxGroups = $groups }}{{- end }}
       {{- end }}
       {{- end }}
-      {{- $waits := add 2 (mul 3 $bootstrapCount) $ladderMaxGroups $ladderTotalGroups }}
+      {{- $waits := add (mul 3 $bootstrapCount) (mul 2 $ladderCount) $ladderTotalGroups 2 }}
       {{- if lt $waits 5 }}{{- $waits = 5 }}{{- end }}
       {{- $grace := int .Values.terminationGracePeriodSeconds }}
-      {{- $graceFloor := add (mul (div $receiptMs 1000) $waits) 120 }}
+      {{- $graceFloor := add (mul (div (add $receiptMs 999) 1000) $waits) 120 }}
       {{- if and (gt $receiptMs 0) (lt $grace $graceFloor) }}
       {{- $grace = $graceFloor }}
       {{- end }}

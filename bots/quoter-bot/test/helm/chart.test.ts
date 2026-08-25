@@ -79,10 +79,10 @@ describe('quoter-bot Helm chart', () => {
     expect(statefulSet).toContain('{{- range (dig "ladder" (list) .Values.config) }}')
     expect(statefulSet).toContain('{{- $groups = mul 2 (int (dig "rungCount" 1 .)) }}')
     expect(statefulSet).toContain(
-      '{{- $waits := add 2 (mul 3 $bootstrapCount) $ladderMaxGroups $ladderTotalGroups }}'
+      '{{- $waits := add (mul 3 $bootstrapCount) (mul 2 $ladderCount) $ladderTotalGroups 2 }}'
     )
     expect(statefulSet).toContain('{{- if lt $waits 5 }}{{- $waits = 5 }}{{- end }}')
-    expect(statefulSet).toContain('add (mul (div $receiptMs 1000) $waits) 120')
+    expect(statefulSet).toContain('add (mul (div (add $receiptMs 999) 1000) $waits) 120')
     expect(statefulSet).toContain('terminationGracePeriodSeconds: {{ $grace }}')
     expect(values).toContain('terminationGracePeriodSeconds: 1020')
   })
