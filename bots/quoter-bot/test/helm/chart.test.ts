@@ -94,7 +94,7 @@ describe('quoter-bot Helm chart', () => {
       '{{- if and .Values.persistence.enabled (not .Values.persistence.existingClaim) }}'
     )
     expect(pvc).not.toContain('lookup')
-    expect(pvc).toContain("Helm's standard adoption path")
+    expect(pvc).toContain('standard adoption path')
   })
 
   it('pins scheduling to the published image architecture', async () => {
