@@ -4,7 +4,8 @@ import { ORACLE_PRICE_SCALE, WAD } from '../constants'
 import { mulDivDown, mulDivUp, zeroFloorSub } from './math'
 
 /**
- * Maximum repaid units permitted by the pre-maturity Repayment Cap Factor.
+ * Maximum repaid units permitted by the normal-mode Repayment Cap Factor. Normal mode is gated on
+ * unhealthiness alone, so this applies before AND after maturity; only post-maturity mode waives it.
  * Mirrors midnight-contracts.txt:2378-2380.
  *
  * `badDebt` is the writeoff the contract subtracts from debt before sizing (:2347), so the cap is
@@ -13,7 +14,7 @@ import { mulDivDown, mulDivUp, zeroFloorSub } from './math'
  * positive for every allowed `lltv < WAD` because `maxLif` is derived so that `maxLif·lltv < WAD²`
  * (:997, :2487), and `lif <= maxLif`.
  */
-export function maxRepaidPreMaturity({
+export function maxRepaidNormalMode({
   debt,
   badDebt,
   maxDebt,

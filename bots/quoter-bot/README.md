@@ -7,6 +7,34 @@ every intended action before enabling signing.
 See [Architecture](./docs/architecture.md) for the contributor-facing package design and code
 structure.
 
+## Install from npm
+
+The bot ships on npm as [`@morpho-org/quoter`](https://www.npmjs.com/package/@morpho-org/quoter):
+one self-contained, dependency-free bundle installing the `morpho-quoter` command. It requires
+Node.js 24.14.1 or newer.
+
+```sh
+npm install -g @morpho-org/quoter
+```
+
+```sh
+# Read-only readiness checks against the configured maker address (no key required).
+morpho-quoter --readonly setup-check
+
+# Inspect every intended ladder action without signing or submitting anything.
+morpho-quoter --readonly ladder --monitor --verbose
+
+# Run setup checks, position bootstrap, and ladder monitoring together until SIGINT/SIGTERM.
+morpho-quoter start --verbose
+```
+
+Configuration is identical in every distribution: the CLI discovers `quoter-bot.yaml` (then
+`quoter-bot.yml`) in the working directory, takes an explicit file with `--config <path>`, and
+reads the environment variables documented below — see [Configuration](#configuration). The
+[Docker image](#deploy) `morphoorg/quoter` and the workspace invocation below run the same CLI, so
+every `morpho-quoter <arguments>` example in this document can also be run as
+`pnpm --filter @morpho-org/quoter-bot run start -- <arguments>` from a repository checkout.
+
 ## Parameter playground
 
 Run the stateless parameter playground locally from the repository root:
@@ -251,12 +279,14 @@ pnpm --filter @morpho-org/quoter-bot run start -- --version
 ## Deploy
 
 The package owns its production [Dockerfile](./Dockerfile), local
-[docker-compose.yml](./docker-compose.yml), and idempotent
-[`scripts/deploy-railway.ts`](./scripts/deploy-railway.ts) entrypoint. The Docker build context is the
-repository root so pnpm can resolve every workspace dependency; a build stage compiles the
-workspace, and the runtime stage ships only this bot's self-contained bundle — no other bot's code,
-workspace source, or package manager — and starts the combined setup, bootstrap, and ladder monitor
-as an unprivileged Node process.
+[docker-compose.yml](./docker-compose.yml), Kubernetes [Helm chart](./helm/quoter-bot), and
+idempotent [`scripts/deploy-railway.ts`](./scripts/deploy-railway.ts) entrypoint. The Docker build
+context is the repository root so pnpm can resolve every workspace dependency; a build stage
+compiles the workspace, and the runtime stage ships only this bot's self-contained bundle — no
+other bot's code, workspace source, or package manager — and starts the combined setup, bootstrap,
+and ladder monitor as an unprivileged Node process. Kubernetes operators should deploy the
+published Docker Hub image through the package-owned Helm chart — see
+[Kubernetes (Helm)](#kubernetes-helm).
 
 A full deployment creates the `quoter-bot` Railway service, selects the package Dockerfile,
 provisions a persistent volume at `/state`, and writes the effective environment configuration
@@ -313,6 +343,77 @@ an image already associated with a release commit. `latest` only moves forward: 
 `quoter-bot-*` release tag descends from the built commit, a rerun backfills that commit's image
 tag without touching `latest`.
 
+### npm publishing
+
+A production release also publishes the CLI to npm as
+[`@morpho-org/quoter`](https://www.npmjs.com/package/@morpho-org/quoter) when
+[`package.json`](./package.json)`#version` was bumped. Once the Deploy production pipeline
+completes, the **Publish quoter-bot npm** workflow — a `workflow_run` chain kept standalone
+because npm trusted publishing validates the top-level workflow filename — verifies that a
+`quoter-bot-*` release tag points at the built commit, stages the package with
+`pnpm --filter @morpho-org/quoter-bot run npm:pack`, smoke-tests that the staged CLI reports the
+staged manifest version, and publishes through npm trusted publishing (OIDC), so CI stores no npm
+token. Provenance attestation is attached whenever the run's event commit is the release commit —
+the normal path. A recovery publish whose event SHA differs (main advanced mid-pipeline, or a
+dispatch selected an older release tag) publishes without provenance instead of attesting a commit
+that did not produce the bundle; the run emits a warning when that happens.
+
+The staged package (`dist/npm/`) contains exactly the self-contained bundle renamed to
+`morpho-quoter.js`, a generated dependency-free manifest, the repository LICENSE, and
+[`docs/npm-README.md`](./docs/npm-README.md); the private workspace manifest never reaches the
+registry. Published versions are immutable: a release whose version already exists on the registry
+completes as a no-op, so bumping `version` in the release PR is what opts a release into an npm
+publish. Dist-tags only move forward: a rerun whose commit has a newer descendant release tag
+publishes under `backfill` (stable or prerelease), a remaining prerelease takes the `next`
+dist-tag only when it semver-advances the registry's current `next`, and a stable version must be
+semver-greater than the registry's current `latest` to take that tag; non-advancing versions
+publish under `backfill`.
+
+One-time setup: npm cannot create a brand-new package through trusted publishing, so a maintainer
+bootstraps the first publish manually
+(`pnpm --filter @morpho-org/quoter-bot run npm:pack && npm publish bots/quoter-bot/dist/npm` from
+the repository root), then configures the package's trusted publisher on npmjs.com (repository
+`morpho-org/morpho-bots`, workflow `publish-quoter-bot-npm.yml`, environment `quoter-bot-npm`) and
+creates the `quoter-bot-npm` GitHub Environment with deployment branches scoped to `main`.
+
+### Kubernetes (Helm)
+
+The [`helm/quoter-bot`](./helm/quoter-bot) chart is the recommended way to self-host the bot on
+Kubernetes from the public `morphoorg/quoter:latest` image. The chart is consumed directly from
+this repository checkout — it is not published to any Helm registry yet — so install it from the
+local path. One values file fully configures a deployment: classic workload parameters (image,
+CPU/memory resources, persistence, scheduling) sit next to a `config` mapping holding the bot's
+complete native YAML configuration — the same schema as
+[`quoter-bot.example.yaml`](./quoter-bot.example.yaml) — which the chart renders into a Secret and
+passes to the bot with `--config`. Because environment values override YAML values, the chart's
+`env`/`envFrom` parameters keep the maker signing secret and the environment-only Better Stack
+variables out of that block.
+
+From the repository root:
+
+```sh
+helm lint bots/quoter-bot/helm/quoter-bot
+
+helm install quoter-bot bots/quoter-bot/helm/quoter-bot \
+  --namespace quoter-bot --create-namespace --values my-values.yaml
+
+helm upgrade quoter-bot bots/quoter-bot/helm/quoter-bot \
+  --namespace quoter-bot --values my-values.yaml
+```
+
+The chart runs a one-replica StatefulSet because the bot is a singleton writer — a replacement
+pod is never created until the old one has fully terminated, across rollouts, manual deletion,
+and eviction alike. It mounts a persistent volume at `/state` for durable offer-group ownership
+state (kept on uninstall by default), runs the bundle directly as the image's unprivileged
+`node` user instead of the root-only Railway entrypoint, and sizes the termination grace period
+(1020 seconds by default, automatically floored for a chart-managed configuration to one
+receipt timeout per serialized shutdown wait — three per bootstrap market, two per ladder
+market, one per ladder group, and two cleanup batches — plus a drain buffer) so shutdown
+cleanup can invalidate owned groups and wait for receipts. An upgrade that
+changes `config` rolls the pod automatically. See the
+[chart README](./helm/quoter-bot/README.md) for the full parameter reference, a complete values
+example, and secret-handling options.
+
 ## Configuration
 
 ### Configuration sources and precedence
@@ -323,8 +424,9 @@ Configuration can come from environment variables, a YAML file, or both. YAML fi
 1. `--config <path>` selects that exact `.yaml` or `.yml` file. Other path extensions and a missing,
    unreadable, empty, oversized, malformed, symlinked, or non-regular explicitly named file fail
    startup. Default-discovered symlinks are rejected as unreadable too.
-2. Without `--config`, the CLI searches the process working directory from which `quoter-bot` was invoked.
-   It checks `quoter-bot.yaml` first, then `quoter-bot.yml`. If both exist, `.yaml` wins.
+2. Without `--config`, the CLI searches the process working directory from which `morpho-quoter`
+   was invoked. It checks `quoter-bot.yaml` first, then `quoter-bot.yml`. If both exist, `.yaml`
+   wins.
 3. If neither default file exists, environment-only startup remains supported.
 4. Every supplied environment variable overrides the corresponding YAML value. CLI signer flags
    override environment and YAML signer selection. A higher-precedence signer selection discards
@@ -634,14 +736,14 @@ ladder:
     targetRate: { strategy: 'hardcoded', hardcodedRateBps: '400' }
 ```
 
-`quoter-bot setup-check --monitor` repeats non-overlapping read-only readiness observations every minute
-until its shutdown signal or the first failed report after transient-provider retry tolerance.
-`quoter-bot bootstrap` first runs the same one-shot readiness gate as `setup-check`, then executes exactly
-one position-bootstrap cycle and prints its
-bigint-safe JSON result. `quoter-bot bootstrap --monitor` uses the same gate, repeats non-overlapping cycles
-every minute, and performs owned-group cleanup after its shutdown signal. `quoter-bot bootstrap --verbose`
-adds safe rate, offer, transaction-hash, configuration, and before/after position diagnostics to
-each result. `quoter-bot ladder --monitor` similarly repeats at the shortest configured ladder cadence,
+`morpho-quoter setup-check --monitor` repeats non-overlapping read-only readiness observations every
+minute until its shutdown signal or the first failed report after transient-provider retry tolerance.
+`morpho-quoter bootstrap` first runs the same one-shot readiness gate as `setup-check`, then executes
+exactly one position-bootstrap cycle and prints its
+bigint-safe JSON result. `morpho-quoter bootstrap --monitor` uses the same gate, repeats non-overlapping
+cycles every minute, and performs owned-group cleanup after its shutdown signal.
+`morpho-quoter bootstrap --verbose` adds safe rate, offer, transaction-hash, configuration, and
+before/after position diagnostics to each result. `morpho-quoter ladder --monitor` similarly repeats at the shortest configured ladder cadence,
 streams cycles, and cleans active owned ladder groups after shutdown; `--verbose` adds safe
 configuration, rate, quote, transaction-hash, and before/after capacity diagnostics. Version output,
 setup monitoring, and invalid usage never start either writer.

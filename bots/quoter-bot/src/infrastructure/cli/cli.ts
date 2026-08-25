@@ -102,7 +102,7 @@ export type CliRuntimeOptions = {
   writeEvent?: (value: unknown) => void | Promise<void>
 }
 
-/** Infrastructure adapter: wires the `quoter-bot` CLI (commander) to application services. */
+/** Infrastructure adapter: wires the `morpho-quoter` CLI (commander) to application services. */
 export class Cli {
   private readonly program: Command
   private output: unknown
@@ -172,7 +172,7 @@ export class Cli {
     ) => QuoterBotMonitorService | Promise<QuoterBotMonitorService>
   ) {
     this.program = new Command()
-      .name('quoter-bot')
+      .name('morpho-quoter')
       .description('Morpho quoter bot CLI')
       .version(version.getVersion(), '-v, --version', 'output the current version')
       .option('-c, --config <path>', 'load configuration from an explicit .yaml or .yml file')

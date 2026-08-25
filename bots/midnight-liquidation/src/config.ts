@@ -66,7 +66,10 @@ const DEFAULT_POSITION_LIQUIDATION_COOLDOWN_MS = 0
 // bursts never queue ahead of a time-sensitive firm quote; log-scaled ladder sizes are whole
 // collateral tokens (converted per-collateral to base units). `PROBE_STALE_MS` caps probe cadence per
 // pair; a pair is re-probed only when a liquidatable position touches it after the cache goes stale.
-const DEFAULT_MARKETS_API_URL = 'https://api.morpho.org/v0/midnight/markets'
+// The whitelist may read MORE THAN ONE markets endpoint (comma-separated), unioned per-source — see
+// `MarketsConfig`. The default is the single public endpoint: an additional source widens what the bot
+// will touch, so it must be opted into explicitly per deployment rather than shipped in the default.
+const DEFAULT_MARKETS_API_URLS = ['https://api.morpho.org/v0/midnight/markets']
 const DEFAULT_MARKETS_REFRESH_MS = 60_000
 const DEFAULT_SLIPPAGE_BPS = 100
 const DEFAULT_PROBE_STALE_MS = 600_000
@@ -126,12 +129,18 @@ export type VenueConfig = {
 }
 
 /**
- * The Midnight markets API used as the market WHITELIST: only listed markets are discovered, probed,
+ * The Midnight markets API(s) used as the market WHITELIST: only listed markets are discovered, probed,
  * and liquidated. Over-inclusion is impossible (fail-closed); the on-chain lens remains the
- * correctness boundary. `refreshMs` caps how often the (cheap, non-rate-limited) endpoint is polled.
+ * correctness boundary. `refreshMs` caps how often the (cheap, non-rate-limited) endpoints are polled.
  */
 export type MarketsConfig = {
-  apiUrl: string
+  /**
+   * One or more markets endpoints, in `MARKETS_API_URL` order and de-duplicated. The effective
+   * whitelist is the union across the sources that are still fresh, so a deployment can read an
+   * additional list (e.g. one carrying extra shorter-maturity markets) without either endpoint
+   * becoming a single point of failure. Each is validated as a URL at load (fail-loud).
+   */
+  apiUrls: string[]
   refreshMs: number
 }
 
@@ -259,6 +268,32 @@ function ladderEnv(env: Env, name: string, def: string[]): string[] {
     }
   }
   return sizes
+}
+
+// Parses an optional comma-separated list of endpoint URLs, with a default, de-duplicating while
+// preserving order. Fails loud on any EMPTY entry (a leading/trailing/repeated comma is usually a
+// misinterpolated env var, i.e. an intended source silently missing — a narrowed whitelist with no
+// signal at all) and on any malformed element. De-duplication is on the PARSED URL with trailing path
+// slashes canonicalized away, so trivially different spellings of one endpoint (a trailing slash, a
+// default port) collapse instead of being polled twice and counted as two independent sources.
+function urlListEnv(env: Env, name: string, def: string[]): string[] {
+  const raw = env[name]?.trim()
+  if (!raw) return def
+  const urls = raw.split(',').map(part => part.trim())
+  if (urls.some(part => part.length === 0)) {
+    throw new Error(
+      `${name} must not contain empty entries (leading, trailing, or repeated commas), got: ${env[name]}`
+    )
+  }
+  const normalized = urls.map(url => {
+    const parsed = tryCatch(() => new URL(url))
+    if (parsed.error) {
+      throw new Error(`${name} is not a valid URL: ${url}`)
+    }
+    parsed.data.pathname = parsed.data.pathname.replace(/\/+$/, '')
+    return parsed.data.toString()
+  })
+  return [...new Set(normalized)]
 }
 
 // Parses an optional comma-separated list of addresses into checksummed `Address`es, with `[]` as the
@@ -390,13 +425,10 @@ export function loadConfig(
     excludeCollaterals: addressListEnv(env, 'EXCLUDE_COLLATERALS')
   }
 
-  // Market whitelist endpoint. Default to the public markets API; fail loud on a malformed override.
-  const marketsApiUrl = env.MARKETS_API_URL?.trim() || DEFAULT_MARKETS_API_URL
-  if (tryCatch(() => new URL(marketsApiUrl)).error) {
-    throw new Error(`MARKETS_API_URL is not a valid URL: ${marketsApiUrl}`)
-  }
+  // Market whitelist endpoint(s) — one, or a comma-separated list that is unioned per-source. Default
+  // to the public markets API; fail loud on any malformed entry.
   const markets: MarketsConfig = {
-    apiUrl: marketsApiUrl,
+    apiUrls: urlListEnv(env, 'MARKETS_API_URL', DEFAULT_MARKETS_API_URLS),
     refreshMs: intEnv(env, 'MARKETS_REFRESH_MS', DEFAULT_MARKETS_REFRESH_MS, { min: 1 })
   }
 
