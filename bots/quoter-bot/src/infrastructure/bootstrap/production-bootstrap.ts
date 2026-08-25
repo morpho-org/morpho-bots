@@ -36,6 +36,7 @@ import { createLadderGroupOwnership } from '../ladder/ladder-group-ownership.uti
 import { buildLadderTree } from '../ladder/ladder-offer.utils'
 import { createMakerAccount } from '../make/maker-account.utils'
 import { ReadOnlyBootstrapMakeService } from '../make/read-only-bootstrap-make.service'
+import { maturityReadsByMarket } from '../maturity-read.utils'
 import { createBlueReferenceReader } from '../reference/blue-reference-reader.utils'
 import { mapSelectedMarketItems } from '../selected-market-items.utils'
 import { BootstrapAdapterError } from './bootstrap-adapter.error'
@@ -443,21 +444,10 @@ export const createProductionBootstrapAdapters = (
       referenceClient as HistoricalBlockReader
     )
   )
-  const readSecondsToMaturity = async (marketId: Hex) => {
-    const [market, block] = await Promise.all([
-      midnight.getMarketData(marketId),
-      client.getBlock({ blockTag: 'latest' })
-    ])
-    return market.timeToMaturity(block.timestamp)
-  }
   const rates = new StrategyBootstrapReferenceRateService(
     new Map(config.bootstrap.map(item => [item.marketId, item.targetRate] as const)),
     blueRates,
-    new Map(
-      config.bootstrap
-        .filter(item => item.maturityPremium !== undefined)
-        .map(item => [item.marketId, () => readSecondsToMaturity(item.marketId)] as const)
-    )
+    maturityReadsByMarket({ entries: config.bootstrap, midnight, client })
   )
   const completeBookOffers = async (marketId: Hex) => {
     const [groups, ladderPublications, wholeBook, ownedBootstrapIds] = await Promise.all([
