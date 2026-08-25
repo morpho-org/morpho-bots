@@ -1,5 +1,5 @@
 apiVersion: apps/v1
-kind: Deployment
+kind: StatefulSet
 metadata:
   name: {{ include "quoter-bot.fullname" . }}
   labels:
@@ -7,11 +7,13 @@ metadata:
 spec:
   # The bot is a singleton writer: its nonce cursor, serialized mutation queue, and durable
   # offer-group ownership state are per-instance, so two replicas against one maker would race
-  # nonces and fight over the offer book. Recreate guarantees the old pod fully drains (offer
-  # cleanup included) before a replacement starts against the same state volume.
+  # nonces and fight over the offer book. A StatefulSet enforces at-most-one across every
+  # replacement path — rollouts, manual pod deletion, and eviction — because it never creates
+  # the replacement pod until the old one is confirmed fully terminated, which matters during
+  # the deliberately long SIGTERM offer-cleanup drain. A Deployment (even with Recreate) only
+  # guarantees termination-before-creation for template rollouts.
   replicas: 1
-  strategy:
-    type: Recreate
+  serviceName: {{ include "quoter-bot.fullname" . }}
   selector:
     matchLabels:
       {{- include "quoter-bot.selectorLabels" . | nindent 6 }}
@@ -19,10 +21,14 @@ spec:
     metadata:
       {{- $chartManagedConfig := and .Values.config (not .Values.existingConfigSecret) }}
       {{- $podAnnotations := omit .Values.podAnnotations "checksum/config" }}
-      {{- if or $chartManagedConfig $podAnnotations }}
+      {{- if or $chartManagedConfig $podAnnotations .Values.forceRestartOnUpgrade }}
       annotations:
         {{- with $podAnnotations }}
         {{- toYaml . | nindent 8 }}
+        {{- end }}
+        {{- if .Values.forceRestartOnUpgrade }}
+        # Changes on every upgrade so a moved image tag (e.g. `latest`) is re-pulled.
+        quoter-bot.morpho.org/restarted-at: {{ now | date "2006-01-02T15:04:05Z07:00" | quote }}
         {{- end }}
         {{- if $chartManagedConfig }}
         # Configuration is read once at startup and the file is mounted through subPath, so a
@@ -38,7 +44,21 @@ spec:
     spec:
       # The bot never talks to the Kubernetes API.
       automountServiceAccountToken: false
-      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      # SIGTERM cleanup waits on transaction receipts, so the grace period must cover the
+      # configured receipt timeout. When the chart-managed config raises
+      # setup.transactionReceiptTimeoutMs, the grace period is floored to that timeout plus a
+      # two-minute drain buffer; operators configuring the timeout through environment
+      # variables or existingConfigSecret must size terminationGracePeriodSeconds themselves.
+      {{- $receiptMs := 0 }}
+      {{- if and .Values.config (not .Values.existingConfigSecret) }}
+      {{- $receiptMs = int (dig "setup" "transactionReceiptTimeoutMs" 0 .Values.config) }}
+      {{- end }}
+      {{- $grace := int .Values.terminationGracePeriodSeconds }}
+      {{- $graceFloor := add (div $receiptMs 1000) 120 }}
+      {{- if and (gt $receiptMs 0) (lt $grace $graceFloor) }}
+      {{- $grace = $graceFloor }}
+      {{- end }}
+      terminationGracePeriodSeconds: {{ $grace }}
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}

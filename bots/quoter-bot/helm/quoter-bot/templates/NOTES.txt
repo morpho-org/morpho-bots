@@ -6,7 +6,7 @@ Configuration: chart-managed Secret {{ include "quoter-bot.configSecretName" . }
 {{- else if .Values.existingConfigSecret }}
 Configuration: existing Secret {{ .Values.existingConfigSecret }} (key quoter-bot.yaml). The
 file is read once at startup; after editing the Secret, restart with:
-  kubectl --namespace {{ .Release.Namespace }} rollout restart deployment/{{ include "quoter-bot.fullname" . }}
+  kubectl --namespace {{ .Release.Namespace }} rollout restart statefulset/{{ include "quoter-bot.fullname" . }}
 {{- else }}
 WARNING: no `config` mapping and no `existingConfigSecret` were provided. The bot starts in
 environment-only mode and fails loudly unless `env`/`envFrom` supply every required variable.
@@ -20,11 +20,15 @@ operator invalidates or adopts them.
 {{- end }}
 
 Follow the JSON Lines log stream:
-  kubectl --namespace {{ .Release.Namespace }} logs deployment/{{ include "quoter-bot.fullname" . }} --follow
+  kubectl --namespace {{ .Release.Namespace }} logs statefulset/{{ include "quoter-bot.fullname" . }} --follow
 
 Operational notes:
-  - The bot is a singleton writer; the chart pins one replica with a Recreate strategy. Never
-    scale it or run a second release against the same maker.
+  - The bot is a singleton writer; the chart runs a one-replica StatefulSet so a replacement
+    pod is never created until the old one has fully terminated. Never scale it or run a
+    second release against the same maker.
   - Shutdown drains the in-flight cycle, then invalidates owned offer groups and waits for
-    receipts; the pod may legitimately take up to terminationGracePeriodSeconds
-    ({{ .Values.terminationGracePeriodSeconds }}s) to stop.
+    receipts; the pod may legitimately take minutes to stop (the grace period covers the
+    configured receipt timeout).
+  - The image is only re-pulled when the pod template changes: after a mutable tag such as
+    `latest` moves, roll the pod with `kubectl rollout restart`, or set
+    forceRestartOnUpgrade=true to roll on every `helm upgrade`.

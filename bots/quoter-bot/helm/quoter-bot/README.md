@@ -1,7 +1,7 @@
 # quoter-bot Helm chart
 
 Deploys the Morpho Midnight maker bot from the public Docker Hub image
-[`morphoorg/quoter`](https://hub.docker.com/r/morphoorg/quoter) as a single-replica Deployment
+[`morphoorg/quoter`](https://hub.docker.com/r/morphoorg/quoter) as a one-replica StatefulSet
 with a persistent state volume. One values file carries both the classic workload parameters
 (image, resources, persistence, scheduling) and the bot's complete native YAML configuration,
 so `helm install --values my-values.yaml` fully describes a deployment.
@@ -94,12 +94,18 @@ env:
         key: makerPrivateKey
 ```
 
-Create the signer Secret out of band, then install:
+Create the signer Secret out of band, then install. The key is read from a hidden prompt and
+piped through stdin so it never appears in `kubectl` process arguments or shell history (the
+same argv-exposure warning as the package README's `--private-key` guidance):
 
 ```sh
 kubectl create namespace quoter-bot
-kubectl --namespace quoter-bot create secret generic quoter-bot-signer \
-  --from-literal=makerPrivateKey=0x...
+
+read -rs MAKER_PRIVATE_KEY
+printf '%s' "$MAKER_PRIVATE_KEY" |
+  kubectl --namespace quoter-bot create secret generic quoter-bot-signer \
+    --from-file=makerPrivateKey=/dev/stdin
+unset MAKER_PRIVATE_KEY
 
 helm install quoter-bot bots/quoter-bot/helm/quoter-bot \
   --namespace quoter-bot --create-namespace --values my-values.yaml
@@ -133,20 +139,21 @@ files over `--set` for the `config` block for the same reason.
 
 ### Image and workload
 
-| Key                                         | Default                                           | Meaning                                                                                                                                    |
-| ------------------------------------------- | ------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| `image.repository`                          | `morphoorg/quoter`                                | Public Docker Hub repository published on every production release.                                                                        |
-| `image.tag`                                 | `''` (chart `appVersion`, `latest`)               | Pin an immutable release commit-hash tag for reproducible deployments.                                                                     |
-| `image.pullPolicy`                          | `Always`                                          | Safe default while the tag is `latest`; use `IfNotPresent` with a pinned tag.                                                              |
-| `imagePullSecrets`                          | `[]`                                              | Pull secrets for private mirrors.                                                                                                          |
-| `command`                                   | `[node, /repo/bots/quoter-bot/dist/src/index.js]` | Runs the bundle directly as the unprivileged `node` user, bypassing the root-only Railway entrypoint.                                      |
-| `args`                                      | `[start, --verbose]`                              | Root flags and command after the chart-managed `--config` pair, e.g. `['--readonly', 'start', '--verbose']` or `[setup-check, --monitor]`. |
-| `resources`                                 | `{}`                                              | CPU/memory requests and limits.                                                                                                            |
-| `terminationGracePeriodSeconds`             | `600`                                             | Shutdown invalidates owned offer groups and waits for receipts; 30s would SIGKILL mid-cleanup.                                             |
-| `podAnnotations` / `podLabels`              | `{}`                                              | Extra pod metadata.                                                                                                                        |
-| `nodeSelector` / `tolerations` / `affinity` | `{}` / `[]` / `{}`                                | Standard scheduling controls.                                                                                                              |
-| `priorityClassName`                         | `''`                                              | Optional pod priority class.                                                                                                               |
-| `nameOverride` / `fullnameOverride`         | `''`                                              | Standard naming overrides.                                                                                                                 |
+| Key                                         | Default                                           | Meaning                                                                                                                                                 |
+| ------------------------------------------- | ------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `image.repository`                          | `morphoorg/quoter`                                | Public Docker Hub repository published on every production release.                                                                                     |
+| `image.tag`                                 | `''` (chart `appVersion`, `latest`)               | Pin an immutable release commit-hash tag for reproducible deployments.                                                                                  |
+| `image.pullPolicy`                          | `Always`                                          | Safe default while the tag is `latest`; use `IfNotPresent` with a pinned tag.                                                                           |
+| `imagePullSecrets`                          | `[]`                                              | Pull secrets for private mirrors.                                                                                                                       |
+| `command`                                   | `[node, /repo/bots/quoter-bot/dist/src/index.js]` | Runs the bundle directly as the unprivileged `node` user, bypassing the root-only Railway entrypoint.                                                   |
+| `args`                                      | `[start, --verbose]`                              | Root flags and command after the chart-managed `--config` pair, e.g. `['--readonly', 'start', '--verbose']` or `[setup-check, --monitor]`.              |
+| `resources`                                 | `{}`                                              | CPU/memory requests and limits.                                                                                                                         |
+| `terminationGracePeriodSeconds`             | `600`                                             | Shutdown invalidates owned offer groups and waits for receipts; automatically floored to a chart-managed `setup.transactionReceiptTimeoutMs` plus 120s. |
+| `forceRestartOnUpgrade`                     | `false`                                           | Stamps an upgrade-time annotation so every `helm upgrade` rolls the pod — the way to re-pull a moved `latest` tag.                                      |
+| `podAnnotations` / `podLabels`              | `{}`                                              | Extra pod metadata.                                                                                                                                     |
+| `nodeSelector` / `tolerations` / `affinity` | `{}` / `[]` / `{}`                                | Standard scheduling controls.                                                                                                                           |
+| `priorityClassName`                         | `''`                                              | Optional pod priority class.                                                                                                                            |
+| `nameOverride` / `fullnameOverride`         | `''`                                              | Standard naming overrides.                                                                                                                              |
 
 ### Configuration
 
@@ -176,17 +183,23 @@ files over `--set` for the `config` block for the same reason.
 
 ## Operations
 
-- **Singleton writer.** The Deployment pins one replica with a `Recreate` strategy: the bot's
-  nonce cursor, serialized mutation queue, and ownership state are per-instance. Never scale
-  it or point a second release at the same maker.
+- **Singleton writer.** The chart runs a one-replica StatefulSet: the bot's nonce cursor,
+  serialized mutation queue, and ownership state are per-instance, and a StatefulSet never
+  creates the replacement pod until the old one is confirmed fully terminated — covering
+  rollouts, manual pod deletion, and eviction alike, which a Deployment (even with `Recreate`)
+  only guarantees for rollouts. Never scale it or point a second release at the same maker.
+  The portless headless Service exists solely to govern the StatefulSet.
 - **State volume.** Losing `/state` makes previously bot-issued offer groups unknown, which
   fails readiness until an operator invalidates or adopts them — hence `persistence.retain`
   defaulting to `true`. Chain truth wins for everything else on restart.
 - **No probes.** The bot exposes no ports; it fails loudly and exits non-zero, and Kubernetes
   restarts it. Watch the structured `tx.*`/cycle events in the JSON Lines log stream, or
   configure Better Stack shipping and its heartbeat through `env`.
-- **Upgrades.** `helm upgrade` with a changed `config` recreates the pod (SIGTERM drain,
-  offer cleanup, then start); expect the transition to take up to the grace period.
+- **Upgrades.** `helm upgrade` with a changed `config` rolls the pod (SIGTERM drain, offer
+  cleanup, then start); expect the transition to take up to the grace period. With an
+  unchanged pod template nothing restarts, so a moved `latest` image is only picked up after
+  `kubectl rollout restart statefulset/<release-name>` or with `forceRestartOnUpgrade=true` —
+  production deployments should pin an immutable commit tag instead.
 
 ## Validate locally
 

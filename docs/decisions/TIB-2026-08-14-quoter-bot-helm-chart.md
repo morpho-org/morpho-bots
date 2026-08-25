@@ -60,9 +60,9 @@ failing in-cluster.
 ## Proposed Solution
 
 A Helm chart at `bots/quoter-bot/helm/quoter-bot` (`Chart.yaml`, `values.yaml`, `templates/`, its
-own `README.md`) rendering one Deployment, an optional chart-managed config Secret, and an
-optional PersistentVolumeClaim. Defaults are load-bearing — each encodes a verified runtime
-constraint:
+own `README.md`) rendering one one-replica StatefulSet with its portless headless governing
+Service, an optional chart-managed config Secret, and an optional PersistentVolumeClaim. Defaults
+are load-bearing — each encodes a verified runtime constraint:
 
 **Configuration passthrough.** A single `config` values mapping mirrors the bot's native YAML
 schema — the same `chain`/`identity`/`contracts`/`apis`/`markets`/`setup`/`bootstrap`/`ladder`
@@ -77,9 +77,9 @@ authority. It is a Secret, not a ConfigMap, because `identity` may carry signing
 `O_RDONLY | O_NONBLOCK | O_NOFOLLOW` and requires a regular file, so the symlink farm a normal
 Secret volume mount exposes (`..data/`) would fail startup. The chart bind-mounts the resolved
 regular file through `subPath`. Consequence: subPath mounts never receive Secret updates, so the
-Deployment pod template carries a `checksum/config` annotation that rolls the pod on
+StatefulSet pod template carries a `checksum/config` annotation that rolls the pod on
 `helm upgrade`; operators using `existingConfigSecret` must
-`kubectl rollout restart deployment/<release>-quoter-bot` after editing their Secret.
+`kubectl rollout restart statefulset/<release>-quoter-bot` after editing their Secret.
 
 **The signer stays out of `config`.** Environment values override YAML values (documented
 precedence), so the chart's `env`/`envFrom` parameters are the intended carrier for
@@ -105,11 +105,15 @@ Kubernetes API). The `volumePermissions` init container reuses the bot image's `
 and is enabled by default. It changes ownership but not mode bits, preserving secure restored
 state files that would be rejected if `fsGroup` handling added group access.
 
-**Singleton semantics.** The Deployment hardcodes `replicas: 1` with `strategy: Recreate`. The
-nonce cursor, serialized mutation queue, and durable offer-group ownership state are
-per-instance: two replicas against one maker would race nonces and fight over the offer book.
-Recreate guarantees the old pod fully drains (offer cleanup included) before the replacement
-starts against the same ReadWriteOnce volume.
+**Singleton semantics.** A StatefulSet hardcoding `replicas: 1`, using the chart-managed PVC as
+a plain volume rather than `volumeClaimTemplates`. The nonce cursor, serialized mutation queue,
+and durable offer-group ownership state are per-instance: two replicas against one maker would
+race nonces and fight over the offer book. Only a StatefulSet enforces at-most-one across every
+replacement path — it never creates the replacement pod until the old one is confirmed fully
+terminated, which matters when a pod is manually deleted or evicted during the deliberately long
+SIGTERM offer-cleanup drain. A Deployment with `strategy: Recreate` guarantees
+termination-before-creation only for template rollouts. The StatefulSet's required headless
+governing Service is portless (the bot exposes no ports).
 
 **State volume.** `XDG_STATE_HOME` always points at the mount (default `/state`). The PVC
 `<fullname>-state` carries `helm.sh/resource-policy: keep` by default (`persistence.retain`):
@@ -119,9 +123,13 @@ re-adopts the kept claim.
 
 **Shutdown budget.** `terminationGracePeriodSeconds` defaults to 600. SIGTERM drains the
 in-flight cycle, then invalidates owned offer groups and waits for receipts — bounded per
-transaction by `TRANSACTION_RECEIPT_TIMEOUT_MS` (default 180 s) — so shutdown legitimately takes
-minutes. Kubernetes' 30-second default would SIGKILL mid-cleanup and leave owned offers on the
-book.
+transaction by `TRANSACTION_RECEIPT_TIMEOUT_MS` (default 180 s, supported up to 900 s) — so
+shutdown legitimately takes minutes. Kubernetes' 30-second default would SIGKILL mid-cleanup and
+leave owned offers on the book. Because a receipt timeout above the grace period would reopen
+that window, the template floors the rendered grace period at the chart-managed
+`setup.transactionReceiptTimeoutMs` plus a two-minute drain buffer; timeouts supplied through
+environment overrides or `existingConfigSecret` are invisible to the template, so those
+operators size the grace period themselves (documented in `values.yaml` and the chart README).
 
 **No probes, no Service.** The bot exposes no ports. It fails loud and exits non-zero; the
 restart policy plus JSON Lines logs and Better Stack shipping are the observability story.
@@ -133,13 +141,16 @@ automatically.
 
 ## Considered Alternatives
 
-### Alternative 1: StatefulSet
+### Alternative 1: Deployment with `strategy: Recreate`
 
-The canonical controller for stateful singletons.
+The chart's original shape: simpler, no governing Service.
 
-**Why rejected:** `volumeClaimTemplates` complicate `existingClaim` reuse, and a StatefulSet
-requires a headless Service — extra surface for a bot with no ports. Deployment + Recreate + the
-`keep` resource policy provides the same singleton and state-retention properties.
+**Why rejected:** Recreate only guarantees termination-before-creation for template rollouts.
+When the single pod is manually deleted or evicted during its long SIGTERM offer-cleanup drain,
+the ReplicaSet creates the replacement while the old writer is still alive — two writers racing
+the nonce cursor and mutating the same maker book. The StatefulSet keeps the `existingClaim` and
+retention semantics by mounting the chart-managed PVC as a plain volume (no
+`volumeClaimTemplates`), and its required headless Service is portless.
 
 ### Alternative 2: publish the chart to a Helm registry
 

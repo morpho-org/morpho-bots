@@ -18,6 +18,13 @@ imagePullSecrets: []
 nameOverride: ''
 fullnameOverride: ''
 
+# Kubernetes only re-pulls the image when a pod is created, so with an unchanged pod template a
+# moved mutable tag (like the default `latest`) is never picked up by `helm upgrade` alone. Set
+# to true to stamp an upgrade-time annotation that rolls the pod on every `helm upgrade`;
+# alternatively pin an immutable commit tag, or run
+# `kubectl rollout restart statefulset/<release-name>` after the tag moves.
+forceRestartOnUpgrade: false
+
 # Entrypoint for the bot process. The chart deliberately bypasses the image's
 # railway-entrypoint.sh (which requires starting as root to chown the Railway volume) and runs
 # the bundle directly as the image's unprivileged `node` user; the init container below handles
@@ -92,7 +99,7 @@ config: {}
 # `quoter-bot.yaml`. When set, the chart mounts that Secret instead of rendering one from
 # `config`, keeping secrets out of Helm values and release storage entirely. Config changes in
 # an existing Secret are not detected by upgrades; restart with
-# `kubectl rollout restart deployment/<release>-quoter-bot`.
+# `kubectl rollout restart statefulset/<release>-quoter-bot`.
 existingConfigSecret: ''
 
 # Extra environment variables (list of EnvVar objects). Environment values override their YAML
@@ -171,7 +178,10 @@ resources: {}
 # SIGTERM lets the in-flight cycle finish, then invalidates owned offer groups and waits for
 # transaction receipts (bounded by transactionReceiptTimeoutMs per transaction), so shutdown
 # legitimately takes minutes. Kubernetes' 30-second default would SIGKILL mid-cleanup and
-# leave owned offers on the book.
+# leave owned offers on the book. When the chart-managed `config` raises
+# setup.transactionReceiptTimeoutMs, the rendered grace period is automatically floored to
+# that timeout plus a two-minute drain buffer; when the timeout comes from environment
+# overrides or an existingConfigSecret, size this value to cover it yourself.
 terminationGracePeriodSeconds: 600
 
 podAnnotations: {}

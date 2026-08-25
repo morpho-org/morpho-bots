@@ -340,13 +340,16 @@ helm upgrade quoter-bot bots/quoter-bot/helm/quoter-bot \
   --namespace quoter-bot --values my-values.yaml
 ```
 
-The chart pins one replica with a `Recreate` update strategy because the bot is a singleton
-writer, mounts a persistent volume at `/state` for durable offer-group ownership state (kept on
-uninstall by default), runs the bundle directly as the image's unprivileged `node` user instead of
-the root-only Railway entrypoint, and defaults the termination grace period to 600 seconds so
-shutdown cleanup can invalidate owned groups and wait for receipts. An upgrade that changes
-`config` rolls the pod automatically. See the [chart README](./helm/quoter-bot/README.md) for the
-full parameter reference, a complete values example, and secret-handling options.
+The chart runs a one-replica StatefulSet because the bot is a singleton writer — a replacement
+pod is never created until the old one has fully terminated, across rollouts, manual deletion,
+and eviction alike. It mounts a persistent volume at `/state` for durable offer-group ownership
+state (kept on uninstall by default), runs the bundle directly as the image's unprivileged
+`node` user instead of the root-only Railway entrypoint, and sizes the termination grace period
+(600 seconds by default, automatically floored to a chart-managed receipt timeout plus a drain
+buffer) so shutdown cleanup can invalidate owned groups and wait for receipts. An upgrade that
+changes `config` rolls the pod automatically. See the
+[chart README](./helm/quoter-bot/README.md) for the full parameter reference, a complete values
+example, and secret-handling options.
 
 ## Configuration
 
