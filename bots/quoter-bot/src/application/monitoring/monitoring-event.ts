@@ -25,7 +25,7 @@ export type MonitoringSide = 'lower' | 'higher'
  *   strings because the bot-kit logger flattens `bigint` before shipping. The bot never reads token
  *   decimals, so no field is human-scaled.
  * - **Cardinality.** Only `workflow`, `marketId`, `side`, `status`, `stage`, `action`, `reason`,
- *   `check`, `bound`, `cap`, `operation`, `mode`, `state`, and `referenceMode` may be used as
+ *   `check`, `bound`, `cap`, `operation`, `state`, and `referenceMode` may be used as
  *   grouping dimensions. `txHash` and `groupId` are unbounded trace-only correlation fields and must
  *   never be grouped on. Error text never appears — only allowlisted `errorName` classifications.
  */
@@ -37,7 +37,7 @@ export type MonitoringEvent =
       referenceMode: 'static' | 'variable' | 'mixed'
       readOnly: boolean
     }
-  | { event: 'market.configured'; marketId: Hex; ladderIntervalSeconds: number }
+  | { event: 'market.configured'; marketId: Hex; ladderIntervalSeconds?: number }
   | {
       event: 'bot.failed'
       workflow?: MonitoringWorkflow

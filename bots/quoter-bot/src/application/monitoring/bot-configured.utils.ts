@@ -6,7 +6,7 @@ import type { MonitoringEvent } from './monitoring-event'
 type ConfiguredMarkets = {
   loanAsset: Address
   readOnly: boolean
-  bootstrap: readonly { targetRate: TargetRateStrategyConfig }[]
+  bootstrap: readonly { marketId: Hex; targetRate: TargetRateStrategyConfig }[]
   ladder: readonly {
     marketId: Hex
     loopIntervalSeconds: number
@@ -14,6 +14,13 @@ type ConfiguredMarkets = {
   }[]
   bootstrapIntervalSeconds: number
 }
+
+const configuredMarketIds = (configured: ConfiguredMarkets) => [
+  ...new Set([
+    ...configured.ladder.map(market => market.marketId),
+    ...configured.bootstrap.map(market => market.marketId)
+  ])
+]
 
 const referenceMode = (
   configurations: readonly { targetRate: TargetRateStrategyConfig }[]
@@ -28,12 +35,13 @@ const referenceMode = (
  * Projects the startup manifest describing what this process is configured to quote.
  * @param configured - Validated market allowlist, loan asset, mode, cadences, and rate strategies.
  * @returns One process-wide `bot.configured` record followed by one `market.configured` record per
- * configured ladder market.
+ * configured market, across both the ladder and bootstrap strategies.
  * @remarks Every absence alert is scoped by these records: without them a consumer cannot know which
  * markets should be reporting, or how long silence must last before it is a fault. Cadence is
  * per-market rather than one process-wide minimum, because a single shortest interval would make
- * every slower market look overdue. Emitted once per process start, so a redeploy re-establishes the
- * scope. Carries no credentials — the loan asset is a public address and the market IDs are the
+ * every slower market look overdue. A market configured for bootstrap only carries no
+ * `ladderIntervalSeconds`; its cadence is the process-wide `bootstrapIntervalSeconds`. Emitted once
+ * per process start, so a redeploy re-establishes the scope. Carries no credentials — the loan asset is a public address and the market IDs are the
  * configured allowlist.
  */
 export const botConfiguredEvents = (configured: ConfiguredMarkets): readonly MonitoringEvent[] => [
@@ -44,11 +52,14 @@ export const botConfiguredEvents = (configured: ConfiguredMarkets): readonly Mon
     referenceMode: referenceMode([...configured.bootstrap, ...configured.ladder]),
     readOnly: configured.readOnly
   },
-  ...configured.ladder.map(
-    (market): MonitoringEvent => ({
+  ...configuredMarketIds(configured).map((marketId): MonitoringEvent => {
+    const ladderIntervalSeconds = configured.ladder.find(
+      market => market.marketId === marketId
+    )?.loopIntervalSeconds
+    return {
       event: 'market.configured',
-      marketId: market.marketId,
-      ladderIntervalSeconds: market.loopIntervalSeconds
-    })
-  )
+      marketId,
+      ...(ladderIntervalSeconds === undefined ? {} : { ladderIntervalSeconds })
+    }
+  })
 ]

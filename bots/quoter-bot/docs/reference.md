@@ -444,7 +444,7 @@ human-scaled: a consumer resolves decimals from the `loanAsset` address shipped 
 | Event                          | Fires when                                                                                    | Fields                                                                                                                                                                                                                                                                 |
 | ------------------------------ | --------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `bot.configured`               | Once per process start, from the validated configuration                                      | `bootstrapIntervalSeconds`, `loanAsset`, `referenceMode` (`static` \| `variable` \| `mixed`), `readOnly`                                                                                                                                                               |
-| `market.configured`            | Once per configured ladder market, immediately after `bot.configured`                         | `marketId`, `ladderIntervalSeconds` (that market's own `loopIntervalSeconds`)                                                                                                                                                                                          |
+| `market.configured`            | Once per configured market, immediately after `bot.configured`                                | `marketId`, `ladderIntervalSeconds?` (that market's own `loopIntervalSeconds`; absent for a bootstrap-only market, whose cadence is `bootstrapIntervalSeconds`)                                                                                                        |
 | `bot.failed`                   | A terminal failure stops the process; one per process, plus one per failed workflow           | `workflow?` (`setup-check` \| `bootstrap` \| `ladder`; absent on the process-level record), `reason`, `errorName?`                                                                                                                                                     |
 | `cycle.completed`              | Once per market per bootstrap/ladder cycle, and once per setup check                          | `workflow` (`setup-check` \| `bootstrap` \| `ladder`), `marketId?` (absent for `setup-check`), `status` (`ready` \| `failed` for `setup-check`), `stage?`, `action?`, `reason?`, `durationMs?`, `errorName?`                                                           |
 | `guardrail.rate-clamped`       | A cycle clamped a rate to its bound; ladder aggregates per side, bootstrap reports one rung   | `workflow`, `marketId`, `side?` (absent for `bootstrap`), `clampedRungs`, `bound` (`minimum` \| `maximum`), `minimumRateBps`, `maximumRateBps`                                                                                                                         |
@@ -477,7 +477,7 @@ because a settled transaction is confirmed by definition.
 #### Cardinality
 
 Safe grouping dimensions are `workflow`, `marketId`, `side`, `status`, `stage`, `action`, `reason`,
-`check`, `bound`, `cap`, `operation`, `mode`, `state`, and `referenceMode`. `marketId` is safe only
+`check`, `bound`, `cap`, `operation`, `state`, and `referenceMode`. `marketId` is safe only
 because it is bounded by the configured allowlist.
 
 `txHash` and `groupId` are unbounded trace-only correlation fields. Use them to join records within
@@ -502,6 +502,10 @@ operator question at three orders of magnitude less volume.
 
 Absence alerts are scoped per market by `market.configured`, which names one `marketId` and that
 market's own `ladderIntervalSeconds`, so each market's silence window is its own configured cadence.
+A market configured for bootstrap only carries no `ladderIntervalSeconds`; use
+`bootstrapIntervalSeconds` for it. Both manifest records are emitted by `start`; the standalone
+`bootstrap` and `ladder` commands are operator tools and emit no manifest, so absence scoping applies
+to the deployed `start` process.
 One process-wide shortest interval made slower markets look overdue. `bot.configured` scopes the
 process-wide `bootstrapIntervalSeconds` and identifies the loan asset and mode. Both are re-emitted
 on every process start, so the scope follows configuration changes across a redeploy.
