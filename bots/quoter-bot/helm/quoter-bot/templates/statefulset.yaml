@@ -1,3 +1,19 @@
+{{- /*
+Renaming the singleton is rejected: on an installed release a changed nameOverride or
+fullnameOverride would make Helm create the newly named StatefulSet before deleting the old
+one, briefly running two writers against the same maker (and, with existingClaim, the same
+ownership state). lookup returns nothing under `helm template`, so the guard only acts inside
+a real install/upgrade. Migration path: uninstall (the state claim is kept), then reinstall.
+*/}}
+{{- $fullname := include "quoter-bot.fullname" . }}
+{{- range (lookup "apps/v1" "StatefulSet" .Release.Namespace "").items }}
+{{- if and
+  (eq (index .metadata.labels "app.kubernetes.io/instance" | default "") $.Release.Name)
+  (eq (index .metadata.labels "app.kubernetes.io/name" | default "") $.Chart.Name)
+  (ne .metadata.name $fullname) }}
+{{- fail (printf "quoter-bot: this release already runs StatefulSet %q; renaming it to %q via nameOverride/fullnameOverride would start a second writer. Uninstall first (the state claim is kept), then reinstall under the new name." .metadata.name $fullname) }}
+{{- end }}
+{{- end }}
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -49,19 +65,20 @@ spec:
       # Pod Identity) inject their own projected tokens independently of this flag.
       automountServiceAccountToken: false
       serviceAccountName: {{ include "quoter-bot.serviceAccountName" . | quote }}
-      # SIGTERM shutdown serializes up to three receipt-bounded waits through the shared
-      # operation queue — the in-flight cycle's transaction, then the bootstrap cleanup batch,
-      # then the ladder cleanup batch — so when the chart-managed config declares
-      # setup.transactionReceiptTimeoutMs, the grace period is floored to three receipt
-      # timeouts plus a two-minute drain buffer. Each additional owned group adds another
-      # bounded wait, and environment-supplied or existingConfigSecret timeouts are invisible
-      # here: size terminationGracePeriodSeconds explicitly for those workloads.
+      # SIGTERM shutdown serializes up to four receipt-bounded waits through the shared
+      # operation queue — the in-flight cycle can await an old-group cancellation and then its
+      # replacement publication before the bootstrap cleanup batch and the ladder cleanup
+      # batch run — so when the chart-managed config declares
+      # setup.transactionReceiptTimeoutMs, the grace period is floored to four receipt
+      # timeouts plus a two-minute drain buffer. Each additional owned or replaced group adds
+      # another bounded wait, and environment-supplied or existingConfigSecret timeouts are
+      # invisible here: size terminationGracePeriodSeconds explicitly for those workloads.
       {{- $receiptMs := 0 }}
       {{- if and .Values.config (not .Values.existingConfigSecret) }}
       {{- $receiptMs = int (dig "setup" "transactionReceiptTimeoutMs" 0 .Values.config) }}
       {{- end }}
       {{- $grace := int .Values.terminationGracePeriodSeconds }}
-      {{- $graceFloor := add (mul (div $receiptMs 1000) 3) 120 }}
+      {{- $graceFloor := add (mul (div $receiptMs 1000) 4) 120 }}
       {{- if and (gt $receiptMs 0) (lt $grace $graceFloor) }}
       {{- $grace = $graceFloor }}
       {{- end }}

@@ -120,7 +120,10 @@ termination-before-creation only for template rollouts. Kubernetes documents one
 no workload controller closes: force deletion (`kubectl delete pod --force --grace-period=0`, or
 force-deleting a partitioned Node) skips termination confirmation, and the bot deliberately has
 no Kubernetes API access or external writer lock — so "never force delete; fence failed nodes
-first" is an operator invariant documented in the chart README and install notes. The
+first" is an operator invariant documented in the chart README and install notes. Selector
+labels derive from the chart and release names (never `nameOverride`), and a `lookup`-based
+template guard rejects upgrades that would rename the installed StatefulSet, because Helm
+creates the renamed resource before deleting the old one and would briefly run two writers. The
 StatefulSet's required headless governing Service is portless (the bot exposes no ports).
 
 **State volume.** `XDG_STATE_HOME` always points at the mount (default `/state`). The PVC
@@ -130,13 +133,14 @@ an operator invalidates or adopts them. A reinstall under the same release name 
 re-adopts the kept claim.
 
 **Shutdown budget.** `terminationGracePeriodSeconds` defaults to 900. SIGTERM shutdown
-serializes up to three receipt-bounded waits through the shared operation queue — the in-flight
-cycle's transaction, the bootstrap cleanup batch, and the ladder cleanup batch — each bounded by
-`TRANSACTION_RECEIPT_TIMEOUT_MS` (default 180 s, supported up to 900 s), and every additional
-owned group adds another bounded wait. Kubernetes' 30-second default would SIGKILL mid-cleanup
-and leave owned offers on the book. The template therefore floors the rendered grace period at
-three chart-managed `setup.transactionReceiptTimeoutMs` timeouts plus a two-minute drain buffer
-(900 s timeout → 2 820 s grace). The floor is not a guaranteed upper bound: many owned groups
+serializes up to four receipt-bounded waits through the shared operation queue — an in-flight
+cycle's old-group cancellation, that cycle's replacement publication, then the bootstrap cleanup
+batch and the ladder cleanup batch — each bounded by `TRANSACTION_RECEIPT_TIMEOUT_MS` (default
+180 s, supported up to 900 s), and every additional owned or replaced group adds another bounded
+wait. Kubernetes' 30-second default would SIGKILL mid-cleanup and leave owned offers on the
+book. The template therefore floors the rendered grace period at four chart-managed
+`setup.transactionReceiptTimeoutMs` timeouts plus a two-minute drain buffer
+(900 s timeout → 3 720 s grace). The floor is not a guaranteed upper bound: many owned groups
 (multi-market, high rung counts) multiply the waits, and timeouts supplied through environment
 overrides or `existingConfigSecret` are invisible to the template — both cases are documented in
 `values.yaml` and the chart README as the operator's explicit sizing responsibility.
@@ -218,10 +222,11 @@ false`. That still fits only the Baseline Pod Security Standard — Restricted n
 
 ## Observability
 
-The chart adds no probes, Service, or metrics endpoint — there is nothing to scrape. Operability
-rests on the bot's own surfaces: fail-loud non-zero exits driving the Kubernetes restart policy,
-JSON Lines logs on stdout, and the `BETTERSTACK_*` variables (injected through `env`/`envFrom`)
-for log shipping and heartbeat.
+The chart adds no probes and no application-facing or scrapeable Service — the only Service is
+the StatefulSet's required portless headless governing Service, which serves no traffic, so
+there is nothing to scrape. Operability rests on the bot's own surfaces: fail-loud non-zero
+exits driving the Kubernetes restart policy, JSON Lines logs on stdout, and the `BETTERSTACK_*`
+variables (injected through `env`/`envFrom`) for log shipping and heartbeat.
 
 ## Future Considerations
 

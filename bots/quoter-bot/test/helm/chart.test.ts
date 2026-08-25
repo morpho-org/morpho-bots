@@ -68,16 +68,35 @@ describe('quoter-bot Helm chart', () => {
     expect(service).not.toContain('ports:')
   })
 
-  it('floors the grace period at three receipt-bounded waits plus a drain buffer', async () => {
+  it('floors the grace period at four receipt-bounded waits plus a drain buffer', async () => {
     const [statefulSet, values] = await Promise.all([
       readChartFile('templates/statefulset.yaml'),
       readChartFile('values.yaml')
     ])
 
     expect(statefulSet).toContain('dig "setup" "transactionReceiptTimeoutMs" 0 .Values.config')
-    expect(statefulSet).toContain('add (mul (div $receiptMs 1000) 3) 120')
+    expect(statefulSet).toContain('add (mul (div $receiptMs 1000) 4) 120')
     expect(statefulSet).toContain('terminationGracePeriodSeconds: {{ $grace }}')
     expect(values).toContain('terminationGracePeriodSeconds: 900')
+  })
+
+  it('rejects upgrades that would rename the installed singleton', async () => {
+    const statefulSet = await readChartFile('templates/statefulset.yaml')
+
+    expect(statefulSet).toContain('lookup "apps/v1" "StatefulSet" .Release.Namespace ""')
+    expect(statefulSet).toContain('(ne .metadata.name $fullname)')
+    expect(statefulSet).toContain('{{- fail (printf')
+  })
+
+  it('reserves the PVC retention annotation while retain is enabled', async () => {
+    const pvc = await readChartFile('templates/pvc.yaml')
+    const filtered = pvc.indexOf('omit $pvcAnnotations "helm.sh/resource-policy"')
+    const custom = pvc.indexOf('{{- toYaml . | nindent 4 }}')
+    const managed = pvc.indexOf('helm.sh/resource-policy: keep')
+
+    expect(filtered).toBeGreaterThan(-1)
+    expect(custom).toBeGreaterThan(-1)
+    expect(managed).toBeGreaterThan(custom)
   })
 
   it('reserves XDG_STATE_HOME against custom env overrides', async () => {

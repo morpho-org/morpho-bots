@@ -8,13 +8,21 @@ metadata:
   name: {{ include "quoter-bot.fullname" . }}-state
   labels:
     {{- include "quoter-bot.labels" . | nindent 4 }}
+  {{- $pvcAnnotations := .Values.persistence.annotations }}
+  {{- if .Values.persistence.retain }}
+  {{- $pvcAnnotations = omit $pvcAnnotations "helm.sh/resource-policy" }}
+  {{- end }}
+  {{- if or .Values.persistence.retain $pvcAnnotations }}
   annotations:
-    {{- if .Values.persistence.retain }}
-    helm.sh/resource-policy: keep
-    {{- end }}
-    {{- with .Values.persistence.annotations }}
+    {{- with $pvcAnnotations }}
     {{- toYaml . | nindent 4 }}
     {{- end }}
+    {{- if .Values.persistence.retain }}
+    # Reserved while retain is true: custom annotations cannot override the keep policy that
+    # protects the ownership-state claim from deletion on uninstall.
+    helm.sh/resource-policy: keep
+    {{- end }}
+  {{- end }}
 spec:
   accessModes:
     {{- toYaml .Values.persistence.accessModes | nindent 4 }}
