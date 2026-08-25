@@ -86,14 +86,14 @@ describe('quoter-bot Helm chart', () => {
     const releaseFullname = await readChartFile('templates/release-fullname.yaml')
 
     expect(statefulSet).toContain(
-      'lookup "v1" "ConfigMap" .Release.Namespace (printf "%s-quoter-bot-fullname" .Release.Name)'
+      'lookup "v1" "ConfigMap" .Release.Namespace (include "quoter-bot.releaseFullnameConfigMapName" .)'
     )
     expect(statefulSet).not.toContain('lookup "apps/v1" "StatefulSet"')
     expect(statefulSet).toContain('{{- fail (printf')
     expect(statefulSet).toContain('helm uninstall --wait')
     expect(statefulSet).toContain('persistence.existingClaim')
     expect(releaseFullname).toContain(
-      'name: {{ printf "%s-quoter-bot-fullname" .Release.Name | quote }}'
+      'name: {{ include "quoter-bot.releaseFullnameConfigMapName" . | quote }}'
     )
     expect(releaseFullname).toContain('fullname: {{ include "quoter-bot.fullname" . | quote }}')
   })
@@ -181,6 +181,20 @@ describe('quoter-bot Helm chart', () => {
     expect(serviceAccount).toContain('automountServiceAccountToken: false')
   })
 
+  it('bounds suffixed resource names to the 63-character DNS label limit', async () => {
+    const helpers = await readChartFile('templates/_helpers.tpl')
+
+    expect(helpers).toContain(
+      `{{- printf "%s-state" (include "quoter-bot.fullname" . | trunc 57 | trimSuffix "-") }}`
+    )
+    expect(helpers).toContain(
+      `{{- printf "%s-config" (include "quoter-bot.fullname" . | trunc 56 | trimSuffix "-") }}`
+    )
+    expect(helpers).toContain(
+      `{{- printf "%s-quoter-bot-fullname" (.Release.Name | trunc 43 | trimSuffix "-") }}`
+    )
+  })
+
   it('quotes externally supplied resource names', async () => {
     const statefulSet = await readChartFile('templates/statefulset.yaml')
 
@@ -190,9 +204,7 @@ describe('quoter-bot Helm chart', () => {
     expect(statefulSet).toContain('name: {{ include "quoter-bot.fullname" . | quote }}')
     expect(statefulSet).toContain('claimName: {{ .Values.persistence.existingClaim | quote }}')
     expect(statefulSet).toContain('priorityClassName: {{ . | quote }}')
-    expect(statefulSet).toContain(
-      'claimName: {{ printf "%s-state" (include "quoter-bot.fullname" .) | quote }}'
-    )
+    expect(statefulSet).toContain('claimName: {{ include "quoter-bot.stateClaimName" . | quote }}')
 
     const helpers = await readChartFile('templates/_helpers.tpl')
     expect(helpers).toContain('(.Values.image.repository | toString)')

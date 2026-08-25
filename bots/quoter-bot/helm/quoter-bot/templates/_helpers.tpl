@@ -62,6 +62,24 @@ printf as parsed YAML numbers.
 {{- printf "%s:%s" (.Values.image.repository | toString) (default .Chart.AppVersion .Values.image.tag | toString) }}
 {{- end }}
 
+{{/*
+State-claim name, bounded to the 63-character DNS label limit: the base is truncated so the
+"-state" suffix always fits, keeping valid long release names installable.
+*/}}
+{{- define "quoter-bot.stateClaimName" -}}
+{{- printf "%s-state" (include "quoter-bot.fullname" . | trunc 57 | trimSuffix "-") }}
+{{- end }}
+
+{{/*
+Name of the release-name-keyed ConfigMap pinning the installed fullname. Bounded to the
+63-character DNS label limit: the release name is truncated so the suffix always fits (releases
+sharing the first 43 characters within one namespace would share this pin, which the guard
+tolerates only when their fullnames also match).
+*/}}
+{{- define "quoter-bot.releaseFullnameConfigMapName" -}}
+{{- printf "%s-quoter-bot-fullname" (.Release.Name | trunc 43 | trimSuffix "-") }}
+{{- end }}
+
 {{/* Whether any configuration file is mounted and passed through --config. */}}
 {{- define "quoter-bot.hasConfigFile" -}}
 {{- if or .Values.existingConfigSecret .Values.config }}true{{ end }}
@@ -72,7 +90,7 @@ printf as parsed YAML numbers.
 {{- if .Values.existingConfigSecret }}
 {{- .Values.existingConfigSecret }}
 {{- else }}
-{{- printf "%s-config" (include "quoter-bot.fullname" .) }}
+{{- printf "%s-config" (include "quoter-bot.fullname" . | trunc 56 | trimSuffix "-") }}
 {{- end }}
 {{- end }}
 

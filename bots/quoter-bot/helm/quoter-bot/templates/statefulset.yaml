@@ -8,10 +8,10 @@ required, and lookup returns nothing under `helm template`, keeping the guard in
 real install/upgrade.
 */}}
 {{- $fullname := include "quoter-bot.fullname" . }}
-{{- $identity := lookup "v1" "ConfigMap" .Release.Namespace (printf "%s-quoter-bot-fullname" .Release.Name) }}
+{{- $identity := lookup "v1" "ConfigMap" .Release.Namespace (include "quoter-bot.releaseFullnameConfigMapName" .) }}
 {{- $installedFullname := dig "fullname" $fullname (($identity | default dict).data | default dict) }}
 {{- if ne $installedFullname $fullname }}
-{{- fail (printf "quoter-bot: this release was installed as StatefulSet %q; renaming it to %q via nameOverride/fullnameOverride would start a second writer. To rename: run `helm uninstall --wait` with a timeout beyond terminationGracePeriodSeconds, confirm the old pod is fully deleted, then reinstall — keeping your persistence.existingClaim unchanged if you configured one, or setting it to the kept %s-state claim for a chart-created claim, so durable offer-group ownership is preserved." $installedFullname $fullname $installedFullname) }}
+{{- fail (printf "quoter-bot: this release was installed as StatefulSet %q; renaming it to %q via nameOverride/fullnameOverride would start a second writer. To rename: run `helm uninstall --wait` with a timeout beyond terminationGracePeriodSeconds, confirm the old pod is fully deleted, then reinstall — keeping your persistence.existingClaim unchanged if you configured one, or setting it to the kept %s-state claim for a chart-created claim, so durable offer-group ownership is preserved." $installedFullname $fullname ($installedFullname | trunc 57 | trimSuffix "-")) }}
 {{- end }}
 apiVersion: apps/v1
 kind: StatefulSet
@@ -195,7 +195,7 @@ spec:
             claimName: {{ .Values.persistence.existingClaim | quote }}
           {{- else if .Values.persistence.enabled }}
           persistentVolumeClaim:
-            claimName: {{ printf "%s-state" (include "quoter-bot.fullname" .) | quote }}
+            claimName: {{ include "quoter-bot.stateClaimName" . | quote }}
           {{- else }}
           emptyDir: {}
           {{- end }}
