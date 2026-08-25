@@ -86,7 +86,7 @@ spec:
       # market lists are invisible here — size terminationGracePeriodSeconds explicitly for
       # those workloads — and so are groups persisted from a PREVIOUS configuration: startup
       # cleanup cancels each removed-market group serially, so before removing markets or
-      # reducing rung counts, invalidate the affected groups first (quoter-bot invalidate — a
+      # reducing rung counts, invalidate the affected groups first (morpho-quoter invalidate — a
       # single maker-wide multicall) or temporarily raise this value for that upgrade.
       {{- $receiptMs := 0 }}
       {{- $bootstrapCount := 0 }}

@@ -8,7 +8,7 @@ export class CliUsageError extends Error {
    * @remarks Raw arguments, command text, option names/values, URLs, and nested causes are discarded.
    */
   constructor() {
-    super('Invalid command-line usage')
+    super('Invalid command-line usage; rerun with --help for usage')
     this.name = 'CliUsageError'
   }
 }

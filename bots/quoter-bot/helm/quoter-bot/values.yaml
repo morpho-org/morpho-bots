@@ -214,7 +214,7 @@ resources: {}
 # which the template cannot see. Groups persisted from a PREVIOUS configuration are also
 # invisible: a shrinking upgrade (removed markets, reduced rung counts) triggers one serial
 # cleanup wait per removed group at startup, so invalidate those groups first
-# (`quoter-bot invalidate` — a single maker-wide multicall) or temporarily raise this value
+# (`morpho-quoter invalidate` — a single maker-wide multicall) or temporarily raise this value
 # for that upgrade.
 terminationGracePeriodSeconds: 1020
 

@@ -1,0 +1,354 @@
+name: Publish quoter-bot npm
+
+# Publish-only job for quoter-bot's public npm package (`@morpho-org/quoter`, command
+# `morpho-quoter`). It runs when the Deploy production pipeline completes and publishes only a
+# main-history commit that carries a `quoter-bot-*` release tag AND that a Deploy production run
+# verifiably released (successful Release-quoter-bot job on that exact SHA), so npm can never ship
+# a build production did not accept — not even through a forged tag. The artifact is staged by `pnpm --filter @morpho-org/quoter-bot run npm:pack`: one
+# self-contained bundle plus a generated dependency-free manifest
+# (bots/quoter-bot/scripts/pack-npm.ts).
+#
+# Authentication uses npm trusted publishing (OIDC), so CI stores no npm token and npm generates
+# provenance attestations. npmjs.com must be configured once by a package maintainer: package
+# `@morpho-org/quoter` → Settings → Trusted Publisher → GitHub Actions with repository
+# `morpho-org/morpho-bots`, workflow `publish-quoter-bot-npm.yml`, environment `quoter-bot-npm`.
+# Trusted publishing validates the *top-level* workflow filename, which is why this is a standalone
+# workflow_run chain instead of a workflow_call from deploy-production.yml like the Docker Hub
+# publish — called reusable workflows would be validated against the caller's filename.
+#
+# Operational notes:
+# - npm cannot create a brand-new package through trusted publishing. The first-ever publish is a
+#   one-time manual bootstrap by a maintainer:
+#   `pnpm --filter @morpho-org/quoter-bot run npm:pack && npm publish bots/quoter-bot/dist/npm`,
+#   then configure the trusted publisher above.
+# - The published version comes from bots/quoter-bot/package.json. Published versions are
+#   immutable, and a release whose version already exists on the registry completes as a no-op —
+#   bumping that version in the release PR is what opts a release into an npm publish.
+
+on:
+  workflow_run:
+    workflows: [Deploy production]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: quoter-bot-* release tag to publish (defaults to the main HEAD release)
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  Publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # workflow_run fires for every completed Deploy production run. The release-tag gate below is
+    # the real filter: the tag exists only when the quoter-bot deploy and release succeeded, even if
+    # an unrelated job (another bot's release, the Docker Hub push) failed the overall run — so only
+    # cancelled runs are excluded here. A publish missed for any other reason is recoverable with
+    # workflow_dispatch. The main-ref guard makes a manual dispatch from a non-main branch inert in
+    # the workflow itself, independent of the environment's deployment-branch policy existing.
+    if: >-
+      ${{ github.ref == 'refs/heads/main' &&
+          (github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion != 'cancelled') }}
+    # Holds no secrets, but scopes the OIDC token subject and carries a main-only deployment branch
+    # policy, mirroring the quoter-bot-dockerhub environment. The npm trusted publisher config must
+    # reference this environment name.
+    environment: quoter-bot-npm
+    permissions:
+      contents: read
+      # Lets the release gate read Deploy production run/job history to verify the commit really
+      # shipped through Release-quoter-bot.
+      actions: read
+      # Mints the GitHub OIDC token the npm CLI exchanges for a short-lived publish token.
+      id-token: write
+    concurrency:
+      # Serialize publishes so the dist-tag gates cannot race between overlapping runs. GitHub
+      # keeps one running plus at most one pending job per group, so if a third release completes
+      # while one publish runs and another waits, the waiting release's publish is cancelled and
+      # its version never reaches npm. Releases outpacing publishes that far is unexpected —
+      # deploy-production serializes releases and outlasts a publish — and every gate is
+      # idempotent, so recover a skipped version by dispatching this workflow with its release tag.
+      group: publish-quoter-bot-npm
+      cancel-in-progress: false
+    steps:
+      # Always check out trusted main first — never a caller-supplied ref. The job later executes
+      # code from the working tree (the setup composite action, package scripts), so the commit it
+      # switches to must be proven production-owned before any of that runs.
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          # Full history and tags: the release gates and latest-tag gate need tags and ancestry.
+          fetch-depth: 0
+
+      # Select and validate the commit to publish before any working-tree code executes, using only
+      # plain git against the just-fetched origin refs plus the Actions API. The commit must be an
+      # ancestor of main, carry a `quoter-bot-*` release tag, AND have a Deploy production run on
+      # exactly that SHA whose Release-quoter-bot job succeeded — tags are pushable by any write
+      # collaborator, but the run history of the main-owned pipeline is not, so a forged tag cannot
+      # publish an unreleased commit through either trigger path. Every other completed pipeline
+      # (other bots, no-release merges) ends here as a successful no-op. (A tag ruleset restricting
+      # `quoter-bot-*` creation to CI would also close the forged-tag vector at the source; that is
+      # repository configuration, not workflow code.)
+      - name: Select and gate the release commit
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = 'workflow_run' ]; then
+            sha="$HEAD_SHA"
+          elif [ -n "$TAG" ]; then
+            case "$TAG" in
+              quoter-bot-*) ;;
+              *)
+                echo "::error::tag must be a quoter-bot-* release tag"
+                exit 1
+                ;;
+            esac
+            if ! sha="$(git rev-parse --verify --quiet "refs/tags/${TAG}^{commit}")"; then
+              echo "::error::tag ${TAG} does not exist on origin"
+              exit 1
+            fi
+          else
+            sha="$(git rev-parse HEAD)"
+          fi
+          if ! git merge-base --is-ancestor "$sha" "$(git rev-parse HEAD)"; then
+            if [ "$EVENT_NAME" = 'workflow_dispatch' ]; then
+              echo "::error::${sha} is not in main history; refusing to publish it"
+              exit 1
+            fi
+            # A Deploy production run dispatched from a non-main branch completes with a non-main
+            # head_sha; it cannot have cut a release, so skip quietly instead of failing red.
+            echo "::notice::${sha} is not in main history; skipping npm publish"
+            echo "release=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          tag="$(git tag --points-at "$sha" --list 'quoter-bot-*' | head -n 1 || true)"
+          if [ -z "$tag" ]; then
+            echo "::notice::no quoter-bot release tag points at ${sha}; skipping npm publish"
+            echo "release=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # The tag alone is forgeable; require the production pipeline's own record that this
+          # exact commit shipped: a Deploy production run with head_sha == sha whose
+          # Release-quoter-bot job succeeded. filter=all covers jobs from earlier attempts of a
+          # partially re-run pipeline. Reaching this point with a tag but no such run is anomalous
+          # on every trigger path, so it fails loud rather than skipping. Actions API stderr is
+          # third-party diagnostic text on a public log, so it is discarded — an API failure just
+          # leaves the run list empty and fails closed through the fixed error below.
+          released='false'
+          for run_id in $(gh api --paginate \
+            "repos/${GITHUB_REPOSITORY}/actions/workflows/deploy-production.yml/runs?head_sha=${sha}&per_page=100" \
+            --jq '.workflow_runs[].id' 2>/dev/null); do
+            if gh api --paginate \
+              "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/jobs?filter=all&per_page=100" \
+              --jq '.jobs[] | select(.name == "Release-quoter-bot") | .conclusion' 2>/dev/null \
+              | grep -qx 'success'; then
+              released='true'
+              break
+            fi
+          done
+          if [ "$released" != 'true' ]; then
+            echo "::error::${tag} points at ${sha}, but no Deploy production run verifiably released quoter-bot from that commit (forged tag, unreleased commit, or Actions API lookup failure); refusing to publish"
+            exit 1
+          fi
+          echo "publishing release ${tag}"
+          git checkout --quiet --force "$sha"
+          echo "release=true" >> "$GITHUB_OUTPUT"
+          echo "sha=${sha}" >> "$GITHUB_OUTPUT"
+
+      - name: Setup
+        if: ${{ steps.release.outputs.release == 'true' }}
+        uses: ./.github/actions/setup
+        with:
+          build-contracts: 'false'
+
+      # Trusted publishing requires npm >= 11.5.1; the pinned Node's bundled npm can lag behind
+      # that. Without it, `npm publish` silently skips the OIDC exchange and fails — so upgrade
+      # (major-pinned) only when the bundled npm is too old.
+      - name: Ensure trusted-publishing-capable npm
+        if: ${{ steps.release.outputs.release == 'true' }}
+        run: |
+          set -euo pipefail
+          minimum='11.5.1'
+          current="$(npm --version)"
+          if [ "$(printf '%s\n%s\n' "$minimum" "$current" | sort -V | head -n 1)" != "$minimum" ]; then
+            echo "npm ${current} predates trusted publishing support; upgrading"
+            npm install -g npm@11
+          fi
+          npm --version
+
+      - name: Stage npm package
+        if: ${{ steps.release.outputs.release == 'true' }}
+        run: pnpm --filter @morpho-org/quoter-bot run npm:pack
+
+      # The staged bundle must run and report the exact version the manifest declares before it may
+      # be published.
+      - name: Smoke-test staged CLI
+        if: ${{ steps.release.outputs.release == 'true' }}
+        id: staged
+        run: |
+          set -euo pipefail
+          version="$(node -p "JSON.parse(require('node:fs').readFileSync('bots/quoter-bot/dist/npm/package.json', 'utf8')).version")"
+          reported="$(node bots/quoter-bot/dist/npm/morpho-quoter.js --version)"
+          if [ "$reported" != "$version" ]; then
+            echo "staged CLI reports ${reported} but the staged manifest says ${version}"
+            exit 1
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      # Published npm versions are immutable. An already-published version means a rerun or a
+      # release without a version bump; both complete as a no-op. A missing package entirely means
+      # the one-time manual bootstrap (see header) has not happened — fail loud with instructions
+      # rather than failing later inside npm publish's OIDC exchange.
+      - name: Check registry
+        if: ${{ steps.release.outputs.release == 'true' }}
+        id: registry
+        env:
+          VERSION: ${{ steps.staged.outputs.version }}
+        run: |
+          set -euo pipefail
+          view_error="$(mktemp)"
+          trap 'rm -f "$view_error"' EXIT
+          # Registry stderr is third-party diagnostic text (it can carry registry URLs and proxy
+          # details) and this log is public — branch on it, never print it.
+          if ! npm view '@morpho-org/quoter' name >/dev/null 2>"$view_error"; then
+            if grep -q 'E404' "$view_error"; then
+              echo "::error::@morpho-org/quoter does not exist on the registry. Trusted publishing cannot create a package; bootstrap once manually: pnpm --filter @morpho-org/quoter-bot run npm:pack && npm publish bots/quoter-bot/dist/npm"
+            else
+              echo '::error::unexpected npm registry failure while checking the package; rerun after checking registry status'
+            fi
+            exit 1
+          fi
+          # The version lookup must fail closed: a transient registry/DNS failure here must not be
+          # read as "unpublished", or a rerun's no-op would become a doomed republish attempt.
+          # Depending on npm version, a missing version yields success with empty output or an
+          # E404; anything else is an unexpected failure.
+          if published="$(npm view "@morpho-org/quoter@${VERSION}" version 2>"$view_error")"; then
+            if [ "$published" = "$VERSION" ]; then
+              echo "::notice::@morpho-org/quoter@${VERSION} is already published; bump bots/quoter-bot/package.json#version to publish the next release"
+              echo "exists=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            if [ -n "$published" ]; then
+              echo "::error::unexpected registry response while checking the staged version"
+              exit 1
+            fi
+          elif ! grep -q 'E404' "$view_error"; then
+            echo '::error::unexpected npm registry failure while checking the version; rerun after checking registry status'
+            exit 1
+          fi
+          echo "exists=false" >> "$GITHUB_OUTPUT"
+
+      # `latest` and `next` must only move forward, because npm resolves installs from dist-tags
+      # and never orders them itself. Three gates, in order: when another quoter-bot release tag
+      # descends from the built commit a newer release already shipped, so the rerun — stable or
+      # prerelease — backfills without touching either tag; a remaining prerelease takes `next`
+      # only when it semver-advances the registry's current `next`; and a stable candidate must be
+      # semver-greater than the registry's current `latest` (fail closed on lookup failures).
+      # Release tags are cut by deploy-production.yml, whose concurrency group serializes release
+      # runs, so the newest release cannot change mid-run.
+      - name: Gate the latest tag
+        if: ${{ steps.release.outputs.release == 'true' && steps.registry.outputs.exists != 'true' }}
+        id: tags
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.staged.outputs.version }}
+        run: |
+          set -euo pipefail
+          # Historical reruns are classified first so neither `latest` nor `next` can move
+          # backward: when a release tag descends from this commit, a newer release already
+          # shipped, and the recovered version — stable or prerelease — publishes under `backfill`.
+          # A descendant tag is honored only when the production pipeline verifiably released its
+          # commit (same Actions API evidence as the release gate, stderr discarded from the public
+          # log); a forged or unreleased descendant tag cannot demote a genuine release.
+          released_from() {
+            for run_id in $(gh api --paginate \
+              "repos/${GITHUB_REPOSITORY}/actions/workflows/deploy-production.yml/runs?head_sha=$1&per_page=100" \
+              --jq '.workflow_runs[].id' 2>/dev/null); do
+              if gh api --paginate \
+                "repos/${GITHUB_REPOSITORY}/actions/runs/$run_id/jobs?filter=all&per_page=100" \
+                --jq '.jobs[] | select(.name == "Release-quoter-bot") | .conclusion' 2>/dev/null \
+                | grep -qx 'success'; then
+                return 0
+              fi
+            done
+            return 1
+          }
+          commit="$(git rev-parse HEAD)"
+          newer=''
+          for tag in $(git tag --list 'quoter-bot-*'); do
+            tag_commit="$(git rev-parse "${tag}^{commit}")"
+            if [ "$tag_commit" != "$commit" ] \
+              && git merge-base --is-ancestor "$commit" "$tag_commit"; then
+              if released_from "$tag_commit"; then
+                newer="$tag"
+                break
+              fi
+              echo "::warning::ignoring descendant tag ${tag} without a verified production release run"
+            fi
+          done
+          if [ -n "$newer" ]; then
+            echo "::notice::release ${newer} descends from ${commit}; publishing under the backfill dist-tag"
+            echo "dist_tag=backfill" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # `sort -V` natural-sorts nonnumeric prerelease identifiers against SemVer precedence,
+          # so both registry comparisons go through the dependency-free SemVer comparator.
+          case "$VERSION" in
+            *-*)
+              # `next` must also only move forward: a chronologically newer commit can still carry
+              # a semver-lower prerelease. Fail closed on lookup failure.
+              if ! current_next="$(npm view '@morpho-org/quoter' dist-tags.next 2>/dev/null)"; then
+                echo '::error::could not read the registry current next dist-tag; rerun after checking registry status'
+                exit 1
+              fi
+              if [ -n "$current_next" ] \
+                && [ "$(node bots/quoter-bot/scripts/semver-precedence.mjs "$current_next" "$VERSION")" != 'ascending' ]; then
+                echo "::notice::${VERSION} does not advance the current next ${current_next}; publishing under the backfill dist-tag"
+                echo "dist_tag=backfill" >> "$GITHUB_OUTPUT"
+              else
+                echo "::notice::${VERSION} is a prerelease; publishing under the next dist-tag"
+                echo "dist_tag=next" >> "$GITHUB_OUTPUT"
+              fi
+              exit 0
+              ;;
+          esac
+          if ! current_latest="$(npm view '@morpho-org/quoter' dist-tags.latest 2>/dev/null)"; then
+            echo '::error::could not read the registry current latest dist-tag; rerun after checking registry status'
+            exit 1
+          fi
+          if [ -n "$current_latest" ] \
+            && [ "$(node bots/quoter-bot/scripts/semver-precedence.mjs "$current_latest" "$VERSION")" != 'ascending' ]; then
+            echo "::notice::${VERSION} does not advance the current latest ${current_latest}; publishing under the backfill dist-tag"
+            echo "dist_tag=backfill" >> "$GITHUB_OUTPUT"
+          else
+            echo "dist_tag=latest" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish
+        if: ${{ steps.release.outputs.release == 'true' && steps.registry.outputs.exists != 'true' }}
+        working-directory: bots/quoter-bot/dist/npm
+        env:
+          DIST_TAG: ${{ steps.tags.outputs.dist_tag }}
+          RELEASE_SHA: ${{ steps.release.outputs.sha }}
+        # Provenance links the published package to this workflow run; access comes from the staged
+        # manifest's publishConfig. Requires npm >= 11.5.1, ensured by the upgrade step above.
+        # npm's provenance generator records env GITHUB_SHA — which GitHub fixes to the event's
+        # commit and does not allow workflows to override — so when the gated release commit is not
+        # that SHA (main advanced mid-pipeline, or a dispatch selected an older release), the
+        # attestation would name a commit that did not produce the bundle. Publish those runs
+        # explicitly without provenance instead of shipping a wrong attestation; the common
+        # non-raced path still attests normally.
+        run: |
+          set -euo pipefail
+          if [ "$RELEASE_SHA" = "$GITHUB_SHA" ]; then
+            npm publish --provenance --tag "$DIST_TAG"
+          else
+            echo "::warning::event SHA differs from the release commit; publishing without provenance because the attestation would name the wrong commit"
+            npm publish --provenance=false --tag "$DIST_TAG"
+          fi
