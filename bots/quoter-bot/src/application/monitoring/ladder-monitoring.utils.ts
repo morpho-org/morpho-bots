@@ -5,15 +5,16 @@ import type { LadderRunResult } from '../ladder/ladder-quoter.service'
 import type { LadderGroupConsumption, LadderVerboseDetails } from '../ladder/ladder-verbose'
 import type { MonitoringEvent, MonitoringSide } from './monitoring-event'
 
-import { CROSS_BOOK_CLEARANCE_BPS } from '../../domain/cross-book'
-
 const SIDES: readonly MonitoringSide[] = ['lower', 'higher']
 
 const defined = <Key extends string>(key: Key, value: bigint | undefined) =>
   value === undefined ? {} : ({ [key]: value } as Record<Key, bigint>)
 
-const sideBook = (marketId: Hex, side: MonitoringSide, quote: LadderQuoteSet): MonitoringEvent => {
-  const rungs: readonly LadderRung[] = quote[side]
+// Emitted for both sides on every observed cycle, including when no quote is active at all: an
+// absent record is indistinguishable from an unshipped one, so "not quoting" needs a positive
+// `state: 'empty'` signal rather than silence.
+const sideBook = (marketId: Hex, side: MonitoringSide, quote?: LadderQuoteSet): MonitoringEvent => {
+  const rungs: readonly LadderRung[] = quote?.[side] ?? []
   const rates = rungs.map(rung => rung.rateBps)
   return {
     event: 'book.observed',
@@ -28,7 +29,7 @@ const sideBook = (marketId: Hex, side: MonitoringSide, quote: LadderQuoteSet): M
           bestRateBps: rates.reduce((best, rate) => (rate > best ? rate : best)),
           worstRateBps: rates.reduce((worst, rate) => (rate < worst ? rate : worst))
         }),
-    centerRateBps: quote.centerRateBps
+    ...(quote === undefined ? {} : { centerRateBps: quote.centerRateBps })
   }
 }
 
@@ -73,8 +74,7 @@ const sideGuardrails = (
           workflow: 'ladder',
           marketId,
           side,
-          clearedRungs: diagnostics.clearedRungs,
-          clearanceBps: CROSS_BOOK_CLEARANCE_BPS
+          clearedRungs: diagnostics.clearedRungs
         } satisfies MonitoringEvent
       ]
     : []),
@@ -122,7 +122,7 @@ const verboseEvents = (
       ...defined('maximumTotalCapacityAssets', market.maximumTotalCapacityAssets)
     })
     const activeQuote = verbose.currentState.activeQuote
-    if (activeQuote) events.push(...SIDES.map(side => sideBook(marketId, side, activeQuote)))
+    events.push(...SIDES.map(side => sideBook(marketId, side, activeQuote)))
   }
   if (verbose.diagnostics) {
     for (const side of SIDES) {
@@ -135,7 +135,6 @@ const verboseEvents = (
       workflow: 'ladder',
       marketId,
       operation: transaction.operation,
-      status: 'confirmed',
       txHash: transaction.txHash
     })
   }

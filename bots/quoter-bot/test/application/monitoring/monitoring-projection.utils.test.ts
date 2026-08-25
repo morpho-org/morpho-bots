@@ -60,8 +60,12 @@ describe('createMonitoringProjection', () => {
   test('reports each failed readiness check without leaking its unknown-typed observation', () => {
     const events = createMonitoringProjection().setup(readyReport)
 
-    expect(events).toContainEqual({ event: 'setup.ready', ready: false })
     expect(events).toContainEqual({ event: 'setup.check-failed', check: 'native-balance' })
+    expect(events).toContainEqual({
+      event: 'cycle.completed',
+      workflow: 'setup-check',
+      status: 'failed'
+    })
     expect(events.filter(event => event.event === 'setup.check-failed')).toHaveLength(1)
     expect(JSON.stringify(events)).not.toContain('required')
   })
@@ -83,10 +87,48 @@ describe('createMonitoringProjection', () => {
         .filter(event => event.event === 'guardrail.spread-rejected')
 
     expect(spreadRejections('negative-spread')).toEqual([
-      { event: 'guardrail.spread-rejected', marketId, errorName: 'BootstrapAdapterError' }
+      { event: 'guardrail.spread-rejected', marketId }
     ])
     expect(spreadRejections('transaction-policy')).toEqual([])
     expect(spreadRejections()).toEqual([])
+  })
+
+  test('signals an empty book positively when no quote is active at all', () => {
+    const observed = [
+      {
+        marketId,
+        status: 'observed',
+        action: 'rest',
+        verbose: {
+          config: { marketId },
+          currentState: { status: 'observed', market: {} },
+          stateAfterCheck: { status: 'observed', market: {} }
+        }
+      }
+    ]
+
+    expect(
+      createMonitoringProjection()
+        .ladder(observed as readonly { status: string }[])
+        .filter(event => event.event === 'book.observed')
+    ).toEqual([
+      {
+        event: 'book.observed',
+        marketId,
+        side: 'lower',
+        state: 'empty',
+        rungs: 0,
+        totalAssets: 0n
+      },
+      {
+        event: 'book.observed',
+        marketId,
+        side: 'higher',
+        state: 'empty',
+        rungs: 0,
+        totalAssets: 0n
+      }
+    ])
   })
 
   test('leaves an already-named transaction event to ship unchanged', () => {

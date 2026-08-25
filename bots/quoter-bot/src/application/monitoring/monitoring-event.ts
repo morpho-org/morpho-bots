@@ -32,12 +32,17 @@ export type MonitoringSide = 'lower' | 'higher'
 export type MonitoringEvent =
   | {
       event: 'bot.configured'
-      marketIds: readonly Hex[]
-      ladderIntervalSeconds: number
       bootstrapIntervalSeconds: number
       loanAsset: Address
       referenceMode: 'static' | 'variable' | 'mixed'
       readOnly: boolean
+    }
+  | { event: 'market.configured'; marketId: Hex; ladderIntervalSeconds: number }
+  | {
+      event: 'bot.failed'
+      workflow?: MonitoringWorkflow
+      reason: string
+      errorName?: string
     }
   | {
       event: 'cycle.completed'
@@ -66,7 +71,6 @@ export type MonitoringEvent =
       marketId: Hex
       side: MonitoringSide
       clearedRungs: number
-      clearanceBps: bigint
     }
   | {
       event: 'guardrail.exposure-capped'
@@ -83,7 +87,7 @@ export type MonitoringEvent =
       configuredRungs: number
       fundedRungs: number
     }
-  | { event: 'guardrail.spread-rejected'; marketId: Hex; errorName: string }
+  | { event: 'guardrail.spread-rejected'; marketId: Hex }
   | {
       event: 'guardrail.halted'
       workflow: MonitoringWorkflow
@@ -118,8 +122,6 @@ export type MonitoringEvent =
       marketId: Hex
       creditAssets: bigint
       creditTargetAssets: bigint
-      shortfallAssets: bigint
-      mode: 'static' | 'variable'
     }
   | {
       event: 'book.observed'
@@ -130,7 +132,7 @@ export type MonitoringEvent =
       totalAssets: bigint
       bestRateBps?: bigint
       worstRateBps?: bigint
-      centerRateBps: bigint
+      centerRateBps?: bigint
     }
   | {
       event: 'offer.consumed'
@@ -146,8 +148,66 @@ export type MonitoringEvent =
       workflow: MonitoringWorkflow
       marketId?: Hex
       operation: 'cancel' | 'ratify' | 'publish'
-      status: 'confirmed'
       txHash: Hex
     }
-  | { event: 'setup.ready'; ready: boolean }
-  | { event: 'setup.check-failed'; check: string; errorName?: string }
+  | { event: 'setup.check-failed'; check: string }
+
+/**
+ * Event names that may be shipped to the log source.
+ * @remarks Shipping is an explicit allowlist, not "any record carrying an `event`". Several
+ * operator-facing records — the `quoter-bot.cycle` envelope and `readonly.make` — are named but
+ * nested and unversioned, so they belong on stdout only. `TRANSACTION_SUBMITTED_EVENTS` are the
+ * pre-receipt counterparts of `transaction.settled` and are already flat, so they ship unchanged.
+ * The type assertions below fail to compile if a `MonitoringEvent` variant is added without being
+ * listed here, or if a name is listed that no variant declares.
+ */
+const MONITORING_EVENT_NAMES = [
+  'bot.configured',
+  'market.configured',
+  'bot.failed',
+  'cycle.completed',
+  'guardrail.rate-clamped',
+  'guardrail.cross-book-cleared',
+  'guardrail.exposure-capped',
+  'guardrail.rungs-truncated',
+  'guardrail.spread-rejected',
+  'guardrail.halted',
+  'reference.observed',
+  'position.observed',
+  'bootstrap.progress',
+  'book.observed',
+  'offer.consumed',
+  'transaction.settled',
+  'setup.check-failed'
+] as const satisfies readonly MonitoringEvent['event'][]
+
+type MissingFromAllowlist = Exclude<
+  MonitoringEvent['event'],
+  (typeof MONITORING_EVENT_NAMES)[number]
+>
+const _allowlistIsExhaustive: MissingFromAllowlist extends never ? true : never = true
+void _allowlistIsExhaustive
+
+const TRANSACTION_SUBMITTED_EVENTS = [
+  'ladder.transaction-submitted',
+  'bootstrap.transaction-submitted',
+  'offer-invalidation.transaction-submitted'
+] as const
+
+const shippableEvents: ReadonlySet<string> = new Set([
+  ...MONITORING_EVENT_NAMES,
+  ...TRANSACTION_SUBMITTED_EVENTS
+])
+
+/**
+ * Reports whether one written record belongs on the shipped monitoring stream.
+ * @param value - Any value passed to the CLI event writer.
+ * @returns `true` only for a record whose `event` is on the shipping allowlist.
+ * @remarks Terminal output is unaffected; this gates shipping alone. Anything not listed stays a
+ * local operator record, which keeps nested unversioned report shapes out of the log source.
+ */
+export const isShippableRecord = (value: unknown) =>
+  typeof value === 'object' &&
+  value !== null &&
+  !Array.isArray(value) &&
+  shippableEvents.has(String((value as { event?: unknown }).event))

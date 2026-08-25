@@ -4,11 +4,14 @@ import type { TargetRateStrategyConfig } from '../../domain/target-rate'
 import type { MonitoringEvent } from './monitoring-event'
 
 type ConfiguredMarkets = {
-  marketIds: readonly Hex[]
   loanAsset: Address
   readOnly: boolean
   bootstrap: readonly { targetRate: TargetRateStrategyConfig }[]
-  ladder: readonly { loopIntervalSeconds: number; targetRate: TargetRateStrategyConfig }[]
+  ladder: readonly {
+    marketId: Hex
+    loopIntervalSeconds: number
+    targetRate: TargetRateStrategyConfig
+  }[]
   bootstrapIntervalSeconds: number
 }
 
@@ -24,21 +27,28 @@ const referenceMode = (
 /**
  * Projects the startup manifest describing what this process is configured to quote.
  * @param configured - Validated market allowlist, loan asset, mode, cadences, and rate strategies.
- * @returns One `bot.configured` record.
- * @remarks Every absence alert is scoped by this record: without it a consumer cannot know which
- * markets should be reporting, or how long silence must last before it is a fault. Emitted once per
- * process start, so a redeploy re-establishes the scope. Carries no credentials — the loan asset is
- * a public address and the market IDs are the configured allowlist.
+ * @returns One process-wide `bot.configured` record followed by one `market.configured` record per
+ * configured ladder market.
+ * @remarks Every absence alert is scoped by these records: without them a consumer cannot know which
+ * markets should be reporting, or how long silence must last before it is a fault. Cadence is
+ * per-market rather than one process-wide minimum, because a single shortest interval would make
+ * every slower market look overdue. Emitted once per process start, so a redeploy re-establishes the
+ * scope. Carries no credentials — the loan asset is a public address and the market IDs are the
+ * configured allowlist.
  */
-export const botConfiguredEvent = (configured: ConfiguredMarkets): MonitoringEvent => ({
-  event: 'bot.configured',
-  marketIds: configured.marketIds,
-  ladderIntervalSeconds: configured.ladder.reduce(
-    (shortest, item) => Math.min(shortest, item.loopIntervalSeconds),
-    Number.POSITIVE_INFINITY
-  ),
-  bootstrapIntervalSeconds: configured.bootstrapIntervalSeconds,
-  loanAsset: configured.loanAsset,
-  referenceMode: referenceMode([...configured.bootstrap, ...configured.ladder]),
-  readOnly: configured.readOnly
-})
+export const botConfiguredEvents = (configured: ConfiguredMarkets): readonly MonitoringEvent[] => [
+  {
+    event: 'bot.configured',
+    bootstrapIntervalSeconds: configured.bootstrapIntervalSeconds,
+    loanAsset: configured.loanAsset,
+    referenceMode: referenceMode([...configured.bootstrap, ...configured.ladder]),
+    readOnly: configured.readOnly
+  },
+  ...configured.ladder.map(
+    (market): MonitoringEvent => ({
+      event: 'market.configured',
+      marketId: market.marketId,
+      ladderIntervalSeconds: market.loopIntervalSeconds
+    })
+  )
+]

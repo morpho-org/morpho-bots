@@ -1,5 +1,3 @@
-import { zeroFloorSub } from '@repo/utils'
-
 import type { BootstrapRunResult } from '../bootstrap/position-bootstrap.service'
 import type { MonitoringEvent } from './monitoring-event'
 
@@ -44,9 +42,7 @@ const verboseEvents = (result: BootstrapRunResult): readonly MonitoringEvent[] =
       event: 'bootstrap.progress',
       marketId,
       creditAssets: position.credit,
-      creditTargetAssets: verbose.config.creditTarget,
-      shortfallAssets: zeroFloorSub(verbose.config.creditTarget, position.credit),
-      mode: verbose.referenceRate?.mode ?? 'static'
+      creditTargetAssets: verbose.config.creditTarget
     })
   }
 
@@ -80,7 +76,6 @@ const verboseEvents = (result: BootstrapRunResult): readonly MonitoringEvent[] =
       workflow: 'bootstrap',
       marketId,
       operation: transaction.operation,
-      status: 'confirmed',
       txHash: transaction.txHash
     })
   }
@@ -120,8 +115,7 @@ export const bootstrapMonitoringEvents = (
       ? ([
           {
             event: 'guardrail.spread-rejected',
-            marketId: result.marketId,
-            errorName: result.errorName
+            marketId: result.marketId
           }
         ] as const)
       : []),

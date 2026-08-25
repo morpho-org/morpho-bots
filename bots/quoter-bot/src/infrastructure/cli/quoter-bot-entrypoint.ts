@@ -7,6 +7,8 @@ import { PositionBootstrapMonitorHaltedError } from '../../application/bootstrap
 import { OfferInvalidationFailedError } from '../../application/invalidation/offer-invalidation-failed.error'
 import { LadderCycleHaltedError } from '../../application/ladder/ladder-cycle-halted.error'
 import { LadderMonitorHaltedError } from '../../application/ladder/ladder-monitor-halted.error'
+import { isShippableRecord } from '../../application/monitoring/monitoring-event'
+import { terminalMonitoringEvents } from '../../application/monitoring/terminal-monitoring.utils'
 import { operatorErrorName } from '../../application/operator-error-name.utils'
 import { QuoterBotMonitorHaltedError } from '../../application/quoter-bot/quoter-bot-monitor-halted.error'
 import { SafeProviderError } from '../../application/setup/safe-provider.error'
@@ -48,16 +50,6 @@ const failureDetails = (error: unknown) => {
   }
   return undefined
 }
-
-// Shipping only named records is what makes `@repo/observability`'s `bot.action` fallback
-// unreachable for this bot: the raw cycle arrays and terminal reports are nested, unversioned
-// operator output that no metric expression can aggregate. Their content survives as the flat
-// `cycle.completed`, `guardrail.halted`, and lifecycle events. Terminal output is unaffected.
-const shipped = (value: unknown) =>
-  typeof value === 'object' &&
-  value !== null &&
-  !Array.isArray(value) &&
-  typeof (value as { event?: unknown }).event === 'string'
 
 const failureMessage = (error: unknown) => {
   if (
@@ -103,7 +95,7 @@ export const runQuoterBotEntrypoint = async (
     const result = await application.run(argv, {
       ...runtime,
       writeEvent: value => {
-        if (shipped(value)) observability?.record(value)
+        if (isShippableRecord(value)) observability?.record(value)
         logger.result(value)
       }
     })
@@ -116,6 +108,10 @@ export const runQuoterBotEntrypoint = async (
     const details = failureDetails(error)
     if (details === undefined && !(error instanceof MakerAccountError)) {
       observability?.unexpected(error, 'entrypoint')
+    } else if (details !== undefined) {
+      for (const event of terminalMonitoringEvents(details, operatorErrorName(error))) {
+        observability?.record(event)
+      }
     }
     logger.error(failureMessage(error), details)
     return 1

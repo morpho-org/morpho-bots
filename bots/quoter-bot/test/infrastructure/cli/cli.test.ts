@@ -278,7 +278,6 @@ describe('Cli', () => {
     ).toEqual(report)
     expect(streamed).toEqual([
       readyReport,
-      { event: 'setup.ready', ready: true },
       { event: 'cycle.completed', workflow: 'setup-check', status: 'ready' }
     ])
     expect(runContinuously).toHaveBeenCalledTimes(1)
@@ -770,7 +769,6 @@ describe('Cli', () => {
     })
     expect(streamed).toEqual([
       event,
-      { event: 'setup.ready', ready: true },
       { event: 'cycle.completed', workflow: 'setup-check', status: 'ready' }
     ])
   })
