@@ -64,7 +64,12 @@ jobs:
       # Mints the GitHub OIDC token the npm CLI exchanges for a short-lived publish token.
       id-token: write
     concurrency:
-      # Serialize publishes so the latest-tag gate cannot race between overlapping runs.
+      # Serialize publishes so the dist-tag gates cannot race between overlapping runs. GitHub
+      # keeps one running plus at most one pending job per group, so if a third release completes
+      # while one publish runs and another waits, the waiting release's publish is cancelled and
+      # its version never reaches npm. Releases outpacing publishes that far is unexpected —
+      # deploy-production serializes releases and outlasts a publish — and every gate is
+      # idempotent, so recover a skipped version by dispatching this workflow with its release tag.
       group: publish-quoter-bot-npm
       cancel-in-progress: false
     steps:
@@ -132,13 +137,16 @@ jobs:
           # exact commit shipped: a Deploy production run with head_sha == sha whose
           # Release-quoter-bot job succeeded. filter=all covers jobs from earlier attempts of a
           # partially re-run pipeline. Reaching this point with a tag but no such run is anomalous
-          # on every trigger path, so it fails loud rather than skipping.
+          # on every trigger path, so it fails loud rather than skipping. Actions API stderr is
+          # third-party diagnostic text on a public log, so it is discarded — an API failure just
+          # leaves the run list empty and fails closed through the fixed error below.
           released='false'
           for run_id in $(gh api \
             "repos/${GITHUB_REPOSITORY}/actions/workflows/deploy-production.yml/runs?head_sha=${sha}&per_page=20" \
-            --jq '.workflow_runs[].id'); do
+            --jq '.workflow_runs[].id' 2>/dev/null); do
             if gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/jobs?filter=all&per_page=100" \
-              --jq '.jobs[] | select(.name == "Release-quoter-bot") | .conclusion' | grep -qx 'success'; then
+              --jq '.jobs[] | select(.name == "Release-quoter-bot") | .conclusion' 2>/dev/null \
+              | grep -qx 'success'; then
               released='true'
               break
             fi
@@ -247,20 +255,39 @@ jobs:
         if: ${{ steps.release.outputs.release == 'true' && steps.registry.outputs.exists != 'true' }}
         id: tags
         env:
+          GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.staged.outputs.version }}
         run: |
           set -euo pipefail
           # Historical reruns are classified first so neither `latest` nor `next` can move
-          # backward: when any release tag descends from this commit, a newer release already
+          # backward: when a release tag descends from this commit, a newer release already
           # shipped, and the recovered version — stable or prerelease — publishes under `backfill`.
+          # A descendant tag is honored only when the production pipeline verifiably released its
+          # commit (same Actions API evidence as the release gate, stderr discarded from the public
+          # log); a forged or unreleased descendant tag cannot demote a genuine release.
+          released_from() {
+            for run_id in $(gh api \
+              "repos/${GITHUB_REPOSITORY}/actions/workflows/deploy-production.yml/runs?head_sha=$1&per_page=20" \
+              --jq '.workflow_runs[].id' 2>/dev/null); do
+              if gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/jobs?filter=all&per_page=100" \
+                --jq '.jobs[] | select(.name == "Release-quoter-bot") | .conclusion' 2>/dev/null \
+                | grep -qx 'success'; then
+                return 0
+              fi
+            done
+            return 1
+          }
           commit="$(git rev-parse HEAD)"
           newer=''
           for tag in $(git tag --list 'quoter-bot-*'); do
             tag_commit="$(git rev-parse "${tag}^{commit}")"
             if [ "$tag_commit" != "$commit" ] \
               && git merge-base --is-ancestor "$commit" "$tag_commit"; then
-              newer="$tag"
-              break
+              if released_from "$tag_commit"; then
+                newer="$tag"
+                break
+              fi
+              echo "::warning::ignoring descendant tag ${tag} without a verified production release run"
             fi
           done
           if [ -n "$newer" ]; then
@@ -306,12 +333,20 @@ jobs:
         working-directory: bots/quoter-bot/dist/npm
         env:
           DIST_TAG: ${{ steps.tags.outputs.dist_tag }}
-          # npm's provenance generator records env GITHUB_SHA as the source commit, and for
-          # workflow_run events GitHub sets that to the default branch's head at event time — not
-          # the gated commit this job built when main advanced mid-pipeline or a dispatch selected
-          # an older release. Pin it to the built commit so the attestation can never name an
-          # unrelated commit; on the common non-raced path this equals the event SHA exactly.
-          GITHUB_SHA: ${{ steps.release.outputs.sha }}
+          RELEASE_SHA: ${{ steps.release.outputs.sha }}
         # Provenance links the published package to this workflow run; access comes from the staged
         # manifest's publishConfig. Requires npm >= 11.5.1, ensured by the upgrade step above.
-        run: npm publish --provenance --tag "$DIST_TAG"
+        # npm's provenance generator records env GITHUB_SHA — which GitHub fixes to the event's
+        # commit and does not allow workflows to override — so when the gated release commit is not
+        # that SHA (main advanced mid-pipeline, or a dispatch selected an older release), the
+        # attestation would name a commit that did not produce the bundle. Publish those runs
+        # explicitly without provenance instead of shipping a wrong attestation; the common
+        # non-raced path still attests normally.
+        run: |
+          set -euo pipefail
+          if [ "$RELEASE_SHA" = "$GITHUB_SHA" ]; then
+            npm publish --provenance --tag "$DIST_TAG"
+          else
+            echo "::warning::event SHA differs from the release commit; publishing without provenance because the attestation would name the wrong commit"
+            npm publish --provenance=false --tag "$DIST_TAG"
+          fi

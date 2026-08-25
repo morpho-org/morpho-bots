@@ -97,7 +97,8 @@
     "scripts/js-doc-validation.error.ts",
     "scripts/bundle-failed.error.ts",
     "scripts/npm-pack-failed.error.ts",
-    "scripts/npm-package.utils.ts"
+    "scripts/npm-package.utils.ts",
+    "scripts/semver-precedence.error.ts"
   ],
   "tsconfig": "tsconfig.json",
   "out": "build/jsdoc",
