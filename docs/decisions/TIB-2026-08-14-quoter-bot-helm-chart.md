@@ -145,11 +145,11 @@ approval and the replacement publication, and cleanup then invalidates every own
 and ladder group — each wait bounded by `TRANSACTION_RECEIPT_TIMEOUT_MS` (default 180 s,
 supported up to 900 s). Kubernetes' 30-second default would SIGKILL mid-cleanup and leave owned
 offers on the book. For a chart-managed config the template derives the wait count from the
-configured workload — 2 (ratify + publish) + one per bootstrap market + the largest ladder
-market's group count + the total ladder group count, where shared-rung markets contribute two
-groups per rung and per-book markets two — and floors the rendered grace period at that many
-receipt timeouts (declared, or the bot's 180 s default) plus a two-minute drain buffer; the
-quickstart configuration renders 2 820 s. The floor is not a guaranteed upper bound: many owned groups
+configured workload — 2 (ladder ratify + publish) + three per bootstrap market (cancellation,
+ratification, publication) + the largest ladder market's group count + the total ladder group
+count, where shared-rung markets contribute two groups per rung and per-book markets two — and
+floors the rendered grace period at that many receipt timeouts (declared, or the bot's 180 s
+default) plus a two-minute drain buffer; the quickstart configuration renders 3 180 s. The floor is not a guaranteed upper bound: many owned groups
 (multi-market, high rung counts) multiply the waits, and timeouts supplied through environment
 overrides or `existingConfigSecret` are invisible to the template — both cases are documented in
 `values.yaml` and the chart README as the operator's explicit sizing responsibility.
@@ -223,10 +223,13 @@ container starts, without changing restored state-file modes.
 - The published `morphoorg/quoter` image is amd64-only (the Docker Hub workflow builds without
   a `platforms` matrix), so `image.architecture: amd64` pins scheduling through a reserved
   `kubernetes.io/arch` nodeSelector entry until a multi-architecture image exists.
-- A kept state claim survives uninstall unmanaged; the PVC template suppresses re-rendering
-  when a name-scoped lookup finds the orphan, so same-name reinstalls mount it instead of
-  colliding, and chart-managed `serviceAccount.annotations` changes roll the pod through a
-  checksum because identity webhooks act at pod admission.
+- A kept state claim survives uninstall with its Helm ownership metadata intact, so a
+  same-name reinstall re-adopts it through Helm's standard adoption path (Helm ≥ 3.2) while
+  the claim stays release-managed across upgrades; foreign claims fail Helm's ownership
+  validation and must be selected deliberately via `persistence.existingClaim`. Chart-managed
+  `serviceAccount.annotations` changes roll the pod through a checksum because identity
+  webhooks act at pod admission, and in-place rotations of env-referenced signer Secrets
+  require a documented `kubectl rollout restart`.
 - Default pod posture: non-root uid 1000, seccomp `RuntimeDefault`, no privilege escalation, all
   capabilities dropped, read-only root filesystem, no service-account token. The chown-only
   `volumePermissions` init container is the only root surface and exits before the bot starts;

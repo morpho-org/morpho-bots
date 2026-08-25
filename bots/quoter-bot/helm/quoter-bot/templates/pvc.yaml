@@ -1,15 +1,12 @@
 {{- /*
-A kept claim survives uninstall as an unmanaged resource. The name-scoped lookup suppresses
-rendering only in the install-over-orphan case (.Release.IsInstall with the claim already
-present), so a same-name reinstall mounts the orphan instead of colliding with a fresh create.
-Upgrades always render the claim: it stays release-managed (no pruning with retain=false, and
-size/annotation changes keep reconciling), and the first upgrade after an adoption install
-re-adopts the orphan through its matching release annotations. lookup is empty under
-`helm template`, where the claim always renders.
+The claim is always rendered, so it stays release-managed on every upgrade (no pruning with
+retain=false; size/annotation changes keep reconciling). A kept claim survives uninstall with
+its Helm ownership metadata intact, so a same-name reinstall re-adopts it through Helm's
+standard adoption path (Helm >= 3.2) instead of colliding; a pre-existing claim that was NOT
+created by this release name fails Helm's ownership validation loudly — select such a claim
+deliberately through persistence.existingClaim.
 */}}
-{{- $existingState := lookup "v1" "PersistentVolumeClaim" .Release.Namespace (include "quoter-bot.stateClaimName" .) }}
-{{- $suppressForAdoption := and .Release.IsInstall $existingState }}
-{{- if and .Values.persistence.enabled (not .Values.persistence.existingClaim) (not $suppressForAdoption) }}
+{{- if and .Values.persistence.enabled (not .Values.persistence.existingClaim) }}
 # Holds the bot's durable offer-group ownership state (XDG_STATE_HOME). Deleting it makes
 # previously bot-issued groups unknown, which fails readiness until an operator invalidates or
 # adopts them, so the claim is kept on uninstall by default (persistence.retain).

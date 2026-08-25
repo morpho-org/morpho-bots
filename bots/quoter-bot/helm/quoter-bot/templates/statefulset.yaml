@@ -73,12 +73,14 @@ spec:
       serviceAccountName: {{ include "quoter-bot.serviceAccountName" . | quote }}
       # SIGTERM shutdown serializes receipt-bounded waits through the shared operation queue:
       # an in-flight ladder replacement can cancel every old group of one market serially,
-      # await a Setter ratification approval and the replacement publication, and cleanup then
-      # invalidates every owned bootstrap and ladder group. For a chart-managed config the
-      # wait count is derived from the configured workload — 2 (ratify + publish) + one per
-      # bootstrap market + the largest single ladder market's group count (in-flight
-      # cancellations) + the total ladder group count (cleanup), where shared-rung markets
-      # contribute two groups per rung and per-book markets two groups — and the grace period
+      # await a Setter ratification approval and the replacement publication, a bootstrap
+      # cycle continues serially through every planned market with up to a cancellation,
+      # ratification, and publication wait each, and cleanup then invalidates every owned
+      # bootstrap and ladder group. For a chart-managed config the wait count is derived from
+      # the configured workload — 2 (ladder ratify + publish) + three per bootstrap market +
+      # the largest single ladder market's group count (in-flight cancellations) + the total
+      # ladder group count (cleanup), where shared-rung markets contribute two groups per rung
+      # and per-book markets two groups — and the grace period
       # is floored to that many receipt timeouts (the declared
       # setup.transactionReceiptTimeoutMs, or the bot's 180 s default when undeclared) plus a
       # two-minute drain buffer. Environment-supplied or existingConfigSecret timeouts and
@@ -102,7 +104,7 @@ spec:
       {{- if gt $groups $ladderMaxGroups }}{{- $ladderMaxGroups = $groups }}{{- end }}
       {{- end }}
       {{- end }}
-      {{- $waits := add 2 $bootstrapCount $ladderMaxGroups $ladderTotalGroups }}
+      {{- $waits := add 2 (mul 3 $bootstrapCount) $ladderMaxGroups $ladderTotalGroups }}
       {{- if lt $waits 5 }}{{- $waits = 5 }}{{- end }}
       {{- $grace := int .Values.terminationGracePeriodSeconds }}
       {{- $graceFloor := add (mul (div $receiptMs 1000) $waits) 120 }}

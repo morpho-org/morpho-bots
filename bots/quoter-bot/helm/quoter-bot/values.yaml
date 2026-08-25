@@ -126,6 +126,10 @@ existingConfigSecret: ''
 # Stack settings (BETTERSTACK_SOURCE_TOKEN, BETTERSTACK_INGESTING_HOST,
 # BETTERSTACK_HEARTBEAT_URL). XDG_STATE_HOME is chart-managed and reserved: entries with that
 # name are ignored so durable ownership state cannot be detached from the retained PVC.
+# Rotating a referenced Secret in place does not reach the running process — environment
+# variables are captured at container start — so follow a signer rotation with
+# `kubectl rollout restart statefulset/<release-name>`, exactly like an edited
+# existingConfigSecret.
 env: []
 # env:
 #   - name: MAKER_PRIVATE_KEY

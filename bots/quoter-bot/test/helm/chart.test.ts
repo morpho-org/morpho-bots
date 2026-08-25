@@ -79,7 +79,7 @@ describe('quoter-bot Helm chart', () => {
     expect(statefulSet).toContain('{{- range (dig "ladder" (list) .Values.config) }}')
     expect(statefulSet).toContain('{{- $groups = mul 2 (int (dig "rungCount" 1 .)) }}')
     expect(statefulSet).toContain(
-      '{{- $waits := add 2 $bootstrapCount $ladderMaxGroups $ladderTotalGroups }}'
+      '{{- $waits := add 2 (mul 3 $bootstrapCount) $ladderMaxGroups $ladderTotalGroups }}'
     )
     expect(statefulSet).toContain('{{- if lt $waits 5 }}{{- $waits = 5 }}{{- end }}')
     expect(statefulSet).toContain('add (mul (div $receiptMs 1000) $waits) 120')
@@ -87,15 +87,14 @@ describe('quoter-bot Helm chart', () => {
     expect(values).toContain('terminationGracePeriodSeconds: 1020')
   })
 
-  it('reuses a kept state claim on reinstall while keeping upgrades managed', async () => {
+  it('keeps the state claim rendered and release-managed on every install and upgrade', async () => {
     const pvc = await readChartFile('templates/pvc.yaml')
 
     expect(pvc).toContain(
-      'lookup "v1" "PersistentVolumeClaim" .Release.Namespace (include "quoter-bot.stateClaimName" .)'
+      '{{- if and .Values.persistence.enabled (not .Values.persistence.existingClaim) }}'
     )
-    expect(pvc).toContain('{{- $suppressForAdoption := and .Release.IsInstall $existingState }}')
-    expect(pvc).toContain('(not $suppressForAdoption)')
-    expect(pvc).not.toContain('(not $existingState)')
+    expect(pvc).not.toContain('lookup')
+    expect(pvc).toContain("Helm's standard adoption path")
   })
 
   it('pins scheduling to the published image architecture', async () => {
