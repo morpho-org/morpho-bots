@@ -99,7 +99,8 @@ const sideGuardrails = (
 
 const verboseEvents = (
   marketId: Hex,
-  verbose: LadderVerboseDetails
+  verbose: LadderVerboseDetails,
+  status: LadderRunResult['status']
 ): readonly MonitoringEvent[] => {
   const events: MonitoringEvent[] = []
   if (verbose.referenceRateBps !== undefined) {
@@ -141,7 +142,7 @@ const verboseEvents = (
     events.push({
       event: 'transaction.settled',
       workflow: 'ladder',
-      marketId,
+      ...(status === 'halted' ? {} : { marketId }),
       operation: transaction.operation,
       txHash: transaction.txHash
     })
@@ -192,7 +193,7 @@ export const ladderMonitoringEvents = (
         strategyInvalidated: result.strategyInvalidated
       })
     }
-    if (result.verbose) events.push(...verboseEvents(marketId, result.verbose))
+    if (result.verbose) events.push(...verboseEvents(marketId, result.verbose, result.status))
     return events
   })
 

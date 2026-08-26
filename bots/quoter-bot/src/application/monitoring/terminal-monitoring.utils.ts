@@ -12,7 +12,11 @@ const text = (value: unknown) => (typeof value === 'string' ? value : undefined)
 const isSetupReport = (value: unknown) =>
   isRecord(value) && typeof value.ready === 'boolean' && Array.isArray(value.checks)
 
-const workflowFailure = (workflow: MonitoringWorkflow, outcome: unknown): MonitoringEvent[] => {
+const workflowFailure = (
+  workflow: MonitoringWorkflow,
+  outcome: unknown,
+  errorName: string
+): MonitoringEvent[] => {
   if (!isRecord(outcome)) return []
   const settled = outcome as Outcome
   if (settled.status === 'rejected') {
@@ -22,13 +26,21 @@ const workflowFailure = (workflow: MonitoringWorkflow, outcome: unknown): Monito
   }
   const report = settled.report
   if (!isRecord(report) || report.status !== 'halted') return []
-  const errorName = text(report.cycleErrorName)
+  const reason = text(report.reason) ?? 'halted'
+  const cleanupErrorName =
+    reason === 'cleanup-failed' && isRecord(report.cleanup)
+      ? text(report.cleanup.errorName)
+      : undefined
+  const resolvedErrorName =
+    cleanupErrorName ??
+    text(report.cycleErrorName) ??
+    (reason === 'cleanup-failed' ? errorName : undefined)
   return [
     {
       event: 'bot.failed',
       workflow,
-      reason: text(report.reason) ?? 'halted',
-      ...(errorName === undefined ? {} : { errorName })
+      reason,
+      ...(resolvedErrorName === undefined ? {} : { errorName: resolvedErrorName })
     }
   ]
 }
@@ -63,17 +75,22 @@ export const terminalMonitoringEvents = (
   if (isRecord(workflows)) {
     return [
       { event: 'bot.failed', reason: text(report.reason) ?? 'halted', errorName },
-      ...workflowFailure('setup-check', workflows.setupCheck),
-      ...workflowFailure('bootstrap', workflows.bootstrap),
-      ...workflowFailure('ladder', workflows.ladder)
+      ...workflowFailure('setup-check', workflows.setupCheck, errorName),
+      ...workflowFailure('bootstrap', workflows.bootstrap, errorName),
+      ...workflowFailure('ladder', workflows.ladder, errorName)
     ]
   }
+  const reason = text(report.reason) ?? 'halted'
+  const cleanupErrorName =
+    reason === 'cleanup-failed' && isRecord(report.cleanup)
+      ? text(report.cleanup.errorName)
+      : undefined
   const cycleErrorName = text(report.cycleErrorName)
   return [
     {
       event: 'bot.failed',
-      reason: text(report.reason) ?? 'halted',
-      errorName: cycleErrorName ?? errorName
+      reason,
+      errorName: cleanupErrorName ?? cycleErrorName ?? errorName
     }
   ]
 }

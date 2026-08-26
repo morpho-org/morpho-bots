@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'vitest'
 
+import type { BootstrapRunResult } from '../../../src/application/bootstrap/position-bootstrap.service'
 import type { LadderRunResult } from '../../../src/application/ladder/ladder-quoter.service'
 import type { SetupCheckReport } from '../../../src/application/setup/setup-check.service'
 
@@ -74,6 +75,52 @@ describe('createMonitoringProjection', () => {
     ])
     expect(spreadRejections('transaction-policy')).toEqual([])
     expect(spreadRejections()).toEqual([])
+  })
+
+  test('omits market attribution for halted bootstrap settlements', () => {
+    const transaction = { operation: 'cancel' as const, txHash: `0x${'33'.repeat(32)}` as const }
+    const events = createMonitoringProjection().bootstrap([
+      {
+        marketId,
+        status: 'halted',
+        stage: 'reference-read',
+        strategyInvalidated: true,
+        errorName: 'ProviderError',
+        verbose: {
+          config: { marketId },
+          currentState: { status: 'not-read', reason: 'configuration-invalid' },
+          stateAfterCheck: { status: 'not-read', reason: 'configuration-invalid' },
+          submittedTransactions: [transaction]
+        }
+      },
+      {
+        marketId,
+        status: 'applied',
+        action: 'publish',
+        verbose: {
+          config: { marketId },
+          currentState: { status: 'not-read', reason: 'configuration-invalid' },
+          stateAfterCheck: { status: 'not-read', reason: 'configuration-invalid' },
+          submittedTransactions: [transaction]
+        }
+      }
+    ] as unknown as readonly BootstrapRunResult[])
+
+    expect(events.filter(event => event.event === 'transaction.settled')).toEqual([
+      {
+        event: 'transaction.settled',
+        workflow: 'bootstrap',
+        operation: 'cancel',
+        txHash: transaction.txHash
+      },
+      {
+        event: 'transaction.settled',
+        workflow: 'bootstrap',
+        marketId,
+        operation: 'cancel',
+        txHash: transaction.txHash
+      }
+    ])
   })
 
   test('signals an empty book positively when no quote is active at all', () => {

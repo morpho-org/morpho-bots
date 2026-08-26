@@ -74,7 +74,7 @@ const verboseEvents = (result: BootstrapRunResult): readonly MonitoringEvent[] =
     events.push({
       event: 'transaction.settled',
       workflow: 'bootstrap',
-      marketId,
+      ...(result.status === 'halted' ? {} : { marketId }),
       operation: transaction.operation,
       txHash: transaction.txHash
     })

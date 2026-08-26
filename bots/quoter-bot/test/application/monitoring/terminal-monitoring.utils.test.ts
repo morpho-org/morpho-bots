@@ -67,14 +67,62 @@ describe('terminalMonitoringEvents', () => {
     ])
   })
 
-  test('never emits a record without an allowlisted classification', () => {
+  test('uses cleanup error names for standalone failures', () => {
     const events = terminalMonitoringEvents(
-      { status: 'halted', reason: 'cleanup-failed' },
+      { status: 'halted', reason: 'cleanup-failed', cleanup: { errorName: 'CleanupError' } },
       'LadderMonitorHaltedError'
     )
 
     expect(events).toEqual([
-      { event: 'bot.failed', reason: 'cleanup-failed', errorName: 'LadderMonitorHaltedError' }
+      { event: 'bot.failed', reason: 'cleanup-failed', errorName: 'CleanupError' }
     ])
+  })
+
+  test('keeps the wrapper classification for other standalone failures', () => {
+    expect(
+      terminalMonitoringEvents({ status: 'halted', reason: 'cycle-failed' }, 'CycleError')
+    ).toEqual([{ event: 'bot.failed', reason: 'cycle-failed', errorName: 'CycleError' }])
+  })
+
+  test('uses cleanup error names for combined workflow failures', () => {
+    const events = terminalMonitoringEvents(
+      {
+        status: 'halted',
+        reason: 'workflow-error',
+        workflows: {
+          setupCheck: { status: 'fulfilled', report: { status: 'stopped', reason: 'signal' } },
+          bootstrap: {
+            status: 'fulfilled',
+            report: {
+              status: 'halted',
+              reason: 'cleanup-failed',
+              cleanup: { status: 'failed', errorName: 'BootstrapCleanupError' }
+            }
+          },
+          ladder: {
+            status: 'fulfilled',
+            report: {
+              status: 'halted',
+              reason: 'cleanup-failed',
+              cleanup: { status: 'failed', errorName: 'LadderCleanupError' }
+            }
+          }
+        }
+      },
+      'QuoterBotMonitorHaltedError'
+    )
+
+    expect(events).toContainEqual({
+      event: 'bot.failed',
+      workflow: 'bootstrap',
+      reason: 'cleanup-failed',
+      errorName: 'BootstrapCleanupError'
+    })
+    expect(events).toContainEqual({
+      event: 'bot.failed',
+      workflow: 'ladder',
+      reason: 'cleanup-failed',
+      errorName: 'LadderCleanupError'
+    })
   })
 })

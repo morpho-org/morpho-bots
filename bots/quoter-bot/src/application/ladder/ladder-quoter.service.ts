@@ -368,10 +368,15 @@ export class LadderQuoterService {
           'ladder-configuration-failed',
           parameters
         )
+        const submittedTransactions =
+          result.makeResult !== undefined && result.makeResult !== 'logged'
+            ? result.makeResult.submittedTransactions
+            : []
         return [
-          await this.completeResult(config, result, parameters, {
+          await this.completeResult(config, result.result, parameters, {
             config,
-            currentState: { status: 'not-read', reason: 'configuration-invalid' }
+            currentState: { status: 'not-read', reason: 'configuration-invalid' },
+            ...(submittedTransactions.length > 0 ? { submittedTransactions } : {})
           })
         ]
       }
@@ -400,12 +405,20 @@ export class LadderQuoterService {
           'ladder-decision-failed',
           parameters
         )
+        const submittedTransactions =
+          result.makeResult !== undefined && result.makeResult !== 'logged'
+            ? result.makeResult.submittedTransactions
+            : []
         results.push(
           await this.completeResult(
             config,
-            result,
+            result.result,
             parameters,
-            { config, currentState: { status: 'failed', errorName: operatorErrorName(error) } },
+            {
+              config,
+              currentState: { status: 'failed', errorName: operatorErrorName(error) },
+              ...(submittedTransactions.length > 0 ? { submittedTransactions } : {})
+            },
             startedAt
           )
         )
@@ -418,7 +431,9 @@ export class LadderQuoterService {
       } catch (error) {
         const { result, invalidation } = await this.failedMarketRead(config, error, parameters)
         const submittedTransactions =
-          invalidation === undefined || invalidation === 'logged'
+          invalidation === undefined ||
+          invalidation === 'logged' ||
+          invalidation.submittedTransactions.length === 0
             ? undefined
             : invalidation.submittedTransactions
         results.push(
@@ -462,12 +477,21 @@ export class LadderQuoterService {
           'reference-read-failed',
           parameters
         )
+        const submittedTransactions =
+          result.makeResult !== undefined && result.makeResult !== 'logged'
+            ? result.makeResult.submittedTransactions
+            : []
         results.push(
           await this.completeResult(
             config,
-            result,
+            result.result,
             parameters,
-            { config, currentState, ...(groupConsumption ? { groupConsumption } : {}) },
+            {
+              config,
+              currentState,
+              ...(groupConsumption ? { groupConsumption } : {}),
+              ...(submittedTransactions.length > 0 ? { submittedTransactions } : {})
+            },
             startedAt
           )
         )
@@ -505,17 +529,22 @@ export class LadderQuoterService {
           'ladder-decision-failed',
           parameters
         )
+        const submittedTransactions =
+          result.makeResult !== undefined && result.makeResult !== 'logged'
+            ? result.makeResult.submittedTransactions
+            : []
         results.push(
           await this.completeResult(
             config,
-            result,
+            result.result,
             parameters,
             {
               config,
               currentState,
               referenceRateBps,
               targetRateBps: referenceRateBps + config.quotePremiumBps,
-              ...(groupConsumption ? { groupConsumption } : {})
+              ...(groupConsumption ? { groupConsumption } : {}),
+              ...(submittedTransactions.length > 0 ? { submittedTransactions } : {})
             },
             startedAt
           )
@@ -641,15 +670,17 @@ export class LadderQuoterService {
         invalidation
       }
     } catch (invalidationError) {
+      const halt = await this.halt(
+        config.marketId,
+        'market-invalidation',
+        error,
+        'market-invalidation-failed',
+        parameters,
+        invalidationError
+      )
       return {
-        result: await this.halt(
-          config.marketId,
-          'market-invalidation',
-          error,
-          'market-invalidation-failed',
-          parameters,
-          invalidationError
-        )
+        result: halt.result,
+        invalidation: halt.makeResult
       }
     }
   }
@@ -709,7 +740,7 @@ export class LadderQuoterService {
     reason: Parameters<LadderMakeService['hardHalt']>[0]['reason'],
     parameters: LadderRunParameters,
     marketInvalidationError?: unknown
-  ): Promise<LadderRunOutcome> {
+  ): Promise<{ result: LadderRunOutcome; makeResult?: LadderMakeResult }> {
     const marketInvalidationFailure =
       marketInvalidationError === undefined
         ? {}
@@ -726,23 +757,28 @@ export class LadderQuoterService {
           : undefined
       })
       return {
-        marketId,
-        status: 'halted',
-        stage,
-        strategyInvalidated: invalidation !== 'logged',
-        ...(invalidation === 'logged' ? { strategyInvalidationLogged: true } : {}),
-        errorName: operatorErrorName(error),
-        ...marketInvalidationFailure
+        result: {
+          marketId,
+          status: 'halted',
+          stage,
+          strategyInvalidated: invalidation !== 'logged',
+          ...(invalidation === 'logged' ? { strategyInvalidationLogged: true } : {}),
+          errorName: operatorErrorName(error),
+          ...marketInvalidationFailure
+        },
+        makeResult: invalidation
       }
     } catch (invalidationError) {
       return {
-        marketId,
-        status: 'halted',
-        stage,
-        strategyInvalidated: false,
-        errorName: operatorErrorName(error),
-        ...marketInvalidationFailure,
-        invalidationErrorName: operatorErrorName(invalidationError)
+        result: {
+          marketId,
+          status: 'halted',
+          stage,
+          strategyInvalidated: false,
+          errorName: operatorErrorName(error),
+          ...marketInvalidationFailure,
+          invalidationErrorName: operatorErrorName(invalidationError)
+        }
       }
     }
   }

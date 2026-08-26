@@ -13,6 +13,7 @@ import type {
 } from '../../../src/domain/ladder/ladder'
 
 import { LadderQuoterService } from '../../../src/application/ladder/ladder-quoter.service'
+import { ladderMonitoringEvents } from '../../../src/application/monitoring/ladder-monitoring.utils'
 import { LadderAdapterError } from '../../../src/infrastructure/ladder/ladder-adapter.error'
 
 const marketId: Hex = `0x${'55'.repeat(32)}`
@@ -540,6 +541,50 @@ describe('LadderQuoterService', () => {
     const result = await subject.service.runOnce()
     expect(subject.halts).toEqual(['reference-read-failed'])
     expect(result).toMatchObject([{ status: 'halted' }])
+  })
+
+  test('retains strategy-wide hard-halt settlements for verbose monitoring', async () => {
+    const cancellationHash: Hex = `0x${'ee'.repeat(32)}`
+    const service = new LadderQuoterService(
+      {
+        async readMarket() {
+          return state()
+        }
+      },
+      {
+        async readRate() {
+          throw new RangeError('private')
+        }
+      },
+      {
+        async readActive() {
+          return undefined
+        },
+        async reconcile() {},
+        async hardHalt() {
+          return { submittedTransactions: [{ operation: 'cancel', txHash: cancellationHash }] }
+        },
+        async cleanup() {}
+      },
+      [config()]
+    )
+
+    const result = await service.runOnce({ verbose: true })
+    expect(result).toMatchObject([
+      {
+        status: 'halted',
+        stage: 'reference-read',
+        verbose: {
+          submittedTransactions: [{ operation: 'cancel', txHash: cancellationHash }]
+        }
+      }
+    ])
+    expect(ladderMonitoringEvents(result)).toContainEqual({
+      event: 'transaction.settled',
+      workflow: 'ladder',
+      operation: 'cancel',
+      txHash: cancellationHash
+    })
   })
 
   test('publishes bound-clamped rungs instead of halting on a reference excursion', async () => {
