@@ -31,8 +31,9 @@ type LatestBlockReader = {
  * identical curve input. Reads are batched across a cycle instead of issuing two requests per
  * market: the market read is cached per market after its first success because the on-chain
  * maturity is immutable (only `timeToMaturity` is consumed from the cached data), and one
- * latest-block read is shared for a bounded fifteen-second window so a serial multi-market sweep
- * sees about one block request per cycle. The bounded timestamp staleness is harmless because integer
+ * latest-block read is shared for a bounded fifteen-second monotonic-clock window so a serial
+ * multi-market sweep sees about one block request per cycle and a wall-clock step (NTP correction,
+ * restored VM snapshot) can never extend the share window. The bounded timestamp staleness is harmless because integer
  * flooring moves a resolved premium roughly one BPS per several days. Each reader still resolves
  * its market and block inputs concurrently through `Promise.all`, decay stays clocked on
  * `block.timestamp` via SDK `Market.timeToMaturity` rather than wall clock, and a failed read is
@@ -56,11 +57,11 @@ export const maturityReadsByMarket = (parameters: {
     return read
   }
   const latestBlock = () => {
-    if (sharedBlock !== undefined && Date.now() - sharedBlock.at < BLOCK_SHARE_MS) {
+    if (sharedBlock !== undefined && performance.now() - sharedBlock.at < BLOCK_SHARE_MS) {
       return sharedBlock.read
     }
     const refreshed = {
-      at: Date.now(),
+      at: performance.now(),
       read: parameters.client.getBlock({ blockTag: 'latest' }).catch((error: unknown) => {
         if (sharedBlock === refreshed) sharedBlock = undefined
         throw error

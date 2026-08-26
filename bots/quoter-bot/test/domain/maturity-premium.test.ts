@@ -4,6 +4,7 @@ import { describe, expect, test } from 'vitest'
 import {
   MATURITY_PREMIUM_MAX_MATURITY_SECONDS,
   MATURITY_PREMIUM_YEAR_SECONDS,
+  hasAttainableMaturityPremiumBps,
   highestReachableMaturityPremiumBps,
   maturityPremiumConfigIssue,
   resolveMaturityPremiumBps
@@ -123,4 +124,70 @@ describe('resolveMaturityPremiumBps', () => {
       ).toBe(0n)
     }
   )
+})
+
+describe('hasAttainableMaturityPremiumBps', () => {
+  const perSecondSlope = 1_000n * MATURITY_PREMIUM_YEAR_SECONDS
+
+  test('accepts any window containing the zero premium attained at maturity', () => {
+    expect(
+      hasAttainableMaturityPremiumBps({ shape: 'linear', premiumPerYearBps: 120n }, -50n, 0n)
+    ).toBe(true)
+    expect(
+      hasAttainableMaturityPremiumBps(
+        { shape: 'linear', premiumPerYearBps: perSecondSlope },
+        0n,
+        700n
+      )
+    ).toBe(true)
+  })
+
+  test('accepts a one-BPS-stepping slope that walks into the window', () => {
+    expect(
+      hasAttainableMaturityPremiumBps({ shape: 'linear', premiumPerYearBps: 120n }, 100n, 700n)
+    ).toBe(true)
+  })
+
+  test('rejects a slope whose integer steps jump over the whole window', () => {
+    expect(
+      hasAttainableMaturityPremiumBps(
+        { shape: 'linear', premiumPerYearBps: perSecondSlope },
+        100n,
+        700n
+      )
+    ).toBe(false)
+  })
+
+  test('accepts a coarse slope whose first step lands exactly on the window edge', () => {
+    expect(
+      hasAttainableMaturityPremiumBps(
+        { shape: 'linear', premiumPerYearBps: perSecondSlope },
+        100n,
+        1_000n
+      )
+    ).toBe(true)
+  })
+
+  test('accepts a coarse slope saturating onto a cap inside the window', () => {
+    expect(
+      hasAttainableMaturityPremiumBps(
+        { shape: 'linear', premiumPerYearBps: perSecondSlope, maximumPremiumBps: 500n },
+        100n,
+        700n
+      )
+    ).toBe(true)
+  })
+
+  test('rejects a ceiling below the window and a window below zero', () => {
+    expect(
+      hasAttainableMaturityPremiumBps(
+        { shape: 'linear', premiumPerYearBps: 120n, maximumPremiumBps: 50n },
+        100n,
+        700n
+      )
+    ).toBe(false)
+    expect(
+      hasAttainableMaturityPremiumBps({ shape: 'linear', premiumPerYearBps: 120n }, -700n, -100n)
+    ).toBe(false)
+  })
 })

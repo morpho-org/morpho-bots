@@ -10,7 +10,10 @@ import { validateBootstrapConfig } from '../domain/bootstrap/position-bootstrap'
 import { isBytes32, normalizeBytes32 } from '../domain/bytes32'
 import { assertLadderShapeAtReference, validateLadderConfig } from '../domain/ladder/ladder'
 import { LadderConfigurationError } from '../domain/ladder/ladder-configuration.error'
-import { highestReachableMaturityPremiumBps } from '../domain/maturity-premium'
+import {
+  hasAttainableMaturityPremiumBps,
+  highestReachableMaturityPremiumBps
+} from '../domain/maturity-premium'
 import { ConfigValidationError } from './config-validation.error'
 
 /** Minimal string environment shape used by pure market-id parsing. */
@@ -331,7 +334,9 @@ export const bootstrapConfigsValue = (
         // A maturity premium moves the requested rate along a reachable envelope bounded by the
         // configured cap and the protocol's 100-year maturity horizon, so load-time rejection is
         // reserved for rates pinned outside the bounds at every protocol-permitted maturity; a
-        // transiently clamped rate is documented runtime behavior.
+        // transiently clamped rate is documented runtime behavior. Integer flooring makes the
+        // premium a step function, so the final check also rejects a slope whose steps jump over
+        // the whole rate band even though the dense envelope overlaps it.
         const requestedRateBps = config.targetRate.hardcodedRateBps + config.premiumBps
         const highestRequestedRateBps =
           config.maturityPremium === undefined
@@ -347,6 +352,19 @@ export const bootstrapConfigsValue = (
           throw new BootstrapConfigurationError(
             'requestedRateBps',
             'must be at most maximumRateBps'
+          )
+        }
+        if (
+          config.maturityPremium !== undefined &&
+          !hasAttainableMaturityPremiumBps(
+            config.maturityPremium,
+            config.minimumRateBps - requestedRateBps,
+            config.maximumRateBps - requestedRateBps
+          )
+        ) {
+          throw new BootstrapConfigurationError(
+            'requestedRateBps',
+            'must be attainable between minimumRateBps and maximumRateBps'
           )
         }
       }

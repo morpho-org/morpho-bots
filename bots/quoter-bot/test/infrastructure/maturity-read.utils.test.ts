@@ -73,9 +73,9 @@ describe('maturityReadsByMarket', () => {
     expect(providers.counts()).toEqual({ marketReads: 2, blockReads: 1 })
   })
 
-  test('refreshes the shared block read after the share window elapses', async () => {
+  test('refreshes the shared block read after the monotonic share window elapses', async () => {
     const providers = harness()
-    const now = vi.spyOn(Date, 'now')
+    const now = vi.spyOn(performance, 'now')
     now.mockReturnValue(0)
     const reads = maturityReadsByMarket({
       entries: [premiumEntry(marketId)],
@@ -85,6 +85,26 @@ describe('maturityReadsByMarket', () => {
 
     await reads.get(marketId)?.()
     now.mockReturnValue(60_000)
+    await reads.get(marketId)?.()
+
+    expect(providers.counts()).toEqual({ marketReads: 1, blockReads: 2 })
+  })
+
+  test('expires the shared block read even when the wall clock moves backward', async () => {
+    const providers = harness()
+    const monotonic = vi.spyOn(performance, 'now')
+    const wallClock = vi.spyOn(Date, 'now')
+    monotonic.mockReturnValue(0)
+    wallClock.mockReturnValue(1_000_000_000_000)
+    const reads = maturityReadsByMarket({
+      entries: [premiumEntry(marketId)],
+      midnight: providers.midnight,
+      client: providers.client
+    })
+
+    await reads.get(marketId)?.()
+    monotonic.mockReturnValue(60_000)
+    wallClock.mockReturnValue(1_000_000_000_000 - 3_600_000)
     await reads.get(marketId)?.()
 
     expect(providers.counts()).toEqual({ marketReads: 1, blockReads: 2 })

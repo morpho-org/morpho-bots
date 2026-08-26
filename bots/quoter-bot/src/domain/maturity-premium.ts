@@ -74,3 +74,30 @@ export const resolveMaturityPremiumBps = (
  */
 export const highestReachableMaturityPremiumBps = (config: MaturityPremiumConfig): bigint =>
   resolveMaturityPremiumBps(config, MATURITY_PREMIUM_MAX_MATURITY_SECONDS)
+
+/**
+ * Reports whether some protocol-permitted maturity resolves a premium inside a window.
+ * @param config - Validated maturity-premium configuration selecting the function shape.
+ * @param lowestBps - Inclusive lower end of the acceptable premium window in basis points.
+ * @param highestBps - Inclusive upper end of the acceptable premium window in basis points.
+ * @returns `true` when at least one integer seconds-to-maturity in the protocol horizon resolves
+ * a premium within the window; `false` when every attainable premium misses it.
+ * @remarks Exact for the step function that integer flooring makes of the linear shape: a slope
+ * above one BPS per second skips integer premiums, so the first attainable value at or above the
+ * window (the floored step at the smallest sufficient maturity, saturated by the configured cap)
+ * decides membership instead of the dense envelope. Zero is always attainable at maturity.
+ */
+export const hasAttainableMaturityPremiumBps = (
+  config: MaturityPremiumConfig,
+  lowestBps: bigint,
+  highestBps: bigint
+): boolean => {
+  if (highestBps < 0n || highestBps < lowestBps) return false
+  if (lowestBps <= 0n) return true
+  if (highestReachableMaturityPremiumBps(config) < lowestBps) return false
+  const firstSufficientSeconds =
+    (lowestBps * MATURITY_PREMIUM_YEAR_SECONDS + config.premiumPerYearBps - 1n) /
+    config.premiumPerYearBps
+  const firstAttainableBps = resolveMaturityPremiumBps(config, firstSufficientSeconds)
+  return firstAttainableBps <= highestBps
+}

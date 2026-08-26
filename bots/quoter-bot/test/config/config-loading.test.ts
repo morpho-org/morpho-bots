@@ -363,6 +363,12 @@ describe('ConfigService YAML and environment loading', () => {
       '400',
       '    premiumBps: -350\n    maturityPremium:\n      shape: linear\n      premiumPerYearBps: "1"',
       'bootstrap[0].requestedRateBps must be at least minimumRateBps'
+    ],
+    [
+      'a slope whose integer premium steps jump over the whole rate band',
+      '400',
+      '    premiumBps: -300\n    maturityPremium:\n      shape: linear\n      premiumPerYearBps: "31536000000"',
+      'bootstrap[0].requestedRateBps must be attainable between minimumRateBps and maximumRateBps'
     ]
   ])(
     'rejects a hardcoded rate pinned outside the bounds at every maturity: %s',
