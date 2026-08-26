@@ -409,7 +409,7 @@ const safeInteger = (value: unknown, field: string) => {
  * malformed integer or group mode, a malformed optional `maturityPremium` (unknown nested key,
  * unsupported shape, missing slope, non-positive slope or cap, or an unquoted integer), a
  * non-allowlisted or duplicate market, any domain shape invariant violation, and a hardcoded
- * target whose full shape stays outside a hard bound at every reachable maturity.
+ * target whose full shape no attainable premium can place inside the hard bounds.
  * @remarks Pure parsing and validation with no environment, provider, logging, or persistence
  * access; browser-safe, so the playground reuses it verbatim for editing and previews.
  */

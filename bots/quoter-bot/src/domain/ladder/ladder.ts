@@ -5,6 +5,7 @@ import type { MaturityPremiumConfig } from '../maturity-premium'
 import { isBytes32 } from '../bytes32'
 import { clampRateBps, CROSS_BOOK_CLEARANCE_BPS } from '../cross-book'
 import {
+  hasAttainableMaturityPremiumBps,
   highestReachableMaturityPremiumBps,
   maturityPremiumConfigIssue,
   resolveMaturityPremiumBps
@@ -256,10 +257,9 @@ export const validateLadderConfig = (config: LadderConfig): void => {
  * maturity premium moves the center along the reachable envelope bounded by the configured cap and
  * the protocol's 100-year maturity horizon, so load-time rejection is reserved for shapes pinned
  * outside a bound at every protocol-permitted maturity; a transiently clamped rung is documented
- * runtime behavior. This is deliberately an envelope check: its endpoints are attainable premiums,
- * but integer flooring steps intermediate premiums by more than one BPS per second once the slope
- * exceeds the year's seconds, so a shape fitting only strictly between attainable steps is still
- * accepted and quotes clamped.
+ * runtime behavior. The per-bound envelope checks give stable field errors, and the final exact
+ * gate rejects a configuration whose floored premium steps jump over every center that fits the
+ * full shape unclamped, so acceptance always means some protocol-permitted maturity truly fits.
  */
 export const assertLadderShapeAtReference = (
   config: LadderConfig,
@@ -282,6 +282,19 @@ export const assertLadderShapeAtReference = (
     throw new LadderConfigurationError(
       'higherRateBps',
       'higher rung is outside the configured hard range'
+    )
+  }
+  if (
+    config.maturityPremium !== undefined &&
+    !hasAttainableMaturityPremiumBps(
+      config.maturityPremium,
+      config.minimumRateBps - centerRateBps + outerOffsetBps,
+      config.maximumRateBps - centerRateBps - outerOffsetBps
+    )
+  ) {
+    throw new LadderConfigurationError(
+      'centerRateBps',
+      'must be attainable with the full shape inside the hard range'
     )
   }
 }

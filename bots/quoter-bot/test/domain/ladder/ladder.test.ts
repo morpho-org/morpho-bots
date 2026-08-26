@@ -446,11 +446,11 @@ describe('assertLadderShapeAtReference', () => {
     ).toThrow('lowerRateBps lower rung is outside the configured hard range')
   })
 
-  test('accepts an envelope whose flooring steps skip every strictly interior fit', () => {
-    // Envelope contract: the endpoints are attainable premiums, but a slope above one BPS per
-    // second steps premiums {0, 2, …}, so the only unclamped fit (center 1) is never attained and
-    // runtime rungs clamp instead. The check deliberately validates the envelope, not each step.
-    expect(
+  test('rejects a slope whose floored premium steps skip every interior fit', () => {
+    // A slope above one BPS per second steps premiums {0, 2, …}, so the only unclamped fit
+    // (center 1) is never attained even though the dense envelope overlaps it; the exact
+    // attainability gate rejects the configuration instead of quoting permanently clamped.
+    expect(() =>
       assertLadderShapeAtReference(
         config({
           spreadBps: 2n,
@@ -458,6 +458,26 @@ describe('assertLadderShapeAtReference', () => {
           rungCount: 1,
           minimumRateBps: 0n,
           maximumRateBps: 2n,
+          maturityPremium: {
+            shape: 'linear',
+            premiumPerYearBps: 2n * MATURITY_PREMIUM_YEAR_SECONDS,
+            maximumPremiumBps: 2n
+          }
+        }),
+        0n
+      )
+    ).toThrow('centerRateBps must be attainable with the full shape inside the hard range')
+  })
+
+  test('accepts a stepping slope once some attainable premium fits the full shape', () => {
+    expect(
+      assertLadderShapeAtReference(
+        config({
+          spreadBps: 2n,
+          stepBps: 1n,
+          rungCount: 1,
+          minimumRateBps: 0n,
+          maximumRateBps: 4n,
           maturityPremium: {
             shape: 'linear',
             premiumPerYearBps: 2n * MATURITY_PREMIUM_YEAR_SECONDS,

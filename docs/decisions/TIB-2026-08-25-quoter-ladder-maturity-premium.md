@@ -84,14 +84,15 @@ recenter republishes the whole ladder only when the accumulated movement escapes
 protocol horizon: with a premium the center spans the reachable envelope
 `[base, base + highest reachable premium]`, where `highestReachableMaturityPremiumBps` is the
 configured cap or, when it does not bind, the premium at Midnight's 100-year `MaturityTooFar`
-horizon. Load-time rejection is reserved for shapes pinned outside a hard bound at every
-protocol-permitted maturity — the lower-rung check tests the highest reachable center, the
-higher-rung check the premium-free base — so an uncapped slope too shallow to ever lift the shape
-inside the range fails loud instead of quoting permanently floor-clamped. This is deliberately an
-envelope check: its endpoints are attainable, but integer flooring steps premiums by more than one
-BPS per second once the slope exceeds `MATURITY_PREMIUM_YEAR_SECONDS`, so a shape that fits only
-strictly between attainable steps is still accepted and its rungs saturate at runtime per
-TIB-2026-08-14.
+horizon. Load-time rejection is reserved for shapes no protocol-permitted maturity can place fully inside
+the hard bounds: the per-bound envelope checks (highest reachable center for the lower rung,
+premium-free base for the higher rung) give stable field errors — so an uncapped slope too shallow
+to ever lift the shape inside the range fails loud instead of quoting permanently floor-clamped —
+and the shared exact gate `hasAttainableMaturityPremiumBps` additionally rejects a slope whose
+floored premium steps (more than one BPS per second once the slope exceeds
+`MATURITY_PREMIUM_YEAR_SECONDS`) jump over every center that fits the full shape unclamped.
+Acceptance therefore always means some attainable premium truly fits; transient excursions still
+saturate at runtime per TIB-2026-08-14.
 
 ## Considered Alternatives
 

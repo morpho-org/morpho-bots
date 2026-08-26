@@ -600,7 +600,7 @@ absorbs that slow decay exactly like reference movement, so a retained center re
 decayed effective center escapes the inclusive deadband. Additional function shapes may be added
 later; `shape` selects the active one. Both target-rate strategies compose with it — a `hardcoded`
 reference with a maturity premium still decays along the curve, and its load-time shape check only
-rejects a shape pinned outside a hard bound at every reachable maturity (a transiently clamped
+rejects a shape that no attainable premium can place fully inside the hard bounds (a transiently clamped
 rung is documented runtime behavior). Omit the object entirely to keep today's static-center
 behavior.
 
