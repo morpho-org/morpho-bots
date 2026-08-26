@@ -48,7 +48,8 @@ timestamp required for maturity comparison.
 `PositionBootstrapService` consumes three application-owned ports:
 
 - `BootstrapPositionService` reads fresh position, balance, exposure, and active-group state.
-- `BootstrapReferenceRateService` reads the Blue reference rate.
+- `BootstrapReferenceRateService` reads the configured target-rate observation, extended with the
+  market's fresh seconds to maturity when a maturity premium is configured.
 - `BootstrapMakeService` owns reconciliation, market invalidation, strategy hard halt, and graceful
   cleanup mutations.
 

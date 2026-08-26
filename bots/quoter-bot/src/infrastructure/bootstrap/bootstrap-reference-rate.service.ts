@@ -3,11 +3,11 @@ import type { Hex } from 'viem'
 import type { BootstrapReferenceRateService } from '../../application/bootstrap/position-bootstrap.service'
 import type { TargetRateStrategyConfig } from '../../domain/target-rate'
 
+import { MATURITY_PREMIUM_YEAR_SECONDS as YEAR_SECONDS } from '../../domain/maturity-premium'
 import { BootstrapAdapterError } from './bootstrap-adapter.error'
 
 const WAD = 10n ** 18n
 const BPS = 10_000n
-const YEAR_SECONDS = 31_536_000n
 const MAX_REFERENCE_STALENESS_SECONDS = 300n
 const REFERENCE_REFRESH_SECONDS = 3_600n
 
@@ -32,27 +32,37 @@ export class StrategyBootstrapReferenceRateService implements BootstrapReference
    * Creates a per-market strategy selector around the established Blue variable-rate adapter.
    * @param strategies - Validated strategy configuration indexed by workflow market.
    * @param variableRates - Existing Blue market variable-rate average implementation.
+   * @param maturityReads - Fresh zero-floored seconds-to-maturity readers, indexed by the markets
+   * whose configured maturity premium requires that observation next to every rate read.
    */
   constructor(
     private readonly strategies: ReadonlyMap<Hex, TargetRateStrategyConfig>,
-    private readonly variableRates: BootstrapReferenceRateService
+    private readonly variableRates: BootstrapReferenceRateService,
+    private readonly maturityReads: ReadonlyMap<Hex, () => Promise<bigint>> = new Map()
   ) {}
 
   /**
    * Resolves the configured hardcoded value or delegates to the Blue variable-rate average.
    * @param marketId - Workflow market requesting its independently configured target rate.
-   * @returns A static observation or the existing Blue variable-rate observation.
-   * @throws `BootstrapAdapterError` when no strategy exists for the requested market.
+   * @returns A static observation or the existing Blue variable-rate observation, extended with
+   * fresh seconds to maturity when this market's premium configuration requires it.
+   * @throws `BootstrapAdapterError` when no strategy exists for the requested market; maturity or
+   * variable-rate read failures propagate so the caller can halt instead of quoting stale terms.
    */
   async readRate(marketId: Hex) {
     const strategy = this.strategies.get(marketId)
     if (!strategy) throw new BootstrapAdapterError('target-rate-strategy-missing')
-    if (strategy.strategy === 'variable_rate_avg') return this.variableRates.readRate(marketId)
-    return {
-      mode: 'static' as const,
-      rateBps: strategy.hardcodedRateBps,
-      observationId: `static:${strategy.hardcodedRateBps}:hour:${BigInt(Math.floor(Date.now() / 1_000)) / REFERENCE_REFRESH_SECONDS}`
-    }
+    const [rate, secondsToMaturity] = await Promise.all([
+      strategy.strategy === 'variable_rate_avg'
+        ? this.variableRates.readRate(marketId)
+        : Promise.resolve({
+            mode: 'static' as const,
+            rateBps: strategy.hardcodedRateBps,
+            observationId: `static:${strategy.hardcodedRateBps}:hour:${BigInt(Math.floor(Date.now() / 1_000)) / REFERENCE_REFRESH_SECONDS}`
+          }),
+      this.maturityReads.get(marketId)?.()
+    ])
+    return secondsToMaturity === undefined ? rate : { ...rate, secondsToMaturity }
   }
 }
 

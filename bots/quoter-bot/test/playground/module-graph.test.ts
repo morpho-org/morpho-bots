@@ -44,7 +44,8 @@ describe('playground browser module graph', () => {
       'src/domain/bytes32.ts',
       'src/domain/cross-book.ts',
       'src/domain/ladder/ladder-configuration.error.ts',
-      'src/domain/ladder/ladder.ts'
+      'src/domain/ladder/ladder.ts',
+      'src/domain/maturity-premium.ts'
     ])
     for (const forbidden of [
       'config.utils',

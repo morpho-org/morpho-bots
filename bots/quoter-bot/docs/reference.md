@@ -112,7 +112,8 @@ The corresponding final cycle outcome uses `status: "logged"` rather than `"appl
 
 `bootstrap --monitor` requires at least one explicit `bootstrap` / `BOOTSTRAP_MARKETS` entry. Each
 market independently selects `targetRate.strategy: variable_rate_avg` (the existing Morpho Blue
-variable-rate average) or `hardcoded` with `hardcodedRateBps`; `premiumBps` is then added to derive
+variable-rate average) or `hardcoded` with `hardcodedRateBps`; `premiumBps` — plus the optional
+`maturityPremium` term derived from the market's live time to maturity — is then added to derive
 the published offer rate. It serially runs a cycle every minute
 and streams each result. `SIGINT` or `SIGTERM` lets an in-flight cycle finish, then invalidates every
 explicitly owned bootstrap group through the same mutation queue and waits for bounded transaction
@@ -126,7 +127,8 @@ and retains the reservation for safe cleanup.
 
 Add `--verbose` to either one-shot or monitored bootstrap mode to include the complete market
 configuration, fresh credit, debt, cash balance, per-market and total exposure, active offer,
-reference rate, premium-adjusted target rate, deterministic decision, desired bootstrap offer, and
+reference rate (with its seconds to maturity when a maturity premium is configured), the resolved
+maturity premium, premium-adjusted target rate, deterministic decision, desired bootstrap offer, and
 a fresh position read after every check. Live mode immediately emits a
 `bootstrap.transaction-submitted` record when the wallet returns each ratification, publication, or cancellation
 hash. Completed results also list confirmed transaction hashes in submission order, and verbose
@@ -446,8 +448,8 @@ reference hard-fails when its latest checkpoint is more than five minutes behind
 ### Position-bootstrap fields
 
 Each `bootstrap` entry must use a unique `marketId` present in `markets.allowlist`.
-`targetRate` defaults to `{ strategy: "variable_rate_avg" }` when omitted for backward compatibility;
-every other field in each entry is required.
+`targetRate` defaults to `{ strategy: "variable_rate_avg" }` when omitted for backward compatibility
+and `maturityPremium` may be omitted entirely; every other field in each entry is required.
 
 | Field                   | Unit / behavior                                                 | Validation                                                                                            |
 | ----------------------- | --------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
@@ -457,6 +459,7 @@ every other field in each entry is required.
 | `acceptanceAssets`      | Raw acceptable shortfall                                        | Non-negative and no greater than `creditTarget`                                                       |
 | `offerSize`             | Raw desired offer size before capacity caps                     | Positive unsigned integer                                                                             |
 | `premiumBps`            | Integer BPS added to the reference rate                         | Zero or negative                                                                                      |
+| `maturityPremium`       | Optional premium function of the market's time to maturity      | Object with `shape: 'linear'`, positive `premiumPerYearBps`, optional positive `maximumPremiumBps`    |
 | `maximumMarketExposure` | Raw per-market exposure cap                                     | Positive and no greater than `maximumTotalExposure`                                                   |
 | `maximumTotalExposure`  | Raw strategy-wide exposure cap                                  | Positive                                                                                              |
 | `minimumRateBps`        | Inclusive final-rate minimum                                    | Non-negative and no greater than `maximumRateBps`                                                     |
@@ -467,7 +470,22 @@ For a market below its accepted target, desired assets are the minimum of `offer
 credit target, cash balance, remaining per-market exposure, and remaining total exposure. Replacement
 capacity excludes that market's representative live group while retaining every other active group's
 exposure. Zero or negative capacity leaves no offer. The final requested rate is `reference rate +
-premiumBps`; an out-of-bounds result is rejected rather than clamped.
+premiumBps + maturity premium`; a result outside the inclusive hard range saturates at the nearest
+bound instead of failing, so a reference-rate excursion can never halt the strategy.
+
+`maturityPremium` makes each entry's premium a function of that market's remaining time to
+maturity, so one bot can quote every configured maturity from one term structure: further maturity
+= higher premium. The initial `linear` shape resolves
+`floor(premiumPerYearBps × secondsToMaturity / 31,536,000)` from the fresh on-chain maturity and
+latest Base block timestamp at every cycle, optionally capped by the inclusive `maximumPremiumBps`;
+a market at or past maturity contributes zero. The resolved term is added on top of the signed
+static `premiumBps` (urgency discount and duration compensation stay independently configured), so
+long maturities can quote above the reference while `premiumBps` still anchors the short end. The
+premium decays as maturity approaches; integer flooring keeps the requested rate stable for days at
+a time, and a one-BPS step only republishes when it actually moves the canonical Midnight tick.
+Additional function shapes may be added later; `shape` selects the active one. Both target-rate
+strategies compose with it — a `hardcoded` reference with a maturity premium still decays along the
+curve. Omit the object entirely to keep today's static-premium behavior.
 
 Live reconciliation retains an owned offer when its assets, canonical Midnight tick, and continuous
 fee cap still match, even if a raw reference-rate change produced the same tick. A market fee-policy
@@ -477,8 +495,10 @@ content-addressed group ID.
 
 `BOOTSTRAP_MARKETS` uses an exact JSON array with the same fields; YAML syntax, duplicate object keys,
 and prototype keys are rejected. Every integer-valued property—including asset amounts, exposure caps,
-rates, and `premiumBps`—must be a quoted decimal-integer string. JSON number tokens are rejected even
-when integral; `marketId` remains a string and `autoRefill` remains a JSON boolean. Supplying it replaces
+rates, `premiumBps`, and the nested `maturityPremium` integers—must be a quoted decimal-integer
+string. JSON number tokens are rejected even
+when integral; `marketId` remains a string, `autoRefill` remains a JSON boolean, and
+`maturityPremium.shape` remains the JSON string `"linear"`. Supplying it replaces
 every YAML bootstrap entry, which avoids ambiguous partial-array merge behavior. See
 [`.env.example`](../.env.example) for exact syntax.
 
