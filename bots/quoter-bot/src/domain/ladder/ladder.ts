@@ -336,7 +336,8 @@ export const effectiveLadderPremiumBps = (
  * @throws LadderConfigurationError for an invalid config, a negative capacity input, or a
  * configured maturity premium missing its maturity observation — even at a retained center, so a
  * wiring gap can never quote silently without its configured duration compensation.
- * @remarks Rungs walking outside the hard range saturate at the bound instead of failing: sells
+ * @remarks Pure derivation with no provider, logging, persistence, or publication access. Rungs
+ * walking outside the hard range saturate at the bound instead of failing: sells
  * settle on `minimumRateBps` and buys on `maximumRateBps`. Sells additionally quote at least
  * {@link CROSS_BOOK_CLEARANCE_BPS} below any live own bootstrap buy so both strategies cannot cross.
  * Saturated neighbouring rungs may share one rate; protocol tick mapping merges equal-tick rungs.
