@@ -219,11 +219,14 @@ custody violation denies with `KmsAttestationFailedError` naming an allowlisted 
 
 The same module carries the digest-signing primitive the TIB's encode stages will call
 (sign-what-you-encode, §2): `kms:Sign` with `MessageType: 'DIGEST'` and
-`SigningAlgorithm: 'ECDSA_SHA_256'`, followed by a strict canonical DER parse, low-s
+`SigningAlgorithm: 'ECDSA_SHA_256'` — issued against the resolved key ARN captured at attestation
+(never the configured alias, which could be repointed to an unattested key afterwards) on a
+single-attempt client (no SDK retries: every CloudTrail `Sign` event must reconcile with exactly
+one middleware signing record) — followed by a strict canonical DER parse, low-s
 normalization, a recovery check across both parities against the attested maker address, and
 capture of the KMS request id — the CloudTrail reconciliation join key each per-artifact signing
-record must log, so a `Sign` response without one is rejected rather than becoming an
-unreconcilable signature. **No intent reaches it yet**: until the encode stages land, every attested
+record must log, so a `Sign` response without one (or with a blank one) is rejected rather than
+becoming an unreconcilable signature. **No intent reaches it yet**: until the encode stages land, every attested
 intent is still denied with `SigningNotImplementedError`, and the execution role needs
 `kms:GetPublicKey` on the maker key but must not hold `kms:Sign`.
 

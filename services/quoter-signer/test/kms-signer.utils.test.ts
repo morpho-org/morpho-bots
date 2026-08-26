@@ -45,6 +45,7 @@ const SPKI_PREFIX = '3056301006072a8648ce3d020106052b8104000a034200'
 const spki = hexToBytes(`0x${SPKI_PREFIX}${bytesToHex(publicKey).slice(2)}`)
 
 const config = { keyId: 'alias/quoter-signer-maker', region: 'eu-west-1' }
+const keyArn = 'arn:aws:kms:eu-west-1:123456789012:key/1234abcd-12ab-34cd-56ef-1234567890ab'
 const digest = hashMessage('quoter-signer kms signing increment')
 
 const HALF_ORDER = secp256k1.CURVE.n / 2n
@@ -53,6 +54,7 @@ const publicKeyMaterial = (
   overrides: Partial<KmsPublicKeyMaterial> = {}
 ): KmsPublicKeyMaterial => ({
   publicKey: spki,
+  keyArn,
   keySpec: 'ECC_SECG_P256K1',
   keyUsage: 'SIGN_VERIFY',
   signingAlgorithms: ['ECDSA_SHA_256', 'ECDSA_SHA_384'],
@@ -134,7 +136,7 @@ describe('createKmsMakerSigner', () => {
     expect(signed.kmsRequestId).toBe('kms-request-2')
   })
 
-  it('passes the deployment config, never caller data, to the transport', async () => {
+  it('attests via the configured alias but signs via the resolved key ARN', async () => {
     const getPublicKey = vi.fn(async () => publicKeyMaterial())
     const signDigest = vi.fn(async (_config: typeof config, digestBytes: Uint8Array) => ({
       signature: secp256k1.sign(digestBytes, secret, { lowS: false }).toDERRawBytes(),
@@ -145,7 +147,26 @@ describe('createKmsMakerSigner', () => {
     await signer.signDigest(digest)
 
     expect(getPublicKey).toHaveBeenCalledExactlyOnceWith(config)
-    expect(signDigest).toHaveBeenCalledExactlyOnceWith(config, hexToBytes(digest))
+    // Never the alias: a repointed alias must not route Sign to a key attestation never saw.
+    expect(signDigest).toHaveBeenCalledExactlyOnceWith(
+      { keyId: keyArn, region: config.region },
+      hexToBytes(digest)
+    )
+  })
+
+  it.each<[string, Partial<KmsPublicKeyMaterial>]>([
+    ['no resolved key ARN', { keyArn: undefined }],
+    ['a non-ARN resolved key id', { keyArn: 'alias/quoter-signer-maker' }],
+    ['a blank resolved key ARN', { keyArn: '' }]
+  ])('rejects a GetPublicKey response with %s', async (_name, overrides) => {
+    await expectAttestationFailure(
+      createKmsMakerSigner(
+        config,
+        maker,
+        fakeTransport({ getPublicKey: async () => publicKeyMaterial(overrides) })
+      ),
+      'key-arn'
+    )
   })
 
   it('wraps a failed GetPublicKey call into a retryable unavailability', async () => {
@@ -264,14 +285,19 @@ describe('createKmsMakerSigner', () => {
     await expectSigningFailure(signer.signDigest(digest), 'missing-signature')
   })
 
-  it('rejects a Sign response without the CloudTrail request id', async () => {
+  it.each<[string, { readonly kmsRequestId?: string }]>([
+    ['no CloudTrail request id', {}],
+    ['an empty request id', { kmsRequestId: '' }],
+    ['a whitespace-only request id', { kmsRequestId: '   ' }]
+  ])('rejects a Sign response with %s', async (_name, requestId) => {
     // A valid signature without its reconciliation join key would be an unreconcilable record.
     const signer = await createKmsMakerSigner(
       config,
       maker,
       fakeTransport({
         signDigest: async (_config, digestBytes) => ({
-          signature: secp256k1.sign(digestBytes, secret, { lowS: false }).toDERRawBytes()
+          signature: secp256k1.sign(digestBytes, secret, { lowS: false }).toDERRawBytes(),
+          ...requestId
         })
       })
     )
@@ -369,6 +395,7 @@ describe('awsKmsTransport', () => {
     sendMock
       .mockResolvedValueOnce({
         PublicKey: spki,
+        KeyId: keyArn,
         KeySpec: 'ECC_SECG_P256K1',
         KeyUsage: 'SIGN_VERIFY',
         SigningAlgorithms: ['ECDSA_SHA_256']
@@ -381,6 +408,7 @@ describe('awsKmsTransport', () => {
 
     expect(material).toStrictEqual({
       publicKey: spki,
+      keyArn,
       keySpec: 'ECC_SECG_P256K1',
       keyUsage: 'SIGN_VERIFY',
       signingAlgorithms: ['ECDSA_SHA_256']
@@ -396,12 +424,16 @@ describe('awsKmsTransport', () => {
         SigningAlgorithm: 'ECDSA_SHA_256'
       }
     ])
+    // One client per region, pinned to a single attempt: SDK retries would break the one
+    // CloudTrail Sign event per middleware signing record reconciliation.
     expect(
       clientConfigs.filter(entry => (entry as { region?: string }).region === 'us-east-1')
-    ).toHaveLength(1)
+    ).toStrictEqual([{ region: 'us-east-1', maxAttempts: 1 }])
   })
 
-  it('signs through the default transport end to end', async () => {
+  it('signs through the default transport end to end, pinning the resolved ARN', async () => {
+    const resolvedArn =
+      'arn:aws:kms:eu-central-1:123456789012:key/feedface-12ab-34cd-56ef-abcdef012345'
     sendMock.mockImplementation(async (command: { readonly input: Record<string, unknown> }) =>
       'Message' in command.input
         ? {
@@ -412,6 +444,7 @@ describe('awsKmsTransport', () => {
           }
         : {
             PublicKey: spki,
+            KeyId: resolvedArn,
             KeySpec: 'ECC_SECG_P256K1',
             KeyUsage: 'SIGN_VERIFY',
             SigningAlgorithms: ['ECDSA_SHA_256']
@@ -426,6 +459,10 @@ describe('awsKmsTransport', () => {
 
     expect(await recoverAddress({ hash: digest, signature: signed.signature })).toBe(maker)
     expect(signed.kmsRequestId).toBe('aws-request-e2e')
+    const signCommand = sendMock.mock.calls
+      .map(call => (call[0] as { input: Record<string, unknown> }).input)
+      .find(input => 'Message' in input)
+    expect(signCommand?.KeyId).toBe(resolvedArn)
   })
 })
 

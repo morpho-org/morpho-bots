@@ -27,6 +27,12 @@ import { KmsUnavailableError } from './kms-unavailable.error'
 export type KmsPublicKeyMaterial = {
   /** DER-encoded X.509 `SubjectPublicKeyInfo` bytes, when the response carried them. */
   readonly publicKey?: Uint8Array
+  /**
+   * Resolved key ARN of the key that actually answered (`KeyId` in the AWS response, an ARN even
+   * when the request addressed an alias). Signing pins this immutable identifier, never the
+   * configured alias, so a repointed alias cannot route a later `Sign` to an unattested key.
+   */
+  readonly keyArn?: string
   /** Reported key spec; the maker key must be `ECC_SECG_P256K1`. */
   readonly keySpec?: string
   /** Reported key usage; the maker key must be `SIGN_VERIFY`. */
@@ -99,7 +105,12 @@ const kmsClients = new Map<string, KMSClient>()
 const kmsClient = (region: string): KMSClient => {
   const cached = kmsClients.get(region)
   if (cached !== undefined) return cached
-  const client = new KMSClient({ region })
+  // Single attempt, no SDK retries: ECDSA signing is not idempotent, and the TIB's CloudTrail
+  // reconciliation requires every `Sign` event to match exactly one middleware signing record — a
+  // silent SDK retry would produce surplus events for one artifact. Retry decisions belong to the
+  // middleware's typed-denial callers (and later its reservation/idempotency layer), not the
+  // transport.
+  const client = new KMSClient({ region, maxAttempts: 1 })
   kmsClients.set(region, client)
   return client
 }
@@ -117,6 +128,7 @@ export const awsKmsTransport: KmsTransport = {
     )
     return {
       publicKey: response.PublicKey,
+      keyArn: response.KeyId,
       keySpec: response.KeySpec,
       keyUsage: response.KeyUsage,
       signingAlgorithms: response.SigningAlgorithms
@@ -213,10 +225,12 @@ const parseDerSignature = (bytes: Uint8Array): { r: bigint; s: bigint } => {
  * Attests the configured KMS maker key and returns the middleware's digest signer.
  *
  * The attestation is the fail-closed custody gate of TIB-2026-08-12 §3: read the key's public
- * material, require the exact `ECC_SECG_P256K1`/`SIGN_VERIFY`/`ECDSA_SHA_256` shape, strictly
+ * material, require the exact `ECC_SECG_P256K1`/`SIGN_VERIFY`/`ECDSA_SHA_256` shape and the
+ * resolved key ARN, strictly
  * parse the canonical uncompressed-secp256k1 SPKI (validating the point is on the curve), derive
  * the maker address, and refuse to serve unless it equals the policy-pinned maker. Signing then
- * verifies every KMS response before releasing it: strict canonical DER parsing, low-s
+ * pins the attested ARN — never the configured alias, which could be repointed after attestation —
+ * and verifies every KMS response before releasing it: strict canonical DER parsing, low-s
  * normalization, and a recovery check across both parities against the attested address — what
  * was attested is what signs, and an unverifiable signature is never returned.
  * @param config - Deployment-pinned KMS key addressing.
@@ -244,12 +258,19 @@ export const createKmsMakerSigner = async (
   ) {
     throw new KmsAttestationFailedError('key-spec')
   }
+  const keyArn = material.keyArn
+  if (typeof keyArn !== 'string' || !keyArn.startsWith('arn:')) {
+    throw new KmsAttestationFailedError('key-arn')
+  }
   if (material.publicKey === undefined) throw new KmsAttestationFailedError('missing-public-key')
   const publicKey = publicKeyFromSpki(material.publicKey)
   const address = publicKeyToAddress(publicKey)
   if (!isAddressEqual(address, expectedMaker)) {
     throw new KmsAttestationFailedError('maker-mismatch')
   }
+  // Sign against the attested key's immutable ARN, never the configured alias: an alias repointed
+  // after attestation must not route a later Sign call to a key this attestation never saw.
+  const signingTarget: KmsSignerConfig = { keyId: keyArn, region: config.region }
 
   const signDigest = async (digest: Hex): Promise<KmsSignedDigest> => {
     // The middleware derives every digest itself; anything but 32 bytes is a middleware bug and
@@ -257,13 +278,16 @@ export const createKmsMakerSigner = async (
     if (size(digest) !== 32) throw new KmsSigningFailedError('digest-width')
     let signed: KmsSignatureMaterial
     try {
-      signed = await transport.signDigest(config, hexToBytes(digest))
+      signed = await transport.signDigest(signingTarget, hexToBytes(digest))
     } catch (error) {
       throw new KmsUnavailableError('sign', { cause: error })
     }
     if (signed.signature === undefined) throw new KmsSigningFailedError('missing-signature')
     const kmsRequestId = signed.kmsRequestId
-    if (kmsRequestId === undefined) throw new KmsSigningFailedError('missing-request-id')
+    // A blank id is as unreconcilable as an absent one; a valid id passes through untrimmed.
+    if (typeof kmsRequestId !== 'string' || kmsRequestId.trim() === '') {
+      throw new KmsSigningFailedError('missing-request-id')
+    }
     const parsed = parseDerSignature(signed.signature)
     const r = numberToHex(parsed.r, { size: 32 })
     const s = numberToHex(parsed.s, { size: 32 })

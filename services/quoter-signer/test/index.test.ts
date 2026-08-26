@@ -21,6 +21,7 @@ const publicKeyMaterial = (
   overrides: Partial<KmsPublicKeyMaterial> = {}
 ): KmsPublicKeyMaterial => ({
   publicKey: spki,
+  keyArn: 'arn:aws:kms:eu-west-1:123456789012:key/1234abcd-12ab-34cd-56ef-1234567890ab',
   keySpec: 'ECC_SECG_P256K1',
   keyUsage: 'SIGN_VERIFY',
   signingAlgorithms: ['ECDSA_SHA_256'],
