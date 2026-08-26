@@ -16,8 +16,20 @@ import { publicKeyToAddress } from 'viem/accounts'
 import type { KmsSignerConfig } from './kms-config.utils'
 
 import { KmsAttestationFailedError } from './kms-attestation-failed.error'
+import { KmsAttestationStaleError } from './kms-attestation-stale.error'
 import { KmsSigningFailedError } from './kms-signing-failed.error'
 import { KmsUnavailableError } from './kms-unavailable.error'
+
+/**
+ * Milliseconds an attestation stays valid before it must be re-proven against live KMS state.
+ * Enforced twice: the handler's resolution cache re-attests past this window, and
+ * {@link KmsMakerSigner.signDigest} itself refuses to sign against a stale attestation, so a held
+ * signer object cannot outlive its custody proof. Bounds how long key or deployment drift on a
+ * warm container can go unnoticed. The TIB's registry-backed freshness window with scheduled
+ * refresh and readiness gating is a later increment; until it lands, this constant is the
+ * middleware's attestation staleness bound.
+ */
+export const KMS_ATTESTATION_FRESHNESS_MS = 300_000
 
 /**
  * Raw material of one KMS `GetPublicKey` read. The transport maps AWS response fields verbatim
@@ -93,8 +105,10 @@ export type KmsMakerSigner = {
    * @param digest - 32-byte digest the middleware derived from a validated, canonically encoded
    * intent; never caller-supplied bytes.
    * @returns The low-s, recovery-checked signature and the KMS request id of the call.
-   * @throws `KmsSigningFailedError` when the digest is not 32 bytes or the response cannot be
-   * verified; `KmsUnavailableError` when the KMS call itself fails (a signature may or may not
+   * @throws `KmsAttestationStaleError` when the signer's attestation aged past
+   * {@link KMS_ATTESTATION_FRESHNESS_MS} — no KMS call is made and the caller must resolve a
+   * fresh signer; `KmsSigningFailedError` when the digest is not 32 bytes or the response cannot
+   * be verified; `KmsUnavailableError` when the KMS call itself fails (a signature may or may not
    * have been produced server-side).
    */
   signDigest(digest: Hex): Promise<KmsSignedDigest>
@@ -271,8 +285,14 @@ export const createKmsMakerSigner = async (
   // Sign against the attested key's immutable ARN, never the configured alias: an alias repointed
   // after attestation must not route a later Sign call to a key this attestation never saw.
   const signingTarget: KmsSignerConfig = { keyId: keyArn, region: config.region }
+  const attestedAtMs = Date.now()
 
   const signDigest = async (digest: Hex): Promise<KmsSignedDigest> => {
+    // The attestation ages with the signer object itself: past the freshness window this
+    // primitive refuses to sign, so freshness never depends on the caller's cache discipline.
+    if (Date.now() - attestedAtMs >= KMS_ATTESTATION_FRESHNESS_MS) {
+      throw new KmsAttestationStaleError()
+    }
     // The middleware derives every digest itself; anything but 32 bytes is a middleware bug and
     // fails closed before KMS.
     if (size(digest) !== 32) throw new KmsSigningFailedError('digest-width')

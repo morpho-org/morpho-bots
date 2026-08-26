@@ -9,7 +9,11 @@ import type { KmsSigningFailureReason } from '../src/kms-signing-failed.error'
 import type { KmsOperation } from '../src/kms-unavailable.error'
 
 import { KmsAttestationFailedError } from '../src/kms-attestation-failed.error'
-import { awsKmsTransport, createKmsMakerSigner } from '../src/kms-signer.utils'
+import {
+  awsKmsTransport,
+  createKmsMakerSigner,
+  KMS_ATTESTATION_FRESHNESS_MS
+} from '../src/kms-signer.utils'
 import { KmsSigningFailedError } from '../src/kms-signing-failed.error'
 
 // The default transport is exercised against a mocked AWS SDK so the exact command shapes
@@ -376,6 +380,31 @@ describe('createKmsMakerSigner', () => {
     )
 
     await expectSigningFailure(signer.signDigest(digest), 'recovery')
+  })
+
+  it('refuses to sign once its attestation ages past the freshness window', async () => {
+    const startMs = 1_756_200_000_000
+    const now = vi.spyOn(Date, 'now').mockReturnValue(startMs)
+    try {
+      const transport = fakeTransport()
+      const signDigestSpy = vi.spyOn(transport, 'signDigest')
+      const signer = await createKmsMakerSigner(config, maker, transport)
+
+      // One millisecond inside the window the attestation still backs a signature.
+      now.mockReturnValue(startMs + KMS_ATTESTATION_FRESHNESS_MS - 1)
+      const fresh = await signer.signDigest(digest)
+      expect(await recoverAddress({ hash: digest, signature: fresh.signature })).toBe(maker)
+
+      // At the boundary the primitive itself refuses, before any KMS call.
+      now.mockReturnValue(startMs + KMS_ATTESTATION_FRESHNESS_MS)
+      await expect(signer.signDigest(digest)).rejects.toMatchObject({
+        name: 'KmsAttestationStaleError',
+        retryable: true
+      })
+      expect(signDigestSpy).toHaveBeenCalledTimes(1)
+    } finally {
+      now.mockRestore()
+    }
   })
 
   it('exposes only the attestation and digest surfaces, never a generic account', async () => {

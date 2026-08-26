@@ -15,7 +15,11 @@ import {
   QUOTER_SIGNER_KMS_REGION_VARIABLE
 } from './kms-config.utils'
 import { KmsNotConfiguredError } from './kms-not-configured.error'
-import { awsKmsTransport, createKmsMakerSigner } from './kms-signer.utils'
+import {
+  awsKmsTransport,
+  createKmsMakerSigner,
+  KMS_ATTESTATION_FRESHNESS_MS
+} from './kms-signer.utils'
 import { KmsUnavailableError } from './kms-unavailable.error'
 import { emitJsonLine } from './log.utils'
 import { MalformedIntentError } from './malformed-intent.error'
@@ -112,16 +116,6 @@ const evaluateDenial = async (
   }
   return new SigningNotImplementedError()
 }
-
-/**
- * Milliseconds an attested signer may be reused before the custody attestation must be re-proven
- * against live KMS state. Bounds how long a warm container can keep serving after key or
- * deployment drift: past this window the next signing-relevant invocation re-attests and fails
- * closed on any mismatch. The TIB's registry-backed freshness window with scheduled refresh and
- * readiness gating is a later increment; until it lands, this constant is the middleware's
- * attestation staleness bound.
- */
-export const KMS_ATTESTATION_FRESHNESS_MS = 300_000
 
 /** Injectable dependencies of {@link createHandler}; production uses the AWS-backed defaults. */
 export type HandlerDependencies = {

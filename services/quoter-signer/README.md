@@ -212,7 +212,10 @@ exact 23-byte-prefix comparison plus on-curve validation of the point — no ASN
 root-of-trust image), derive the maker address, and fail closed unless it equals the
 policy-pinned `maker`. The attested signer is cached per execution environment with a
 **five-minute freshness bound** (`KMS_ATTESTATION_FRESHNESS_MS`), so a warm container re-proves
-custody at the next window and catches key or deployment drift; a failed attestation is evicted
+custody at the next window and catches key or deployment drift — and the signing primitive
+enforces the same bound itself, refusing to sign against an attestation that has aged past the
+window (`KmsAttestationStaleError`, retryable after re-attestation), so freshness never depends
+on the caller's cache discipline; a failed attestation is evicted
 so a transient KMS fault never poisons the container. When both the policy document and the KMS
 variables are configured, a best-effort attestation also starts at **cold start**, before the
 first invocation. A failed `GetPublicKey` call denies with the retryable `KmsUnavailableError`;
@@ -225,8 +228,8 @@ attestation registry with its manifest-pinned freshness window and scheduled ref
 alias/image/readiness validation are later increments. An unattested container still answers
 wire-contract and policy denials (that is fail-closed serving, not signing), and the guarantee
 this build does make is strict: the digest-signing primitive is reachable only behind a fresh
-attestation, and since no encode-and-sign surface exists, nothing can be signed before, without,
-or against a stale attestation.
+attestation and refuses on its own to sign against a stale one, and since no encode-and-sign
+surface exists, nothing can be signed before, without, or against a stale attestation.
 
 The same module carries the digest-signing primitive the TIB's encode stages will call
 (sign-what-you-encode, §2): `kms:Sign` with `MessageType: 'DIGEST'` and

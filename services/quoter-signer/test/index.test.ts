@@ -5,7 +5,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { KmsPublicKeyMaterial, KmsTransport } from '../src/kms-signer.utils'
 
-import { createHandler, handler, KMS_ATTESTATION_FRESHNESS_MS } from '../src/index'
+import { createHandler, handler } from '../src/index'
+import { KMS_ATTESTATION_FRESHNESS_MS } from '../src/kms-signer.utils'
 
 const privateKey = `0x${'11'.repeat(32)}` as const
 const maker = privateKeyToAccount(privateKey).address
