@@ -447,7 +447,9 @@ const Playground = () => {
             if (id) next[kind].splice(to, 0, id)
             return next
           })
-          requestAnimationFrame(() => document.getElementById(`${kind}-${to}-marketId`)?.focus())
+          // A zero-delay timer runs after React's commit without requestAnimationFrame's
+          // paint-coupled scheduling, which throttled headless/background documents can starve.
+          setTimeout(() => document.getElementById(`${kind}-${to}-marketId`)?.focus(), 0)
         }
         const remove = (kind: CollectionKind, index: number) => {
           void form.removeFieldValue(kind, index)
@@ -455,7 +457,7 @@ const Playground = () => {
             ...previous,
             [kind]: previous[kind].filter((_, i) => i !== index)
           }))
-          requestAnimationFrame(() => document.getElementById(`add-${kind}`)?.focus())
+          setTimeout(() => document.getElementById(`add-${kind}`)?.focus(), 0)
         }
         const add = (kind: CollectionKind) => {
           const marketId = nextMarketId(state[kind])
@@ -463,8 +465,9 @@ const Playground = () => {
             kind === 'bootstrap' ? createDefaultBootstrap(marketId) : createDefaultLadder(marketId)
           form.pushFieldValue(kind, item as never)
           setUiIds(previous => ({ ...previous, [kind]: [...previous[kind], newId(kind)] }))
-          requestAnimationFrame(() =>
-            document.getElementById(`${kind}-${state[kind].length}-marketId`)?.focus()
+          setTimeout(
+            () => document.getElementById(`${kind}-${state[kind].length}-marketId`)?.focus(),
+            0
           )
         }
         const editor = <Item extends BootstrapInput | LadderInput>(
@@ -640,7 +643,7 @@ const Playground = () => {
         )
         const activateTab = (format: ExportFormat, focus = false) => {
           setActiveExport(format)
-          if (focus) requestAnimationFrame(() => document.getElementById(`tab-${format}`)?.focus())
+          if (focus) setTimeout(() => document.getElementById(`tab-${format}`)?.focus(), 0)
         }
         const tabKey = (event: React.KeyboardEvent, index: number) => {
           let next = index
