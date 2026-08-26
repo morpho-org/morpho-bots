@@ -1001,6 +1001,12 @@ host itself; it strengthens rather than changes this design.
   middleware-only rung cap that keeps each reservation within one transaction.
 - `@morpho-org/midnight-sdk` offer-tree EIP-712 hashing for canonical encoding inside the Lambda.
 - viem for transaction serialization and signature parsing/verification in the Lambda.
+- The middleware validates the KMS `GetPublicKey` SPKI by exact canonical-DER template comparison
+  plus an on-curve check (`@noble/curves`), unlike the bot's asn1js-based parse: DER is canonical,
+  so the uncompressed-secp256k1 `SubjectPublicKeyInfo` has exactly one 88-byte encoding, and the
+  root-of-trust image deliberately carries no ASN.1 library. Its strict canonical ECDSA-DER
+  signature parser mirrors the bot's proven parser rather than sharing a module, per the
+  middleware's mirror-not-share auditability rule.
 - [TIB-2026-07-27](./TIB-2026-07-27-midnight-quoter-bot.md) for the V1 security gate this TIB
   advances.
 
