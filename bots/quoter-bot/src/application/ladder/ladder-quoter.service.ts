@@ -52,6 +52,8 @@ export interface LadderReferenceRateService {
    * @returns Current rate and stable freshness observation identity, extended with fresh seconds
    * to maturity when this market's maturity-premium configuration requires that observation.
    * @throws When the rate provider cannot return a fresh valid reference.
+   * @remarks Read-only: implementations may reach providers over the network but must not
+   * publish, replace, invalidate, or persist anything.
    */
   readObservation?(
     marketId: Hex
