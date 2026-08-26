@@ -217,6 +217,10 @@ main {
   right: 26%;
   color: #ff9bb4;
 }
+.ladder-center-marker--maximum {
+  right: 8%;
+  opacity: 0.55;
+}
 .callouts {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr));

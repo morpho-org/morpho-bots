@@ -21,7 +21,9 @@ type LatestBlockReader = {
  * Builds the per-market fresh seconds-to-maturity readers required by maturity premiums.
  * @param parameters - Input object: `entries` are one workflow's configured markets, whose
  * optional `maturityPremium` selects the markets that need the observation beside every rate
- * read; `midnight` resolves SDK market data; and `client` reads the latest block.
+ * read; `midnight` resolves SDK market data; `client` reads the latest block; and the optional
+ * `blockShareMs` caps latest-block sharing below the default when the workflow's monitor cadence
+ * is shorter, so consecutive cycles always observe a fresh timestamp.
  * @returns Readers indexed by market, present only for entries configuring a maturity premium.
  * @throws Nothing while building; a returned reader rejects with the stable sanitized
  * `BootstrapAdapterError` `maturity-read` classification when its market or block read fails, so
@@ -31,19 +33,26 @@ type LatestBlockReader = {
  * identical curve input. Reads are batched across a cycle instead of issuing two requests per
  * market: the market read is cached per market after its first success because the on-chain
  * maturity is immutable (only `timeToMaturity` is consumed from the cached data), and one
- * latest-block read is shared for a bounded fifteen-second monotonic-clock window so a serial
- * multi-market sweep sees about one block request per cycle and a wall-clock step (NTP correction,
- * restored VM snapshot) can never extend the share window. The bounded timestamp staleness is harmless because integer
- * flooring moves a resolved premium roughly one BPS per several days. Each reader still resolves
- * its market and block inputs concurrently through `Promise.all`, decay stays clocked on
- * `block.timestamp` via SDK `Market.timeToMaturity` rather than wall clock, and a failed read is
- * evicted so the next cycle retries instead of caching the failure.
+ * latest-block read is shared for a bounded monotonic-clock window — at most fifteen seconds,
+ * never more than the caller's cadence — so a serial multi-market sweep sees about one block
+ * request per cycle, a faster monitor cadence still refreshes the timestamp every cycle, and a
+ * wall-clock step (NTP correction, restored VM snapshot) can never extend the share window. The
+ * bounded within-sweep staleness is harmless because integer flooring moves a resolved premium
+ * roughly one BPS per several days at operational slopes. Each reader still resolves its market
+ * and block inputs concurrently through `Promise.all`, decay stays clocked on `block.timestamp`
+ * via SDK `Market.timeToMaturity` rather than wall clock, and a failed read is evicted so the
+ * next cycle retries instead of caching the failure.
  */
 export const maturityReadsByMarket = (parameters: {
   entries: readonly { marketId: Hex; maturityPremium?: MaturityPremiumConfig }[]
   midnight: MaturityMarketReader
   client: LatestBlockReader
+  blockShareMs?: number
 }): ReadonlyMap<Hex, () => Promise<bigint>> => {
+  const blockShareMs = Math.min(
+    BLOCK_SHARE_MS,
+    Math.max(0, parameters.blockShareMs ?? BLOCK_SHARE_MS)
+  )
   const marketReads = new Map<Hex, Promise<{ timeToMaturity(timestamp: bigint): bigint }>>()
   let sharedBlock: { at: number; read: Promise<{ timestamp: bigint }> } | undefined
   const marketData = (marketId: Hex) => {
@@ -57,7 +66,7 @@ export const maturityReadsByMarket = (parameters: {
     return read
   }
   const latestBlock = () => {
-    if (sharedBlock !== undefined && performance.now() - sharedBlock.at < BLOCK_SHARE_MS) {
+    if (sharedBlock !== undefined && performance.now() - sharedBlock.at < blockShareMs) {
       return sharedBlock.read
     }
     const refreshed = {

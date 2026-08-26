@@ -1,6 +1,7 @@
 import type { Hex } from 'viem'
 
 import type { BootstrapReferenceRateService } from '../../application/bootstrap/position-bootstrap.service'
+import type { BootstrapRate } from '../../domain/bootstrap/position-bootstrap'
 import type { TargetRateStrategyConfig } from '../../domain/target-rate'
 
 import { MATURITY_PREMIUM_YEAR_SECONDS as YEAR_SECONDS } from '../../domain/maturity-premium'
@@ -49,7 +50,7 @@ export class StrategyBootstrapReferenceRateService implements BootstrapReference
    * @throws `BootstrapAdapterError` when no strategy exists for the requested market; maturity or
    * variable-rate read failures propagate so the caller can halt instead of quoting stale terms.
    */
-  async readRate(marketId: Hex) {
+  async readRate(marketId: Hex): Promise<BootstrapRate> {
     const strategy = this.strategies.get(marketId)
     if (!strategy) throw new BootstrapAdapterError('target-rate-strategy-missing')
     const [rate, secondsToMaturity] = await Promise.all([

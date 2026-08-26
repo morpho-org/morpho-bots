@@ -47,6 +47,7 @@ import {
 import { invalidateOffersBatch } from '../invalidation/batch-offer-invalidation.utils'
 import { OfferInvalidationAdapterError } from '../invalidation/offer-invalidation-adapter.error'
 import { createMakerAccount } from '../make/maker-account.utils'
+import { maturityReadsByMarket } from '../maturity-read.utils'
 import { createBlueReferenceReader } from '../reference/blue-reference-reader.utils'
 import { mapSelectedMarketItems } from '../selected-market-items.utils'
 import {
@@ -445,13 +446,27 @@ export const createProductionLadderAdapters = (
   )
   const strategyRates = new StrategyBootstrapReferenceRateService(
     new Map(config.ladder.map(item => [item.marketId, item.targetRate] as const)),
-    blueRates
+    blueRates,
+    maturityReadsByMarket({
+      entries: config.ladder,
+      midnight,
+      client,
+      // The ladder monitor runs at the shortest configured cadence; capping block sharing there
+      // guarantees every cycle re-derives the premium from a fresh timestamp.
+      blockShareMs: 1_000 * Math.min(...config.ladder.map(item => item.loopIntervalSeconds))
+    })
   )
   const rates: LadderReferenceRateService = {
     readRate: async marketId => (await strategyRates.readRate(marketId)).rateBps,
     readObservation: async marketId => {
       const observation = await strategyRates.readRate(marketId)
-      return { rateBps: observation.rateBps, observationId: observation.observationId }
+      return {
+        rateBps: observation.rateBps,
+        observationId: observation.observationId,
+        ...(observation.secondsToMaturity === undefined
+          ? {}
+          : { secondsToMaturity: observation.secondsToMaturity })
+      }
     }
   }
 

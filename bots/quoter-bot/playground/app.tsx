@@ -28,6 +28,7 @@ import {
 import {
   BOOTSTRAP_FIELDS,
   LADDER_FIELDS,
+  clampPlotPercent,
   createDefaultBootstrap,
   createDefaultLadder,
   createDefaultPlaygroundState,
@@ -194,7 +195,11 @@ const BootstrapGraphic = ({
 }
 
 const LadderGraphic = ({ graphic, index }: { graphic: LadderGraphicModel; index: number }) => {
-  const description = `Ladder market ${index + 1}, ${graphic.marketId}. Range ${graphic.minimumRateBps} to ${graphic.maximumRateBps} BPS. Deterministic reference ${graphic.referenceRateBps} BPS and center ${graphic.centerRateBps} BPS. Triangle markers are lend rungs and circle markers are reduce-only rungs. Exact allocations and caps are in the semantic table. No live offers, balances, positions, or book.`
+  const maturityText =
+    graphic.maximumCenterRateBps === undefined
+      ? ''
+      : ` The maturity premium raises the center to ${graphic.maximumCenterRateBps} BPS at far maturities.`
+  const description = `Ladder market ${index + 1}, ${graphic.marketId}. Range ${graphic.minimumRateBps} to ${graphic.maximumRateBps} BPS. Deterministic reference ${graphic.referenceRateBps} BPS and center ${graphic.centerRateBps} BPS.${maturityText} Triangle markers are lend rungs and circle markers are reduce-only rungs. Exact allocations and caps are in the semantic table. No live offers, balances, positions, or book.`
   return (
     <article className="preview-card ladder-preview" data-preview="ladder">
       <h3 id={`ladder-title-${index}`}>Ladder market {index + 1}</h3>
@@ -221,10 +226,20 @@ const LadderGraphic = ({ graphic, index }: { graphic: LadderGraphicModel; index:
           </b>
           <b
             className="ladder-marker ladder-center-marker"
-            style={{ top: `${graphic.rateToY(graphic.centerRateBps)}%` }}
+            style={{ top: `${clampPlotPercent(graphic.rateToY(graphic.centerRateBps))}%` }}
           >
             Center {graphic.centerRateBps} BPS
           </b>
+          {graphic.maximumCenterRateBps === undefined ? null : (
+            <b
+              className="ladder-marker ladder-center-marker ladder-center-marker--maximum"
+              style={{
+                top: `${clampPlotPercent(graphic.rateToY(graphic.maximumCenterRateBps))}%`
+              }}
+            >
+              Far-maturity center {graphic.maximumCenterRateBps} BPS
+            </b>
+          )}
         </div>
         <figcaption>▲ Lend · ● Reduce-only · values are also available in the table</figcaption>
       </figure>

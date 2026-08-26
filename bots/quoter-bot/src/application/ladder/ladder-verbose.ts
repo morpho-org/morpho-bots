@@ -63,7 +63,11 @@ export type LadderVerboseDetails = {
   currentState: LadderVerboseState
   /** Fresh reference rate used to derive the effective ladder center, when available. */
   referenceRateBps?: bigint
-  /** Reference rate plus configured quote premium, when derivation was possible. */
+  /** Fresh seconds to maturity read beside the reference, when a maturity premium requires it. */
+  secondsToMaturity?: bigint
+  /** Resolved time-to-maturity premium included in `targetRateBps`, when configured. */
+  maturityPremiumBps?: bigint
+  /** Reference rate plus configured quote and maturity premiums, when derivation was possible. */
   targetRateBps?: bigint
   /** Exact desired lower/higher quote set, when decision derivation succeeded. */
   ladderOffer?: LadderQuoteSet

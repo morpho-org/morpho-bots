@@ -6,6 +6,7 @@ import { CollectionValidationError } from '../../playground/collection-validatio
 import { FragmentCodecError } from '../../playground/fragment-codec.error'
 import {
   COLLECTION_FRAGMENT_VERSION,
+  clampPlotPercent,
   createDefaultBootstrap,
   createDefaultLadder,
   createDefaultPlaygroundState,
@@ -172,6 +173,133 @@ describe('bootstrap + ladder only playground follow-up', () => {
     expect(validateBootstrapCollection(state.bootstrap).valid).toBe(false)
     state.bootstrap[0]!.maturityPremium = { shape: 'linear', premiumPerYearBps: '120' }
     expect(validateBootstrapCollection(state.bootstrap).valid).toBe(true)
+    state.ladder[0]!.maturityPremium = { shape: 'linear', premiumPerYearBps: '0' }
+    expect(validateLadderCollection(state.ladder).valid).toBe(false)
+    state.ladder[0]!.maturityPremium = { shape: 'linear', premiumPerYearBps: '120' }
+    expect(validateLadderCollection(state.ladder).valid).toBe(true)
+  })
+
+  test('round-trips, validates, and annotates a ladder maturity premium', () => {
+    const state = createDefaultPlaygroundState()
+    state.ladder[0]!.maturityPremium = {
+      shape: 'linear',
+      premiumPerYearBps: '120',
+      maximumPremiumBps: '300'
+    }
+
+    expect(validateLadderCollection(state.ladder).valid).toBe(true)
+    const exported = exportLadderMarketsEnvValue(state.ladder)
+    expect(JSON.parse(exported)[0].maturityPremium).toEqual({
+      shape: 'linear',
+      premiumPerYearBps: '120',
+      maximumPremiumBps: '300'
+    })
+    const imported = parseCollectionsImport(exported)
+    expect(imported.ladder?.[0]?.maturityPremium).toEqual({
+      shape: 'linear',
+      premiumPerYearBps: '120',
+      maximumPremiumBps: '300'
+    })
+    const decoded = decodePlaygroundFragment(encodePlaygroundFragment(state))
+    expect(decoded.ladder[0]?.maturityPremium).toEqual({
+      shape: 'linear',
+      premiumPerYearBps: '120',
+      maximumPremiumBps: '300'
+    })
+    const graphic = generateLadderGraphicModels(state.ladder)[0]
+    expect(graphic).toMatchObject({
+      referenceRateBps: '500',
+      centerRateBps: '500',
+      maximumCenterRateBps: '800'
+    })
+    expect(graphic?.callouts).toContainEqual({
+      label: 'Maturity premium',
+      value:
+        'Linear +120 BPS per year to maturity, capped at 300 BPS; the preview anchors the at-maturity center and marks the far-maturity center at the highest reachable premium',
+      parameters: ['maturityPremium.premiumPerYearBps', 'maturityPremium.maximumPremiumBps']
+    })
+
+    delete state.ladder[0]!.maturityPremium
+    const withoutPremium = generateLadderGraphicModels(state.ladder)[0]
+    expect(withoutPremium?.callouts.some(callout => callout.label === 'Maturity premium')).toBe(
+      false
+    )
+    expect(withoutPremium?.maximumCenterRateBps).toBeUndefined()
+  })
+
+  test('renders the true far-maturity center for a curve-dependent hardcoded ladder', () => {
+    const state = createDefaultPlaygroundState()
+    state.ladder[0]!.targetRate = { strategy: 'hardcoded', hardcodedRateBps: '400' }
+    state.ladder[0]!.maturityPremium = { shape: 'linear', premiumPerYearBps: '200' }
+
+    expect(validateLadderCollection(state.ladder).valid).toBe(true)
+    expect(generateLadderGraphicModels(state.ladder)[0]).toMatchObject({
+      referenceRateBps: '400',
+      centerRateBps: '400',
+      maximumCenterRateBps: '20400'
+    })
+
+    state.ladder[0]!.maturityPremium = {
+      shape: 'linear',
+      premiumPerYearBps: '200',
+      maximumPremiumBps: '150'
+    }
+    expect(generateLadderGraphicModels(state.ladder)[0]).toMatchObject({
+      centerRateBps: '400',
+      maximumCenterRateBps: '550'
+    })
+
+    state.ladder[0]!.maturityPremium = {
+      shape: 'linear',
+      premiumPerYearBps: '200',
+      maximumPremiumBps: '50'
+    }
+    expect(validateLadderCollection(state.ladder).valid).toBe(false)
+  })
+
+  test('keeps a cap-exceeding-headroom far center true while only markers clamp', () => {
+    const state = createDefaultPlaygroundState()
+    state.ladder[0]!.targetRate = { strategy: 'hardcoded', hardcodedRateBps: '400' }
+    state.ladder[0]!.maturityPremium = {
+      shape: 'linear',
+      premiumPerYearBps: '1000',
+      maximumPremiumBps: '1000'
+    }
+
+    expect(validateLadderCollection(state.ladder).valid).toBe(true)
+    const graphic = generateLadderGraphicModels(state.ladder)[0]!
+    expect(graphic).toMatchObject({ centerRateBps: '400', maximumCenterRateBps: '1400' })
+    expect(graphic.rateToY('1400')).toBeLessThan(0)
+    expect(clampPlotPercent(graphic.rateToY('1400'))).toBe(0)
+  })
+
+  test('clamps only marker plot coordinates into the axis range', () => {
+    expect(clampPlotPercent(-16.67)).toBe(0)
+    expect(clampPlotPercent(42.5)).toBe(42.5)
+    expect(clampPlotPercent(116.66)).toBe(100)
+  })
+
+  test('keeps the true premium-lifted at-maturity center while its marker clamps', () => {
+    const state = createDefaultPlaygroundState()
+    state.ladder[0]!.targetRate = { strategy: 'hardcoded', hardcodedRateBps: '400' }
+    state.ladder[0]!.quotePremiumBps = '-300'
+    state.ladder[0]!.maturityPremium = { shape: 'linear', premiumPerYearBps: '200' }
+
+    expect(validateLadderCollection(state.ladder).valid).toBe(true)
+    const graphic = generateLadderGraphicModels(state.ladder)[0]!
+    expect(graphic).toMatchObject({
+      referenceRateBps: '400',
+      centerRateBps: '100',
+      maximumCenterRateBps: '20100'
+    })
+    expect(graphic.axis.centerRateBps).toBe('100')
+    expect(graphic.callouts).toContainEqual({
+      label: 'Center',
+      value: '400 + -300 = 100 BPS',
+      parameters: ['quotePremiumBps']
+    })
+    expect(graphic.rateToY('100')).toBeGreaterThan(100)
+    expect(clampPlotPercent(graphic.rateToY('100'))).toBe(100)
   })
 
   test('renders a hardcoded bootstrap reference outside bounds when its premium-adjusted quote is valid', () => {

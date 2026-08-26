@@ -120,6 +120,7 @@ const yamlKeys = {
     'marketId',
     'targetRate',
     'quotePremiumBps',
+    'maturityPremium',
     'spreadBps',
     'stepBps',
     'rungCount',
