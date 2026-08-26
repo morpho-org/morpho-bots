@@ -14,7 +14,12 @@ export type QuoterSignerDenial = {
   readonly retryable: boolean
 }
 
-/** Fail-closed denial envelope: nothing was signed and no KMS call was made for this intent. */
+/**
+ * Fail-closed denial envelope: nothing was signed for this intent and `kms:Sign` was never
+ * called. A denial does not imply zero KMS activity: an intent that passes every deterministic
+ * check triggers (or reuses) the read-only `kms:GetPublicKey` custody attestation before it is
+ * denied, and the container may have warmed that attestation up at cold start.
+ */
 export type QuoterSignerDenialResponse = {
   /** Wire-contract version of the envelope. */
   readonly contractVersion: typeof QUOTER_SIGNER_CONTRACT_VERSION

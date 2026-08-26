@@ -113,10 +113,27 @@ const evaluateDenial = async (
   return new SigningNotImplementedError()
 }
 
+/**
+ * Milliseconds an attested signer may be reused before the custody attestation must be re-proven
+ * against live KMS state. Bounds how long a warm container can keep serving after key or
+ * deployment drift: past this window the next signing-relevant invocation re-attests and fails
+ * closed on any mismatch. The TIB's registry-backed freshness window with scheduled refresh and
+ * readiness gating is a later increment; until it lands, this constant is the middleware's
+ * attestation staleness bound.
+ */
+export const KMS_ATTESTATION_FRESHNESS_MS = 300_000
+
 /** Injectable dependencies of {@link createHandler}; production uses the AWS-backed defaults. */
 export type HandlerDependencies = {
   /** KMS transport override; defaults to the `@aws-sdk/client-kms`-backed transport. */
   readonly kms?: KmsTransport
+  /**
+   * Whether construction starts a best-effort cold-start attestation when the deployment is fully
+   * configured (default `true`). Serving never depends on the warm-up — every signing-relevant
+   * invocation resolves the attestation itself — and tests that script per-invocation transport
+   * behavior disable it for determinism.
+   */
+  readonly attestAtStartup?: boolean
 }
 
 /** The Lambda handler signature this service exports. */
@@ -128,24 +145,54 @@ export type QuoterSignerHandler = (
 /**
  * Builds the quoter-signer Lambda handler with its per-execution-environment signer cache.
  *
- * The factory exists for two reasons: tests inject a fake KMS transport, and the attested maker
- * signer is memoized per `(region, key id, maker)` so one container performs the custody
- * attestation once, not per invocation. A failed attestation is evicted from the cache before the
- * denial is returned, so a transient KMS fault never poisons the execution environment.
- * @param dependencies - Optional transport overrides; omit in production.
+ * The attested maker signer is memoized per `(region, key id, maker)` with a
+ * {@link KMS_ATTESTATION_FRESHNESS_MS} freshness bound, so one container attests once per window
+ * rather than per invocation while key or deployment drift on a warm container is still caught at
+ * the next window. A failed attestation is evicted from the cache before the denial is returned,
+ * so a transient KMS fault never poisons the execution environment. When the deployment is fully
+ * configured, construction also starts a best-effort cold-start attestation during container init
+ * (a misconfigured deployment stays a typed per-invocation denial, never an init crash). The
+ * factory is also the test seam for injecting a fake KMS transport.
+ * @param dependencies - Optional transport and warm-up overrides; omit in production.
  * @returns The Lambda handler documented on {@link handler}.
  */
 export const createHandler = (dependencies: HandlerDependencies = {}): QuoterSignerHandler => {
   const transport = dependencies.kms ?? awsKmsTransport
-  const signers = new Map<string, Promise<KmsMakerSigner>>()
+  const signers = new Map<string, { signer: Promise<KmsMakerSigner>; attestedAtMs: number }>()
   const resolveSigner: KmsSignerResolver = (config, maker) => {
     const key = `${config.region}\n${config.keyId}\n${maker}`
     const cached = signers.get(key)
-    if (cached !== undefined) return cached
-    const signer = createKmsMakerSigner(config, maker, transport)
-    signers.set(key, signer)
-    signer.catch(() => signers.delete(key))
-    return signer
+    if (cached !== undefined && Date.now() - cached.attestedAtMs < KMS_ATTESTATION_FRESHNESS_MS) {
+      return cached.signer
+    }
+    const entry = {
+      signer: createKmsMakerSigner(config, maker, transport),
+      attestedAtMs: Date.now()
+    }
+    signers.set(key, entry)
+    // Evict only this entry on failure: a fresher attestation must never be dropped by the late
+    // rejection of a stale one, while transient faults stay retryable on the next invocation.
+    entry.signer.catch(() => {
+      if (signers.get(key) === entry) signers.delete(key)
+    })
+    return entry.signer
+  }
+  if (dependencies.attestAtStartup !== false) {
+    // Best-effort cold-start attestation: when the container's deployment parameters parse,
+    // custody proving starts during init instead of waiting for the first in-policy invocation.
+    try {
+      const policy = parseQuoterSignerPolicy(process.env[QUOTER_SIGNER_POLICY_VARIABLE])
+      const kmsConfig = parseKmsSignerConfig(
+        process.env[QUOTER_SIGNER_KMS_KEY_ID_VARIABLE],
+        process.env[QUOTER_SIGNER_KMS_REGION_VARIABLE]
+      )
+      void resolveSigner(kmsConfig, policy.maker).catch(() => {
+        // The next signing-relevant invocation re-attests and reports the typed denial.
+      })
+    } catch {
+      // Not (fully) configured: the evaluation pipeline reports the precise typed denial per
+      // intent, and an init-time throw would take down even the wire-contract denials.
+    }
   }
   return async (event, context) => {
     const awsRequestId = context?.awsRequestId

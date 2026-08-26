@@ -204,18 +204,29 @@ so a cross-region key is a reviewed, fail-loud choice). Both are strictly parsed
 serve with `KmsNotConfiguredError`.
 
 For an intent that passes every deterministic policy check, the handler then performs the
-**maker-key custody attestation** ([`src/kms-signer.utils.ts`](./src/kms-signer.utils.ts)), the
-projection of the TIB's per-surface startup attestation onto this single-function build: call
+**maker-key custody attestation** ([`src/kms-signer.utils.ts`](./src/kms-signer.utils.ts)): call
 `kms:GetPublicKey` on the configured key, require the exact
-`ECC_SECG_P256K1`/`SIGN_VERIFY`/`ECDSA_SHA_256` shape, strictly parse the canonical
-uncompressed-secp256k1 `SubjectPublicKeyInfo` (DER is canonical, so the parse is an exact
-23-byte-prefix comparison plus on-curve validation of the point — no ASN.1 library in the
+`ECC_SECG_P256K1`/`SIGN_VERIFY`/`ECDSA_SHA_256` shape and the resolved key ARN, strictly parse
+the canonical uncompressed-secp256k1 `SubjectPublicKeyInfo` (DER is canonical, so the parse is an
+exact 23-byte-prefix comparison plus on-curve validation of the point — no ASN.1 library in the
 root-of-trust image), derive the maker address, and fail closed unless it equals the
-policy-pinned `maker`. The attested signer is cached per execution environment, so one container
-attests once, and a failed attestation is evicted so a transient KMS fault never poisons the
-container. A failed `GetPublicKey` call denies with the retryable `KmsUnavailableError`; every
-custody violation denies with `KmsAttestationFailedError` naming an allowlisted reason
-(`key-spec`, `missing-public-key`, `public-key-encoding`, `maker-mismatch`).
+policy-pinned `maker`. The attested signer is cached per execution environment with a
+**five-minute freshness bound** (`KMS_ATTESTATION_FRESHNESS_MS`), so a warm container re-proves
+custody at the next window and catches key or deployment drift; a failed attestation is evicted
+so a transient KMS fault never poisons the container. When both the policy document and the KMS
+variables are configured, a best-effort attestation also starts at **cold start**, before the
+first invocation. A failed `GetPublicKey` call denies with the retryable `KmsUnavailableError`;
+every custody violation denies with `KmsAttestationFailedError` naming an allowlisted reason
+(`key-spec`, `key-arn`, `missing-public-key`, `public-key-encoding`, `maker-mismatch`).
+
+**Scope, stated precisely**: this is a per-container attestation gating the signing path, not yet
+the TIB's full startup/readiness attestation — the setup/health surface, the per-surface
+attestation registry with its manifest-pinned freshness window and scheduled refresh, and the
+alias/image/readiness validation are later increments. An unattested container still answers
+wire-contract and policy denials (that is fail-closed serving, not signing), and the guarantee
+this build does make is strict: the digest-signing primitive is reachable only behind a fresh
+attestation, and since no encode-and-sign surface exists, nothing can be signed before, without,
+or against a stale attestation.
 
 The same module carries the digest-signing primitive the TIB's encode stages will call
 (sign-what-you-encode, §2): `kms:Sign` with `MessageType: 'DIGEST'` and
