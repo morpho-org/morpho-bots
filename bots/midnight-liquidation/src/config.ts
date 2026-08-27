@@ -61,6 +61,11 @@ const DEFAULT_PENDLE_SLIPPAGE_BPS = 50
 // observation and deliberately NOT the default.
 const DEFAULT_HEADROOM_FLOOR_BPS = 3
 const DEFAULT_SEIZE_CAP_MARGIN_BPS = 30 // shave the repay cap when sizing a cap-binding seize — one-block oracle-drift headroom; calibratable
+// Pure break-even by default: at 0 the profitability gate compares two contract-derived quantities and
+// carries no tuned value, so it can only reject plans that would have reverted on-chain. Raising it
+// trades captured liquidations for margin against gas and sim→exec drift, and wants a measured basis
+// distribution rather than a guess — one maturity implies only a wide, unhelpful interval.
+const DEFAULT_MIN_SURPLUS_BPS = 0
 const DEFAULT_BACKOFF_BASE_BLOCKS = 2n
 const DEFAULT_BACKOFF_MAX_BLOCKS = 64n
 // Opt-in per-position cooldown (ms) after a liquidation attempt fails to produce a submittable tx
@@ -100,6 +105,8 @@ export type QuotingConfig = {
   pendleSlippageBps: number
   /** Headroom (bps) shaved off the on-chain repay cap when sizing a cap-binding seize-exact plan. */
   seizeCapMarginBps: number
+  /** Surplus over the plan's contract-derived repay a quoted route must clear to be simulated. */
+  minSurplusBps: number
   /** Lower bound (bps) on swap execution cost; skips plans whose incentive headroom cannot cover it. */
   headroomFloorBps: number
   backoffBaseBlocks: bigint
@@ -461,6 +468,10 @@ export function loadConfig(
       max: 10_000
     }),
     seizeCapMarginBps: intEnv(env, 'SEIZE_CAP_MARGIN_BPS', DEFAULT_SEIZE_CAP_MARGIN_BPS, {
+      min: 0,
+      max: 10_000
+    }),
+    minSurplusBps: intEnv(env, 'MIN_SURPLUS_BPS', DEFAULT_MIN_SURPLUS_BPS, {
       min: 0,
       max: 10_000
     }),

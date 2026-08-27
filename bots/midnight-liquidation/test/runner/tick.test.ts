@@ -32,7 +32,13 @@ const expectCounterIdentities = (c: Record<string, number>) => {
   expect(c.pairs).toBeGreaterThanOrEqual(c.liquidatable!)
   expect(c.liquidatable).toBe(c.inflightSkipped! + c.planSkipped! + c.planned!)
   expect(c.planned).toBe(
-    c.cooledDown! + c.backoffSkipped! + c.noSwapPath! + c.quoteFailed! + c.ok! + c.reverted!
+    c.cooledDown! +
+      c.backoffSkipped! +
+      c.noSwapPath! +
+      c.quoteFailed! +
+      c.quoteUnprofitable! +
+      c.ok! +
+      c.reverted!
   )
   expect(c.ok).toBe(c.submitted! + c.notSent!)
 }
@@ -125,6 +131,7 @@ function runWith(opts: {
   noSwap?: boolean
   seedBackoffAt?: bigint
   headroomFloorBps?: number
+  minSurplusBps?: number
   cooldown?: CooldownStore
   /** Models the queue's outcome; the two no-broadcast reasons are NOT interchangeable. */
   submitOutcome?: SubmitOutcome
@@ -152,6 +159,7 @@ function runWith(opts: {
     caller: CALLER,
     seizeCapMarginBps: 0,
     headroomFloorBps: opts.headroomFloorBps ?? 0,
+    minSurplusBps: opts.minSurplusBps ?? 0,
     readLens: stubReadLens(opts.out === undefined ? lensOut() : opts.out),
     quoteFor: async () => {
       quoteCalls += 1
@@ -197,6 +205,7 @@ describe('runTick', () => {
       backoffSkipped: 0,
       noSwapPath: 0,
       quoteFailed: 0,
+      quoteUnprofitable: 0,
       ok: 1,
       reverted: 0,
       submitted: 1,
@@ -225,6 +234,7 @@ describe('runTick', () => {
       planned: 1,
       noSwapPath: 1,
       quoteFailed: 0,
+      quoteUnprofitable: 0,
       submitted: 0
     })
     expect(simulateCalls()).toBe(0) // skipped before simulating
@@ -275,6 +285,7 @@ describe('runTick', () => {
       planned: 1,
       noSwapPath: 0,
       quoteFailed: 0,
+      quoteUnprofitable: 0,
       submitted: 1
     })
     expect(quoteCalls()).toBe(0) // bad-debt realization never quotes
@@ -440,6 +451,7 @@ describe('runTick', () => {
           caller: CALLER,
           seizeCapMarginBps: 0,
           headroomFloorBps: 0,
+          minSurplusBps: 0,
           readLens: stubReadLens(lensOut()),
           quoteFor: async () => ({ kind: 'swap', plan: SWAP_PLAN }),
           simulate: async () => ({ status: 'ok' }),
@@ -542,6 +554,73 @@ describe('runTick', () => {
       expect(counters).toMatchObject({ liquidatable: 1, planSkipped: 1, planned: 0 })
       const skipped = events.find(e => e.event === 'plan.skipped')
       expect(skipped?.fields).toMatchObject({ reason: 'writeoff_below_max_debt' })
+      expectCounterIdentities(counters)
+    })
+  })
+
+  describe('profitability gate', () => {
+    // The default fixture sizes a cap-bound normal-mode plan: seize 1100 at LIF 1.1, so the contract
+    // ceil-derives a 1000-unit repay. That is the swap's break-even, and SWAP_PLAN clears it at 2000.
+    const REQUIRED_REPAY = 1000n
+    const quoting = (expectedAmountOut: bigint): QuoteOutcome => ({
+      kind: 'swap',
+      plan: { ...SWAP_PLAN, expectedAmountOut }
+    })
+
+    it('skips before simulating when the route cannot cover the derived repay', async () => {
+      const { counters, simulateCalls, submitCalls, events } = await runWith({
+        quoteOutcome: quoting(REQUIRED_REPAY - 1n)
+      })
+      expect(counters).toMatchObject({ planned: 1, quoteUnprofitable: 1, ok: 0, reverted: 0 })
+      // The whole point: the shortfall is reported instead of being discovered as an allowance revert.
+      expect(simulateCalls()).toBe(0)
+      expect(submitCalls()).toBe(0)
+      const skipped = events.find(e => e.event === 'quote.unprofitable')
+      expect(skipped?.fields).toMatchObject({
+        requiredRepay: REQUIRED_REPAY,
+        achievableOut: REQUIRED_REPAY - 1n,
+        shortfallBps: 10n
+      })
+      expectCounterIdentities(counters)
+    })
+
+    it('does not back off or cool down an unprofitable quote', async () => {
+      const { counters, backoff, cooldown } = await runWith({
+        quoteOutcome: quoting(REQUIRED_REPAY - 1n),
+        cooldown: createCooldownStore({ cooldownMs: 60_000 })
+      })
+      // Asserted so the suppression checks below cannot pass by the gate simply never firing.
+      expect(counters.quoteUnprofitable).toBe(1)
+      // Economic non-viability is not a failure: break-even falls as the LIF ramps and route cost is
+      // itself volatile, so suppressing the position would delay re-checking it precisely as it
+      // becomes fundable.
+      expect(backoff.shouldSkip(LABEL, 100n)).toBe(false)
+      expect(cooldown.shouldSkip(LABEL)).toBe(false)
+    })
+
+    it('passes a route at exact break-even, and fails it once a surplus is required', async () => {
+      const exact = await runWith({ quoteOutcome: quoting(REQUIRED_REPAY) })
+      expect(exact.counters).toMatchObject({ quoteUnprofitable: 0, ok: 1, submitted: 1 })
+
+      const withSurplus = await runWith({
+        quoteOutcome: quoting(REQUIRED_REPAY),
+        minSurplusBps: 1
+      })
+      expect(withSurplus.counters).toMatchObject({ quoteUnprofitable: 1, ok: 0 })
+      expect(withSurplus.simulateCalls()).toBe(0)
+    })
+
+    it('uses the LIF the plan was sized at, not the one chain time implies', async () => {
+      // Matured AND unhealthy opens both on-chain gates, and sizing picks by surplus: one second past
+      // maturity the post-maturity ramp is still ~WAD, so normal mode wins with the full maxLif and a
+      // 1000-unit break-even. Deriving the LIF here from `blockTimestamp > maturity` instead would use
+      // the ramping value, put break-even at 1100, and reject a route the chain funds.
+      const { counters, simulateCalls } = await runWith({
+        out: lensOut({ blockTimestamp: 2001n, healthy: false }),
+        quoteOutcome: quoting(1050n)
+      })
+      expect(counters).toMatchObject({ planned: 1, quoteUnprofitable: 0, ok: 1, submitted: 1 })
+      expect(simulateCalls()).toBe(1)
       expectCounterIdentities(counters)
     })
   })

@@ -11,6 +11,7 @@ import type { LensInput, LensOut } from '../state/lens.sol'
 
 import { isBadDebtRealization, planWithReason } from '../sizing/plan'
 import { isLiquidatable, planInputFromLens } from './eligibility'
+import { assessProfitability } from './profitability'
 
 /**
  * Per-tick outcome tally, emitted as `tick.end`, ordered as the pipeline runs. On a tick that ran to
@@ -20,7 +21,7 @@ import { isLiquidatable, planInputFromLens } from './eligibility'
  * ```text
  * pairs        >= liquidatable
  * liquidatable === inflightSkipped + planSkipped + planned
- * planned      === cooledDown + backoffSkipped + noSwapPath + quoteFailed + ok + reverted
+ * planned      === cooledDown + backoffSkipped + noSwapPath + quoteFailed + quoteUnprofitable + ok + reverted
  * ok           === submitted + notSent
  * ```
  *
@@ -48,6 +49,13 @@ type TickCounters = {
   backoffSkipped: number
   noSwapPath: number
   quoteFailed: number
+  /**
+   * Quoted successfully, but the route could not cover the repay `liquidate` would pull. An economic
+   * skip, not a failure: deliberately no backoff and no cooldown, because both sides of the comparison
+   * move on a ten-second scale — the LIF ramp lifts break-even while route cost is itself volatile —
+   * so this outcome says almost nothing about the next attempt.
+   */
+  quoteUnprofitable: number
   ok: number
   reverted: number
   /** Broadcast: the queue reported a transaction actually went out. */
@@ -106,6 +114,12 @@ export async function runTick(deps: {
   caller: Address
   /** Headroom (bps) shaved off a cap-binding seize for one-block oracle-drift; passed to sizing. */
   seizeCapMarginBps: number
+  /**
+   * Surplus over break-even a quoted route must clear to be simulated, in bps of the plan's
+   * contract-derived repay. `0` is pure break-even — both sides then come from the contract's own
+   * formula with no tuned value, so the gate can only reject plans that would have reverted.
+   */
+  minSurplusBps: number
   /** Lower bound (bps) on swap execution cost; passed to sizing. `0` disables the headroom gate. */
   headroomFloorBps: number
   readLens: (pairs: LensInput[]) => Promise<Map<string, LensOut>>
@@ -154,6 +168,7 @@ export async function runTick(deps: {
     caller,
     seizeCapMarginBps,
     headroomFloorBps,
+    minSurplusBps,
     readLens,
     quoteFor,
     simulate,
@@ -189,6 +204,7 @@ export async function runTick(deps: {
     backoffSkipped: 0,
     noSwapPath: 0,
     quoteFailed: 0,
+    quoteUnprofitable: 0,
     ok: 0,
     reverted: 0,
     submitted: 0,
@@ -276,6 +292,30 @@ export async function runTick(deps: {
           cooldown.mark(label)
           continue
         }
+
+        // Economic gate, before spending a simulation: `liquidate` ends by pulling its own re-derived
+        // repay from the Executor, which approves only its live balance — so a route short of that
+        // repay reverts as an allowance error instead of reporting a shortfall.
+        const economics = assessProfitability({
+          plan: liquidationPlan,
+          swapPlan: quote.plan,
+          minSurplusBps
+        })
+        if (!economics.viable) {
+          // No backoff, no cooldown — see `quoteUnprofitable` on TickCounters. Quote volume is bounded
+          // by the pre-quote headroom gate in sizing, not by suppressing a position that may be one
+          // block of LIF ramp away from being fundable.
+          counters.quoteUnprofitable += 1
+          logger.info('quote.unprofitable', {
+            marketId: pair.id,
+            borrower: pair.borrower,
+            requiredRepay: economics.requiredRepay,
+            achievableOut: economics.achievableOut,
+            shortfallBps: economics.shortfallBps
+          })
+          continue
+        }
+
         swapPlan = quote.plan
       }
 
