@@ -35,7 +35,9 @@ const PARAMS: MarketParams = {
 // price = 1e36 → expectedLoanOut = seizedAssets = 1000 (the route-quality reference).
 // break-even at lif 1.0 with no shares skew — the strictest floor, so the first quote pass
 // already clears it and these projection cases spend no second call.
-const PLAN: LiquidationPlan = { seizedAssets: 1000n, impliedRepaidAssets: 1000n }
+// Break-even at 800, under the 0x stub's reported min-out of 995, so these cases exercise the lens
+// projection rather than the economic floor (which is covered in @repo/swaps).
+const PLAN: LiquidationPlan = { seizedAssets: 1000n, impliedRepaidAssets: 800n }
 
 const OUT: LensOut = {
   params: PARAMS,

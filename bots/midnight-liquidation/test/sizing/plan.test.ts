@@ -355,10 +355,13 @@ describe('headroom floor', () => {
   const earlyRamp = { blockTimestamp: 2020n, maturity: 2000n, healthy: true }
 
   it('skips a plan whose headroom is under the floor, with insufficient_headroom', () => {
-    expect(planWithReason(baseInput(earlyRamp), { headroomFloorBps: 3 })).toEqual({
-      plan: null,
-      reason: 'insufficient_headroom'
-    })
+    const outcome = planWithReason(baseInput(earlyRamp), { headroomFloorBps: 3 })
+    expect(outcome.plan).toBeNull()
+    expect(outcome.reason).toBe('insufficient_headroom')
+    // The skip carries the numbers behind it, so a caller can report WHY without re-deriving a LIF it
+    // cannot recover (the chosen mode is not implied by chain time).
+    expect(outcome.headroom).toMatchObject({ postMaturityMode: true })
+    expect(outcome.headroom!.bps).toBeLessThan(3n)
   })
 
   it('allows the same position once the ramp clears the floor', () => {

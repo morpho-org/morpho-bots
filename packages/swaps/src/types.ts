@@ -58,6 +58,16 @@ export type Swap = {
   expectedAmountOut: bigint
   /** The min-out floor encoded in `callData` — logging/observability. */
   amountOutMinimum: bigint
+  /**
+   * Whether {@link Swap.amountOutMinimum} is the floor the venue actually encoded in `callData`
+   * (`'venue'`) or our own reconstruction of what it probably encoded (`'derived'`).
+   *
+   * Load-bearing, not bookkeeping: an economic floor can only be *checked* against a `'venue'` value.
+   * Comparing a `'derived'` one against the floor compares our arithmetic with itself and always
+   * agrees, whatever the venue actually baked — so a caller enforcing a floor must reject `'derived'`
+   * rather than trust it.
+   */
+  minOutSource: 'venue' | 'derived'
 }
 
 /**

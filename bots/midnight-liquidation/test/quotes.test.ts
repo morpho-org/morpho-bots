@@ -51,8 +51,10 @@ const PLAN: LiquidationPlan = {
   seizedAssets: 1000n,
   repaidUnits: 900n,
   postMaturityMode: false,
-  lif: WAD,
-  impliedRepaidUnits: 1000n
+  // lif 1.25 puts break-even at exactly 800, under the 0x stub's reported min-out of 995, so these
+  // projection cases exercise the lens mapping rather than the economic floor.
+  lif: (WAD * 5n) / 4n,
+  impliedRepaidUnits: 800n
 }
 
 const OUT: LensOut = {

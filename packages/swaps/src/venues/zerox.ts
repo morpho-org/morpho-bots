@@ -61,7 +61,8 @@ export async function quoteZerox(
     callData: json.transaction.data,
     amountIn: { source: 'fixed', value: params.amountIn },
     expectedAmountOut: BigInt(json.buyAmount ?? '0'),
-    amountOutMinimum: BigInt(json.minBuyAmount ?? '0')
+    amountOutMinimum: BigInt(json.minBuyAmount ?? '0'),
+    minOutSource: 'venue'
   }
 }
 

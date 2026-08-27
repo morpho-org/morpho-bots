@@ -87,8 +87,16 @@ export type PlanSkipReason =
  * so suppressing a skipped position would delay re-evaluating it precisely when it becomes viable.
  */
 type PlanOutcome =
-  | { plan: LiquidationPlan; reason?: undefined }
-  | { plan: null; reason: PlanSkipReason }
+  | { plan: LiquidationPlan; reason?: undefined; headroom?: undefined }
+  | { plan: null; reason: PlanSkipReason; headroom?: SkippedHeadroom }
+
+/**
+ * The numbers behind an `insufficient_headroom` skip. Carried on the outcome because the gate holds the
+ * chosen plan when it rejects it, and a caller cannot reconstruct these afterwards: a
+ * matured-and-unhealthy position may be sized in EITHER mode, so neither `maxLif` nor chain time
+ * identifies the LIF that was actually applied.
+ */
+type SkippedHeadroom = { bps: bigint; lif: bigint; postMaturityMode: boolean }
 
 /**
  * Operator sizing knobs that are NOT lens-derived (so they live here, not on `PlanInput`). Sourced
@@ -115,7 +123,11 @@ type PlanOptions = {
   headroomFloorBps?: number
 }
 
-const skip = (reason: PlanSkipReason): PlanOutcome => ({ plan: null, reason })
+const skip = (reason: PlanSkipReason, headroom?: SkippedHeadroom): PlanOutcome => ({
+  plan: null,
+  reason,
+  headroom
+})
 const sized = (plan: LiquidationPlan): PlanOutcome => ({ plan })
 
 /**
@@ -396,8 +408,13 @@ const selectMode = (input: PlanInput, seizeCapMarginBps: number): PlanOutcome =>
 // Reads the CHOSEN plan's own `lif`, so it cannot disagree with the mode `selectMode` picked.
 const gateOnHeadroom = (outcome: PlanOutcome, headroomFloorBps: number): PlanOutcome => {
   if (headroomFloorBps <= 0 || outcome.plan === null) return outcome
-  if (headroomBps(outcome.plan) >= BigInt(headroomFloorBps)) return outcome
-  return skip('insufficient_headroom')
+  const bps = headroomBps(outcome.plan)
+  if (bps >= BigInt(headroomFloorBps)) return outcome
+  return skip('insufficient_headroom', {
+    bps,
+    lif: outcome.plan.lif,
+    postMaturityMode: outcome.plan.postMaturityMode
+  })
 }
 
 /**

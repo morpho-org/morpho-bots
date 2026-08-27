@@ -165,20 +165,20 @@ const sizeCandidates = (deps: {
     const outcome = planWithReason(input, { seizeCapMarginBps, headroomFloorBps })
     if (outcome.plan === null) {
       counters.planSkipped += 1
-      // `insufficient_headroom` is a threshold decision, so it carries the inputs behind it — the
-      // reason alone says a position was skipped without saying whether the floor is mis-set or the
-      // ramp is simply early. The realized headroom itself is NOT here: it is `(lif - 1)/lif` of the
-      // CHOSEN plan, and a skip discards the plan, so the tick cannot recover which mode won. `maxLif`
-      // plus `secondsSinceMaturity` lets an operator reconstruct the post-maturity case, which is the
-      // one this gate fires in.
+      // A threshold decision carries the numbers behind it, including the LIF and mode actually
+      // chosen: `maxLif` and chain time do NOT identify them, because a matured-and-unhealthy position
+      // may be sized in either mode. Without these an operator cannot tell a mis-set floor from an
+      // early ramp, nor which mode the sizer picked.
       logger[LEVEL_BY_REASON[outcome.reason]]('plan.skipped', {
         marketId: pair.id,
         borrower: pair.borrower,
         reason: outcome.reason,
-        ...(outcome.reason === 'insufficient_headroom'
+        ...(outcome.headroom
           ? {
+              headroomBps: outcome.headroom.bps,
               headroomFloorBps,
-              maxLif: out.bestCollateralMaxLif,
+              lif: outcome.headroom.lif,
+              postMaturityMode: outcome.headroom.postMaturityMode,
               secondsSinceMaturity: out.blockTimestamp - out.market.maturity
             }
           : {})

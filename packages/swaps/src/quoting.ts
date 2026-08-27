@@ -97,6 +97,14 @@ export function passesRouteQuality(args: {
  * reference we hand it, while the aggregators apply it to their own quoted output. Passing the wrong
  * one silently lands the floor below break-even — see the second pass in `firmQuoteVenue`.
  */
+/**
+ * Whether a quote's ENCODED min-out is known to sit at or above `floor`. A `'derived'` min-out never
+ * qualifies, however large it looks: it is our reconstruction, so checking it against the floor checks
+ * our arithmetic against itself (see {@link Swap.minOutSource}).
+ */
+const clearsFloor = (swap: Swap, floor: bigint): boolean =>
+  swap.minOutSource === 'venue' && swap.amountOutMinimum >= floor
+
 const slippageForFloor = (floor: bigint, denominator: bigint): number =>
   denominator <= 0n || floor >= denominator
     ? 0
@@ -157,6 +165,7 @@ type FirmQuoteOutcome =
   | { kind: 'swap'; swap: Swap; plan: SwapPlan }
   | { kind: 'quote_failed'; reason: QuoteFailureReason; detail: string }
   | { kind: 'bad_route'; swap: Swap }
+  | { kind: 'floor_unmet'; swap: Swap; floor: bigint }
 
 // One firm venue quote shared by both composers: build the venue params, dispatch under `tryCatch`,
 // then oracle-sanity the quoted output and fold a success into the plan's final step. `venueEntry` is
@@ -207,21 +216,25 @@ async function firmQuoteVenue(args: {
     return { kind: 'quote_failed', reason, detail: ensureError(first.error).message }
   }
 
-  // Second pass, and the reason it exists: the aggregators apply the slippage percentage to THEIR OWN
-  // quote, which sits under the oracle reference by the execution cost. A percentage derived against
-  // the reference therefore lands their min-out at `quote · floor / reference` — strictly BELOW
-  // break-even — so a drifted fill would clear the router and then revert at the protocol's repay
-  // pull, which is exactly the misleading failure this floor exists to prevent. Re-deriving against
-  // the venue's own quoted output puts the floor where it belongs. Uniswap already lands at or above
-  // break-even on the first pass (it applies the percentage to the reference itself), so it never
-  // takes this branch.
+  // The aggregators apply the slippage percentage to THEIR OWN quote, which sits under the oracle
+  // reference by the execution cost, so a percentage derived against the reference lands their min-out
+  // at `quote · floor / reference` — strictly BELOW break-even. Re-deriving against the venue's own
+  // quoted output puts it back. Uniswap applies the percentage to the reference itself and is already
+  // at or above the floor, so it never takes this branch.
   let swap = first.data
-  if (swap.amountOutMinimum < economicFloor && swap.expectedAmountOut > 0n) {
+  if (!clearsFloor(swap, economicFloor) && swap.expectedAmountOut > 0n) {
     const second = await quote(paramsFor(swap.expectedAmountOut))
-    // A failed re-quote is not fatal: the first quote is still executable, just with a looser on-chain
-    // floor than break-even. Simulation and the caller's pre-broadcast profitability check both still
-    // stand between it and a broadcast.
     if (second.data) swap = second.data
+  }
+
+  // POSTCONDITION, and the actual guarantee — the retry above is only an attempt to satisfy it. The
+  // second quote's own output can come back lower than the first's, which puts its min-out back under
+  // the floor; the retry can fail outright; and a venue that only lets us RECONSTRUCT its min-out
+  // cannot be checked at all. In every one of those cases the encoded bound does not protect the
+  // repay, so the venue is refused and the caller falls through to the next one. Keeping a
+  // known-underfloor quote here is what the earlier revision got wrong.
+  if (!clearsFloor(swap, economicFloor)) {
+    return { kind: 'floor_unmet', swap, floor: economicFloor }
   }
 
   // The reference stays the FULL-PATH oracle value (collateral → loan): the unwrap chain threads its
@@ -470,6 +483,19 @@ export function composeMultiVenueQuoting(deps: {
             collateral: collateralToken,
             reason: lastReason,
             detail: outcome.detail
+          })
+          continue
+        }
+        if (outcome.kind === 'floor_unmet') {
+          lastReason = 'bad_route'
+          logger.warn('quote.floor_unmet', {
+            venue,
+            id,
+            collateral: collateralToken,
+            expected: outcome.swap.expectedAmountOut,
+            amountOutMinimum: outcome.swap.amountOutMinimum,
+            minOutSource: outcome.swap.minOutSource,
+            floor: outcome.floor
           })
           continue
         }

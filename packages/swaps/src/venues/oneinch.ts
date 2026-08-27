@@ -77,7 +77,12 @@ export async function quoteOneInch(
     callData: json.tx.data,
     amountIn: { source: 'fixed', value: params.amountIn },
     expectedAmountOut,
-    amountOutMinimum: (expectedAmountOut * (BPS - BigInt(params.slippageBps))) / BPS
+    // RECONSTRUCTED, not read: 1inch returns opaque calldata with its own bound baked in from the
+    // `slippage` percentage, and nothing here verifies this matches it. Its `minReturn` parameter would
+    // let us set an absolute floor and report it faithfully; until that is wired, a caller enforcing an
+    // economic floor must not use this venue. See {@link Swap.minOutSource}.
+    amountOutMinimum: (expectedAmountOut * (BPS - BigInt(params.slippageBps))) / BPS,
+    minOutSource: 'derived'
   }
 }
 

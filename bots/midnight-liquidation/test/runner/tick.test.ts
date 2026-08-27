@@ -52,6 +52,7 @@ const ZERO = '0x0000000000000000000000000000000000000000' as const
 const MARKET: Hex = `0x${'a'.repeat(64)}`
 const LABEL = lensKey(MARKET, BORROWER)
 // 3.63% incentive → a 349bps headroom ceiling; the ramp reaches 3bps about 30s past maturity.
+const WAD_ONE = 10n ** 18n
 const MAX_LIF = 1036269430051813471n
 
 const SWAP_PLAN: SwapPlan = {
@@ -534,13 +535,16 @@ describe('runTick', () => {
       expect(skipped?.level).toBe('debug')
       expect(skipped?.fields).toMatchObject({
         reason: 'insufficient_headroom',
-        // The inputs behind the decision: without these an operator cannot tell a mis-set floor from
-        // an early ramp. The realized headroom is absent by design — a skip discards the plan, so the
-        // chosen mode's LIF is not recoverable here.
+        // The realized headroom AND the LIF/mode it came from: `maxLif` plus chain time do not
+        // identify them, because a matured-and-unhealthy position may be sized in either mode.
         headroomFloorBps: 3,
-        maxLif: MAX_LIF,
+        postMaturityMode: true,
         secondsSinceMaturity: 20n
       })
+      // ~2bps at 20s into a 3600s ramp on a 3.63% incentive — under the 3bps floor that rejected it.
+      expect(skipped?.fields?.headroomBps as bigint).toBeLessThan(3n)
+      expect(skipped?.fields?.lif as bigint).toBeGreaterThan(WAD_ONE)
+      expect(skipped?.fields?.lif as bigint).toBeLessThan(MAX_LIF)
       expect(backoff.shouldSkip(LABEL, 100n)).toBe(false)
       expect(cooldown.shouldSkip(LABEL)).toBe(false)
       expectCounterIdentities(counters)
