@@ -335,17 +335,29 @@ const surplusUsd = usdValueOf(loanToken, referenceAmountOut - plan.impliedRepaid
   `isBadDebtRealization` branch.
 - Marks the cooldown, so a position below threshold is not re-evaluated every block for an hour.
 
-**Placement depends on whether PR #134 is revived.**
+**Placement is settled.** PR #134 is being closed as superseded, with its essentials absorbed into the
+BOTS-35 item 1 PR — so `planWithReason()`, `PlanSkipReason`, `plan.skipped` and `LEVEL_BY_REASON` will
+exist. The ratio floor folds in as the `insufficient_headroom` variant: no new counter, no new event.
+#134's sum identities stay intact, with the skip absorbed by
+`liquidatable === inflightSkipped + planSkipped + planned`, because the candidate never enters the
+worked set. The gate is pure arithmetic over `PlanInput` — `blockTimestamp`, `maturity` and
+`bestCollateralMaxLif` are all already there, so `PlanInput` needs no widening, and the threshold
+arrives via the existing `PlanOptions`.
 
-- **#134 alive** — the ratio floor folds into its `PlanSkipReason` union as `insufficient_headroom`,
-  riding the existing `plan.skipped` event and `LEVEL_BY_REASON` map. No new counter, no new event,
-  and #134's documented sum identities stay intact: the skip is absorbed by
-  `liquidatable === inflightSkipped + planSkipped + planned`, because the candidate never enters the
-  worked set. This is the preferred shape — the gate is pure arithmetic over `PlanInput`, which is
-  exactly what `planWithReason()` already is.
-- **#134 dead** — the gate needs its own loop exit, a `headroomSkipped` counter, and a
-  `plan.headroom_insufficient` event carrying `headroomBps`, `lif`, and seconds-since-maturity, so the
-  next maturity produces the ramp curve as telemetry rather than as 133 identical warnings.
+Requirements on that seam, agreed with the item 1 fork:
+
+- **Plan-skip must record neither backoff nor cooldown**, which is today's behavior
+  (`if (!liquidationPlan) continue`). This is load-bearing: see change #4. A per-reason suppression
+  policy, if one is ever added, must default to "no suppression".
+- `LEVEL_BY_REASON` maps `insufficient_headroom` to **`debug`**. Because headroom is a group property
+  it fires identically for every candidate in a group — 14 identical lines per tick is the same defect
+  as the 133 identical warnings the post-mortem had to read. The ramp-curve telemetry comes instead
+  from one group-level line at `info`, cadence-gated by #134's `createBlockSampler`, whose
+  edge-triggered semantics ("a quiet stretch never consumes the window, so the first occurrence after
+  any gap is always reported") are exactly right for this.
+- Payload for this reason: `headroomBps`, `lif`, `maxLif`, `secondsSinceMaturity`, `tCrossSeconds`.
+  `tCrossSeconds` is what makes the line actionable rather than merely diagnostic — it says when the
+  position _will_ be viable.
 
 Event naming is agreed with the BOTS-35 item 2 fork, split by pipeline stage to match the existing
 `plan.*` / `quote.*` / `simulate.*` convention: this gate is `plan.headroom_insufficient`; their
