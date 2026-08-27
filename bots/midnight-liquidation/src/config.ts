@@ -53,6 +53,13 @@ const DEFAULT_MAX_ROUTE_IMPACT_BPS = 500 // reject an aggregator route >5% below
 // entry (the underlying's entry isn't known until after resolution). Keep well under
 // MAX_ROUTE_IMPACT_BPS — it also haircuts the amount the downstream venue sells.
 const DEFAULT_PENDLE_SLIPPAGE_BPS = 50
+// Lower bound on swap execution cost. Skips a plan whose incentive headroom `(lif - 1)/lif` cannot
+// cover even the cheapest route, before it costs a quote, a simulation and a gas estimate. Kept LOW
+// deliberately: the floor is a pure time gate (3 bps suppresses until ~t+25s post-maturity on a
+// 438bps-maxLif tier), and blinding the earliest seconds of a maturity is far more costly than a
+// wasted quote. The 31 Jul archive implies (8.52, 15.83] for that maturity's basis regime; that is one
+// observation and deliberately NOT the default.
+const DEFAULT_HEADROOM_FLOOR_BPS = 3
 const DEFAULT_SEIZE_CAP_MARGIN_BPS = 30 // shave the repay cap when sizing a cap-binding seize — one-block oracle-drift headroom; calibratable
 const DEFAULT_BACKOFF_BASE_BLOCKS = 2n
 const DEFAULT_BACKOFF_MAX_BLOCKS = 64n
@@ -93,6 +100,8 @@ export type QuotingConfig = {
   pendleSlippageBps: number
   /** Headroom (bps) shaved off the on-chain repay cap when sizing a cap-binding seize-exact plan. */
   seizeCapMarginBps: number
+  /** Lower bound (bps) on swap execution cost; skips plans whose incentive headroom cannot cover it. */
+  headroomFloorBps: number
   backoffBaseBlocks: bigint
   backoffMaxBlocks: bigint
 }
@@ -452,6 +461,10 @@ export function loadConfig(
       max: 10_000
     }),
     seizeCapMarginBps: intEnv(env, 'SEIZE_CAP_MARGIN_BPS', DEFAULT_SEIZE_CAP_MARGIN_BPS, {
+      min: 0,
+      max: 10_000
+    }),
+    headroomFloorBps: intEnv(env, 'HEADROOM_FLOOR_BPS', DEFAULT_HEADROOM_FLOOR_BPS, {
       min: 0,
       max: 10_000
     }),

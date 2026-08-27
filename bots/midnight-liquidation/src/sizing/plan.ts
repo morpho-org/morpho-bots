@@ -35,6 +35,18 @@ export type LiquidationPlan = {
   seizedAssets: bigint
   repaidUnits: bigint
   postMaturityMode: boolean
+  /**
+   * LIF this plan was sized at — {@link lifAt} for `postMaturityMode` at `input.blockTimestamp`.
+   * Surfaced rather than recomputed because it is NOT derivable from `postMaturityMode` alone: the
+   * matured-and-unhealthy branch picks a mode by surplus, so only the chosen plan knows its own LIF.
+   */
+  lif: bigint
+  /**
+   * The repay the contract will ceil-derive for `seizedAssets` at {@link LiquidationPlan.lif} — i.e.
+   * the swap's break-even output in loan units. `repaidUnits` stays `0n` (seize-exact); this is what
+   * the chain computes from it.
+   */
+  impliedRepaidUnits: bigint
 }
 
 /**
@@ -52,6 +64,9 @@ export type LiquidationPlan = {
  *   `(0, 0)` plan that {@link isBadDebtRealization} would misclassify as a write-off against a
  *   still-solvent position.
  * - `seize_rounds_to_zero`: a cap-binding seize rounded down to zero collateral.
+ * - `insufficient_headroom`: the chosen plan's incentive headroom is below
+ *   {@link PlanOptions.headroomFloorBps}, so no swap route could fund the repay. Clears on its own as
+ *   the post-maturity LIF ramps, which is why a skip must not record backoff (see {@link PlanOutcome}).
  */
 export type PlanSkipReason =
   | 'no_debt'
@@ -60,6 +75,7 @@ export type PlanSkipReason =
   | 'cap_not_positive'
   | 'nothing_to_seize'
   | 'seize_rounds_to_zero'
+  | 'insufficient_headroom'
   | 'writeoff_below_max_debt'
 
 /**
@@ -87,6 +103,16 @@ type PlanOptions = {
    * `cap·(1 - margin)` keeps headroom for ordinary one-block moves. `0` reproduces the unmargined cap.
    */
   seizeCapMarginBps?: number
+  /**
+   * A **lower bound** on swap execution cost in bps — the cheapest route the operator would ever
+   * expect — NOT a typical-cost estimate. A seize-exact plan's entire margin is `(lif - 1)/lif`, so a
+   * plan whose headroom is under this floor cannot fund its own repay by any route and is skipped
+   * before it costs a quote, a simulation and a gas estimate.
+   *
+   * Set it too high and the gate blinds the earliest, most contested part of a maturity: the floor is
+   * a pure time gate, suppressing until `headroom(t) >= floor`. `0` disables the gate.
+   */
+  headroomFloorBps?: number
 }
 
 const skip = (reason: PlanSkipReason): PlanOutcome => ({ plan: null, reason })
@@ -98,14 +124,50 @@ const sized = (plan: LiquidationPlan): PlanOutcome => ({ plan })
  * A `(0, 0)` plan is the encoding — seizing no collateral for no repay. Callers must branch on this
  * before treating a plan as a swap-funded liquidation, since a write-off needs neither a quote nor
  * loan-token funding. Pure predicate: no failures, no side effects.
+ *
+ * Takes only the two amounts it reads, not a whole {@link LiquidationPlan}, so a caller holding
+ * wire-verified params need not synthesize the plan's derived fields to ask the question.
  */
-export const isBadDebtRealization = (plan: LiquidationPlan): boolean =>
-  plan.seizedAssets === 0n && plan.repaidUnits === 0n
+export const isBadDebtRealization = (
+  plan: Pick<LiquidationPlan, 'seizedAssets' | 'repaidUnits'>
+): boolean => plan.seizedAssets === 0n && plan.repaidUnits === 0n
 
-// Repaid units the contract derives when the caller passes `seizedAssets` (midnight-contracts.txt:2369):
-// two chained ceil-divisions, collateral → loan units → repaid units.
+/**
+ * Repaid units the contract derives when the caller passes `seizedAssets`
+ * (midnight-contracts.txt:2369): two chained ceil-divisions, collateral → loan units → repaid units.
+ * Both round up, i.e. against the liquidator, so this is the swap's break-even output. Every sized
+ * plan already carries its own value as {@link LiquidationPlan.impliedRepaidUnits}, so read that
+ * rather than recomputing; export this only alongside a consumer that cannot.
+ */
 const impliedRepaidUnits = (seizedAssets: bigint, price: bigint, lif: bigint): bigint =>
   mulDivUp(mulDivUp(seizedAssets, price, ORACLE_PRICE_SCALE), WAD, lif)
+
+/**
+ * The seized slot's oracle value in loan units — `seizedAssets · price / ORACLE_PRICE_SCALE`. Floors,
+ * so a dust position can value to zero; callers dividing by it must guard that.
+ */
+const seizedValueOf = (seizedAssets: bigint, price: bigint): bigint =>
+  mulDivDown(seizedAssets, price, ORACLE_PRICE_SCALE)
+
+// Assembles a seize-exact plan with the two derived fields downstream consumers would otherwise
+// recompute: the LIF it was sized at and the repay the chain will derive from it.
+const buildPlan = (args: {
+  input: PlanInput
+  seizedAssets: bigint
+  lif: bigint
+  postMaturityMode: boolean
+}): LiquidationPlan => ({
+  collateralIndex: args.input.bestCollateralIndex,
+  seizedAssets: args.seizedAssets,
+  repaidUnits: 0n,
+  postMaturityMode: args.postMaturityMode,
+  lif: args.lif,
+  impliedRepaidUnits: impliedRepaidUnits(
+    args.seizedAssets,
+    args.input.bestCollateralPrice,
+    args.lif
+  )
+})
 
 /**
  * The largest seize `S` whose contract-derived repaid (`impliedRepaidUnits(S, price, lif)`) stays
@@ -139,21 +201,12 @@ const capBoundPlan = (
   const capEff = mulDivDown(cap, BPS - BigInt(marginBps), BPS)
   const seizedAssets = maxSeizeForCap(capEff, input.bestCollateralPrice, lif)
   if (seizedAssets === 0n) return skip('seize_rounds_to_zero')
-  return sized({
-    collateralIndex: input.bestCollateralIndex,
-    seizedAssets,
-    repaidUnits: 0n,
-    postMaturityMode
-  })
+  return sized(buildPlan({ input, seizedAssets, lif, postMaturityMode }))
 }
 
 // The whole-slot seize-exact plan in the given mode (the no-cap-binding case for both modes).
-const wholeSlotPlan = (input: PlanInput, postMaturityMode: boolean): LiquidationPlan => ({
-  collateralIndex: input.bestCollateralIndex,
-  seizedAssets: input.bestCollateralAmt,
-  repaidUnits: 0n,
-  postMaturityMode
-})
+const wholeSlotPlan = (input: PlanInput, lif: bigint, postMaturityMode: boolean): LiquidationPlan =>
+  buildPlan({ input, seizedAssets: input.bestCollateralAmt, lif, postMaturityMode })
 
 // Normal-mode sizing (gated on-chain by `debt > maxDebt`, before or after maturity alike): LIF is the
 // slot's full `maxLif` immediately. The contract subtracts `repaidUnits` from the post-writeoff debt
@@ -198,7 +251,7 @@ const normalModePlan = (input: PlanInput, marginBps: number): PlanOutcome => {
   const repayCap = exempt ? effectiveDebt : min(maxRepaid, effectiveDebt)
   if (repayCap <= 0n) return skip('cap_not_positive')
 
-  if (wholeSlotRepaid <= repayCap) return sized(wholeSlotPlan(input, false))
+  if (wholeSlotRepaid <= repayCap) return sized(wholeSlotPlan(input, lif, false))
   return capBoundPlan(input, repayCap, lif, marginBps, false)
 }
 
@@ -222,23 +275,29 @@ const postMaturityPlan = (input: PlanInput, marginBps: number): PlanOutcome => {
     input.bestCollateralPrice,
     lif
   )
-  if (wholeSlotRepaid <= effectiveDebt) return sized(wholeSlotPlan(input, true))
+  if (wholeSlotRepaid <= effectiveDebt) return sized(wholeSlotPlan(input, lif, true))
   return capBoundPlan(input, effectiveDebt, lif, marginBps, true)
 }
 
 // Expected surplus of a seize-exact plan, in loan units: the seized slot's oracle value minus the
-// repaid units the contract will ceil-derive under that plan's mode/LIF. Used only to CHOOSE between
-// two plans whose gates are both open — absolute profitability (gas, slippage, route quality) stays
-// the quoting/simulate layer's job.
-const planSurplus = (input: PlanInput, chosen: LiquidationPlan): bigint => {
-  const lif = lifAt({
-    now: input.blockTimestamp,
-    maturity: input.maturity,
-    maxLif: input.bestCollateralMaxLif,
-    postMaturityMode: chosen.postMaturityMode
-  })
-  const seizedValue = mulDivDown(chosen.seizedAssets, input.bestCollateralPrice, ORACLE_PRICE_SCALE)
-  return seizedValue - impliedRepaidUnits(chosen.seizedAssets, input.bestCollateralPrice, lif)
+// repay the contract will ceil-derive. Both terms are already on the plan, so this neither recomputes
+// `lifAt` nor can disagree with the LIF the plan was sized at. Used to CHOOSE between two plans whose
+// gates are both open; absolute profitability (gas, route quality) stays the quoting layer's job.
+const planSurplus = (input: PlanInput, chosen: LiquidationPlan): bigint =>
+  seizedValueOf(chosen.seizedAssets, input.bestCollateralPrice) - chosen.impliedRepaidUnits
+
+/**
+ * Incentive headroom of a sized plan, in bps: `surplus / seizedValue`, which for a seize-exact plan
+ * reduces to `(lif - 1) / lif` and is therefore **scale-invariant** — a $10k and a $1 plan at the same
+ * LIF read identically. That is why this cannot reject dust; only an absolute floor can.
+ *
+ * Returns `0n` when the seized slot's oracle value floors to zero, so a valueless plan fails any
+ * non-zero floor rather than dividing by zero.
+ */
+const headroomBps = (input: PlanInput, chosen: LiquidationPlan): bigint => {
+  const seizedValue = seizedValueOf(chosen.seizedAssets, input.bestCollateralPrice)
+  if (seizedValue <= 0n) return 0n
+  return ((seizedValue - chosen.impliedRepaidUnits) * BPS) / seizedValue
 }
 
 /**
@@ -269,7 +328,7 @@ const planSurplus = (input: PlanInput, chosen: LiquidationPlan): bigint => {
  * Side-effect free. Callers must not treat a skip as a failure — see {@link PlanOutcome}.
  */
 export const planWithReason = (input: PlanInput, options: PlanOptions = {}): PlanOutcome => {
-  const { seizeCapMarginBps = 0 } = options
+  const { seizeCapMarginBps = 0, headroomFloorBps = 0 } = options
 
   if (!input.hasDebt) return skip('no_debt')
   if (input.locked) return skip('locked')
@@ -277,19 +336,37 @@ export const planWithReason = (input: PlanInput, options: PlanOptions = {}): Pla
   const matured = input.blockTimestamp > input.maturity
   if (!matured && input.healthy) return skip('healthy_pre_maturity')
 
+  // Bad-debt realization: a pure write-off, no assets move and no swap funds it, so the headroom gate
+  // below must not see it — hence the early return rather than a `(0, 0)` plan falling through.
   if (input.badDebt >= input.debt) {
-    return sized({
-      collateralIndex: input.bestCollateralIndex,
-      seizedAssets: 0n,
-      repaidUnits: 0n,
-      postMaturityMode: matured
-    })
+    return sized(
+      buildPlan({
+        input,
+        seizedAssets: 0n,
+        lif: lifAt({
+          now: input.blockTimestamp,
+          maturity: input.maturity,
+          maxLif: input.bestCollateralMaxLif,
+          postMaturityMode: matured
+        }),
+        postMaturityMode: matured
+      })
+    )
   }
 
   // Below here every plan seizes collateral, so an empty best slot cannot produce one: a whole-slot
   // seize of nothing is the `(0, 0)` shape reserved for bad-debt realization.
   if (input.bestCollateralAmt === 0n) return skip('nothing_to_seize')
 
+  return gateOnHeadroom(input, selectMode(input, seizeCapMarginBps), headroomFloorBps)
+}
+
+// The mode policy of `liquidate(...)` — see {@link planWithReason}'s JSDoc. Split out so the headroom
+// gate is provably DOWNSTREAM of mode selection: normal mode pays the full `maxLif` with no ramp, so a
+// gate reading a ramping post-maturity LIF would reject matured-and-unhealthy positions that normal
+// mode funds immediately.
+const selectMode = (input: PlanInput, seizeCapMarginBps: number): PlanOutcome => {
+  const matured = input.blockTimestamp > input.maturity
   if (!matured) return normalModePlan(input, seizeCapMarginBps)
 
   const post = postMaturityPlan(input, seizeCapMarginBps)
@@ -301,6 +378,18 @@ export const planWithReason = (input: PlanInput, options: PlanOptions = {}): Pla
   if (post.plan === null) return normal.plan === null ? post : normal
   if (normal.plan === null) return post
   return planSurplus(input, normal.plan) > planSurplus(input, post.plan) ? normal : post
+}
+
+// Rejects a sized plan whose incentive headroom cannot cover the operator's floor on execution cost.
+// Reads the CHOSEN plan's own `lif`, so it cannot disagree with the mode `selectMode` picked.
+const gateOnHeadroom = (
+  input: PlanInput,
+  outcome: PlanOutcome,
+  headroomFloorBps: number
+): PlanOutcome => {
+  if (headroomFloorBps <= 0 || outcome.plan === null) return outcome
+  if (headroomBps(input, outcome.plan) >= BigInt(headroomFloorBps)) return outcome
+  return skip('insufficient_headroom')
 }
 
 /**

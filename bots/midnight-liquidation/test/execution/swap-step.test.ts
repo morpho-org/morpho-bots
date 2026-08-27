@@ -56,7 +56,9 @@ describe('expectedLoanOut', () => {
       collateralIndex: 0,
       seizedAssets: 1000n,
       repaidUnits: 0n,
-      postMaturityMode: false
+      postMaturityMode: false,
+      lif: WAD,
+      impliedRepaidUnits: 1000n
     }
     // 1000 collateral × price(2) = 2000 loan.
     expect(expectedLoanOut(plan, out)).toBe(2000n)
@@ -69,7 +71,9 @@ describe('expectedLoanOut', () => {
       collateralIndex: 0,
       seizedAssets: 366n,
       repaidUnits: 0n,
-      postMaturityMode: false
+      postMaturityMode: false,
+      lif: WAD,
+      impliedRepaidUnits: 1098n
     }
     expect(expectedLoanOut(plan, { ...out, bestCollateralPrice: ORACLE_PRICE_SCALE * 3n })).toBe(
       1098n
@@ -81,7 +85,9 @@ describe('expectedLoanOut', () => {
       collateralIndex: 0,
       seizedAssets: 1000n,
       repaidUnits: 0n,
-      postMaturityMode: false
+      postMaturityMode: false,
+      lif: WAD,
+      impliedRepaidUnits: 1000n
     }
     expect(expectedLoanOut(plan, { ...out, bestCollateralPrice: 0n })).toBe(0n)
   })

@@ -50,7 +50,9 @@ const PLAN: LiquidationPlan = {
   collateralIndex: 0,
   seizedAssets: 1000n,
   repaidUnits: 900n,
-  postMaturityMode: false
+  postMaturityMode: false,
+  lif: WAD,
+  impliedRepaidUnits: 1000n
 }
 
 const OUT: LensOut = {

@@ -326,6 +326,7 @@ async function main() {
       chainHead,
       caller: config.executooorAddress,
       seizeCapMarginBps: config.quoting.seizeCapMarginBps,
+      headroomFloorBps: config.quoting.headroomFloorBps,
       readLens: pairs => readMidnightLiquidationLens(client, config.midnight, pairs),
       quoteFor,
       simulate: ({ market, borrower, plan, swapPlan }) =>

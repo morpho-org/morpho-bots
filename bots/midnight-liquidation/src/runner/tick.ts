@@ -74,7 +74,11 @@ const LEVEL_BY_REASON: Record<PlanSkipReason, 'debug' | 'info' | 'warn'> = {
   seize_rounds_to_zero: 'info',
   // Unliquidatable in normal mode rather than transient: it clears only when the oracle moves or the
   // position matures into post-maturity mode, where the RCF cap does not apply.
-  writeoff_below_max_debt: 'info'
+  writeoff_below_max_debt: 'info',
+  // Group property, not a per-position one: headroom is `(lif - 1)/lif`, so every candidate sharing a
+  // (maturity, maxLif, chosen mode) group is skipped together. At `info` that is one line per position
+  // per block — the shape that gave the 31 Jul post-mortem hundreds of identical warnings.
+  insufficient_headroom: 'debug'
 }
 
 /**
@@ -102,6 +106,8 @@ export async function runTick(deps: {
   caller: Address
   /** Headroom (bps) shaved off a cap-binding seize for one-block oracle-drift; passed to sizing. */
   seizeCapMarginBps: number
+  /** Lower bound (bps) on swap execution cost; passed to sizing. `0` disables the headroom gate. */
+  headroomFloorBps: number
   readLens: (pairs: LensInput[]) => Promise<Map<string, LensOut>>
   /**
    * Fetches ONE executable swap for a liquidatable position from its configured venue (Uniswap is
@@ -147,6 +153,7 @@ export async function runTick(deps: {
     chainHead,
     caller,
     seizeCapMarginBps,
+    headroomFloorBps,
     readLens,
     quoteFor,
     simulate,
@@ -206,7 +213,10 @@ export async function runTick(deps: {
         continue
       }
 
-      const outcome = planWithReason(planInputFromLens(out), { seizeCapMarginBps })
+      const outcome = planWithReason(planInputFromLens(out), {
+        seizeCapMarginBps,
+        headroomFloorBps
+      })
       if (outcome.plan === null) {
         // Deliberately no backoff and no cooldown: a sizing skip is not a failure, and several
         // reasons clear on their own as chain time advances (see PlanOutcome).

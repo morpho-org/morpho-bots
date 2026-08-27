@@ -45,6 +45,8 @@ const ROUTER: Address = getAddress('0x5555555555555555555555555555555555555555')
 const ZERO = '0x0000000000000000000000000000000000000000' as const
 const MARKET: Hex = `0x${'a'.repeat(64)}`
 const LABEL = lensKey(MARKET, BORROWER)
+// 3.63% incentive → a 349bps headroom ceiling; the ramp reaches 3bps about 30s past maturity.
+const MAX_LIF = 1036269430051813471n
 
 const SWAP_PLAN: SwapPlan = {
   steps: [
@@ -122,6 +124,7 @@ function runWith(opts: {
   inflight?: ReadonlySet<string>
   noSwap?: boolean
   seedBackoffAt?: bigint
+  headroomFloorBps?: number
   cooldown?: CooldownStore
   /** Models the queue's outcome; the two no-broadcast reasons are NOT interchangeable. */
   submitOutcome?: SubmitOutcome
@@ -148,6 +151,7 @@ function runWith(opts: {
     chainHead,
     caller: CALLER,
     seizeCapMarginBps: 0,
+    headroomFloorBps: opts.headroomFloorBps ?? 0,
     readLens: stubReadLens(opts.out === undefined ? lensOut() : opts.out),
     quoteFor: async () => {
       quoteCalls += 1
@@ -435,6 +439,7 @@ describe('runTick', () => {
           chainHead: 100n,
           caller: CALLER,
           seizeCapMarginBps: 0,
+          headroomFloorBps: 0,
           readLens: stubReadLens(lensOut()),
           quoteFor: async () => ({ kind: 'swap', plan: SWAP_PLAN }),
           simulate: async () => ({ status: 'ok' }),
@@ -472,6 +477,40 @@ describe('runTick', () => {
       // A sizing skip is not a failure — several reasons clear as chain time advances.
       expect(backoff.shouldSkip(LABEL, 100n)).toBe(false)
       expect(cooldown.shouldSkip(LABEL)).toBe(false)
+      expectCounterIdentities(counters)
+    })
+
+    it('reports insufficient_headroom at debug, spending no quote and recording no backoff', async () => {
+      // Past maturity and healthy, 20s into the LIF ramp: ~2bps of headroom against a 3bps floor. The
+      // point of the gate is that this costs no aggregator call, no simulation and no gas estimate.
+      const cooldown = createCooldownStore({ cooldownMs: 60_000 })
+      const { counters, events, backoff, quoteCalls, simulateCalls } = await runWith({
+        cooldown,
+        headroomFloorBps: 3,
+        out: lensOut({ healthy: true, blockTimestamp: 2020n, bestCollateralMaxLif: MAX_LIF })
+      })
+      expect(counters).toMatchObject({ liquidatable: 1, planSkipped: 1, planned: 0 })
+      expect(quoteCalls()).toBe(0)
+      expect(simulateCalls()).toBe(0)
+      const skipped = events.find(e => e.event === 'plan.skipped')
+      // debug, not info: headroom is a group property, so this fires identically for every candidate
+      // in the group — one line per position per block is the shape that buried the 31 Jul post-mortem.
+      expect(skipped?.level).toBe('debug')
+      expect(skipped?.fields).toMatchObject({ reason: 'insufficient_headroom' })
+      expect(backoff.shouldSkip(LABEL, 100n)).toBe(false)
+      expect(cooldown.shouldSkip(LABEL)).toBe(false)
+      expectCounterIdentities(counters)
+    })
+
+    it('does not gate a matured-and-unhealthy position that normal mode funds at maxLif', async () => {
+      // Regression companion to the sizing test: same instant as above but UNHEALTHY, so both on-chain
+      // gates are open and normal mode wins with the full maxLif. It must be worked, not skipped.
+      const { counters, quoteCalls } = await runWith({
+        headroomFloorBps: 100,
+        out: lensOut({ healthy: false, blockTimestamp: 2020n, bestCollateralMaxLif: MAX_LIF })
+      })
+      expect(counters).toMatchObject({ liquidatable: 1, planSkipped: 0, planned: 1 })
+      expect(quoteCalls()).toBe(1)
       expectCounterIdentities(counters)
     })
 
