@@ -2,26 +2,38 @@
 
 | Field        | Value                                                                                                                                     |
 | ------------ | ----------------------------------------------------------------------------------------------------------------------------------------- |
-| Status       | Investigation complete, economics verified against production logs. Awaiting decisions below; no code written.                            |
+| Status       | **Decided 2026-08-27; implementing.** Economics verified against production logs. See Decisions.                                          |
 | Linear issue | [BOTS-35](https://linear.app/morpho-labs/issue/BOTS-35/fixmidnight-liquidation-order-by-profit-fix-allowance-and-slippage) — third defect |
 | Depends on   | PR #181 (`fix/bots-35-tick-telemetry-and-submit-outcome`) — green, MERGEABLE, base with `gh stack`                                        |
 | Also touches | BOTS-81 (dust), BOTS-87 (`BlockSampler`, blue port)                                                                                       |
 | Prod config  | Base 8453, venues `['lifi', '0x']`, `SLIPPAGE_BPS` unset → default `100`                                                                  |
 
-## Recommendation
+## Decisions (settled)
 
-**Re-scope BOTS-35 to correctness, and treat the competitive framing as answered rather than open.**
+Hayden, 2026-08-27:
 
-The ticket asks for the slippage guard to be "retuned (or made adaptive) so it does not reject
+1. **Do not rewrite BOTS-35's framing — argue it in a comment.** The re-scoping case and the
+   coverage-versus-share-of-value argument go on the ticket as a comment, leaving the original text
+   intact.
+2. **Merge items 2 and 3**, also communicated by comment. One economic root cause, two accounting
+   defects.
+3. **The gate ships default-ON** — see the floor value below. This reverses the recommendation an earlier
+   draft made.
+4. **Inventory funding is permanently out of scope.** Not deferred: "we will never do inventory funding."
+
+## Why this work is worth doing
+
+**Correctness and legibility, not revenue.**
+
+BOTS-35 asks for the slippage guard to be "retuned (or made adaptive) so it does not reject
 economically sound fills." The guard was not mis-tuned. It is _simultaneously_ too loose to protect the
 repay and too tight to gate on, and neither direction of retuning could have won the position. What
 actually limits us is that a swap-funded liquidation has only `lif − 1` of headroom, which ramps from
 zero over an hour after maturity — and the total prize across the entire Midnight book is **~$3–5k per
 year**, shared with every other liquidator.
 
-That does not mean do nothing. It means the work is worth doing for **legibility and correctness**, not
-for revenue, and the ordering changes accordingly: measure first, then fix the two real defects, then add
-the gate behind a default-off flag.
+That does not mean do nothing. It means the ordering is set by correctness rather than by expected value:
+measure first, then fix the two real defects, then add the gate.
 
 ## Current state
 
@@ -204,7 +216,9 @@ level, is the variable to control.
 Cheapest item proposed by anyone, and every open parameter is downstream of it. `select.ok` already logs
 `{ venue, id, collateral, expected, oracle, amountOutMinimum, order }`, so realized cost per quote is
 `(oracle − expected)/oracle` and viability is `expected ≥ oracle/lif`. **Zero new instrumentation** — a
-query and a readout. It sets the gate's floor, the item-2 gate's buffer, and decides inventory funding.
+query and a readout. It sets this gate's floor and the item-2 gate's buffer — the two parameters nobody
+can currently justify a value for. (It was also the input to the inventory-funding decision, which is now
+closed, so that justification no longer applies.)
 
 ### 2. Exempt economic skips from backoff
 
@@ -231,7 +245,7 @@ cost 10 bps → t+82s     cost 30 bps → t+246s
 Floor the min-out at the derived repay so a shortfall reverts at the router (`return too low`) rather than
 at the repay (`exceeds allowance`). Both paths revert; one names the cause. Falls out of change 5.
 
-### 4. The gate: `insufficient_headroom`, default off
+### 4. The gate: `insufficient_headroom`, default ON at 3 bps
 
 **Prerequisite:** surface the derived repay from sizing. `impliedRepaidUnits` is module-private
 (`sizing/plan.ts:61`) and `LiquidationPlan` carries `repaidUnits: 0n` for every seize-exact plan:
@@ -343,8 +357,20 @@ The errors are asymmetric — a wasted quote costs one aggregator call, a blinde
 0.56 bps was observed at t+240 in this same incident, so the low-basis case is not hypothetical. A 10 bps
 threshold would blind the first 57–78 seconds of a low-basis maturity — the most contested part of the
 auction. A name asking for "cost" invites a reader to enter their _typical_ cost and produce exactly that;
-a name asking for a floor does not. **Default `0`.** For provenance: this maturity implies
-`(8.52, 15.83]`, deliberately **not** adopted, because it fits one observed basis regime.
+a name asking for a floor does not.
+
+**Default `3`, per the default-ON decision.** It suppresses the first 24.6 s — which the incident shows
+was never viable (best cost at t+0–20 s was 10.45 bps against 1.22 bps of headroom) — catches 20% of the
+futile quotes, and risks blinding only ~20 s in the extreme 0.56 bps case. `10` stays rejected: it fits
+one observed basis regime and would blind 57–78 s of a low-basis maturity. For provenance, this maturity
+implies `(8.52, 15.83]`; that window is recorded, **not** adopted.
+
+**The dust floor stays off, and that is a coverage decision rather than an oversight.**
+`MIN_NET_PROFIT_USD > 0` would stop us clearing sub-gas positions — but clearing those is precisely the
+backstop role the prize analysis argues is the bot's actual job, and the eleven positions we won on 31 Jul
+were $0.05–$80. Turning it on trades protocol coverage for a few cents of gas per fill. Flagging rather
+than deciding: if the gas subsidy is unwanted, set it just above per-fill gas (~$0.05 on Base) and accept
+that dust stops being cleared. Related: BOTS-81.
 
 ## Test plan
 
@@ -362,7 +388,9 @@ Repo convention — `test/` mirroring `src/`, vitest, additive to the nearest ex
   hour rather than looping.
 - **Gate** (`test/runner/tick.test.ts`): a plan below `HEADROOM_FLOOR_BPS` is skipped with **no `quoteFor`
   call**; a bad-debt realization bypasses both floors; both knobs at `0` reproduce current behavior
-  exactly. Assert the **group** property — every candidate sharing a `(maturity, maxLif, mode)` group is
+  exactly. Because the gate now ships **on**, also pin the default explicitly: at the shipped `3` bps a
+  candidate at t+20 s is skipped and one at t+30 s is not, so a change to the default breaks a test rather
+  than silently altering prod timing. Assert the **group** property — every candidate sharing a `(maturity, maxLif, mode)` group is
   skipped or worked together — because a per-candidate threshold test passes vacuously. Assert separately
   that a large and a dust candidate in the **same** group diverge under `MIN_NET_PROFIT_USD`. Assert a
   normal-mode candidate is never skipped by the ratio floor.
@@ -383,22 +411,21 @@ Per CLAUDE.md, once the code is settled — concurrent where independent:
 3. `pnpm format`
 4. `pnpm test`
 
-## Decisions needed
+## Open items
 
-1. **Re-scope BOTS-35 to correctness?** The pool is ~$3–5k/year and the ticket's "1.2% of the value"
-   premise measures share-against-third-parties rather than coverage. Recommend rewriting the framing and
-   the third acceptance criterion.
-2. **Merge items 2 and 3, and correct the ticket?** One economic root cause, two accounting defects. The
-   item-2 premise about an exact-amount approve is factually wrong regardless. Counts are also off: 131
-   allowance reverts not 120, 157 `tx.submit_failed` not 133.
-3. **Does the gate ship default-off?** Recommend yes — no prod behaviour change at this book size. It
-   still earns its place by bounding 824 `plan.built` and 81 wasted aggregator quotes per burst, which is
-   rate-limit budget rather than margin.
-4. **Inventory funding as its own deferred issue?** It is the only thing that removes basis exposure
-   entirely, but the basis self-corrected in ~2 minutes and we have one observation. Recommend deferring
-   to the readout (change 1) rather than deciding now.
+- **The dust floor** (`MIN_NET_PROFIT_USD`) is a coverage-versus-gas-subsidy call, flagged above and not
+  taken. Default `0` keeps dust being cleared.
+- **The BOTS-35 comment** covering the re-scoping argument, the item 2+3 merge, and the ticket's factual
+  corrections (the JIT-approve premise; 131 not 120; 157 not 133). One consolidated comment, coordinated
+  with the item 2 session rather than three separate ones.
+- **`repaidUnits` are units, not assets.** Confirm the conversion against `midnight-contracts.txt:1819`
+  before the min-out floor is trusted as a loan-token amount. Both sampled markets have zero settlement
+  and continuous fees, so they coincide today.
+  Settled — recorded so they are not re-litigated:
 
-Settled during investigation — recorded so they are not re-litigated:
+- **Inventory funding: never.** Permanently out of scope by decision, not deferred. It was the only
+  approach that removes basis exposure entirely, so the residual basis cost is now accepted as a
+  standing limit of a swap-funded liquidator.
 
 - **Repay-exact: no.** Seize-exact already accepts an arbitrary `seizedAssets`, so it does depth-aware
   sizing without losing the deterministic sell-side amount fixed-calldata venues need.
