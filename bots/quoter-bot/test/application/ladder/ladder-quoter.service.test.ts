@@ -48,6 +48,7 @@ const state = (capacity = 20n): LadderMarketState => ({
 const harness = (configs: readonly LadderConfig[] = [config()]) => {
   let rate = 500n
   let observationId = 'static:500:hour:1'
+  let maturitySeconds: bigint | undefined
   let marketState = state()
   let readFailure: Hex | undefined
   let reconcileFailure: Hex | undefined
@@ -73,7 +74,11 @@ const harness = (configs: readonly LadderConfig[] = [config()]) => {
     },
     async readObservation(id: Hex) {
       reads.push(`observation:${id}`)
-      return { rateBps: rate, observationId }
+      return {
+        rateBps: rate,
+        observationId,
+        ...(maturitySeconds === undefined ? {} : { secondsToMaturity: maturitySeconds })
+      }
     }
   }
   const cleanupRemovedMarkets = vi.fn(async () => {})
@@ -115,6 +120,7 @@ const harness = (configs: readonly LadderConfig[] = [config()]) => {
     make,
     setRate: (value: bigint) => (rate = value),
     setObservation: (value: string) => (observationId = value),
+    setMaturity: (value: bigint | undefined) => (maturitySeconds = value),
     setCapacity: (value: bigint) => (marketState = state(value)),
     failMarket: (id: Hex) => (readFailure = id),
     failReconcile: (id: Hex) => (reconcileFailure = id),
@@ -366,6 +372,68 @@ describe('LadderQuoterService', () => {
     subject.setObservation('static:500:hour:2')
 
     expect(await subject.service.runOnce()).toMatchObject([{ action: 'replace', reason: 'resize' }])
+  })
+
+  test('publishes around the maturity-premium-adjusted center and reports it verbosely', async () => {
+    const halfYearSeconds = 15_768_000n
+    const subject = harness([
+      { ...config(), maturityPremium: { shape: 'linear', premiumPerYearBps: 200n } }
+    ])
+    subject.setMaturity(halfYearSeconds)
+
+    const results = await subject.service.runOnce({ verbose: true })
+
+    expect(results).toMatchObject([
+      {
+        marketId,
+        status: 'applied',
+        action: 'publish',
+        verbose: {
+          referenceRateBps: 500n,
+          secondsToMaturity: halfYearSeconds,
+          maturityPremiumBps: 100n,
+          targetRateBps: 600n,
+          ladderOffer: { centerRateBps: 600n },
+          decision: 'publish'
+        }
+      }
+    ])
+    expect(subject.reconciliations[0]?.desired?.centerRateBps).toBe(600n)
+  })
+
+  test('rests while maturity decay stays inside tolerance, then recenters once it escapes', async () => {
+    const subject = harness([
+      { ...config(), maturityPremium: { shape: 'linear', premiumPerYearBps: 200n } }
+    ])
+    subject.setMaturity(15_768_000n)
+    expect(await subject.service.runOnce()).toMatchObject([{ action: 'publish' }])
+
+    subject.setMaturity(14_348_880n)
+    expect(await subject.service.runOnce()).toMatchObject([{ action: 'rest' }])
+
+    subject.setMaturity(7_884_000n)
+    expect(await subject.service.runOnce()).toMatchObject([
+      { action: 'replace', reason: 'recenter' }
+    ])
+    expect(subject.reconciliations.at(-1)?.desired?.centerRateBps).toBe(550n)
+  })
+
+  test('halts the strategy when a configured maturity premium lacks its observation', async () => {
+    const subject = harness([
+      { ...config(), maturityPremium: { shape: 'linear', premiumPerYearBps: 200n } }
+    ])
+
+    expect(await subject.service.runOnce()).toEqual([
+      {
+        marketId,
+        status: 'halted',
+        stage: 'decision',
+        strategyInvalidated: true,
+        errorName: 'LadderConfigurationError'
+      }
+    ])
+    expect(subject.halts).toEqual(['ladder-decision-failed'])
+    expect(subject.reconciliations).toEqual([])
   })
 
   test('invalidates an active ladder when both sides fall below the offer floor', async () => {

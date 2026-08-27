@@ -26,6 +26,7 @@ import { BootstrapConfigurationError } from '../../domain/bootstrap/bootstrap-co
 import {
   decidePositionBootstrapTransition,
   decidePositionBootstrapWithDiagnostics,
+  effectiveBootstrapPremiumBps,
   validateBootstrapConfig
 } from '../../domain/bootstrap/position-bootstrap'
 import { BootstrapAdapterError } from '../../infrastructure/bootstrap/bootstrap-adapter.error'
@@ -586,7 +587,7 @@ export class PositionBootstrapService {
                 currentState: { status: 'observed', position: currentState },
                 effectiveState,
                 referenceRate: rate,
-                targetRateBps: rate.rateBps + config.premiumBps
+                ...this.premiumDiagnostics(config, rate)
               },
               true,
               halt.makeResult
@@ -637,7 +638,7 @@ export class PositionBootstrapService {
                 ...(rate
                   ? {
                       referenceRate: rate,
-                      targetRateBps: rate.rateBps + config.premiumBps
+                      ...this.premiumDiagnostics(config, rate)
                     }
                   : {}),
                 decision,
@@ -984,6 +985,31 @@ export class PositionBootstrapService {
           invalidationErrorName: operatorErrorName(invalidationError)
         }
       }
+    }
+  }
+
+  /**
+   * Derives the safe premium and target-rate diagnostics for one verbose market result.
+   * @param config - Market configuration whose static and optional maturity premiums apply.
+   * @param rate - Reference observation used by the decision for this market check.
+   * @returns Resolved premium fields, or an empty object when the premium cannot be resolved
+   * because the required maturity observation is missing; that configuration failure is already
+   * reported by the decision itself, so diagnostics must not throw again inside result assembly.
+   * @throws Rethrows any non-configuration failure instead of silently dropping diagnostics.
+   */
+  private premiumDiagnostics(
+    config: BootstrapConfig,
+    rate: BootstrapRate
+  ): Pick<BootstrapVerboseDetails, 'maturityPremiumBps' | 'targetRateBps'> {
+    try {
+      const premiumBps = effectiveBootstrapPremiumBps(config, rate.secondsToMaturity)
+      return {
+        ...(config.maturityPremium ? { maturityPremiumBps: premiumBps - config.premiumBps } : {}),
+        targetRateBps: rate.rateBps + premiumBps
+      }
+    } catch (error) {
+      if (error instanceof BootstrapConfigurationError) return {}
+      throw error
     }
   }
 

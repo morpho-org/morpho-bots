@@ -20,6 +20,7 @@ import type {
 } from './ladder-verbose'
 
 import {
+  effectiveLadderPremiumBps,
   generateLadderWithDiagnostics,
   shouldRecenter,
   validateLadderConfig
@@ -54,10 +55,15 @@ export interface LadderReferenceRateService {
    * Optionally reads the rate together with a freshness identity used to refresh timestamp-sensitive
    * protocol offers even when the configured APR is unchanged.
    * @param marketId - Canonical market identifier whose reference is required.
-   * @returns Current rate and stable freshness observation identity.
+   * @returns Current rate and stable freshness observation identity, extended with fresh seconds
+   * to maturity when this market's maturity-premium configuration requires that observation.
    * @throws When the rate provider cannot return a fresh valid reference.
+   * @remarks Read-only: implementations may reach providers over the network but must not
+   * publish, replace, invalidate, or persist anything.
    */
-  readObservation?(marketId: Hex): Promise<{ rateBps: bigint; observationId: string }>
+  readObservation?(
+    marketId: Hex
+  ): Promise<{ rateBps: bigint; observationId: string; secondsToMaturity?: bigint }>
 }
 
 /** Consumer-owned blocking make boundary for ladder reconciliation and safety invalidation. */
@@ -461,11 +467,13 @@ export class LadderQuoterService {
 
       let referenceRateBps: bigint
       let referenceObservationId: string | undefined
+      let secondsToMaturity: bigint | undefined
       try {
         if (this.rates.readObservation) {
           const observation = await this.rates.readObservation(config.marketId)
           referenceRateBps = observation.rateBps
           referenceObservationId = observation.observationId
+          secondsToMaturity = observation.secondsToMaturity
         } else {
           referenceRateBps = await this.rates.readRate(config.marketId)
         }
@@ -502,19 +510,27 @@ export class LadderQuoterService {
       let decision: 'publish' | 'recenter' | 'resize' | 'rest'
       let diagnostics: LadderDiagnostics | undefined
       try {
-        const targetRateBps = referenceRateBps + config.quotePremiumBps
+        const targetRateBps =
+          referenceRateBps + effectiveLadderPremiumBps(config, secondsToMaturity)
         const recenter = active
           ? shouldRecenter(active.centerRateBps, targetRateBps, config.movementToleranceBps)
           : true
+        const maturity = secondsToMaturity === undefined ? {} : { secondsToMaturity }
         const generation =
           active && !recenter
             ? generateLadderWithDiagnostics({
                 config,
                 referenceRateBps,
                 capacities: market,
-                retainedCenterRateBps: active.centerRateBps
+                retainedCenterRateBps: active.centerRateBps,
+                ...maturity
               })
-            : generateLadderWithDiagnostics({ config, referenceRateBps, capacities: market })
+            : generateLadderWithDiagnostics({
+                config,
+                referenceRateBps,
+                capacities: market,
+                ...maturity
+              })
         diagnostics = generation.diagnostics
         const generated = generation.quote
         desired = referenceObservationId ? { ...generated, referenceObservationId } : generated
@@ -542,7 +558,8 @@ export class LadderQuoterService {
               config,
               currentState,
               referenceRateBps,
-              targetRateBps: referenceRateBps + config.quotePremiumBps,
+              ...(secondsToMaturity === undefined ? {} : { secondsToMaturity }),
+              ...this.premiumDiagnostics(config, referenceRateBps, secondsToMaturity),
               ...(groupConsumption ? { groupConsumption } : {}),
               ...(submittedTransactions.length > 0 ? { submittedTransactions } : {})
             },
@@ -560,7 +577,8 @@ export class LadderQuoterService {
         config,
         currentState,
         referenceRateBps,
-        targetRateBps: referenceRateBps + config.quotePremiumBps,
+        ...(secondsToMaturity === undefined ? {} : { secondsToMaturity }),
+        ...this.premiumDiagnostics(config, referenceRateBps, secondsToMaturity),
         ladderOffer: desired,
         decision,
         ...(diagnostics ? { diagnostics } : {}),
@@ -704,6 +722,35 @@ export class LadderQuoterService {
         stateAfterCheck,
         ...(startedAt === undefined ? {} : { durationMs: Date.now() - startedAt })
       }
+    }
+  }
+
+  /**
+   * Derives the safe premium and target-rate diagnostics for one verbose market result.
+   * @param config - Market configuration whose static and optional maturity premiums apply.
+   * @param referenceRateBps - Reference observation used by the decision for this market check.
+   * @param secondsToMaturity - Fresh maturity observation read beside the reference, when wired.
+   * @returns Resolved premium fields, or an empty object when the premium cannot be resolved
+   * because the required maturity observation is missing; that configuration failure is already
+   * reported by the decision itself, so diagnostics must not throw again inside result assembly.
+   * @throws Rethrows any non-configuration failure instead of silently dropping diagnostics.
+   */
+  private premiumDiagnostics(
+    config: LadderConfig,
+    referenceRateBps: bigint,
+    secondsToMaturity: bigint | undefined
+  ): Pick<LadderVerboseDetails, 'maturityPremiumBps' | 'targetRateBps'> {
+    try {
+      const premiumBps = effectiveLadderPremiumBps(config, secondsToMaturity)
+      return {
+        ...(config.maturityPremium
+          ? { maturityPremiumBps: premiumBps - config.quotePremiumBps }
+          : {}),
+        targetRateBps: referenceRateBps + premiumBps
+      }
+    } catch (error) {
+      if (error instanceof LadderConfigurationError) return {}
+      throw error
     }
   }
 

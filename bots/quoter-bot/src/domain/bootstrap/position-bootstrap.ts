@@ -1,7 +1,10 @@
 import type { Hex } from 'viem'
 
+import type { MaturityPremiumConfig } from '../maturity-premium'
+
 import { isBytes32 } from '../bytes32'
 import { clampRateBps } from '../cross-book'
+import { maturityPremiumConfigIssue, resolveMaturityPremiumBps } from '../maturity-premium'
 import { BootstrapConfigurationError } from './bootstrap-configuration.error'
 
 const bigintMin = (left: bigint, right: bigint) => (left < right ? left : right)
@@ -13,6 +16,8 @@ export type BootstrapConfig = {
   acceptanceAssets: bigint
   offerSize: bigint
   premiumBps: bigint
+  /** Optional premium function of time to maturity added on top of `premiumBps`. */
+  maturityPremium?: MaturityPremiumConfig
   maximumMarketExposure: bigint
   maximumTotalExposure: bigint
   minimumRateBps: bigint
@@ -33,6 +38,8 @@ export type BootstrapRate = {
   mode: 'static' | 'variable'
   rateBps: bigint
   observationId: string
+  /** Fresh seconds until market maturity, required by maturity-premium configurations. */
+  secondsToMaturity?: bigint
 }
 
 /** Fully derived market offer suitable for application-port reconciliation. */
@@ -101,6 +108,10 @@ export const validateBootstrapConfig = (config: BootstrapConfig): void => {
   }
   if (config.premiumBps > 0n) {
     throw new BootstrapConfigurationError('premiumBps', 'must be zero or negative')
+  }
+  if (config.maturityPremium !== undefined) {
+    const issue = maturityPremiumConfigIssue(config.maturityPremium)
+    if (issue) throw new BootstrapConfigurationError(issue.field, issue.reason)
   }
   if (config.minimumRateBps < 0n) {
     throw new BootstrapConfigurationError('minimumRateBps', 'must not be negative')
@@ -184,6 +195,27 @@ export type BootstrapSizeCap =
   | 'total-exposure'
 
 /**
+ * Resolves the complete premium applied to the reference rate for one bootstrap offer.
+ * @param config - Bootstrap configuration whose static and optional maturity premiums apply.
+ * @param secondsToMaturity - Fresh seconds until market maturity from the current observation.
+ * @returns The static premium plus the resolved maturity premium in integer basis points.
+ * @throws BootstrapConfigurationError when a maturity premium is configured without a fresh
+ * maturity observation, so a wiring gap fails loud instead of silently dropping the premium.
+ * @remarks Pure derivation with no provider access; the static premium stays zero or negative
+ * while the maturity term is non-negative, so only further maturities raise the requested rate.
+ */
+export const effectiveBootstrapPremiumBps = (
+  config: BootstrapConfig,
+  secondsToMaturity?: bigint
+): bigint => {
+  if (config.maturityPremium === undefined) return config.premiumBps
+  if (secondsToMaturity === undefined) {
+    throw new BootstrapConfigurationError('maturityPremium', 'requires a maturity observation')
+  }
+  return config.premiumBps + resolveMaturityPremiumBps(config.maturityPremium, secondsToMaturity)
+}
+
+/**
  * Guardrail observations from one bootstrap derivation.
  * @remarks `cap` names the binding limit even when nothing was reduced, so a projection must
  * compare `requestedAssets` against `cappedAssets` before reporting an exposure cap. `cappedAssets`
@@ -209,7 +241,8 @@ const SIZE_CAPS: readonly BootstrapSizeCap[] = [
 /**
  * Computes one bootstrap action alongside the guardrail observations that shaped it.
  * @returns The decision, plus rate-clamp and size-cap diagnostics for a rate-derived decision.
- * @throws BootstrapConfigurationError when the static configuration itself is invalid.
+ * @throws BootstrapConfigurationError when the static configuration itself is invalid or a
+ * configured maturity premium is missing its maturity observation.
  * @remarks Diagnostics are absent for transition decisions, which never reach rate derivation.
  * Exists so silent rate saturation stays observable without a logger reaching into this pure module.
  */
@@ -232,7 +265,8 @@ export const decidePositionBootstrapWithDiagnostics = ({
   })
   if (transition) return { decision: transition }
 
-  const unclampedRateBps = rate.rateBps + config.premiumBps
+  const unclampedRateBps =
+    rate.rateBps + effectiveBootstrapPremiumBps(config, rate.secondsToMaturity)
   const requestedRateBps = clampRateBps(
     unclampedRateBps,
     config.minimumRateBps,

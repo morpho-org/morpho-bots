@@ -25,6 +25,7 @@ import type { MakerIdentity } from '../../config/config.service'
 
 import { MakerAccountError } from './maker-account.error'
 import { createManagedMakerAccount } from './managed-maker-account.utils'
+import { MiddlewareSigningUnsupportedError } from './middleware-signing-unsupported.error'
 
 const SECP256K1_ORDER = 0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n
 const HALF_SECP256K1_ORDER = SECP256K1_ORDER / 2n
@@ -232,14 +233,18 @@ const createKmsAccount = async (
  * @param dependencies - Optional file, decryption, and KMS dependency overrides.
  * @returns Local-compatible account backed by the selected signing method.
  * @throws `MakerAccountError` when credential loading, decryption, KMS validation/signing, or the
- * configured-maker address check fails.
+ * configured-maker address check fails. `MiddlewareSigningUnsupportedError` always, for the
+ * `middleware` identity: TIB-2026-08-12 removes the generic digest-signing surface from the bot,
+ * and the replacing intent ports are not implemented yet, so the residual path fails closed.
  * @remarks Keystore mode reads and decrypts one local file. AWS mode reuses one client per region,
  * calls KMS for public-key discovery and later signatures, and never exports remote private keys.
+ * Middleware mode never signs here by design.
  */
 export const createMakerAccount = async (
   identity: Exclude<MakerIdentity, { readOnly: true }>,
   dependencies: MakerAccountDependencies = {}
 ): Promise<LocalAccount> => {
+  if (identity.method === 'middleware') throw new MiddlewareSigningUnsupportedError()
   if (identity.method === 'private-key') {
     const account = createManagedMakerAccount(identity.privateKey)
     if (!isAddressEqual(account.address, identity.maker)) {

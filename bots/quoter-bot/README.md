@@ -71,6 +71,7 @@ pnpm --filter @morpho-org/quoter-bot run start -- --readonly setup-check
 pnpm --filter @morpho-org/quoter-bot run start -- --private-key '<key>' setup-check
 pnpm --filter @morpho-org/quoter-bot run start -- --keystore ./maker.json --interactive setup-check
 pnpm --filter @morpho-org/quoter-bot run start -- --aws setup-check
+pnpm --filter @morpho-org/quoter-bot run start -- --middleware setup-check
 ```
 
 For unattended keystore operation, provision `KEYSTORE_PASSWORD` separately through the deployment
@@ -162,7 +163,8 @@ The corresponding final cycle outcome uses `status: "logged"` rather than `"appl
 
 `bootstrap --monitor` requires at least one explicit `bootstrap` / `BOOTSTRAP_MARKETS` entry. Each
 market independently selects `targetRate.strategy: variable_rate_avg` (the existing Morpho Blue
-variable-rate average) or `hardcoded` with `hardcodedRateBps`; `premiumBps` is then added to derive
+variable-rate average) or `hardcoded` with `hardcodedRateBps`; `premiumBps` — plus the optional
+`maturityPremium` term derived from the market's live time to maturity — is then added to derive
 the published offer rate. It serially runs a cycle every minute
 and streams each result. `SIGINT` or `SIGTERM` lets an in-flight cycle finish, then invalidates every
 explicitly owned bootstrap group through the same mutation queue and waits for bounded transaction
@@ -176,7 +178,8 @@ and retains the reservation for safe cleanup.
 
 Add `--verbose` to either one-shot or monitored bootstrap mode to include the complete market
 configuration, fresh credit, debt, cash balance, per-market and total exposure, active offer,
-reference rate, premium-adjusted target rate, deterministic decision, desired bootstrap offer, and
+reference rate (with its seconds to maturity when a maturity premium is configured), the resolved
+maturity premium, premium-adjusted target rate, deterministic decision, desired bootstrap offer, and
 a fresh position read after every check. Live mode immediately emits a
 `bootstrap.transaction-submitted` record when the wallet returns each ratification, publication, or cancellation
 hash. Completed results also list confirmed transaction hashes in submission order, and verbose
@@ -206,10 +209,11 @@ invalidates every active owned ladder group through the same serialized mutation
 or halted cycle stops monitoring, still attempts cleanup, prints the terminal halted report, and
 exits with code `1`. Read-only monitoring emits the cleanup request without signing or submitting.
 
-`ladder --verbose` includes the validated market config, current capacities and active quote,
-reference and premium-adjusted target rates, exact desired ladder, decision, confirmed transaction
-hashes, and a fresh state read after every check. Live transaction hashes are also emitted
-immediately as `ladder.transaction-submitted` records.
+`ladder --verbose` includes the validated market config, current capacities and active quote, the
+reference rate (with its seconds to maturity when a maturity premium is configured), the resolved
+maturity premium, the premium-adjusted target rate, exact desired ladder, decision, confirmed
+transaction hashes, and a fresh state read after every check. Live transaction hashes are also
+emitted immediately as `ladder.transaction-submitted` records.
 
 `start` requires at least one configured bootstrap market and one configured ladder market. It runs
 the readiness gate before constructing either writer, then launches setup monitoring, position
@@ -301,9 +305,11 @@ Provide the required values from [`.env.example`](./.env.example) in the invokin
 A full provisioning run supports only `private-key`, because the script cannot safely seed a local
 keystore file or an AWS credential source into a newly created service. For `keystore`, first
 provision the encrypted file at `KEYSTORE_PATH` in the existing service. For `aws`, first provision
-an AWS SDK credential source with KMS access in the existing service. Then set the corresponding
+an AWS SDK credential source with KMS access in the existing service. For `middleware`, first
+provision an AWS SDK credential source whose role may invoke the configured quoter-signer Lambda
+(TIB-2026-08-12) in the existing service. Then set the corresponding
 signer variables out of band and use `DEPLOY_ONLY=true`; deploy-only does not inspect or mutate those
-credentials or files. Full provisioning fails closed for both modes instead of launching a service
+credentials or files. Full provisioning fails closed for these modes instead of launching a service
 that cannot resolve its signer.
 
 `BOOTSTRAP_MARKETS` and `LADDER_MARKETS` must each be populated JSON arrays so a full run cannot
@@ -463,36 +469,37 @@ Two unit conventions apply everywhere: amounts are **raw loan-token units** (for
 Every supported environment variable is listed below. “Raw assets” means the loan token's smallest
 unit; for six-decimal USDC, `101000000` is 101 USDC. No value is inferred from another variable.
 
-| Environment variable             | YAML key                            | Requirement and behavior                                                                                                                                                                                  |
-| -------------------------------- | ----------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `CHAIN_ID`                       | `chain.id`                          | Required. Must be `8453`; all protocol, token, market, and transaction operations run on Base.                                                                                                            |
-| `RPC_URL`                        | `chain.rpcUrl`                      | Required. Current-state Base JSON-RPC endpoint used for blocks, balances, allowances, positions, contract reads, simulation, transaction submission, and receipts.                                        |
-| `REFERENCE_RPC_URL`              | `chain.archiveRpcUrl`               | Required when the selected command has an active `variable_rate_avg` target. Archive-capable Base JSON-RPC endpoint used to read the reference Morpho Blue market at historical blocks.                   |
-| `MAKER_ADDRESS`                  | `identity.makerAddress`             | Required. EVM address whose balance, allowance, credit, offers, and exposure the bot manages. In write mode it must match the selected signer.                                                            |
-| `KEY_STORAGE_METHOD`             | `identity.keyStorageMethod`         | Optional only for backward-compatible `MAKER_PRIVATE_KEY` use; otherwise `private-key`, `keystore`, or `aws`. Exactly one effective source is required in write mode.                                     |
-| `MAKER_PRIVATE_KEY`              | `identity.makerPrivateKey`          | Local private-key source. Must be a 0x-prefixed 32-byte secp256k1 key. `--private-key` overrides config. Never include it in committed configuration or logs.                                             |
-| `KEYSTORE_PATH`                  | `identity.keystorePath`             | Encrypted Web3 Secret Storage file used by the `keystore` method. CLI equivalent: `--keystore <path>`.                                                                                                    |
-| `KEYSTORE_PASSWORD`              | `identity.keystorePassword`         | Keystore password. Exactly one direct or interactive mode is required; see the argv exposure warning above. Never logged or included in diagnostics.                                                      |
-| `KEYSTORE_INTERACTIVE`           | `identity.keystoreInteractive`      | `true` prompts without echoing for the keystore password; CLI equivalent: `--interactive`. Not suitable for unattended deployment.                                                                        |
-| `AWS_KMS_KEY_ID`                 | `identity.awsKmsKeyId`              | KMS key ID/ARN/alias for an asymmetric `ECC_SECG_P256K1` signing key. `--aws` selects this backend.                                                                                                       |
-| `AWS_REGION`                     | `identity.awsRegion`                | AWS region containing the KMS key. AWS credentials use the standard AWS SDK credential chain.                                                                                                             |
-| `MIDNIGHT_ADDRESS`               | `contracts.midnightAddress`         | Required. Expected deployed Midnight singleton. Setup verifies its bytecode before a writer starts.                                                                                                       |
-| `LOAN_ASSET_ADDRESS`             | `contracts.loanAssetAddress`        | Required. Loan token used by every configured Midnight market. Balances, allowances, budgets, offer sizes, and exposure values use this token's raw units.                                                |
-| `RATIFIER_ADDRESS`               | `contracts.ratifierAddress`         | Required. Canonical SDK Ecrecover or Setter ratifier authorized by the maker. The bot signs Ecrecover trees or approves Setter roots onchain, then verifies the selected deployment and Midnight binding. |
-| `MORPHO_API_BASE_URL`            | `apis.morphoBaseUrl`                | Required. Morpho API origin used for Midnight books, market metadata, prospective-offer validation, and cursor-paginated maker offer groups. No API-key header is supported.                              |
-| `ROUTER_API_BASE_URL`            | `apis.routerBaseUrl`                | Deprecated compatibility key. Accepted and ignored; ratifier identity comes from the pinned Morpho SDK catalog.                                                                                           |
-| `MARKET_IDS`                     | `markets.allowlist`                 | Required comma-separated list of unique 0x-prefixed bytes32 Midnight market IDs. Every bootstrap or ladder `marketId` must appear here.                                                                   |
-| `REFERENCE_MARKET_ID`            | `markets.referenceMarketId`         | Required when the selected command has an active `variable_rate_avg` target. Must be a 0x-prefixed bytes32 Morpho Blue market ID.                                                                         |
-| `V0_OFFER_GROUP_IDS`             | `markets.v0OfferGroupIds`           | Optional comma-separated list of unique, explicitly strategy-owned bytes32 offer-group IDs; defaults to empty. Use it to adopt known pre-existing groups safely.                                          |
-| `NATIVE_RESERVE_WEI`             | `setup.nativeReserveWei`            | Required unsigned integer. Minimum maker native-token balance, in wei, required by readiness for transaction fees.                                                                                        |
-| `MAXIMUM_LEND_EXPOSURE_ASSETS`   | `setup.maximumLendExposureAssets`   | Required unsigned integer in raw loan-token units. Minimum maker allowance to Midnight required by readiness; it is not a strategy position cap.                                                          |
-| `REQUEST_TIMEOUT_MS`             | `setup.requestTimeoutMs`            | Optional provider-operation and aggregate pagination timeout in milliseconds. Defaults to `10000`; accepted range is `1` through `120000`.                                                                |
-| `TRANSACTION_RECEIPT_TIMEOUT_MS` | `setup.transactionReceiptTimeoutMs` | Optional timeout for confirming an already-submitted transaction, in milliseconds. Defaults to `180000`; accepted range is `1` through `900000`.                                                          |
-| `BOOTSTRAP_MARKETS`              | `bootstrap`                         | Optional exact JSON array of position-bootstrap entries documented below; defaults to `[]` and replaces the complete YAML `bootstrap` list when supplied.                                                 |
-| `LADDER_MARKETS`                 | `ladder`                            | Optional exact JSON array of ladder entries documented below; defaults to `[]` and replaces the complete YAML `ladder` list when supplied.                                                                |
-| `BETTERSTACK_SOURCE_TOKEN`       | —                                   | Optional Better Stack source token. Must be set together with `BETTERSTACK_INGESTING_HOST`; partial configuration emits `logship.misconfigured` and ships nothing.                                        |
-| `BETTERSTACK_INGESTING_HOST`     | —                                   | Optional Better Stack ingest host, with or without an `https://` prefix. Must be set together with `BETTERSTACK_SOURCE_TOKEN`.                                                                            |
-| `BETTERSTACK_HEARTBEAT_URL`      | —                                   | Optional HTTP(S) heartbeat URL pinged at startup and once per minute. Invalid URLs and ping failures are reported safely and never interrupt quoter-bot.                                                  |
+| Environment variable             | YAML key                            | Requirement and behavior                                                                                                                                                                                                                                                                                                                                            |
+| -------------------------------- | ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `CHAIN_ID`                       | `chain.id`                          | Required. Must be `8453`; all protocol, token, market, and transaction operations run on Base.                                                                                                                                                                                                                                                                      |
+| `RPC_URL`                        | `chain.rpcUrl`                      | Required. Current-state Base JSON-RPC endpoint used for blocks, balances, allowances, positions, contract reads, simulation, transaction submission, and receipts.                                                                                                                                                                                                  |
+| `REFERENCE_RPC_URL`              | `chain.archiveRpcUrl`               | Required when the selected command has an active `variable_rate_avg` target. Archive-capable Base JSON-RPC endpoint used to read the reference Morpho Blue market at historical blocks.                                                                                                                                                                             |
+| `MAKER_ADDRESS`                  | `identity.makerAddress`             | Required. EVM address whose balance, allowance, credit, offers, and exposure the bot manages. In write mode it must match the selected signer.                                                                                                                                                                                                                      |
+| `KEY_STORAGE_METHOD`             | `identity.keyStorageMethod`         | Optional only for backward-compatible `MAKER_PRIVATE_KEY` use; otherwise `private-key`, `keystore`, `aws`, or `middleware`. Exactly one effective source is required in write mode.                                                                                                                                                                                 |
+| `MAKER_PRIVATE_KEY`              | `identity.makerPrivateKey`          | Local private-key source. Must be a 0x-prefixed 32-byte secp256k1 key. `--private-key` overrides config. Never include it in committed configuration or logs.                                                                                                                                                                                                       |
+| `KEYSTORE_PATH`                  | `identity.keystorePath`             | Encrypted Web3 Secret Storage file used by the `keystore` method. CLI equivalent: `--keystore <path>`.                                                                                                                                                                                                                                                              |
+| `KEYSTORE_PASSWORD`              | `identity.keystorePassword`         | Keystore password. Exactly one direct or interactive mode is required; see the argv exposure warning above. Never logged or included in diagnostics.                                                                                                                                                                                                                |
+| `KEYSTORE_INTERACTIVE`           | `identity.keystoreInteractive`      | `true` prompts without echoing for the keystore password; CLI equivalent: `--interactive`. Not suitable for unattended deployment.                                                                                                                                                                                                                                  |
+| `AWS_KMS_KEY_ID`                 | `identity.awsKmsKeyId`              | KMS key ID/ARN/alias for an asymmetric `ECC_SECG_P256K1` signing key. `--aws` selects this backend.                                                                                                                                                                                                                                                                 |
+| `AWS_REGION`                     | `identity.awsRegion`                | AWS region containing the KMS key. AWS credentials use the standard AWS SDK credential chain.                                                                                                                                                                                                                                                                       |
+| `QUOTER_SIGNER_LAMBDA_ARN`       | `identity.quoterSignerLambdaArn`    | Quoter-signer KMS policy middleware production-alias Lambda ARN (TIB-2026-08-12): must be alias-qualified — unqualified, version, and `$LATEST` ARNs are rejected — and the AWS region is derived from the ARN. `--middleware` selects this backend. Fail-closed today: middleware mode exposes no generic signer, so write flows halt until the intent ports ship. |
+| `MIDNIGHT_ADDRESS`               | `contracts.midnightAddress`         | Required. Expected deployed Midnight singleton. Setup verifies its bytecode before a writer starts.                                                                                                                                                                                                                                                                 |
+| `LOAN_ASSET_ADDRESS`             | `contracts.loanAssetAddress`        | Required. Loan token used by every configured Midnight market. Balances, allowances, budgets, offer sizes, and exposure values use this token's raw units.                                                                                                                                                                                                          |
+| `RATIFIER_ADDRESS`               | `contracts.ratifierAddress`         | Required. Canonical SDK Ecrecover or Setter ratifier authorized by the maker. The bot signs Ecrecover trees or approves Setter roots onchain, then verifies the selected deployment and Midnight binding.                                                                                                                                                           |
+| `MORPHO_API_BASE_URL`            | `apis.morphoBaseUrl`                | Required. Morpho API origin used for Midnight books, market metadata, prospective-offer validation, and cursor-paginated maker offer groups. No API-key header is supported.                                                                                                                                                                                        |
+| `ROUTER_API_BASE_URL`            | `apis.routerBaseUrl`                | Deprecated compatibility key. Accepted and ignored; ratifier identity comes from the pinned Morpho SDK catalog.                                                                                                                                                                                                                                                     |
+| `MARKET_IDS`                     | `markets.allowlist`                 | Required comma-separated list of unique 0x-prefixed bytes32 Midnight market IDs. Every bootstrap or ladder `marketId` must appear here.                                                                                                                                                                                                                             |
+| `REFERENCE_MARKET_ID`            | `markets.referenceMarketId`         | Required when the selected command has an active `variable_rate_avg` target. Must be a 0x-prefixed bytes32 Morpho Blue market ID.                                                                                                                                                                                                                                   |
+| `V0_OFFER_GROUP_IDS`             | `markets.v0OfferGroupIds`           | Optional comma-separated list of unique, explicitly strategy-owned bytes32 offer-group IDs; defaults to empty. Use it to adopt known pre-existing groups safely.                                                                                                                                                                                                    |
+| `NATIVE_RESERVE_WEI`             | `setup.nativeReserveWei`            | Required unsigned integer. Minimum maker native-token balance, in wei, required by readiness for transaction fees.                                                                                                                                                                                                                                                  |
+| `MAXIMUM_LEND_EXPOSURE_ASSETS`   | `setup.maximumLendExposureAssets`   | Required unsigned integer in raw loan-token units. Minimum maker allowance to Midnight required by readiness; it is not a strategy position cap.                                                                                                                                                                                                                    |
+| `REQUEST_TIMEOUT_MS`             | `setup.requestTimeoutMs`            | Optional provider-operation and aggregate pagination timeout in milliseconds. Defaults to `10000`; accepted range is `1` through `120000`.                                                                                                                                                                                                                          |
+| `TRANSACTION_RECEIPT_TIMEOUT_MS` | `setup.transactionReceiptTimeoutMs` | Optional timeout for confirming an already-submitted transaction, in milliseconds. Defaults to `180000`; accepted range is `1` through `900000`.                                                                                                                                                                                                                    |
+| `BOOTSTRAP_MARKETS`              | `bootstrap`                         | Optional exact JSON array of position-bootstrap entries documented below; defaults to `[]` and replaces the complete YAML `bootstrap` list when supplied.                                                                                                                                                                                                           |
+| `LADDER_MARKETS`                 | `ladder`                            | Optional exact JSON array of ladder entries documented below; defaults to `[]` and replaces the complete YAML `ladder` list when supplied.                                                                                                                                                                                                                          |
+| `BETTERSTACK_SOURCE_TOKEN`       | —                                   | Optional Better Stack source token. Must be set together with `BETTERSTACK_INGESTING_HOST`; partial configuration emits `logship.misconfigured` and ships nothing.                                                                                                                                                                                                  |
+| `BETTERSTACK_INGESTING_HOST`     | —                                   | Optional Better Stack ingest host, with or without an `https://` prefix. Must be set together with `BETTERSTACK_SOURCE_TOKEN`.                                                                                                                                                                                                                                      |
+| `BETTERSTACK_HEARTBEAT_URL`      | —                                   | Optional HTTP(S) heartbeat URL pinged at startup and once per minute. Invalid URLs and ping failures are reported safely and never interrupt quoter-bot.                                                                                                                                                                                                            |
 
 There is no separate Mempool endpoint or API-key field. Books and cursor-paginated maker offer groups
 are read through `MORPHO_API_BASE_URL`. Ratifier identity is validated from the pinned Morpho SDK
@@ -632,7 +639,7 @@ and `ladder`; unknown keys at any level are rejected. Every supported key appear
 
 - `chain`: `id`, `rpcUrl`, `archiveRpcUrl`.
 - `identity`: `makerAddress`, `keyStorageMethod`, `makerPrivateKey`, `keystorePath`,
-  `keystorePassword`, `keystoreInteractive`, `awsKmsKeyId`, `awsRegion`.
+  `keystorePassword`, `keystoreInteractive`, `awsKmsKeyId`, `awsRegion`, `quoterSignerLambdaArn`.
 - `contracts`: `midnightAddress`, `loanAssetAddress`, `ratifierAddress`.
 - `apis`: `morphoBaseUrl`, `routerBaseUrl`.
 - `markets`: `allowlist`, `referenceMarketId`, `v0OfferGroupIds`.
@@ -683,8 +690,8 @@ reference hard-fails when its latest checkpoint is more than five minutes behind
 ### Position-bootstrap fields
 
 Each `bootstrap` entry must use a unique `marketId` present in `markets.allowlist`.
-`targetRate` defaults to `{ strategy: "variable_rate_avg" }` when omitted for backward compatibility;
-every other field in each entry is required.
+`targetRate` defaults to `{ strategy: "variable_rate_avg" }` when omitted for backward compatibility
+and `maturityPremium` may be omitted entirely; every other field in each entry is required.
 
 | Field                   | Unit / behavior                                                 | Validation                                                                                            |
 | ----------------------- | --------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
@@ -694,6 +701,7 @@ every other field in each entry is required.
 | `acceptanceAssets`      | Raw acceptable shortfall                                        | Non-negative and no greater than `creditTarget`                                                       |
 | `offerSize`             | Raw desired offer size before capacity caps                     | Positive unsigned integer                                                                             |
 | `premiumBps`            | Integer BPS added to the reference rate                         | Zero or negative                                                                                      |
+| `maturityPremium`       | Optional premium function of the market's time to maturity      | Object with `shape: 'linear'`, positive `premiumPerYearBps`, optional positive `maximumPremiumBps`    |
 | `maximumMarketExposure` | Raw per-market exposure cap                                     | Positive and no greater than `maximumTotalExposure`                                                   |
 | `maximumTotalExposure`  | Raw strategy-wide exposure cap                                  | Positive                                                                                              |
 | `minimumRateBps`        | Inclusive final-rate minimum                                    | Non-negative and no greater than `maximumRateBps`                                                     |
@@ -704,7 +712,22 @@ For a market below its accepted target, desired assets are the minimum of `offer
 credit target, cash balance, remaining per-market exposure, and remaining total exposure. Replacement
 capacity excludes that market's representative live group while retaining every other active group's
 exposure. Zero or negative capacity leaves no offer. The final requested rate is `reference rate +
-premiumBps`; an out-of-bounds result is rejected rather than clamped.
+premiumBps + maturity premium`; a result outside the inclusive hard range saturates at the nearest
+bound instead of failing, so a reference-rate excursion can never halt the strategy.
+
+`maturityPremium` makes each entry's premium a function of that market's remaining time to
+maturity, so one bot can quote every configured maturity from one term structure: further maturity
+= higher premium. The initial `linear` shape resolves
+`floor(premiumPerYearBps × secondsToMaturity / 31,536,000)` from the fresh on-chain maturity and
+latest Base block timestamp at every cycle, optionally capped by the inclusive `maximumPremiumBps`;
+a market at or past maturity contributes zero. The resolved term is added on top of the signed
+static `premiumBps` (urgency discount and duration compensation stay independently configured), so
+long maturities can quote above the reference while `premiumBps` still anchors the short end. The
+premium decays as maturity approaches; integer flooring keeps the requested rate stable for days at
+a time, and a one-BPS step only republishes when it actually moves the canonical Midnight tick.
+Additional function shapes may be added later; `shape` selects the active one. Both target-rate
+strategies compose with it — a `hardcoded` reference with a maturity premium still decays along the
+curve. Omit the object entirely to keep today's static-premium behavior.
 
 Live reconciliation retains an owned offer when its assets, canonical Midnight tick, and continuous
 fee cap still match, even if a raw reference-rate change produced the same tick. A market fee-policy
@@ -714,8 +737,10 @@ content-addressed group ID.
 
 `BOOTSTRAP_MARKETS` uses an exact JSON array with the same fields; YAML syntax, duplicate object keys,
 and prototype keys are rejected. Every integer-valued property—including asset amounts, exposure caps,
-rates, and `premiumBps`—must be a quoted decimal-integer string. JSON number tokens are rejected even
-when integral; `marketId` remains a string and `autoRefill` remains a JSON boolean. Supplying it replaces
+rates, `premiumBps`, and the nested `maturityPremium` integers—must be a quoted decimal-integer
+string. JSON number tokens are rejected even
+when integral; `marketId` remains a string, `autoRefill` remains a JSON boolean, and
+`maturityPremium.shape` remains the JSON string `"linear"`. Supplying it replaces
 every YAML bootstrap entry, which avoids ambiguous partial-array merge behavior. See
 [`.env.example`](./.env.example) for exact syntax.
 
@@ -764,13 +789,15 @@ mutation and graceful-cleanup operation instead.
 Each `ladder` entry has a unique allowlisted `marketId`. Rates are integer BPS and asset/exposure
 amounts are exact raw loan-asset units. `quotePremiumBps` and `sizeSkewBps` are signed; all other
 integer fields are nonnegative or positive as shown below. `targetRate` defaults to
-`{ strategy: "variable_rate_avg" }`; every other field in each entry is required.
+`{ strategy: "variable_rate_avg" }` and `maturityPremium` may be omitted entirely; every other
+field in each entry is required.
 
 | Field                        | Unit / behavior                                                                                                                                                      | Validation                                                                                                |
 | ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
 | `marketId`                   | 0x-prefixed 32-byte Midnight market ID quoted by this entry.                                                                                                         | Required, unique across the array, and present in `MARKET_IDS`.                                           |
 | `targetRate`                 | Target-rate method used as reference `R`.                                                                                                                            | `variable_rate_avg`, or `hardcoded` with positive `hardcodedRateBps`; defaults to `variable_rate_avg`.    |
 | `quotePremiumBps`            | Signed BPS added to the fresh reference rate before the ladder spread is applied. Positive moves both sides higher; negative moves both lower.                       | Signed decimal integer; the resulting funded rungs must remain inside the configured rate range.          |
+| `maturityPremium`            | Optional premium function of the market's time to maturity added to the effective center on top of `quotePremiumBps`.                                                | Object with `shape: 'linear'`, positive `premiumPerYearBps`, optional positive `maximumPremiumBps`.       |
 | `spreadBps`                  | Full distance in BPS between the nearest lower and higher rates. Each nearest rung is half this value from the center.                                               | Positive and even, so each half-spread is an exact integer BPS value.                                     |
 | `stepBps`                    | Additional BPS between successive rungs on the same side, moving farther from the center.                                                                            | Positive.                                                                                                 |
 | `rungCount`                  | Maximum number of rungs constructed on each side before capacity and minimum-size filtering.                                                                         | Positive safe integer no greater than `512`.                                                              |
@@ -783,23 +810,40 @@ integer fields are nonnegative or positive as shown below. `targetRate` defaults
 | `groupMode`                  | Consumption-cap grouping: `shared-rung` creates one independent group per rung; `per-book` creates one shared group for all funded rungs on each side.               | Exactly `shared-rung` or `per-book`.                                                                      |
 | `loopIntervalSeconds`        | Requested delay between completed monitor cycles for this market set; the monitor uses the shortest configured value.                                                | Positive integer no greater than `2147483`, keeping the millisecond delay within the runtime timer limit. |
 | `movementToleranceBps`       | Inclusive center-rate deadband. An existing center is retained until the effective center moves by strictly more than this value; capacity resizing still applies.   | Nonnegative.                                                                                              |
-| `minimumRateBps`             | Inclusive hard minimum for every funded final rung after premium, spread, and step offsets. Rates are rejected rather than clamped.                                  | Nonnegative and strictly less than `maximumRateBps`.                                                      |
-| `maximumRateBps`             | Inclusive hard maximum for every funded final rung after premium, spread, and step offsets. Rates are rejected rather than clamped.                                  | Positive and strictly greater than `minimumRateBps`; the complete static ladder shape must fit.           |
+| `minimumRateBps`             | Inclusive hard minimum for every funded final rung after premium, spread, and step offsets. A rung below it saturates at this bound.                                 | Nonnegative and strictly less than `maximumRateBps`.                                                      |
+| `maximumRateBps`             | Inclusive hard maximum for every funded final rung after premium, spread, and step offsets. A rung above it saturates at this bound.                                 | Positive and strictly greater than `minimumRateBps`; the complete static ladder shape must fit.           |
 
 The rung limit bounds local allocation to 1,024 offers for a two-sided ladder, a height-10 tree
 below the Midnight SDK's height-20 protocol limit.
 
-For reference `R`, effective center `C = R + quotePremiumBps`. With zero-based rung `k`:
+For reference `R`, effective center `C = R + quotePremiumBps + maturity premium` (the maturity term
+is zero without a `maturityPremium`). With zero-based rung `k`:
 
 ```text
 lower rate = C - spreadBps / 2 - k * stepBps
 higher rate = C + spreadBps / 2 + k * stepBps
 ```
 
-The complete static shape must fit between `minimumRateBps` and `maximumRateBps`. Every runtime rung
-must also remain inside that inclusive hard range; values are rejected, never clamped. A retained
-center is recentered only when absolute effective-center movement is strictly greater than
-`movementToleranceBps`; capacity changes still resize quotes inside that tolerance.
+The complete static shape must fit between `minimumRateBps` and `maximumRateBps`. A runtime rung
+walking outside that inclusive hard range saturates at the nearest bound instead of failing, so a
+reference-rate excursion can never halt the strategy. A retained center is recentered only when
+absolute effective-center movement is strictly greater than `movementToleranceBps`; capacity
+changes still resize quotes inside that tolerance.
+
+`maturityPremium` makes the effective center a function of that market's remaining time to
+maturity, so one bot can quote every configured maturity from one term structure: further maturity
+= higher center. The initial `linear` shape resolves
+`floor(premiumPerYearBps × secondsToMaturity / 31,536,000)` from the fresh on-chain maturity and
+latest Base block timestamp at every cycle, optionally capped by the inclusive `maximumPremiumBps`;
+a market at or past maturity contributes zero. The resolved term is added on top of the signed
+static `quotePremiumBps`, and the premium decays as maturity approaches; `movementToleranceBps`
+absorbs that slow decay exactly like reference movement, so a retained center rests until the
+decayed effective center escapes the inclusive deadband. Additional function shapes may be added
+later; `shape` selects the active one. Both target-rate strategies compose with it — a `hardcoded`
+reference with a maturity premium still decays along the curve, and its load-time shape check only
+rejects a shape that no attainable premium can place fully inside the hard bounds (a transiently clamped
+rung is documented runtime behavior). Omit the object entirely to keep today's static-center
+behavior.
 
 “Lower” and “higher” describe rates, not protocol `buy`/`sell` flags. Because Midnight price is
 inverse to rate, lower-rate rungs are encoded as borrow-side `sell` offers and higher-rate rungs as
@@ -824,7 +868,8 @@ one-shot `ladder` invocation and every non-overlapping `ladder --monitor` cycle:
 
 1. Reads fresh market credit, wallet balance, allowance, market and strategy exposure, active owned
    groups, group consumption, and the configured target rate (including Blue history only for
-   `variable_rate_avg`).
+   `variable_rate_avg`, and the market's fresh time to maturity only when a maturity premium is
+   configured).
 2. Reconstructs the remaining active quote. A partially consumed group contributes only its
    remaining assets, and a fully consumed indexed group contributes no rung. A persisted group that
    has not appeared in the eventually consistent API remains pending-active so the bot cannot
@@ -834,12 +879,12 @@ one-shot `ladder` invocation and every non-overlapping `ladder --monitor` cycle:
    recalculated from fresh inventory.
 4. Compares the complete active and desired quotes, then selects one decision:
 
-| Decision   | Condition                                                                                                                                      | Mutation                                                                                                         |
-| ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| `publish`  | No active ladder remains and at least one side can fund an offer.                                                                              | Publishes one fresh complete tree. The cycle reports `action: "publish", reason: "publish"`.                     |
-| `rest`     | Active and desired quotes are exactly equal, or neither an active nor a fundable desired quote exists.                                         | Submits no transaction.                                                                                          |
-| `resize`   | An active ladder exists, its center remains inside tolerance, but fresh sizes, funded rung count, side availability, or grouping have changed. | Replaces the complete market ladder and reports `action: "replace", reason: "resize"`.                           |
-| `recenter` | The absolute movement from the active center to `reference + quotePremiumBps` is strictly greater than `movementToleranceBps`.                 | Recalculates rates and sizes, replaces the complete ladder, and reports `action: "replace", reason: "recenter"`. |
+| Decision   | Condition                                                                                                                                                                | Mutation                                                                                                         |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------- |
+| `publish`  | No active ladder remains and at least one side can fund an offer.                                                                                                        | Publishes one fresh complete tree. The cycle reports `action: "publish", reason: "publish"`.                     |
+| `rest`     | Active and desired quotes are exactly equal, or neither an active nor a fundable desired quote exists.                                                                   | Submits no transaction.                                                                                          |
+| `resize`   | An active ladder exists, its center remains inside tolerance, but fresh sizes, funded rung count, side availability, or grouping have changed.                           | Replaces the complete market ladder and reports `action: "replace", reason: "resize"`.                           |
+| `recenter` | The absolute movement from the active center to the fresh effective center (reference plus quote and maturity premiums) is strictly greater than `movementToleranceBps`. | Recalculates rates and sizes, replaces the complete ladder, and reports `action: "replace", reason: "recenter"`. |
 
 `movementToleranceBps` controls only rate movement. It never suppresses a capacity-driven `resize`.
 For example, a retained center can stay at 4.22% while a fill changes five higher-side rungs from
@@ -937,11 +982,12 @@ invalidation. A failed or halted monitored cycle stops the loop and still attemp
 group cleanup. `SIGINT` and `SIGTERM` let the in-flight cycle finish and then cancel every remaining
 active owned ladder group before the monitor reports `status: "stopped"`.
 
-`LADDER_MARKETS` is exact JSON with the same fields. Every integer-valued property must be a quoted
-decimal string; JSON number tokens, floats, exponents, malformed values, unknown fields, duplicate
-markets, and markets outside `MARKET_IDS` are rejected. The variable replaces the YAML list before
-semantic validation, so a valid environment list can replace semantically invalid YAML while YAML
-parser hazards still fail closed.
+`LADDER_MARKETS` is exact JSON with the same fields. Every integer-valued property — including the
+nested `maturityPremium` integers — must be a quoted decimal string; JSON number tokens, floats,
+exponents, malformed values, unknown fields, duplicate markets, and markets outside `MARKET_IDS`
+are rejected, and `maturityPremium.shape` remains the JSON string `"linear"`. The variable replaces
+the YAML list before semantic validation, so a valid environment list can replace semantically
+invalid YAML while YAML parser hazards still fail closed.
 
 ### Secrets and failure behavior
 

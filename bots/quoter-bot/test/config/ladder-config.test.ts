@@ -116,6 +116,142 @@ describe('ladder configuration loading', () => {
     ).toThrow('higher rung is outside the configured hard range')
   })
 
+  test('loads a nested YAML ladder maturity premium with quoted and bare integers', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'ladder-config-'))
+    directories.push(directory)
+    const path = join(directory, 'quoter-bot.yaml')
+    const yamlItem = Object.entries(item())
+      .map(([key, value]) => `    ${key}: '${value}'`)
+      .join('\n')
+    await writeFile(
+      path,
+      `ladder:\n  -\n${yamlItem}\n    maturityPremium:\n      shape: linear\n      premiumPerYearBps: '120'\n      maximumPremiumBps: 300\n`
+    )
+
+    const config = await ConfigService.load(baseEnvironment, { configPath: path })
+
+    expect(config.ladder[0]?.maturityPremium).toEqual({
+      shape: 'linear',
+      premiumPerYearBps: 120n,
+      maximumPremiumBps: 300n
+    })
+  })
+
+  test('loads a LADDER_MARKETS maturity premium and omits the absent optional cap', () => {
+    const config = ConfigService.from({
+      ...baseEnvironment,
+      LADDER_MARKETS: JSON.stringify([
+        item({ maturityPremium: { shape: 'linear', premiumPerYearBps: '120' } })
+      ])
+    })
+
+    expect(config.ladder[0]?.maturityPremium).toEqual({
+      shape: 'linear',
+      premiumPerYearBps: 120n
+    })
+    expect(config.ladder[0]?.quotePremiumBps).toBe(0n)
+  })
+
+  test.each([
+    [
+      'unsupported nested key',
+      { shape: 'linear', premiumPerYearBps: '120', slopeBps: '1' },
+      'ladder[0].maturityPremium contains an unsupported key'
+    ],
+    [
+      'unsupported shape',
+      { shape: 'quadratic', premiumPerYearBps: '120' },
+      'ladder[0].maturityPremium.shape must be linear'
+    ],
+    [
+      'missing slope',
+      { shape: 'linear' },
+      'ladder[0].maturityPremium.premiumPerYearBps is required'
+    ],
+    [
+      'non-positive slope',
+      { shape: 'linear', premiumPerYearBps: '0' },
+      'ladder[0].maturityPremium.premiumPerYearBps must be positive'
+    ],
+    [
+      'number token slope',
+      { shape: 'linear', premiumPerYearBps: 120 },
+      'ladder[0].maturityPremium.premiumPerYearBps must be an integer'
+    ],
+    [
+      'non-positive cap',
+      { shape: 'linear', premiumPerYearBps: '120', maximumPremiumBps: '0' },
+      'ladder[0].maturityPremium.maximumPremiumBps must be positive'
+    ]
+  ])(
+    'rejects an invalid LADDER_MARKETS maturity premium: %s',
+    (_name, maturityPremium, message) => {
+      expect(() =>
+        ConfigService.from({
+          ...baseEnvironment,
+          LADDER_MARKETS: JSON.stringify([item({ maturityPremium })])
+        })
+      ).toThrow(message)
+    }
+  )
+
+  test.each([
+    ['an uncapped maturity premium reaching the minimum at long maturities', undefined],
+    ['a capped maturity premium whose highest reachable center fits the shape', '300']
+  ])('accepts a hardcoded ladder shape breaching the minimum with %s', (_name, cap) => {
+    const config = ConfigService.from({
+      ...baseEnvironment,
+      LADDER_MARKETS: JSON.stringify([
+        item({
+          targetRate: { strategy: 'hardcoded', hardcodedRateBps: '400' },
+          maturityPremium: {
+            shape: 'linear',
+            premiumPerYearBps: '200',
+            ...(cap === undefined ? {} : { maximumPremiumBps: cap })
+          }
+        })
+      ])
+    })
+
+    expect(config.ladder[0]?.targetRate).toEqual({ strategy: 'hardcoded', hardcodedRateBps: 400n })
+  })
+
+  test.each([
+    [
+      'a capped premium that can never lift the lower rung inside',
+      '400',
+      { shape: 'linear', premiumPerYearBps: '200', maximumPremiumBps: '50' },
+      'lower rung is outside the configured hard range'
+    ],
+    [
+      'a base higher rung already above the maximum at every maturity',
+      '700',
+      { shape: 'linear', premiumPerYearBps: '200' },
+      'higher rung is outside the configured hard range'
+    ],
+    [
+      'an uncapped slope too shallow to lift the lower rung within the protocol horizon',
+      '300',
+      { shape: 'linear', premiumPerYearBps: '1' },
+      'lower rung is outside the configured hard range'
+    ]
+  ])(
+    'rejects a hardcoded ladder shape pinned outside the bounds at every maturity: %s',
+    (_name, hardcodedRateBps, maturityPremium, message) => {
+      expect(() =>
+        ConfigService.from({
+          ...baseEnvironment,
+          LADDER_MARKETS: JSON.stringify([
+            item({
+              targetRate: { strategy: 'hardcoded', hardcodedRateBps },
+              maturityPremium
+            })
+          ])
+        })
+      ).toThrow(message)
+    }
+  )
+
   test.each([
     [
       'BOOTSTRAP_MARKETS',

@@ -1,7 +1,15 @@
 import type { Hex } from 'viem'
 
+import type { MaturityPremiumConfig } from '../maturity-premium'
+
 import { isBytes32 } from '../bytes32'
 import { clampRateBps, CROSS_BOOK_CLEARANCE_BPS } from '../cross-book'
+import {
+  hasAttainableMaturityPremiumBps,
+  highestReachableMaturityPremiumBps,
+  maturityPremiumConfigIssue,
+  resolveMaturityPremiumBps
+} from '../maturity-premium'
 import { LadderConfigurationError } from './ladder-configuration.error'
 
 const WEIGHT_SCALE_BPS = 10_000n
@@ -20,6 +28,8 @@ const MAX_MONITOR_INTERVAL_SECONDS = 2_147_483
 export type LadderConfig = {
   marketId: Hex
   quotePremiumBps: bigint
+  /** Optional premium function of time to maturity added on top of `quotePremiumBps`. */
+  maturityPremium?: MaturityPremiumConfig
   spreadBps: bigint
   stepBps: bigint
   rungCount: number
@@ -103,6 +113,7 @@ type GenerateLadderParameters = {
   referenceRateBps: bigint
   capacities?: LadderMarketState
   retainedCenterRateBps?: bigint
+  secondsToMaturity?: bigint
 }
 
 const minimum = (values: readonly bigint[]) => values.reduce(bigintMin)
@@ -179,6 +190,10 @@ export const validateLadderConfig = (config: LadderConfig): void => {
   if (!isBytes32(config.marketId)) {
     throw new LadderConfigurationError('marketId', 'must be a 0x-prefixed bytes32 hex value')
   }
+  if (config.maturityPremium !== undefined) {
+    const issue = maturityPremiumConfigIssue(config.maturityPremium)
+    if (issue) throw new LadderConfigurationError(issue.field, issue.reason)
+  }
   positive(config.spreadBps, 'spreadBps')
   if (config.spreadBps % 2n !== 0n) {
     throw new LadderConfigurationError('spreadBps', 'must be even')
@@ -241,13 +256,20 @@ export const validateLadderConfig = (config: LadderConfig): void => {
 }
 
 /**
- * Validates that the full ladder shape quoted at one exact reference fits the hard range.
+ * Validates that the full ladder shape quoted at one exact reference can fit the hard range.
  * @param config - Static strategy configuration whose shape and bounds are validated first.
  * @param referenceRateBps - Exact reference the shape is anchored to, before the quote premium.
- * @returns Nothing when every rung of the full shape stays inside the hard range.
- * @throws LadderConfigurationError when the config is invalid or an outer rung leaves the range.
+ * @returns Nothing when the full shape fits unclamped at some reachable maturity premium.
+ * @throws LadderConfigurationError when the config is invalid or an outer rung stays outside the
+ * hard range at every reachable maturity premium.
  * @remarks Static preflight for operator-pinned references: runtime generation clamps rungs, so a
- * hardcoded target that cannot fit unclamped must fail loud at configuration time instead.
+ * hardcoded target that can never fit unclamped must fail loud at configuration time instead. A
+ * maturity premium moves the center along the reachable envelope bounded by the configured cap and
+ * the protocol's 100-year maturity horizon, so load-time rejection is reserved for shapes pinned
+ * outside a bound at every protocol-permitted maturity; a transiently clamped rung is documented
+ * runtime behavior. The per-bound envelope checks give stable field errors, and the final exact
+ * gate rejects a configuration whose floored premium steps jump over every center that fits the
+ * full shape unclamped, so acceptance always means some protocol-permitted maturity truly fits.
  */
 export const assertLadderShapeAtReference = (
   config: LadderConfig,
@@ -256,7 +278,11 @@ export const assertLadderShapeAtReference = (
   validateLadderConfig(config)
   const centerRateBps = referenceRateBps + config.quotePremiumBps
   const outerOffsetBps = config.spreadBps / 2n + BigInt(config.rungCount - 1) * config.stepBps
-  if (centerRateBps - outerOffsetBps < config.minimumRateBps) {
+  const highestCenterRateBps =
+    config.maturityPremium === undefined
+      ? centerRateBps
+      : centerRateBps + highestReachableMaturityPremiumBps(config.maturityPremium)
+  if (highestCenterRateBps - outerOffsetBps < config.minimumRateBps) {
     throw new LadderConfigurationError(
       'lowerRateBps',
       'lower rung is outside the configured hard range'
@@ -268,6 +294,42 @@ export const assertLadderShapeAtReference = (
       'higher rung is outside the configured hard range'
     )
   }
+  if (
+    config.maturityPremium !== undefined &&
+    !hasAttainableMaturityPremiumBps(
+      config.maturityPremium,
+      config.minimumRateBps - centerRateBps + outerOffsetBps,
+      config.maximumRateBps - centerRateBps - outerOffsetBps
+    )
+  ) {
+    throw new LadderConfigurationError(
+      'centerRateBps',
+      'must be attainable with the full shape inside the hard range'
+    )
+  }
+}
+
+/**
+ * Resolves the complete premium applied to the reference rate for one ladder center.
+ * @param config - Ladder configuration whose static and optional maturity premiums apply.
+ * @param secondsToMaturity - Fresh seconds until market maturity from the current observation.
+ * @returns The signed quote premium plus the resolved maturity premium in integer basis points.
+ * @throws LadderConfigurationError when a maturity premium is configured without a fresh maturity
+ * observation, so a wiring gap fails loud instead of silently quoting a flat curve.
+ * @remarks Pure derivation with no provider access; the signed static quote premium keeps its
+ * meaning while the maturity term is non-negative, so only further maturities raise the center.
+ */
+export const effectiveLadderPremiumBps = (
+  config: LadderConfig,
+  secondsToMaturity?: bigint
+): bigint => {
+  if (config.maturityPremium === undefined) return config.quotePremiumBps
+  if (secondsToMaturity === undefined) {
+    throw new LadderConfigurationError('maturityPremium', 'requires a maturity observation')
+  }
+  return (
+    config.quotePremiumBps + resolveMaturityPremiumBps(config.maturityPremium, secondsToMaturity)
+  )
 }
 
 /**
@@ -295,16 +357,24 @@ export type LadderDiagnostics = {
  * Generates one ladder quote set alongside the guardrail counts that shaped it.
  * @param parameters - Same inputs as {@link generateLadder}.
  * @returns The desired quote set and the per-side clamp, clearance, and funding counts.
- * @throws LadderConfigurationError for an invalid config or negative capacity input.
+ * @throws LadderConfigurationError for an invalid config, a negative capacity input, or a
+ * configured maturity premium missing its maturity observation.
  * @remarks Exists so silent rate saturation and cross-book repricing stay observable without a
  * logger reaching into this pure module; see {@link generateLadder} for the generation contract.
  */
 export const generateLadderWithDiagnostics = (
   parameters: GenerateLadderParameters
 ): { quote: LadderQuoteSet; diagnostics: LadderDiagnostics } => {
-  const { config, referenceRateBps, capacities = {}, retainedCenterRateBps } = parameters
+  const {
+    config,
+    referenceRateBps,
+    capacities = {},
+    retainedCenterRateBps,
+    secondsToMaturity
+  } = parameters
   validateLadderConfig(config)
-  const centerRateBps = retainedCenterRateBps ?? referenceRateBps + config.quotePremiumBps
+  const effectivePremiumBps = effectiveLadderPremiumBps(config, secondsToMaturity)
+  const centerRateBps = retainedCenterRateBps ?? referenceRateBps + effectivePremiumBps
   const weights = rungWeights(config)
   const lowerBudget = sideBudget(config.lowerRateBudgetAssets, capacities.lowerRateCapacityAssets)
   const higherBudget = minimum([
@@ -358,12 +428,17 @@ export const generateLadderWithDiagnostics = (
  * @param parameters - Input object: `config` defines the static shape, budgets, cadence, and hard
  * rate range; `referenceRateBps` is the fresh reference in integer basis points; `capacities`
  * optionally supplies fresh balance, credit, exposure-increasing lend caps, and the live own
- * bootstrap-buy rate; and `retainedCenterRateBps` optionally keeps a previously active center
- * inside movement tolerance while still clamping every resulting rung into the hard range.
+ * bootstrap-buy rate; `retainedCenterRateBps` optionally keeps a previously active center
+ * inside movement tolerance while still clamping every resulting rung into the hard range; and
+ * `secondsToMaturity` supplies the fresh maturity observation a configured maturity premium
+ * requires to raise the center by its resolved duration compensation.
  * @returns Exact desired quote set; only the nearest rates are funded when the side cannot support
  * every rung at `minimumOfferAssets`, and the outermost funded rung receives division remainders.
- * @throws LadderConfigurationError for an invalid config or negative capacity input.
- * @remarks Rungs walking outside the hard range saturate at the bound instead of failing: sells
+ * @throws LadderConfigurationError for an invalid config, a negative capacity input, or a
+ * configured maturity premium missing its maturity observation — even at a retained center, so a
+ * wiring gap can never quote silently without its configured duration compensation.
+ * @remarks Pure derivation with no provider, logging, persistence, or publication access. Rungs
+ * walking outside the hard range saturate at the bound instead of failing: sells
  * settle on `minimumRateBps` and buys on `maximumRateBps`. Sells additionally quote at least
  * {@link CROSS_BOOK_CLEARANCE_BPS} below any live own bootstrap buy so both strategies cannot cross.
  * Saturated neighbouring rungs may share one rate; protocol tick mapping merges equal-tick rungs.
@@ -375,10 +450,13 @@ export const generateLadder = (parameters: GenerateLadderParameters): LadderQuot
 /**
  * Determines whether a retained center must move after a fresh effective-center observation.
  * @param activeCenterRateBps - Current desired-set center.
- * @param effectiveCenterRateBps - Fresh reference plus configured quote premium.
+ * @param effectiveCenterRateBps - Fresh reference plus the configured quote premium and any
+ * resolved maturity premium.
  * @param toleranceBps - Inclusive no-op movement threshold.
  * @returns `true` only when absolute movement is strictly greater than tolerance.
  * @throws LadderConfigurationError when tolerance is negative.
+ * @remarks The tolerance absorbs slow maturity-premium decay exactly like reference movement: a
+ * retained center rests until the decayed effective center escapes the inclusive deadband.
  */
 export const shouldRecenter = (
   activeCenterRateBps: bigint,
