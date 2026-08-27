@@ -43,8 +43,14 @@ Two adjacent defects sit on the same lines and are worth naming, though neither 
 
 - `submit` returns `boolean`, and `runTick` ignores it: a failed submit still runs `backoff.clear(label)`
   and `counters.submitted += 1`. That both inflates the `submitted` metric and removes the only
-  brake on immediate re-attempt — the direct cause of the _thrash_ (120 attempts) as distinct from the
-  individual failures. PR #134 covers the counter half.
+  brake on immediate re-attempt — the direct cause of the _thrash_ as distinct from the individual
+  failures. PR #134 fixes this properly, returning a `SubmitOutcome` so only `kind: 'sent'` clears
+  backoff.
+- Note the two error strings in this incident had **different amplifiers**, so they are not one bug:
+  the allowance failures were at the _simulate_ stage, where `backoff.record` does fire and does
+  suppress (120 occurrences over 390 s across 14 candidates ≈ 8.6 attempts each — backoff working);
+  the min-out failures were at the _send_ stage, where `backoff.clear` fires instead and suppresses
+  nothing (133 over 114 s). Same underlying marginality, different accounting defects.
 - `cooldown.mark(label)` is called on quote failure and sim revert but not on submit failure, so the
   opt-in cooldown cannot damp this loop either (it is also disabled by default:
   `POSITION_LIQUIDATION_COOLDOWN_MS=0`).
@@ -100,17 +106,61 @@ Consequences that follow directly:
    oracle-referenced headroom against an operator-set expected execution cost, before spending an API
    call, a simulation, or a gas estimate. This is what converts 138 seconds of doomed thrash into a
    single correctly-timed attempt once the ramp has cleared cost.
-3. **Keep the arithmetic in loan-token units.** Unlike the Blue gate
-   (`docs/plans/crtr-2806-blue-profitability-gate.md`, which explicitly non-goals Midnight), no USD
-   price provider is needed: the Midnight oracle converts collateral → loan natively, and both the
-   surplus and the floor are loan-denominated. Gas is the only native-denominated term, and it is
-   second-order next to a 2 bps headroom; it is deferred, not modelled.
-4. **Do not paper over the stale-quote window.** Re-quoting immediately before `submit` would close it
+3. **The gate needs two floors, not one — a ratio floor AND an absolute floor.** Headroom is
+   **scale-invariant** (see below), so a bps threshold is blind to position size: at t+123 s a $10k
+   cap-bound plan and a $1 plan both show 8.93 bps, but their absolute surpluses are $8.94 and
+   $0.00089. Gas is a fixed cost, so only the absolute floor can reject dust. The ratio floor answers
+   "is the ramp far enough along?"; the absolute floor answers "is this position big enough?". The
+   ticket's own aside — eight fills moving $0.00 in aggregate — is the absolute floor missing, and it
+   is adjacent to BOTS-81.
+4. **The ratio floor stays in loan-token units; the absolute floor needs valuation.** Unlike the Blue
+   gate (`docs/plans/crtr-2806-blue-profitability-gate.md`, which explicitly non-goals Midnight), the
+   ratio arithmetic needs no price provider: the Midnight oracle converts collateral → loan natively.
+   The absolute floor does need a loan-token → USD step to compare against gas, which is the
+   `usdValueOf` snapshot BOTS-35 item 1 is already building from
+   `GET /markets/midnight/tokens`. Consume that rather than adding a second price path.
+5. **Do not paper over the stale-quote window.** Re-quoting immediately before `submit` would close it
    but costs an API round trip in a latency race we are already losing. The profitability gate makes
    the window matter far less, because attempts only happen when headroom exceeds execution cost by a
    margin. Revisit only if evidence shows late-ramp attempts still aging out.
-5. **`SLIPPAGE_BPS` remains, as a ceiling.** The derived floor is clamped so it never permits _more_
+6. **`SLIPPAGE_BPS` remains, as a ceiling.** The derived floor is clamped so it never permits _more_
    slippage than the operator's configured maximum. Operators keep one comprehensible safety knob.
+7. **The execution-cost estimate is one operator-owned value, not a tuned constant.** Both this gate
+   and the post-quote check in BOTS-35 item 2 compare against an estimate of DEX + gas cost. Two
+   independent estimates would drift, so it is a single env knob with a documented default of `0`
+   (gate off). The incident implies roughly 10 bps realized for cbBTC→USDC at $10k, but one maturity
+   is one data point and that number is not hardcoded.
+
+### Headroom is scale-invariant, and therefore hoistable
+
+Substituting the contract's own derivations for a cap-bound plan (`capBoundPlan`, `plan.ts:88`):
+
+```text
+capEff       = cap · (BPS − marginBps) / BPS
+seizedAssets = maxSeizeForCap(capEff, price, lif)  ≈ capEff · lif / price
+seizedValue  = seizedAssets · price / SCALE        ≈ capEff · lif
+repaidUnits  = impliedRepaidUnits(seized, …)       ≈ capEff
+headroom     = (seizedValue − repaidUnits) / seizedValue = (lif − 1) / lif
+```
+
+`capEff` cancels. Verified numerically against the real `mulDivUp`/`mulDivDown` paths: the lltv 0.915
+tier at t+123 s yields **8.9325 bps at `SEIZE_CAP_MARGIN_BPS` of both 0 and 30**, identical to four
+decimals. Two consequences:
+
+- **`SEIZE_CAP_MARGIN_BPS` does not eat the headroom.** It shrinks the position by 0.3% and the
+  absolute surplus by 0.3% — three cents on an $8.94 surplus — and moves the break-even instant by
+  zero seconds. It is doing exactly the one-block-oracle-drift job its docstring claims and should be
+  left alone. (An earlier draft of this analysis claimed otherwise by comparing a margin on _size_
+  against a margin on _rate_; that was wrong.)
+- **The ratio floor is not a per-candidate quantity.** It depends only on the market's maturity, the
+  chosen slot's `maxLif`, the mode, and chain time — not on the borrower, the size, the collateral
+  amount, or the price. So it is one value per `(maturity, maxLif, mode)` group per block: a few
+  divisions per tick, hoistable out of the candidate loop. It also rejects all-or-nothing within a
+  group, which is the correct behavior and matches the incident (all 14 candidates failed identically
+  at t+13 s because they shared one `lif`). Tests must assert the **group** property or they pass
+  vacuously.
+- In normal mode `lifAt` returns the full `maxLif` immediately, so headroom is 60–438 bps and the
+  ratio floor is a no-op. It bites post-maturity plans essentially only.
 
 ## Non-goals
 
@@ -152,18 +202,37 @@ floor is trusted as a loan-token amount.
 
 ### 2. Pre-quote profitability gate in the tick
 
-In `runTick`, between `plan()` and the `quoteFor` call, and only for non-bad-debt plans:
+Before the `quoteFor` call, and only for non-bad-debt plans. Two independent floors:
 
 ```ts
+// Ratio floor — group-level, hoisted out of the candidate loop (one value per maturity/maxLif/mode).
 const headroomBps = ((referenceAmountOut - plan.impliedRepaidUnits) * BPS) / referenceAmountOut
-if (headroomBps < minHeadroomBps) { counters.unprofitable += 1; /* log + cooldown; continue */ }
+// Absolute floor — per-candidate, the only one that can reject dust.
+const surplusUsd = usdValueOf(loanToken, referenceAmountOut - plan.impliedRepaidUnits)
 ```
 
-- Bad-debt realizations bypass the gate (they perform no swap), matching the existing
+- Bad-debt realizations bypass both floors (they perform no swap), matching the existing
   `isBadDebtRealization` branch.
-- Emits a new `plan.unprofitable` event carrying `headroomBps`, `lif`, and seconds-since-maturity, so
-  the next maturity produces the ramp curve as telemetry rather than as 133 identical warnings.
 - Marks the cooldown, so a position below threshold is not re-evaluated every block for an hour.
+
+**Placement depends on whether PR #134 is revived.**
+
+- **#134 alive** — the ratio floor folds into its `PlanSkipReason` union as `insufficient_headroom`,
+  riding the existing `plan.skipped` event and `LEVEL_BY_REASON` map. No new counter, no new event,
+  and #134's documented sum identities stay intact: the skip is absorbed by
+  `liquidatable === inflightSkipped + planSkipped + planned`, because the candidate never enters the
+  worked set. This is the preferred shape — the gate is pure arithmetic over `PlanInput`, which is
+  exactly what `planWithReason()` already is.
+- **#134 dead** — the gate needs its own loop exit, a `headroomSkipped` counter, and a
+  `plan.headroom_insufficient` event carrying `headroomBps`, `lif`, and seconds-since-maturity, so the
+  next maturity produces the ramp curve as telemetry rather than as 133 identical warnings.
+
+Event naming is agreed with the BOTS-35 item 2 fork, split by pipeline stage to match the existing
+`plan.*` / `quote.*` / `simulate.*` convention: this gate is `plan.headroom_insufficient`; their
+post-quote check (real swap output vs required repay) is `quote.unprofitable` / `quoteUnprofitable`,
+a sibling of `quoteFailed` in #134's identity. The two are filter-then-verify, not duplicates: this
+one is a cheap necessary condition computed from the oracle, theirs is the accurate check that costs
+the API call this one is trying to save.
 
 ### 3. Economic min-out floor in `@repo/swaps`
 
@@ -195,14 +264,17 @@ Per-venue derivation, matching how each venue actually binds its floor:
 
 ### 4. Configuration surface
 
-| Env                | Default | Meaning                                                                                      |
-| ------------------ | ------- | -------------------------------------------------------------------------------------------- |
-| `MIN_HEADROOM_BPS` | `0`     | Skip a plan whose oracle headroom (`LIF − 1`) is below this. `0` preserves today's behavior. |
-| `SLIPPAGE_BPS`     | `100`   | Unchanged in name and default; now a **ceiling** on the derived floor rather than the floor. |
+| Env                  | Default | Meaning                                                                                                 |
+| -------------------- | ------- | ------------------------------------------------------------------------------------------------------- |
+| `EXECUTION_COST_BPS` | `0`     | Estimated DEX + gas cost. The ratio floor. Shared with the BOTS-35 item 2 gate — one estimate, not two. |
+| `MIN_NET_PROFIT_USD` | `0`     | The absolute floor. Rejects dust, which the ratio floor structurally cannot.                            |
+| `SLIPPAGE_BPS`       | `100`   | Unchanged in name and default; now a **ceiling** on the derived min-out floor rather than the floor.    |
 
-Default-off for `MIN_HEADROOM_BPS` keeps the open-source posture the repo already takes with
+Both gates default off, keeping the open-source posture the repo already takes with
 `ALLOW_BAD_DEBT_ONLY` and `POSITION_LIQUIDATION_COOLDOWN_MS`: existing deployments are unaffected
-until an operator opts in. Prod would be set from the next maturity's measured execution cost.
+until an operator opts in. Prod values come from the next maturity's measured execution cost — the
+incident implies roughly 10 bps for cbBTC→USDC at $10k, which is one data point and deliberately not
+a default.
 
 ## Test plan
 
@@ -212,10 +284,15 @@ Following repo convention — `test/` mirroring `src/`, vitest, additive to the 
   surfaced and equal what `planSurplus` uses; the round-trip
   `impliedRepaidUnits(maxSeizeForCap(cap)) <= cap` invariant still holds; post-maturity ramp endpoints
   (t+0 → WAD, t ≥ 3600 → `maxLif`).
-- **Tick** (`bots/midnight-liquidation/test/runner/tick.test.ts`): a plan below `MIN_HEADROOM_BPS` is
-  skipped with **no `quoteFor` call** (the point of the gate), increments the new counter, marks the
-  cooldown; a bad-debt realization bypasses the gate; `MIN_HEADROOM_BPS=0` reproduces current behavior
-  exactly.
+- **Tick** (`bots/midnight-liquidation/test/runner/tick.test.ts`): a plan below `EXECUTION_COST_BPS` is
+  skipped with **no `quoteFor` call** (the point of the gate) and marks the cooldown; a bad-debt
+  realization bypasses both floors; both knobs at `0` reproduce current behavior exactly. Because the
+  ratio floor is scale-invariant, assert the **group** property — every candidate sharing a
+  `(maturity, maxLif, mode)` group is skipped or worked together, and a per-candidate threshold test
+  would pass vacuously. Assert separately that a large and a dust candidate in the **same** group
+  diverge under `MIN_NET_PROFIT_USD`, since that is the only floor that can separate them. Assert a
+  normal-mode candidate is never skipped by the ratio floor (`lifAt` returns full `maxLif`, so headroom
+  is 60–438 bps).
 - **Venues** (`packages/swaps/test/venues/*.test.ts`): uniswap-v3 floors at
   `minAcceptableAmountOut` when it exceeds the slippage-derived value; the aggregators' derived
   `effectiveSlippageBps` is clamped to `[0, slippageBps]` and computed from the probe estimate;
@@ -240,7 +317,14 @@ Per CLAUDE.md, run once the code is settled — `Promise.all`-concurrent where i
    gate plus an economic floor, and argues the retune is a no-op. If the reframing is accepted,
    BOTS-35's third acceptance criterion should be rewritten and the inventory-funded strategy split
    into its own issue.
-2. **`MIN_HEADROOM_BPS` for prod.** Needs one maturity's measured cbBTC→USDC execution cost. The
-   `plan.unprofitable` telemetry above is designed to produce it; until then the default stays `0`.
-3. **Should the adjacent submit-accounting bug ride along?** `runTick` ignoring `submit`'s boolean is
-   two lines and is the actual cause of the 120-attempt thrash, but it overlaps PR #134.
+2. **Is PR #134 alive?** It decides this change's shape, not just the merge order. Alive → the ratio
+   floor folds into `PlanSkipReason`, adds no counter and no event, and #134 already fixes the
+   submit-accounting bug below. Dead → the gate carries its own exit, counter, and event, and that bug
+   needs picking up separately.
+3. **Threshold values for prod.** Both knobs default to `0`. Setting them needs one maturity's measured
+   cbBTC→USDC execution cost, which the `plan.headroom_insufficient` telemetry is designed to produce.
+4. **Should the adjacent submit-accounting bug ride along?** `runTick` ignores `submit`'s return
+   boolean, so `backoff.clear()` and `counters.submitted += 1` run even on a failed send — no
+   suppression at all, which is what let 133 `tx.submit_failed` pile up in 114 seconds. PR #134 fixes
+   this properly by returning a `SubmitOutcome` so only `kind: 'sent'` clears backoff. Subsumed if
+   #134 lands.
