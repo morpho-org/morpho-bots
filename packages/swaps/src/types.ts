@@ -24,16 +24,16 @@ export type QuoteParameters = TokenInDecimals & {
   tokenIn: Address // seized collateral
   tokenOut: Address // loan token
   amountIn: bigint // the seized collateral the Executor will hold — exactly `plan.seizedAssets` (seize-exact)
+  /**
+   * Max output discount the venue may accept, in bps. **Derived**, not operator-set: the quoting layer
+   * computes it from the liquidation's break-even output (`QuoteRequest.minAcceptableAmountOut`) so the
+   * resulting floor is economic. A percentage is all the aggregators accept, which is why this — and
+   * not the absolute floor — is the shape a venue sees.
+   */
   slippageBps: number
   executor: Address
   /** Oracle-priced expected output (no DEX slippage) — the no-route-quality reference. */
   referenceAmountOut: bigint
-  /**
-   * Break-even output: the loan-token amount the protocol will pull to settle the repay. When set, it
-   * REPLACES `slippageBps` as the min-out floor — see {@link QuoteRequest.minAcceptableAmountOut} for
-   * why an economic floor beats an operator-chosen percentage.
-   */
-  minAcceptableAmountOut?: bigint
 }
 
 /**

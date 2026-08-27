@@ -25,7 +25,6 @@ export function composeQuoting(deps: {
   chainId: number
   executor: Address
   venues: readonly Venue[]
-  slippageBps: number
   baseUrls: Partial<Record<Venue, string>>
   maxRouteImpactBps: number
   unwrappers: readonly Unwrapper[]

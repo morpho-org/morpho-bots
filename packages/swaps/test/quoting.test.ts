@@ -26,7 +26,10 @@ const REQUEST: QuoteRequest = {
   collateralToken: COLLATERAL,
   loanToken: LOAN,
   amountIn: 1000n,
-  referenceAmountOut: 1000n
+  referenceAmountOut: 1000n,
+  // Break-even equal to the reference means zero derived slippage — the strictest floor, so a venue
+  // stub returning exactly the reference still passes and existing expectations are unchanged.
+  minAcceptableAmountOut: 1000n
 }
 
 // The plan's final step is the venue swap; its approvalSpender is the venue's approve target — the
@@ -143,7 +146,6 @@ function composeMulti(
     chainId: 8453,
     executor: EXECUTOR,
     venues,
-    slippageBps: 50,
     baseUrls: {},
     maxRouteImpactBps: 500, // floor = 950
     unwrappers: options.unwrappers ?? [],
@@ -347,7 +349,7 @@ describe('composeMultiVenueQuoting', () => {
   })
 })
 
-describe('economic min-out floor (minAcceptableAmountOut)', () => {
+describe('economic min-out floor', () => {
   // Captures the slippage each venue was asked for, which is the aggregators' ONLY min-out lever.
   const capturingHttp = (body: unknown) => {
     const calls: { searchParams?: Record<string, string> }[] = []
@@ -366,12 +368,6 @@ describe('economic min-out floor (minAcceptableAmountOut)', () => {
     await quoteFor(request)
     return { calls }
   }
-
-  it('leaves the operator slippage untouched when no floor is supplied', async () => {
-    const { calls } = await quoteWith(REQUEST, oneInchBody('1000'))
-    // composeMulti configures slippageBps: 50, sent as a percentage.
-    expect(calls[0]?.searchParams?.slippage).toBe('0.5')
-  })
 
   it('derives the allowance from break-even, replacing the operator percentage', async () => {
     // reference 1000, break-even 900 -> the route may give up 100/1000 = 1000bps = 10%.

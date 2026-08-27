@@ -111,7 +111,6 @@ function compose(
     chainId: 8453,
     executor: EXECUTOR,
     venues: overrides.venues ?? ['0x'],
-    slippageBps: 100,
     baseUrls: {},
     maxRouteImpactBps: 500,
     unwrappers: [],

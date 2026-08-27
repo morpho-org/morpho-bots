@@ -113,9 +113,8 @@ export type QuoteRequest = {
    * router reject fills that would have settled profitably. Deriving the allowance from break-even is
    * right at every point, and cannot be tuned wrong.
    *
-   * Omit it to keep the pre-existing `slippageBps` behavior exactly.
    */
-  minAcceptableAmountOut?: bigint
+  minAcceptableAmountOut: bigint
   /** `collateralToken` decimals — required only for decimal-denominated venues (LiquidSwap). */
   tokenInDecimals?: number
   /** The position's correlation id — threaded into log events only, never parsed. */
@@ -155,7 +154,6 @@ async function firmQuoteVenue(args: {
   chainId: number
   executor: Address
   venueEntry: () => SwapConfigEntry
-  slippageBps: number
   tokenIn: Address
   amountIn: bigint
   steps: SwapStep[]
@@ -172,13 +170,13 @@ async function firmQuoteVenue(args: {
   // `reference · (1 - slippage)`, so the same percentage lands it on `minAcceptableAmountOut` exactly;
   // an aggregator lands slightly below it (its own quote is under the oracle by the execution cost),
   // which is the safe direction — it can never reject a fill that would have settled.
+  // A floor above the oracle reference would imply negative slippage; clamp rather than reject, since
+  // rounding can put break-even a unit over the reference on a dust seize.
   const economicFloor =
-    minAcceptableAmountOut !== undefined && minAcceptableAmountOut > referenceAmountOut
-      ? referenceAmountOut // a floor above the oracle reference would imply negative slippage
-      : minAcceptableAmountOut
+    minAcceptableAmountOut > referenceAmountOut ? referenceAmountOut : minAcceptableAmountOut
   const slippageBps =
-    economicFloor === undefined || referenceAmountOut <= 0n
-      ? args.slippageBps
+    referenceAmountOut <= 0n
+      ? 0
       : Number(((referenceAmountOut - economicFloor) * BPS) / referenceAmountOut)
 
   const params: QuoteParameters = {
@@ -192,7 +190,6 @@ async function firmQuoteVenue(args: {
     slippageBps,
     executor,
     referenceAmountOut,
-    minAcceptableAmountOut,
     // The request's decimals describe the RAW collateral; after an unwrap they would mislabel
     // the underlying, so they are only forwarded on the direct (no-unwrap) path.
     tokenInDecimals: steps.length === 0 ? request.tokenInDecimals : undefined
@@ -343,8 +340,6 @@ export function composeMultiVenueQuoting(deps: {
   executor: Address
   /** Enabled venues, in deterministic default order (used when a pair has no cached probe yet). */
   venues: readonly Venue[]
-  /** Global slippage (bps) applied to every venue — no per-collateral routing anymore. */
-  slippageBps: number
   /** Optional per-venue API host overrides. */
   baseUrls: Partial<Record<Venue, string>>
   maxRouteImpactBps: number
@@ -364,7 +359,6 @@ export function composeMultiVenueQuoting(deps: {
     chainId,
     executor,
     venues,
-    slippageBps,
     baseUrls,
     maxRouteImpactBps,
     unwrappers,
@@ -378,13 +372,13 @@ export function composeMultiVenueQuoting(deps: {
   function entryFor(venue: Venue): SwapConfigEntry {
     switch (venue) {
       case '0x':
-        return { venue: '0x', baseUrl: baseUrls['0x'], slippageBps }
+        return { venue: '0x', baseUrl: baseUrls['0x'] }
       case '1inch':
-        return { venue: '1inch', baseUrl: baseUrls['1inch'], slippageBps }
+        return { venue: '1inch', baseUrl: baseUrls['1inch'] }
       case 'lifi':
-        return { venue: 'lifi', baseUrl: baseUrls.lifi, slippageBps }
+        return { venue: 'lifi', baseUrl: baseUrls.lifi }
       case 'liquidswap':
-        return { venue: 'liquidswap', baseUrl: baseUrls.liquidswap, slippageBps }
+        return { venue: 'liquidswap', baseUrl: baseUrls.liquidswap }
       case 'uniswap-v3':
         throw new QuoteError('api_error', 'uniswap-v3 is not a multi-venue candidate')
       default:
@@ -441,7 +435,6 @@ export function composeMultiVenueQuoting(deps: {
           chainId,
           executor,
           venueEntry: () => entryFor(venue),
-          slippageBps,
           tokenIn: resolution.token,
           amountIn: resolution.amountIn,
           steps: resolution.steps,

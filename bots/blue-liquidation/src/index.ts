@@ -165,7 +165,6 @@ async function main() {
     chainId: config.chainId,
     executor: config.executooorAddress,
     venues,
-    slippageBps: config.venues.slippageBps,
     baseUrls,
     maxRouteImpactBps: config.quoting.maxRouteImpactBps,
     unwrappers,
