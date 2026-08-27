@@ -12,11 +12,26 @@
 BOTS-35's acceptance criterion for this item is: _"The slippage guard is retuned (or made adaptive)
 so it does not reject economically sound fills during a maturity burst."_
 
-Exploration establishes that during the observed window there **were no economically sound fills to
-reject**. The guard was not mis-tuned; it was reporting, in the wrong vocabulary, that a swap-funded
-liquidation is unprofitable in the first minutes of the post-maturity LIF ramp. Retuning it — in
-either direction — cannot produce a won position. This document records the evidence, then proposes
-the change that does satisfy the criterion's _intent_.
+Exploration establishes that the guard was not mis-tuned in one direction. It is **simultaneously too
+loose to protect the repay and too tight to be usable as a gate**: at `SLIPPAGE_BPS = 100` the min-out
+floor sits below break-even (so shortfalls surface at the repay instead), while gating on that same
+floor would demand 100 bps of headroom against a tier whose lifetime maximum can be 60 bps. Retuning
+it in either direction cannot produce a won position, because the binding constraint was never the
+guard.
+
+Two things it took the arithmetic to see. First, a swap-funded liquidation has only `lif − 1` of
+headroom, which post-maturity ramps from zero over an hour — so early attempts are unprofitable by
+construction. Second, and more actionable: the moment that headroom clears is a **closed form**, and
+the bot's exponential backoff sampled straight across it. The evidence is consistent with the position
+having been winnable and missed for lack of looking, not lost to economics.
+
+This document records the evidence, then proposes the change that satisfies the criterion's _intent_.
+
+> **Evidence provenance.** Everything here derives from the ticket text, the repository source, and
+> the live markets API. The `t+123 s` and `t+138 s` timestamps are the ticket's. **Nobody has checked
+> Better Stack.** Three parallel sessions worked BOTS-35's three defects and none had the incident
+> logs. Confirming the attempt timeline against the real `simulate.revert` / `tx.submit_failed` lines
+> is the first thing to do before implementing.
 
 ## The mechanism behind `Error(return too low)`
 
@@ -68,6 +83,11 @@ A seize-exact plan pins `seizedAssets`; the contract derives the repay as
 repay transfer fails and the whole transaction reverts atomically. The economic headroom available to
 cover DEX execution cost is therefore exactly `LIF − 1`.
 
+The incident market is **determined, not inferred**. The ticket names `0x168e3125…a47937`; the markets
+API returns `maturity 1785510000 = 2026-07-31T15:00:00Z` (matching the ticket exactly), loan USDC,
+and a **single** collateral slot: cbBTC at `lltv 0.860 / cursor 0.30`, so `maxLif = 1.043841` and max
+headroom 438.4 bps. Every number below for the incident uses that tier.
+
 Computed from the live markets API for the three cbBTC/USDC collateral tiers on Base:
 
 | lltv  | cursor | maxLif   | headroom @ t+60s | @ t+123s | @ t+300s | @ t+600s | @ t+3600s |
@@ -76,10 +96,9 @@ Computed from the live markets API for the three cbBTC/USDC collateral tiers on 
 | 0.915 | 0.30   | 1.026167 | 4.4 bps          | 8.9 bps  | 21.8 bps | 43.6 bps | 262 bps   |
 | 0.980 | 0.30   | 1.006036 | 1.0 bps          | 2.1 bps  | 5.0 bps  | 10.1 bps | 60 bps    |
 
-The $10,004 fill was lost at **t+123 s**. At that point a swap-funded liquidator had between **2 and
-15 bps** of headroom, depending on tier. A cbBTC→USDC swap on Base cannot execute inside that: the
-cheapest Uniswap v3 tier alone is 5 bps, before spread, price impact on a $10k clip, and the
-oracle-versus-market basis.
+On the incident tier the $10,004 fill was lost at **t+123 s**, where headroom was 14.98 bps. A
+cbBTC→USDC swap on Base is not comfortably inside that: the cheapest Uniswap v3 tier alone is 5 bps,
+before spread, price impact on a $10k clip, and the oracle-versus-market basis.
 
 Consequences that follow directly:
 
@@ -90,11 +109,49 @@ Consequences that follow directly:
   transaction reverts; the Executor's structural sweeps mean a successful exec ends at zero balance.
   The only exposure to a loose guard is sandwich extraction of the surplus, which is real but is a
   late-ramp concern, not an early-ramp one.
-- **The ticket's own context corroborates this.** "99% of value cleared within 4 minutes of maturity"
-  means the entire auction resolves inside the window where a self-funding swap route is
-  structurally unprofitable. The liquidators who cleared it were almost certainly **inventory-funded**:
-  repay from held loan token, keep the collateral, sell later off the critical path. That strategy has
-  no slippage guard to tune because it performs no swap.
+
+### The realized execution cost is an interval, and it overlaps the winner's
+
+Our first `simulate.ok` was t+138 s. But attempts were not continuous — the backoff schedule
+(base 2 / max 64 blocks, ~2 s Base blocks) puts them at t = 13/17/25/41/73/137/265/393 s. So:
+
+```text
+attempt t+73s   → headroom  8.89 bps   (failed)
+attempt t+137s  → headroom 16.68 bps   (first simulate.ok at t+138s)
+⇒ our realized execution cost ∈ (8.89, 16.68] bps
+winner struck at t+123s   → their total cost ≤ 14.98 bps
+```
+
+**The ranges overlap.** So the evidence does not support "the winner executed more cheaply than we
+could", and an earlier draft of this document was wrong to say the winners were "almost certainly
+inventory-funded". A swap-funded liquidator with ~15 bps execution, polling every block, explains the
+t+123 s strike completely — note that a 15 bps cost puts the deterministic crossover at exactly
+t+123 s. Inventory funding remains a plausible and strategically interesting answer, but it is not
+what this incident demonstrates.
+
+### What actually lost the position: backoff across a deterministic crossover
+
+If the true crossover sat anywhere in (73 s, 123 s] — the lower half of our bound — we were
+economically viable _before_ the winner struck and simply were not looking. Attempts at t+73 and
+t+137 leave a 64-second gap straddling the crossover; at a crossover of t+90 s that is 47 seconds of
+winnable window sat out by the backoff schedule alone.
+
+The cause is a category error: exponential backoff treats a **deterministically improving** condition
+as a random failure. Headroom is `(lif − 1)/lif` with `lif` rising linearly in known chain time, so
+the moment it clears is a closed form, not something to be discovered by retrying:
+
+```text
+t_cross = 3600 · cost_bps / (maxLif − 1)_bps          // per (market, collateral tier)
+
+cost  5 bps → t+41s        cost 15 bps → t+123s
+cost 10 bps → t+82s        cost 30 bps → t+246s
+```
+
+Backing off doubles the wait exactly when waiting is least justified. This makes the gate two-sided:
+suppress attempts before `t_cross` (killing the thrash), and attempt **every block** from `t_cross`
+onward without economic backoff (winning the position). An economic failure below `t_cross` carries
+no information beyond the clock; one above it is noise, not grounds to sleep 64 seconds. Transport
+failures keep their existing backoff.
 
 ## Items 2 and 3 are one root cause, and the ticket's item-2 premise is wrong
 
@@ -311,7 +368,26 @@ Per-venue derivation, matching how each venue actually binds its floor:
   is simultaneously adaptive and never looser than the operator's ceiling. On a cold probe cache, fall
   back to `referenceAmountOut` as the denominator — the same oracle reference uniswap-v3 already uses.
 
-### 4. Configuration surface
+The strongest justification for the floor is not the diagnostic one (both paths revert; the floor just
+names the cause and burns slightly less gas). It is that the floor makes **`SLIPPAGE_BPS` monotone and
+safe to widen**: today, raising it loosens the router's protection and pushes shortfalls onto the
+repay, so the knob has a perverse range. With the floor, widening it can never take min-out below
+break-even.
+
+### 4. Exempt economic failures from backoff, and schedule on `t_cross`
+
+The change with the clearest link to the lost position. Today an economic failure records exponential
+backoff, so the bot sampled t+73 s then t+137 s across a crossover that was computable in advance.
+
+- A plan below `t_cross` is skipped **without** `backoff.record` — it is not a failure, and the wait is
+  already known exactly. The cooldown (or a scheduled wake at `t_cross`) carries it instead.
+- From `t_cross` onward the position is attempted **every block** with no economic backoff. Only
+  transport-class failures (`api_error`, `rate_limited`, `timeout`, RPC faults) keep today's backoff.
+- This is the one item that requires distinguishing failure classes. `QuoteFailureReason` already
+  separates `no_route` / `bad_route` from `timeout` / `rate_limited` / `api_error`, so the seam exists;
+  the sim-revert path is the one that currently conflates them.
+
+### 5. Configuration surface
 
 | Env                  | Default | Meaning                                                                                                 |
 | -------------------- | ------- | ------------------------------------------------------------------------------------------------------- |
@@ -333,6 +409,14 @@ Following repo convention — `test/` mirroring `src/`, vitest, additive to the 
   surfaced and equal what `planSurplus` uses; the round-trip
   `impliedRepaidUnits(maxSeizeForCap(cap)) <= cap` invariant still holds; post-maturity ramp endpoints
   (t+0 → WAD, t ≥ 3600 → `maxLif`).
+- **Backoff class** (`bots/midnight-liquidation/test/runner/tick.test.ts`): a plan below `t_cross` does
+  NOT call `backoff.record`; a transport-class failure still does; a position at `t_cross + 1 block` is
+  retried on the very next block rather than after a doubled wait. This is the assertion that maps
+  directly to the lost position, so it should fail loudly if the exemption regresses.
+- **Crossover arithmetic** (`bots/midnight-liquidation/test/sizing/lif.test.ts`): `t_cross` for the
+  incident tier (`maxLif = 1.043841`) is t+123 s at 15 bps and t+82 s at 10 bps; a tier whose lifetime
+  maximum headroom is below the configured cost (0.980 tier at 60.4 bps vs 100 bps) yields no crossover
+  at all and must be skipped for the entire post-maturity hour rather than looping.
 - **Tick** (`bots/midnight-liquidation/test/runner/tick.test.ts`): a plan below `EXECUTION_COST_BPS` is
   skipped with **no `quoteFor` call** (the point of the gate) and marks the cooldown; a bad-debt
   realization bypasses both floors; both knobs at `0` reproduce current behavior exactly. Because the
@@ -361,6 +445,10 @@ Per CLAUDE.md, run once the code is settled — `Promise.all`-concurrent where i
 4. `pnpm test`
 
 ## Decisions needed before implementation
+
+0. **Check Better Stack first.** Every number here is derived from ticket text + source + live API;
+   nobody has read the incident logs. The attempt timeline (t+73 / t+137) is reconstructed from the
+   backoff schedule, and it is the load-bearing evidence for change #4. Confirm it before building.
 
 1. **Does this reframing stand?** The ticket asks for a retuned guard; this proposes a profitability
    gate plus an economic floor, and argues the retune is a no-op. If the reframing is accepted,
