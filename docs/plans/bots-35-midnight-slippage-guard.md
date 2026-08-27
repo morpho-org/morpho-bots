@@ -46,11 +46,12 @@ Two adjacent defects sit on the same lines and are worth naming, though neither 
   brake on immediate re-attempt — the direct cause of the _thrash_ as distinct from the individual
   failures. PR #134 fixes this properly, returning a `SubmitOutcome` so only `kind: 'sent'` clears
   backoff.
-- Note the two error strings in this incident had **different amplifiers**, so they are not one bug:
-  the allowance failures were at the _simulate_ stage, where `backoff.record` does fire and does
-  suppress (120 occurrences over 390 s across 14 candidates ≈ 8.6 attempts each — backoff working);
-  the min-out failures were at the _send_ stage, where `backoff.clear` fires instead and suppresses
-  nothing (133 over 114 s). Same underlying marginality, different accounting defects.
+- The two error strings in this incident share one economic cause (see the next section) but have
+  **different amplifiers**, so they need one economic fix and two accounting fixes. The allowance
+  failures were at the _simulate_ stage, where `backoff.record` fires and does suppress (120
+  occurrences over 390 s across 14 candidates ≈ 8.6 attempts each — backoff working as designed); the
+  min-out failures were at the _send_ stage, where `backoff.clear` fires instead and suppresses
+  nothing (133 over 114 s). Only the send-stage amplifier is what PR #134 fixes.
 - `cooldown.mark(label)` is called on quote failure and sim revert but not on submit failure, so the
   opt-in cooldown cannot damp this loop either (it is also disabled by default:
   `POSITION_LIQUIDATION_COOLDOWN_MS=0`).
@@ -94,6 +95,54 @@ Consequences that follow directly:
   structurally unprofitable. The liquidators who cleared it were almost certainly **inventory-funded**:
   repay from held loan token, keep the collateral, sell later off the critical path. That strategy has
   no slippage guard to tune because it performs no swap.
+
+## Items 2 and 3 are one root cause, and the ticket's item-2 premise is wrong
+
+BOTS-35 item 2 states: _"The executor uses a just-in-time exact-amount approve (approve 0, then
+approve exactly what's needed, in the same transaction), so the pre-flight simulation appears to be
+running against state where that approval hasn't been applied"_, and leaves the 15:02:18 recovery
+unexplained.
+
+That premise does not match the encoder. `approvePair`
+(`packages/swaps/src/execution/executor-calls.ts:50`) emits `approve(spender, 0)` then
+`approve(spender, <live balanceOf>)`, the amount argument spliced at exec by
+`balanceOfPlaceholder(token, executor, ERC20_AMOUNT_OFFSET)`. It is **balance-based over-approval,
+not an exact amount** — stated at `encode-call.ts:104-106`, precisely because `repaidUnits` is
+recomputed on-chain and is not staticcall-readable. So there is no "state where the approval hasn't
+been applied": the approve reads the balance in the same transaction, after the swap steps.
+
+Therefore `allowance == balance`, exactly, and:
+
+```text
+ERC20: transfer amount exceeds allowance  ⟺  loan balance after swap < derived repay
+```
+
+The allowance revert is a balance shortfall wearing an allowance error message. There is no
+allowance-provisioning bug, and the 15:02:18 recovery needs no internal-state explanation — the swap
+simply began clearing the repay as `lif` ramped.
+
+This consolidates the ticket: **items 2 and 3 are the same root cause at two points inside one
+transaction.** `Error(return too low)` is the router refusing mid-swap; `exceeds allowance` is the
+repay failing post-swap. Both say the swap did not produce enough, which is the marginality this
+document quantifies. They differ only in amplifier — the simulate-stage failures were
+backoff-suppressed (`backoff.record` fires), the send-stage ones were not (`backoff.clear` fires
+instead) — so they need two accounting fixes but one economic fix.
+
+### Drift bounds on any repay-vs-output gate
+
+A gate comparing `amountOutMinimum >= requiredRepay` at quote time is not a structural guarantee.
+The output side is pinned by the router, but `requiredRepay_exec = seized · price_exec / lif_exec`
+is not. Over the ~2-block sim→exec gap on Base:
+
+```text
+lif protection (0.86 tier):  (maxLif − 1) · 4/3600 = 438.4bps × 0.00111 ≈ 0.49 bps
+BTC 1σ price move over 4s:   0.40/√(31.5e6/4)                          ≈ 1.42 bps
+```
+
+Price dominates the ramp's protection by roughly 3× at 1σ, and is two-sided. Such a gate removes the
+_systematic_ failure — the bulk of it — but leaves a random residual, and closing that residual needs
+a vol-sized buffer, which is a tuned number. State the claim as "the revert stops being systematic",
+never as "unreachable".
 
 ## Design decisions
 
@@ -317,13 +366,17 @@ Per CLAUDE.md, run once the code is settled — `Promise.all`-concurrent where i
    gate plus an economic floor, and argues the retune is a no-op. If the reframing is accepted,
    BOTS-35's third acceptance criterion should be rewritten and the inventory-funded strategy split
    into its own issue.
-2. **Is PR #134 alive?** It decides this change's shape, not just the merge order. Alive → the ratio
+1. **Should items 2 and 3 be merged?** They are one economic root cause (above), so a single
+   profitability gate closes both. What remains genuinely separate is their two accounting defects.
+   The ticket's item-2 premise about an exact-amount approve should be corrected regardless, since it
+   currently reads as an open mystery that the encoder already answers.
+1. **Is PR #134 alive?** It decides this change's shape, not just the merge order. Alive → the ratio
    floor folds into `PlanSkipReason`, adds no counter and no event, and #134 already fixes the
    submit-accounting bug below. Dead → the gate carries its own exit, counter, and event, and that bug
    needs picking up separately.
-3. **Threshold values for prod.** Both knobs default to `0`. Setting them needs one maturity's measured
+1. **Threshold values for prod.** Both knobs default to `0`. Setting them needs one maturity's measured
    cbBTC→USDC execution cost, which the `plan.headroom_insufficient` telemetry is designed to produce.
-4. **Should the adjacent submit-accounting bug ride along?** `runTick` ignores `submit`'s return
+1. **Should the adjacent submit-accounting bug ride along?** `runTick` ignores `submit`'s return
    boolean, so `backoff.clear()` and `counters.submitted += 1` run even on a failed send — no
    suppression at all, which is what let 133 `tx.submit_failed` pile up in 114 seconds. PR #134 fixes
    this properly by returning a `SubmitOutcome` so only `kind: 'sent'` clears backoff. Subsumed if
