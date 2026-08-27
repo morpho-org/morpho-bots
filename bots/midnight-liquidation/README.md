@@ -357,6 +357,16 @@ zero new candidates so the pending queue (confirmations / fee bumps) is still dr
 runaway paginated response is capped at `MAX_DISCOVERY_PAGES` and logs `discover.max_pages` rather than
 silently truncating (which would be under-inclusion — a liquidation missed).
 
+Separately, [src/discovery/token-prices.ts](./src/discovery/token-prices.ts) keeps a snapshot of loan
+token USD prices from the markets tokens endpoint, refreshed on its own timer (independent of
+`MARKETS_REFRESH_MS`, so a slow tokens fetch cannot stall the fail-closed whitelist refresh) and served
+last-known-good. It is used **only to order** the tick's candidates by expected profit, never to decide
+whether a liquidation is attempted, so it fails **open**: a token with no usable price sorts last and a
+total outage degrades ordering to discovery order. Watch `prices.tokens` for the snapshot size and the
+`unpriced` counter on `tick.end` — a persistently high `unpriced` means the snapshot is not covering the
+loan tokens actually being liquidated. Note the endpoint prices plain assets but not Midnight's
+synthetic collateral wrappers; only the loan token is needed here.
+
 ### State Lens
 
 [src/state/lens.sol.ts](./src/state/lens.sol.ts) defines a deployless Solidity lens. For each

@@ -283,7 +283,17 @@ const postMaturityPlan = (input: PlanInput, marginBps: number): PlanOutcome => {
 // repay the contract will ceil-derive. Both terms are already on the plan, so this neither recomputes
 // `lifAt` nor can disagree with the LIF the plan was sized at. Used to CHOOSE between two plans whose
 // gates are both open; absolute profitability (gas, route quality) stays the quoting layer's job.
-const planSurplus = (input: PlanInput, chosen: LiquidationPlan): bigint =>
+/**
+ * Expected surplus of a sized plan, in loan units: the seized slot's oracle value minus the repay the
+ * contract will ceil-derive for it. Reads the plan's own recorded `impliedRepaidUnits`, so it cannot
+ * disagree with the LIF the plan was sized at.
+ *
+ * **Oracle-only, and a ranking key rather than a profitability measure.** It excludes DEX execution
+ * cost and gas, and post-maturity `lif > WAD` makes it structurally positive for every candidate — so
+ * a positive surplus does not mean a liquidation is worth attempting. Use it to order work, and leave
+ * viability to the headroom floor and the quoting/simulate layer.
+ */
+export const planSurplus = (input: PlanInput, chosen: LiquidationPlan): bigint =>
   seizedValueOf(chosen.seizedAssets, input.bestCollateralPrice) - chosen.impliedRepaidUnits
 
 /**

@@ -112,6 +112,18 @@ function lensOut(overrides: Partial<LensOut> = {}): LensOut {
 const candidates = (...borrowers: Address[]): BorrowerCandidate[] =>
   borrowers.map(borrower => ({ marketId: MARKET, borrower }))
 
+// Per-borrower readings, so one tick can hold candidates with different surpluses / loan tokens.
+function stubReadLensByBorrower(byBorrower: Map<Address, LensOut>) {
+  return async (pairs: LensInput[]) => {
+    const map = new Map<string, LensOut>()
+    for (const pair of pairs) {
+      const out = byBorrower.get(pair.borrower)
+      if (out) map.set(lensKey(pair.id, pair.borrower), out)
+    }
+    return map
+  }
+}
+
 function stubReadLens(out: LensOut | null) {
   return async (pairs: LensInput[]) => {
     const map = new Map<string, LensOut>()
@@ -137,8 +149,13 @@ function runWith(opts: {
   submitOutcome?: SubmitOutcome
   /** Models a send that claimed a nonce but produced no hash, which aborts the tick. */
   submitThrows?: Error
+  /** Distinct readings per borrower, for ordering cases. Overrides `out`. */
+  outsByBorrower?: Map<Address, LensOut>
+  /** Defaults to an identity valuation, so surplusUsd tracks surplus and ordering is deterministic. */
+  usdValueOf?: (loanToken: Address, loanUnits: bigint) => bigint | null
 }) {
   const { logger, events } = spyLogger()
+  const order: Address[] = []
   let simulateCalls = 0
   let submitCalls = 0
   let quoteCalls = 0
@@ -160,9 +177,12 @@ function runWith(opts: {
     seizeCapMarginBps: 0,
     headroomFloorBps: opts.headroomFloorBps ?? 0,
     minSurplusBps: opts.minSurplusBps ?? 0,
-    readLens: stubReadLens(opts.out === undefined ? lensOut() : opts.out),
-    quoteFor: async () => {
+    readLens: opts.outsByBorrower
+      ? stubReadLensByBorrower(opts.outsByBorrower)
+      : stubReadLens(opts.out === undefined ? lensOut() : opts.out),
+    quoteFor: async (_plan, _out, label) => {
       quoteCalls += 1
+      order.push(getAddress(`0x${label.slice(-40)}`))
       return opts.quoteOutcome ?? defaultOutcome
     },
     simulate: async () => {
@@ -177,6 +197,7 @@ function runWith(opts: {
     backoff,
     cooldown,
     inflightLabels: () => opts.inflight ?? new Set(),
+    usdValueOf: opts.usdValueOf ?? ((_loanToken, loanUnits) => loanUnits),
     logger
   })
   return result.then(counters => ({
@@ -186,6 +207,7 @@ function runWith(opts: {
     simulateCalls: () => simulateCalls,
     submitCalls: () => submitCalls,
     quoteCalls: () => quoteCalls,
+    order,
     events
   }))
 }
@@ -209,7 +231,8 @@ describe('runTick', () => {
       ok: 1,
       reverted: 0,
       submitted: 1,
-      notSent: 0
+      notSent: 0,
+      unpriced: 0
     })
     expect(simulateCalls()).toBe(1)
     expect(submitCalls()).toBe(1)
@@ -464,6 +487,7 @@ describe('runTick', () => {
           backoff: createBackoff({ baseBlocks: 2n, maxBlocks: 64n }),
           cooldown: createCooldownStore({ cooldownMs: 0 }),
           inflightLabels: () => new Set(),
+          usdValueOf: (_loanToken, loanUnits) => loanUnits,
           logger
         })
       ).rejects.toThrow('nonce claimed, no hash')
@@ -642,6 +666,83 @@ describe('runTick', () => {
         submitted: 2
       })
       expectCounterIdentities(counters)
+    })
+  })
+  describe('profit ordering', () => {
+    // The repay cap binds at `debt - badDebt`, so debt sets the seize and therefore the surplus:
+    // seize = cap * lif / WAD, surplus = seizedValue - ceil(seize * WAD / lif) = cap * (lif - 1)/WAD.
+    // debt 500 -> 50, debt 1000 -> 100, debt 2000 -> 200, at maxLif 1.1.
+    const SMALL = getAddress('0x0000000000000000000000000000000000000a11')
+    const LARGE = getAddress('0x0000000000000000000000000000000000000b22')
+    const MEDIUM = getAddress('0x0000000000000000000000000000000000000c33')
+
+    it('works the highest-USD-surplus position first, whatever order discovery returned', async () => {
+      const outs = new Map<Address, LensOut>([
+        [SMALL, lensOut({ debt: 500n, maxDebt: 450n })],
+        [LARGE, lensOut({ debt: 2000n, maxDebt: 1800n })],
+        [MEDIUM, lensOut({ debt: 1000n, maxDebt: 900n })]
+      ])
+      const { counters, order } = await runWith({
+        borrowers: [SMALL, LARGE, MEDIUM],
+        outsByBorrower: outs
+      })
+      expect(counters).toMatchObject({ liquidatable: 3, planned: 3, unpriced: 0, submitted: 3 })
+      expect(order).toEqual([LARGE, MEDIUM, SMALL])
+      expectCounterIdentities(counters)
+    })
+
+    it('orders an unpriced candidate last even when its surplus is the largest', async () => {
+      const UNPRICED_TOKEN = getAddress('0x9999999999999999999999999999999999999999')
+      const outs = new Map<Address, LensOut>([
+        // The bigger position is the unpriced one, so discovery order and surplus order both put it
+        // first; only the unpriced-last rule can move it.
+        [
+          LARGE,
+          lensOut({
+            debt: 2000n,
+            maxDebt: 1800n,
+            market: { ...lensOut().market, loanToken: UNPRICED_TOKEN }
+          })
+        ],
+        [MEDIUM, lensOut({ debt: 1000n, maxDebt: 900n })]
+      ])
+      const { counters, order } = await runWith({
+        borrowers: [LARGE, MEDIUM],
+        outsByBorrower: outs,
+        usdValueOf: (loanToken, loanUnits) => (loanToken === UNPRICED_TOKEN ? null : loanUnits)
+      })
+      expect(counters).toMatchObject({ liquidatable: 2, planned: 2, unpriced: 1 })
+      expect(order).toEqual([MEDIUM, LARGE])
+      expectCounterIdentities(counters)
+    })
+
+    it('falls back to discovery order when nothing is priced', async () => {
+      const outs = new Map<Address, LensOut>([
+        [SMALL, lensOut({ debt: 500n, maxDebt: 450n })],
+        [LARGE, lensOut({ debt: 2000n, maxDebt: 1800n })],
+        [MEDIUM, lensOut({ debt: 1000n, maxDebt: 900n })]
+      ])
+      const { counters, order } = await runWith({
+        borrowers: [SMALL, LARGE, MEDIUM],
+        outsByBorrower: outs,
+        usdValueOf: () => null
+      })
+      expect(counters.unpriced).toBe(3)
+      expect(order).toEqual([SMALL, LARGE, MEDIUM])
+    })
+
+    it('logs rank and surplus on plan.built in the order worked', async () => {
+      const outs = new Map<Address, LensOut>([
+        [SMALL, lensOut({ debt: 500n, maxDebt: 450n })],
+        [LARGE, lensOut({ debt: 2000n, maxDebt: 1800n })]
+      ])
+      const { events } = await runWith({ borrowers: [SMALL, LARGE], outsByBorrower: outs })
+      const built = events.filter(e => e.event === 'plan.built')
+      expect(built.map(e => e.fields?.rank)).toEqual([1, 2])
+      expect(built.map(e => e.fields?.borrower)).toEqual([LARGE, SMALL])
+      expect(built.map(e => e.fields?.surplus)).toEqual([200n, 50n])
+      // Rendered at the USD scale rather than as a raw 1e8-scaled bigint.
+      expect(built[0]?.fields?.surplusUsd).toBe('0.000002')
     })
   })
 })

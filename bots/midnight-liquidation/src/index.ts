@@ -34,13 +34,18 @@ import type { Market } from './execution/encode-call'
 import type { LiquidationPlan } from './sizing/plan'
 
 import { loadConfig } from './config'
-import { LISTED_MARKETS_MAX_AGE_MS, SETTLED_COOLDOWN_BLOCKS } from './constants'
+import {
+  LISTED_MARKETS_MAX_AGE_MS,
+  SETTLED_COOLDOWN_BLOCKS,
+  TOKEN_PRICES_REFRESH_MS
+} from './constants'
 import {
   createApiCandidateSource,
   discoverBorrowers,
   MAX_DISCOVERY_PAGES
 } from './discovery/borrowers'
 import { createListedMarketFilter, createUnionListedMarketFilter } from './discovery/markets'
+import { createTokenPriceSource } from './discovery/token-prices'
 import { encodeLiquidationExec } from './execution/encode-call'
 import { composeQuoting } from './quotes'
 import { runTick } from './runner/tick'
@@ -162,6 +167,17 @@ async function main() {
     logger
   })
   await tryCatch(listedMarkets.refresh())
+
+  // Loan-token USD prices, used ONLY to order the tick's candidates by expected profit. Fails open:
+  // an unpriced token sorts last, so a fetch failure degrades ordering to discovery order rather than
+  // suppressing work. Shares the candidates endpoint's base URL, so pointing the bot at a staging host
+  // moves both. The boot fetch is non-fatal — the timer below retries.
+  const tokenPrices = createTokenPriceSource({
+    apiUrl: config.discovery.apiUrl,
+    chainId: config.chainId,
+    logger
+  })
+  await tryCatch(tokenPrices.refresh())
 
   // Pre-swap converters for exotic collateral (ERC4626 shares, Pendle PTs → underlying).
   // Auto-detecting with per-process memoization. erc4626 first: a memoized eth_call beats consulting
@@ -352,6 +368,7 @@ async function main() {
       backoff,
       cooldown,
       inflightLabels: () => queue.inflightLabels(),
+      usdValueOf: tokenPrices.usdValueOf,
       logger
     })
 
@@ -393,6 +410,20 @@ async function main() {
   }
   void refreshMarketsLoop()
 
+  // Prices refresh on their own timer rather than inside `refreshMarketsLoop`. `fetchWithRetry` is a
+  // 5s deadline times three retries plus backoff, so a hanging tokens fetch could stall ~22s — and the
+  // whitelist refresh it would stall is fail-closed and safety-critical, while this one only orders
+  // work. `refresh` is contractually non-throwing (it reports `prices.refresh_failed` itself), so the
+  // tryCatch is belt-and-braces and an error here is a bug rather than an API blip.
+  const refreshTokenPricesLoop = async () => {
+    await delay(TOKEN_PRICES_REFRESH_MS)
+    if (stopped) return
+    const { error } = await tryCatch(tokenPrices.refresh())
+    if (error) logger.error('prices.refresh_error', { detail: error.message })
+    void refreshTokenPricesLoop()
+  }
+  void refreshTokenPricesLoop()
+
   // Graceful shutdown: stop the loops and log the pending set (hashes + nonces) plus the venue /
   // whitelist state for observability. Sends are fire-and-forget and chain truth wins on restart, so
   // there is nothing to persist or await-drain — a redeploy re-derives from chain.
@@ -403,7 +434,8 @@ async function main() {
       signal,
       pending: queue.snapshot(),
       venues: venueSelector.snapshot(),
-      listedMarkets: listedMarkets.snapshot()
+      listedMarkets: listedMarkets.snapshot(),
+      tokenPrices: tokenPrices.snapshot()
     })
     void runner.stop().finally(() => process.exit(0))
   }
