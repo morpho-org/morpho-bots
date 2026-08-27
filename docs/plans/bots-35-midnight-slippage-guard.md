@@ -1,108 +1,40 @@
-# BOTS-35 (item 3): Midnight liquidation slippage guard
+# BOTS-35: Midnight liquidation — slippage guard, and what the 31 Jul maturity actually showed
 
 | Field        | Value                                                                                                                                     |
 | ------------ | ----------------------------------------------------------------------------------------------------------------------------------------- |
-| Status       | Exploration complete, economics verified against production logs; recommend re-scoping BOTS-35 to correctness fixes only                  |
+| Status       | Investigation complete, economics verified against production logs. Awaiting decisions below; no code written.                            |
 | Linear issue | [BOTS-35](https://linear.app/morpho-labs/issue/BOTS-35/fixmidnight-liquidation-order-by-profit-fix-allowance-and-slippage) — third defect |
-| Scope        | `bots/midnight-liquidation` sizing + quoting seam, `@repo/swaps` min-out derivation, operator documentation                               |
+| Depends on   | PR #181 (`fix/bots-35-tick-telemetry-and-submit-outcome`) — green, MERGEABLE, base with `gh stack`                                        |
+| Also touches | BOTS-81 (dust), BOTS-87 (`BlockSampler`, blue port)                                                                                       |
 | Prod config  | Base 8453, venues `['lifi', '0x']`, `SLIPPAGE_BPS` unset → default `100`                                                                  |
 
-## Objective
+## Recommendation
 
-BOTS-35's acceptance criterion for this item is: _"The slippage guard is retuned (or made adaptive)
-so it does not reject economically sound fills during a maturity burst."_
+**Re-scope BOTS-35 to correctness, and treat the competitive framing as answered rather than open.**
 
-Exploration establishes that the guard was not mis-tuned in one direction. It is **simultaneously too
-loose to protect the repay and too tight to be usable as a gate**: at `SLIPPAGE_BPS = 100` the min-out
-floor sits below break-even (so shortfalls surface at the repay instead), while gating on that same
-floor would demand 100 bps of headroom against a tier whose lifetime maximum can be 60 bps. Retuning
-it in either direction cannot produce a won position, because the binding constraint was never the
-guard.
+The ticket asks for the slippage guard to be "retuned (or made adaptive) so it does not reject
+economically sound fills." The guard was not mis-tuned. It is _simultaneously_ too loose to protect the
+repay and too tight to gate on, and neither direction of retuning could have won the position. What
+actually limits us is that a swap-funded liquidation has only `lif − 1` of headroom, which ramps from
+zero over an hour after maturity — and the total prize across the entire Midnight book is **~$3–5k per
+year**, shared with every other liquidator.
 
-A swap-funded liquidation has only `lif − 1` of headroom, which post-maturity ramps from zero over an
-hour, so early attempts are unprofitable by construction. But the decisive finding is narrower and is
-now measured: **our execution cost on the position that mattered exceeded the headroom for the entire
-window in which it was available.** We did not lose it to a mis-tuned guard, and we did not lose it to
-sampling. Nor — measured, not assumed — to price impact: at ~$10k, size-related impact on cbBTC→USDC is
-approximately zero. What remains is size-independent cost, most likely oracle-versus-DEX basis plus
-venue coverage, and that is where the competitive question actually sits.
+That does not mean do nothing. It means the work is worth doing for **legibility and correctness**, not
+for revenue, and the ordering changes accordingly: measure first, then fix the two real defects, then add
+the gate behind a default-off flag.
 
-This document records the evidence, then proposes the change that satisfies the criterion's _intent_.
+## Current state
 
-> **Evidence provenance.** The economics below are **verified against production logs** (Better Stack
-> source 2607569, s3 archive, 2026-07-31 14:59–15:10), obtained by the BOTS-35 item 2 session. The
-> viability predicate `cost_bps ≤ (maxLif − 1)·t/3600` predicts **13 of 13** simulate outcomes at
-> t+138–144, including two dust rejections, and the log fit brackets `maxLif − 1 ≥ 432 bps`
-> independently confirming the 438.4 bps tier lookup. Still _not_ verified: the winner's t+123 s strike
-> is ticket-derived (no on-chain `Liquidate` event was checked). Ticket counts are slightly off —
-> 131 allowance reverts, not 120; 157 `tx.submit_failed`, not 133.
+### The economics (verified)
 
-## The mechanism behind `Error(return too low)`
+Post-maturity LIF ramps linearly from `WAD` to `maxLif` over `TIME_TO_MAX_LIF` = 3600 s
+(`sizing/lif.ts`, mirroring the contract). `maxLif = WAD²/(WAD − cursor·(WAD − lltv))`
+(`midnight-contracts.txt:874`). A seize-exact plan pins `seizedAssets` and the contract derives the repay
+as `ceil(ceil(seized·price/SCALE)·WAD/LIF)`, so the swap must return at least `oracleValue / LIF` or the
+repay fails and the whole transaction reverts atomically.
 
-The revert string is not ours; no such string exists in this repository or in the Midnight contracts.
-It is a venue router's min-out revert, bubbled verbatim by `Executor._revert`. The path that surfaces
-it as `tx.submit_failed` rather than `simulate.revert` is:
-
-1. `runTick` calls `simulate` — an `eth_call` at the then-current head
-   (`packages/bot-kit/src/simulate.ts`). It returns `ok`.
-2. The `ok`-only gate opens and `runTick` calls `submit`
-   (`bots/midnight-liquidation/src/runner/tick.ts:216`).
-3. `submit` → `PendingQueue.submitLocked` → the injected `send`, which begins with
-   `prepareTransactionRequest` (`packages/bot-kit/src/signer.ts:110`). That performs an
-   **`eth_estimateGas` against a newer block**.
-4. In a burst, the pool moved between (1) and (3). The baked-in `amountOutMinimum` no longer clears,
-   the estimate reverts, `send` throws, and the queue logs `tx.submit_failed` with the decoded router
-   reason.
-
-So `simulate.ok` followed by `tx.submit_failed: Error(return too low)` is a _stale-quote_ signature,
-not a configuration error. The **157** observed `tx.submit_failed` events (the ticket says 133) are
-sends whose quote aged out before gas estimation. They **are** attributable: every `tx.*` line carries
-`label`, which is `${id}:${borrower}` — the same value `select.ok` logs as `id`. An earlier draft of this
-document claimed the send stage lacked a correlation field and that the repo's id-join convention was
-broken there. That was false; the query that produced it was looking for `id`/`borrower` fields the
-stage does not use.
-
-Two adjacent defects sit on the same lines and are worth naming, though neither is this item:
-
-- `PendingQueue.submit` already returns `Promise<boolean>` with a documented contract — "a caller
-  counting real broadcasts must not count those" (`pending-queue.ts:82`) — but both bots' `index.ts`
-  closures type the dep as `Promise<void>` and discard it, so a failed submit still runs
-  `backoff.clear(label)` and `counters.submitted += 1`. That inflates the `submitted` metric and removes
-  the only brake on immediate re-attempt. **No new type is needed**: an earlier draft of this document
-  said PR #134 introduced a `SubmitOutcome`, which was wrong — the contract already exists in bot-kit
-  and only the two call sites are defective.
-- The two error strings in this incident share one economic cause (see the next section) but have
-  **different amplifiers**, so they need one economic fix and two accounting fixes. The allowance
-  failures were at the _simulate_ stage, where `backoff.record` fires and does suppress (**131**
-  observed, t+13 → t+595 — backoff working as designed); the min-out failures were at the _send_ stage,
-  where `backoff.clear` fires instead and suppresses nothing (**157** observed). Only the send-stage
-  amplifier is what PR #134 fixes.
-- `cooldown.mark(label)` is called on quote failure and sim revert but not on submit failure, so the
-  opt-in cooldown cannot damp this loop either (it is also disabled by default:
-  `POSITION_LIQUIDATION_COOLDOWN_MS=0`).
-
-## Why retuning cannot win the position
-
-Midnight's post-maturity liquidation incentive is not constant. `lifAt`
-(`bots/midnight-liquidation/src/sizing/lif.ts`) mirrors the contract: in post-maturity mode LIF ramps
-**linearly from WAD to `maxLif` over `TIME_TO_MAX_LIF` = 3600 s**. And `maxLif` is itself small,
-derived on-chain as `WAD² / (WAD − cursor·(WAD − lltv))` (`midnight-contracts.txt:874`).
-
-A seize-exact plan pins `seizedAssets`; the contract derives the repay as
-`ceil(ceil(seized·price/SCALE)·WAD/LIF)`. So the swap must return at least `oracleValue / LIF` or the
-repay transfer fails and the whole transaction reverts atomically. The economic headroom available to
-cover DEX execution cost is therefore exactly `LIF − 1`.
-
-The incident market is **determined, not inferred**. The ticket names `0x168e3125…a47937`; the markets
-API returns `maturity 1785510000 = 2026-07-31T15:00:00Z` (matching the ticket exactly), loan USDC,
-and a **single** collateral slot: cbBTC at `lltv 0.860 / cursor 0.30`, so `maxLif = 1.043841` and a
-headroom ceiling of 420.0 bps. Every number below for the incident uses that tier.
-
-Computed from the live markets API for the three cbBTC/USDC collateral tiers on Base:
-
-Headroom is the ratio `(lif − 1)/lif`, not `lif − 1`. The two are interchangeable early in the ramp
-(where every decision in this incident was made) but diverge by ~4% at full ramp, and the clamped value
-is the hard ceiling that matters:
+**Headroom is therefore `(lif − 1)/lif`** — not `lif − 1`. The two are interchangeable early in the ramp
+but diverge ~4% at full ramp, and the clamped value is the ceiling that matters:
 
 | lltv  | cursor | maxLif   | @ t+60s | @ t+123s | @ t+300s | @ t+600s | ceiling (t ≥ 3600 s) |
 | ----- | ------ | -------- | ------- | -------- | -------- | -------- | -------------------- |
@@ -110,94 +42,101 @@ is the hard ceiling that matters:
 | 0.915 | 0.30   | 1.026167 | 4.4 bps | 8.9 bps  | 21.8 bps | 43.4 bps | **255.1 bps**        |
 | 0.980 | 0.30   | 1.006036 | 1.0 bps | 2.1 bps  | 5.0 bps  | 10.1 bps | **60.0 bps**         |
 
-On the incident tier the $10,004 fill was lost at **t+123 s**, where headroom was 14.98 bps. Our
-observed quotes on that size never came in below 16.37 bps (see below), so the position was never
-affordable to us while it was available.
+The incident market is determined, not inferred: the ticket names `0x168e3125…a47937`, and the markets
+API gives `maturity 1785510000 = 2026-07-31T15:00:00Z` (matching the ticket) with a **single** collateral
+slot — cbBTC at `lltv 0.860 / cursor 0.30`. So the 420.0 bps ceiling applies.
 
-Consequences that follow directly:
+Because `lif` is clamped, a position whose swap cost exceeds the ceiling is **permanently** unliquidatable
+by swap — not "unprofitable for a while", never, at any `t`. Since repayment is what makes lender funds
+withdrawable (`_marketState.withdrawable += repaidUnits`), the harm would be stranded lender capital
+rather than bad debt. A purely underwater position is unaffected: bad-debt realization is the `(0,0)` plan
+and needs no swap.
 
-- **Widening `SLIPPAGE_BPS` is futile.** It moves the failure from the router's min-out revert to the
-  protocol's repay shortfall. Same skipped position, one block later, more gas burned on estimates.
-- **Tightening it is also irrelevant.** The binding constraint was never the guard.
-- **We cannot lose principal to a loose guard.** If the swap under-delivers, the repay fails and the
-  transaction reverts; the Executor's structural sweeps mean a successful exec ends at zero balance.
-  The only exposure to a loose guard is sandwich extraction of the surplus, which is real but is a
-  late-ramp concern, not an early-ramp one.
+### Two properties that drive the whole design
 
-### The realized execution cost is an interval, and it overlaps the winner's
-
-Our first `simulate.ok` was t+138 s. But attempts were not continuous — the backoff schedule
-(base 2 / max 64 blocks, ~2 s Base blocks) puts them at t = 13/17/25/41/73/137/265/393 s. So:
+**Headroom is scale-invariant.** Substituting the contract's derivations for a cap-bound plan
+(`capBoundPlan`, `plan.ts:88`):
 
 ```text
-attempt t+73s   → headroom  8.89 bps   (failed)
-attempt t+137s  → headroom 16.68 bps   (first simulate.ok at t+138s)
-⇒ our realized execution cost ∈ (8.89, 16.68] bps
-winner struck at t+123s   → their total cost ≤ 14.98 bps
+capEff       = cap · (BPS − marginBps) / BPS
+seizedAssets = maxSeizeForCap(capEff, price, lif)  ≈ capEff · lif / price
+seizedValue  = seizedAssets · price / SCALE        ≈ capEff · lif
+repaidUnits  = impliedRepaidUnits(seized, …)       ≈ capEff
+headroom     = (seizedValue − repaidUnits) / seizedValue = (lif − 1) / lif
 ```
 
-**The ranges overlap.** So the evidence does not support "the winner executed more cheaply than we
-could", and an earlier draft of this document was wrong to say the winners were "almost certainly
-inventory-funded". A swap-funded liquidator with ~15 bps execution, polling every block, explains the
-t+123 s strike completely — note that a 15 bps cost puts the deterministic crossover at exactly
-t+123 s. Inventory funding remains a plausible and strategically interesting answer, but it is not
-what this incident demonstrates.
+`capEff` cancels. Verified numerically against the real `mulDivUp`/`mulDivDown` paths (0.915 tier,
+t+123 s): **8.9325 bps at `SEIZE_CAP_MARGIN_BPS` of both 0 and 30**, identical to four decimals.
+Consequences:
 
-### What lost the position: our cost exceeded headroom the whole time it was available
+- **`SEIZE_CAP_MARGIN_BPS` is fine as-is.** It shrinks the position and the absolute surplus by 0.3% —
+  three cents on an $8.94 surplus — and moves the break-even instant by zero seconds. It is doing the
+  one-block-drift job its docstring claims. Leave it alone.
+- **The ratio floor is a group property, not a per-candidate one.** It depends only on the market's
+  maturity, the slot's `maxLif`, the mode and chain time — never on borrower, size, or price. One value
+  per `(maturity, maxLif, mode)` group per block: a few divisions, hoistable out of the candidate loop. It
+  rejects all-or-nothing within a group, which matches the incident (all 14 candidates failed identically
+  at t+13 s on one shared `lif`). **Tests must assert the group property or pass vacuously.**
+- In normal mode `lifAt` returns full `maxLif` immediately, so headroom is 60–420 bps and the ratio floor
+  is a no-op. It bites post-maturity plans essentially only.
 
-**Verified from production `select.ok` lines.** Every quote the $10,004 position (`0x5b878f8e…`) ever
-received:
+**A gate must key on headroom, never on cost.** Headroom is known exactly from chain time. Cost is not:
+it moved 25 bps → 8 bps in under sixty seconds during the incident, at constant venue and collateral. That
+asymmetry is what makes "gate on a threshold" and "re-quote often because cost is volatile" consistent
+rather than contradictory, and it is the one design conclusion resting on the contract rather than on this
+maturity.
 
-| t     | quoted cost | headroom then | viable |
-| ----- | ----------- | ------------- | ------ |
-| +14 s | 17.37 bps   | 1.70 bps      | no     |
-| +21 s | 18.29 bps   | 2.56 bps      | no     |
-| +29 s | 16.37 bps   | 3.53 bps      | no     |
-| +43 s | 18.75 bps   | 5.24 bps      | no     |
-| +75 s | 25.12 bps   | 9.13 bps      | no     |
+### What the prize is worth
 
-It never appears in `simulate.ok`, all window. Headroom at the winner's t+123 s strike was 14.98 bps;
-the position's **best-ever** quote was 16.37 bps. Its `t_cross` was ~134 s at that best cost and ~206 s
-at its last. So it was not viable at t+123 s under any observed quote — perfect per-block polling would
-not have taken it. The winner cleared ≤ 14.98 bps; our cheapest route on that size was 16.37 bps. They
-were genuinely cheaper, by 1.4–10 bps.
+The liquidator's entire margin is the LIF bonus, so the gross prize is `notional × headroom`:
 
-### The cost was NOT price impact — measured
+```text
+t+123s (winner strikes)   headroom 14.98 bps  →  gross $14.94
+t+143s (our first ok)     headroom 17.41 bps  →  gross $17.37
+our net at our best observed cost (16.37 bps) →  $1.04
+```
 
-At t+138–144 the eleven positions we won cost 7.85–10.4 bps and were $0.05–$80; the $10k position cost
-16.4–25.1 bps. That looks like a size penalty, and an earlier draft of this document read it as one.
-**It is not.** Measured against the marginal (smallest-probe) rate via LiFi, cbBTC→USDC on Base:
+The whole maturity — $11,424 repaid at 15–25 bps clearing headroom — was worth **$17–29 gross**, split
+across every participant. The reported $138.74 was notional, worth cents of margin.
 
-| notional   | impact vs marginal | routed via |
-| ---------- | ------------------ | ---------- |
-| $80        | 0.00 bps           | fly        |
-| $845       | 1.13 bps           | fly        |
-| $8,448     | −1.74 bps          | fly        |
-| $84,483    | 1.26 bps           | kyberswap  |
-| $422,417   | 2.88 bps           | kyberswap  |
-| $844,834   | 10.63 bps          | fly        |
-| $1,689,667 | 18.84 bps          | fly        |
+Sizing the book from the markets API (186 distinct markets, deduped): **~$1.98M outstanding** (USDC
+$1,805,977 + WETH $175,737), 81 of 186 markets carrying debt, maturities spanning 2026-07-17 to
+2027-07-17. Every market's whole debt becomes liquidatable at its maturity and the span is ~one year, so
+roughly one turnover per year: a total pool of **$2,973–$4,954/year**, shared. Pool ≈ 0.2% of notional per
+turnover, so it scales — $10M book → ~$20k/yr, $100M → ~$200k/yr.
 
-Size-related impact at ~$10k is **approximately zero**. So almost none of the observed 16–25 bps was
-price impact, and slicing a trade whose impact is already zero recovers nothing. The residual must be
-size-independent:
+**This changes the objective, not just the budget.** The bot's purpose is protocol safety; the prize pool
+justifies (or doesn't) _competing for contested positions_, which is a different thing. The logs separate
+them: the $10k position was cleared promptly by someone 123 s after maturity — a healthy protocol outcome,
+and a ~$1.40 margin loss for us. The eleven positions we won were $0.05–$80, the ones nobody else had
+reason to touch. That is the bot working as a backstop.
 
-- **oracle-versus-DEX basis** at that moment — the likeliest candidate, and precisely the offset this
-  measurement excludes by construction;
-- **route/venue coverage** — prod runs `['lifi','0x']`, while these probes routed via `fly` and
-  `kyberswap`, neither of which the bot quotes;
-- **a confound to check**: whether the eleven cheap positions were even the same collateral. If they
-  were cbETH or wstETH rather than cbBTC, the 7.85–10.4 vs 16.4–25.1 gap is different-basis, not
-  different-size. `select.ok` carries `collateral`, so this is answerable from the logs.
+### The two real defects
 
-Caveats: this measures **today's calm liquidity**, not 31 Jul during the burst — though a pool that
-absorbs $1.7M at 19 bps does not move on the burst's total $11,424, so drainage is an implausible
-explanation. Readings under ~2 bps are routing noise between probes; treat them as zero.
+1. **The allowance revert is a balance shortfall wearing a misleading string, 131 times.** `approvePair`
+   (`packages/swaps/src/execution/executor-calls.ts:50`) emits `approve(spender, 0)` then
+   `approve(spender, <live balanceOf>)`, spliced at exec by `balanceOfPlaceholder` — **balance-based
+   over-approval, not an exact amount** (stated at `encode-call.ts:104-106`, because `repaidUnits` is
+   recomputed on-chain and is not staticcall-readable). So `allowance == balance`, exactly, and
+   `ERC20: transfer amount exceeds allowance ⟺ loan balance after swap < derived repay`. There is no
+   allowance-provisioning bug. **BOTS-35's item-2 premise about a "just-in-time exact-amount approve" is
+   factually wrong**, and the unexplained 15:02:18 recovery needs no internal-state theory — the swap
+   simply began clearing the repay as `lif` ramped.
+2. **Both bots discard `submit`'s broadcast signal.** `PendingQueue.submit` already returns
+   `Promise<boolean>` with a documented contract (`pending-queue.ts:82`: "a caller counting real
+   broadcasts must not count those"), but both bots' `index.ts` closures type the dep as `Promise<void>`
+   and discard it — so a failed submit still runs `backoff.clear(label)` and `counters.submitted += 1`. No
+   new type is needed; `@repo/bot-kit` is correct. **PR #181 fixes this in both bots.**
 
-### The blind spot, and why the cost term settles the design
+Items 2 and 3 of the ticket are therefore **one economic root cause at two points inside one
+transaction** — `Error(return too low)` is the router refusing mid-swap, `exceeds allowance` is the repay
+failing post-swap. They differ only in amplifier: the simulate-stage failures were backoff-suppressed
+(`backoff.record` fires), the send-stage ones were not (`backoff.clear` fires instead).
 
-The item 2 session's production time series (cbBTC, venue 0x, positions > $1 — all 17 candidates were
-cbBTC, so collateral is not a confound, and the venue was constant throughout):
+### The blind spot
+
+Production time series (cbBTC, venue 0x, positions > $1 — all 17 candidates were cbBTC, so collateral is
+not a confound, and the venue was constant):
 
 | t bucket  | quotes | median cost | best cost | headroom    |
 | --------- | ------ | ----------- | --------- | ----------- |
@@ -210,324 +149,92 @@ cbBTC, so collateral is not a confound, and the venue was constant throughout):
 | 140–160 s | 37     | 10.04       | 4.64      | 18.27       |
 | 200–220 s | 20     | 5.17        | 3.09      | 25.57       |
 
-Two directly observed facts. **A 58-second total blind spot, t+80 → t+138, across every position over a
-dollar** — the winner struck at t+123, inside it. And **cost collapsed ~16 bps across that gap** at
-constant venue and collateral, which confirms the residual was oracle-versus-DEX basis and that the
-basis mean-reverted within about two minutes.
+**A 58-second total blind spot, t+80 → t+138, across every position over a dollar** — and the winner
+struck at t+123 inside it. Cost collapsed ~16 bps across the gap at constant venue and collateral, which
+confirms the residual was oracle-versus-DEX basis and that it mean-reverted within ~2 minutes.
 
-**The counterfactual is unresolvable, and deliberately so.** Interpolating cost linearly across the gap
-puts the viability crossover at t+114.9 (anchoring at the bucket midpoint) or t+117.3 (bucket edge) —
-6 to 8 seconds ahead of the winner. That margin is well inside the uncertainty of interpolating across a
-58-second hole; mild convexity in the decay pushes it past t+123. The measurements needed to decide it
-are precisely the ones the bug prevented from existing. So the backoff fix must be justified as "it wins
+The counterfactual is **unresolvable, and deliberately so**: interpolating cost linearly across the gap
+puts the viability crossover at t+114.9 to t+117.3 — 6 to 8 seconds ahead of the winner, well inside the
+interpolation's own uncertainty. Mild convexity pushes it past t+123. The measurements needed to decide it
+are precisely the ones the bug prevented from existing. So **the backoff fix must be justified as "it wins
 positions in this regime in general, and it produces the evidence to tell" — never as "it would have won
-this one".
+this one."**
 
-**It does NOT supply a default threshold, and the knob's semantics are the real finding.** Reproducing
-all seven buckets requires a threshold in `(8.52, 15.83]` — but that fits _this_ maturity's basis
-regime, observed once, and the same series shows basis is volatile. Because the gate suppresses until
-`headroom(t) ≥ threshold`, it is a pure time gate:
+### Cost was basis, not price impact
 
-```text
-threshold  1 bps → no quotes until t+8.2s      threshold 10 bps → no quotes until t+82.1s
-threshold  5 bps → no quotes until t+41.1s     threshold 16 bps → no quotes until t+131.4s
-```
+Measured against the marginal (smallest-probe) rate via LiFi, cbBTC→USDC on Base:
 
-The two errors are asymmetric — a wasted quote costs one aggregator call, a blinded window costs the
-position — and the incident supplies both sides:
+| notional   | impact vs marginal | routed via |
+| ---------- | ------------------ | ---------- |
+| $80        | 0.00 bps           | fly        |
+| $8,448     | −1.74 bps          | fly        |
+| $84,483    | 1.26 bps           | kyberswap  |
+| $422,417   | 2.88 bps           | kyberswap  |
+| $844,834   | 10.63 bps          | fly        |
+| $1,689,667 | 18.84 bps          | fly        |
 
-| threshold | futile quotes suppressed | viable window blinded if true cost is 0.56 / 3.09 / 5.0 bps |
-| --------- | ------------------------ | ----------------------------------------------------------- |
-| 3 bps     | 12 of 59 (20%)           | 20.0s / — / —                                               |
-| 5 bps     | 36 of 59 (61%)           | 36.5s / 15.7s / —                                           |
-| 10 bps    | 59 of 59 (100%)          | 77.5s / 56.7s / 41.1s                                       |
+Size-related impact at ~$10k is **approximately zero**, so almost none of the observed 16–25 bps was price
+impact. Readings under ~2 bps are routing noise. Caveat: this is today's calm liquidity, not 31 Jul during
+the burst — though a pool absorbing $1.7M at 19 bps does not move on the burst's total $11,424.
 
-0.56 bps is not hypothetical — it was observed at t+240 in this same incident. So a 10 bps threshold
-would blind the first 57–78 seconds of a low-basis maturity: the earliest and most contested part of the
-auction, and precisely the window this document argues we cannot afford to miss. That would replace a
-backoff hole with a configured one.
-
-**So the knob is a cost _lower bound_, not a cost estimate**, and it is renamed accordingly:
-`HEADROOM_FLOOR_BPS`, documented as "the cheapest execution you would ever expect; the gate suppresses
-only the provably-hopeless opening seconds." The old name `EXECUTION_COST_BPS` invites a reader to enter
-their _typical_ cost, which is how the fitted 10 was arrived at in the first place. **Default `0`**, with
-the provenance recorded rather than adopted: one maturity implies `(8.52, 15.83]` under that maturity's
-basis regime, and that is a reason not to trust it as a default.
-
-**And it explains why the design holds while the cost term does not.** The cost swung 3× in under a
-minute, so an economic failure carries almost no information about the next ten seconds — which is a
-second, independent reason not to back off on one, beyond the LIF ramp being predictable. The gate
-survives that volatility only because it keys on **headroom**, known exactly from chain time, rather
-than on measured cost. Had it keyed on cost it would be unreliable in exactly the regime that matters.
-The corollary is that on an economic skip the bot should re-quote _more_ often, bounded by rate limit
-rather than by backoff.
-
-### Partial sizing: structurally sound, no live instance
-
-Headroom is hard-capped, because `lif = min(maxLif, …)`: the ceiling is `(maxLif − 1)/maxLif` = **420.0
-bps** for the incident tier. A position whose swap cost exceeds that is **permanently** unliquidatable
-single-shot — not "unprofitable for a while", never, at any `t`. That is exact and independent of any
-curve fit. Since repayment is what makes lender funds withdrawable
-(`_marketState.withdrawable += repaidUnits`), the harm is stranded lender capital rather than bad debt;
-a purely underwater position is fine regardless, since bad-debt realization is the `(0,0)` plan and
-needs no swap.
-
-The largest live single position is real and large — **$1,005,266**, borrower `0xC6877a6534…`, market
-`0x549cd072daf9…`, from the candidates endpoint. But at the _measured_ curve ~$1M costs ~11 bps, so it
-clears comfortably inside the ramp. On a concave curve the 420 bps breakpoint sits orders of magnitude
-above the entire current book ($1.98M). **So the argument is structurally valid with no instance at any
-plausible near-term book size**, and it should be re-derived from a measured curve, not a fit, before
-being scheduled.
-
-If it is ever built, three things make it plumbing rather than a project:
-
-1. **The protocol permits it.** `liquidationLocked` reads `UtilsLib.tGet(LIQUIDATION_LOCK_SLOT, …)`,
-   i.e. `tload` — **transient storage**, set at `Midnight.sol:1647` and cleared at `:1678` inside the
-   same call. It is a re-entrancy guard, transaction-scoped; nothing rate-limits liquidation across
-   blocks. Post-maturity mode also skips the RCF cap (`if (!postMaturityMode && lltv < WAD)`), leaving
-   debt as the only ceiling.
-2. **It does not need repay-exact.** Seize-exact accepts an arbitrary `seizedAssets`, so passing a
-   partial amount instead of `wholeSlotPlan`'s `bestCollateralAmt` gives depth-aware sizing while
-   keeping the deterministic sell-side amount that LiFi and 0x require for fixed-amount calldata.
-   This supersedes an earlier note in this document that depth-aware sizing was repay-exact's one
-   surviving merit — repay-exact now has no argument left.
-3. **The size ladder already exists.** `PROBE_LADDER` defaults to `['0.01','0.1','1','10','100']` whole
-   collateral tokens and `select(pair, amountIn)` returns per-venue estimates _for a size_. The venue
-   selector already measures the cost-versus-size curve; the bot ranks venues with it and discards the
-   size dimension.
-
-Because the cost is size-independent, the two candidates that survive are **additional venues** (better
-price discovery — cheap, and the probes routed via `fly`/`kyberswap`, which the bot does not quote) and
-**inventory funding** (removes basis and impact exposure entirely, at the price of holding collateral
-risk). Both deserve their own issues.
-
-One inequality worth recording without over-reading it: if basis was 16–25 bps for us and the winner
-cleared at ≤14.98 bps while facing the same basis, they were plausibly not swapping at all. That
-partially revives inventory funding as the explanation — but it is a hypothesis resting on a single
-inequality, and two diagnoses in this document have already been overturned by exactly that kind of
-reasoning.
-
-### The backoff gap is real, observed, and was not decisive here
-
-An earlier draft of this document argued the backoff schedule lost the position. The `select.ok` series
-above refutes that: the position's best-ever quote (16.37 bps) exceeded the headroom at the winner's
-strike (14.98 bps), so per-block polling would not have taken it either. The gap is nonetheless real
-and observed — quoted at t+75 s, next attempt scheduled ~t+137 s, winner struck at t+123 s squarely
-inside the hole — and it remains worth fixing on its own merits.
-
-The cause is a category error: exponential backoff treats a **deterministically improving** condition
-as a random failure. Headroom is `(lif − 1)/lif` with `lif` rising linearly in known chain time, so
-the moment it clears is a closed form, not something to be discovered by retrying:
-
-```text
-t_cross = 3600 · cost_bps / (maxLif − 1)_bps          // per (market, collateral tier)
-
-cost  5 bps → t+41s        cost 15 bps → t+123s
-cost 10 bps → t+82s        cost 30 bps → t+246s
-```
-
-Backing off doubles the wait exactly when waiting is least justified. This makes the gate two-sided:
-suppress attempts before `t_cross` (killing the thrash), and attempt **every block** from `t_cross`
-onward without economic backoff. An economic failure below `t_cross` carries no information beyond the
-clock; one above it is noise, not grounds to sleep 64 seconds. Transport failures keep their existing
-backoff.
-
-## What the prize is actually worth
-
-The liquidator's entire margin is the LIF bonus, so the gross prize is `notional × headroom`, not
-notional. On the incident position:
-
-```text
-t+123s (winner strikes)   headroom 14.98 bps  →  gross $14.94
-t+143s (our first ok)     headroom 17.41 bps  →  gross $17.37
-our net at our best observed cost (16.37 bps) →  $1.04
-```
-
-The whole maturity — $11,424 repaid at 15–25 bps clearing headroom — was worth **$17–29 gross**, split
-across every liquidator that participated. Our reported $138.74 was notional, worth cents of margin.
-
-Sizing the entire book from the markets API (186 distinct markets, deduped):
-
-```text
-outstanding notional   USDC $1,805,977 + WETH $175,737   ≈ $1.98M
-markets carrying debt  81 of 186
-maturities             2026-07-17 .. 2027-07-17 (364-day span)
-```
-
-Every market's whole debt becomes liquidatable at its maturity and the maturities span ~one year, so
-roughly one turnover per year. At 15–25 bps clearing headroom that is a total pool of
-**$2,973 – $4,954 per year, shared across all liquidators.** The pool is ≈0.2% of notional per
-turnover, so it scales: $10M book → ~$20k/yr, $100M → ~$200k/yr.
-
-### This changes the objective, not just the budget
-
-The bot's purpose is protocol safety, not profit — if nobody liquidates, bad debt accrues. The prize
-pool does not justify the bot's existence; it justifies (or does not) **competing for contested
-positions.** The logs separate those cleanly:
-
-- The $10k position was cleared promptly, by someone, 123 s after maturity. From the protocol's
-  perspective that is a healthy outcome. Our loss was ~$1.40 of margin, not a safety event.
-- The eleven positions we won were $0.05–$80 — the ones no other liquidator had an economic reason to
-  touch. That is the bot **working as a backstop**, not failing.
-
-So BOTS-35's premise that a 1.2%-of-notional share is a defect measures share-of-value against third
-parties. On coverage — the metric that bears on protocol safety — we did the part nobody else would and
-a cheaper competitor did the part they were better at. That premise deserves challenging on its own,
-separately from the three real bugs.
-
-**Consequence for this plan.** Changes #3 and #4 below are correct but are worth ~$1.41 on the position
-that prompted them; the honest case for them is rate-limit budget and legibility, not revenue. Change
-#2's gate avoids 824 `plan.built` and 81 wasted aggregator quotes per burst, which is real load. All of
-it should stay default-off at this book size. Depth-aware partial sizing, split routing, extra venues
-and inventory funding should be **shelved** and revisited on book size, not on this incident.
-
-## Items 2 and 3 are one root cause, and the ticket's item-2 premise is wrong
-
-BOTS-35 item 2 states: _"The executor uses a just-in-time exact-amount approve (approve 0, then
-approve exactly what's needed, in the same transaction), so the pre-flight simulation appears to be
-running against state where that approval hasn't been applied"_, and leaves the 15:02:18 recovery
-unexplained.
-
-That premise does not match the encoder. `approvePair`
-(`packages/swaps/src/execution/executor-calls.ts:50`) emits `approve(spender, 0)` then
-`approve(spender, <live balanceOf>)`, the amount argument spliced at exec by
-`balanceOfPlaceholder(token, executor, ERC20_AMOUNT_OFFSET)`. It is **balance-based over-approval,
-not an exact amount** — stated at `encode-call.ts:104-106`, precisely because `repaidUnits` is
-recomputed on-chain and is not staticcall-readable. So there is no "state where the approval hasn't
-been applied": the approve reads the balance in the same transaction, after the swap steps.
-
-Therefore `allowance == balance`, exactly, and:
-
-```text
-ERC20: transfer amount exceeds allowance  ⟺  loan balance after swap < derived repay
-```
-
-The allowance revert is a balance shortfall wearing an allowance error message. There is no
-allowance-provisioning bug, and the 15:02:18 recovery needs no internal-state explanation — the swap
-simply began clearing the repay as `lif` ramped.
-
-This consolidates the ticket: **items 2 and 3 are the same root cause at two points inside one
-transaction.** `Error(return too low)` is the router refusing mid-swap; `exceeds allowance` is the
-repay failing post-swap. Both say the swap did not produce enough, which is the marginality this
-document quantifies. They differ only in amplifier — the simulate-stage failures were
-backoff-suppressed (`backoff.record` fires), the send-stage ones were not (`backoff.clear` fires
-instead) — so they need two accounting fixes but one economic fix.
+Two consequences. **Partial sizing has no live instance**: the largest single position is real and large
+($1,005,266, borrower `0xC6877a6534…`, market `0x549cd072daf9…`), but at ~11 bps it clears comfortably
+inside the ramp, and on a concave curve the 420 bps breakpoint sits orders of magnitude above the entire
+$1.98M book. **And slicing recovers nothing** on a trade whose impact is already zero. The 420 bps cap
+stays a documented limit, not a work item.
 
 ### Drift bounds: basis versus outright vol
 
-Two distinct exposures, easily conflated:
+Two exposures, easily conflated:
 
-- **Will the repay clear?** Price-independent to first order. `requiredRepay` and the swap's actual
-  output both scale with price, so only oracle-versus-DEX _basis_ drift matters.
+- **Will the repay clear?** Price-independent to first order — `requiredRepay` and actual output both
+  scale with price, so only basis drift matters.
 - **Will the router min-out clear?** Full outright vol exposure, because `amountOutMinimum` is a frozen
-  integer compared against a price-scaling actual output. This is defect #3's error string.
+  integer compared against a price-scaling actual output.
 
 A gate whose two sides are computed from the _same_ lens read at the _same_ instant is price-level
-invariant and therefore basis-only — the frozen-integer reading applies to the calldata that has
-already been minted, not to the decision. Which is why quote age, not price level, is the variable to
-control.
+invariant and therefore basis-only. The frozen-integer exposure applies to calldata already minted, and it
+grows with **quote age**: basis over ~2 blocks, outright vol over minutes. So quote freshness, not price
+level, is the variable to control.
 
-### Drift bounds on any repay-vs-output gate
+## What to build, in recommended order
 
-A gate comparing `amountOutMinimum >= requiredRepay` at quote time is not a structural guarantee.
-The output side is pinned by the router, but `requiredRepay_exec = seized · price_exec / lif_exec`
-is not. Over the ~2-block sim→exec gap on Base:
+### 1. Per-maturity basis readout — do this first
 
-```text
-lif protection (0.86 tier):  (maxLif − 1) · 4/3600 = 438.4bps × 0.00111 ≈ 0.49 bps
-BTC 1σ price move over 4s:   0.40/√(31.5e6/4)                          ≈ 1.42 bps
-```
+Cheapest item proposed by anyone, and every open parameter is downstream of it. `select.ok` already logs
+`{ venue, id, collateral, expected, oracle, amountOutMinimum, order }`, so realized cost per quote is
+`(oracle − expected)/oracle` and viability is `expected ≥ oracle/lif`. **Zero new instrumentation** — a
+query and a readout. It sets the gate's floor, the item-2 gate's buffer, and decides inventory funding.
 
-Price dominates the ramp's protection by roughly 3× at 1σ, and is two-sided. Such a gate removes the
-_systematic_ failure — the bulk of it — but leaves a random residual, and closing that residual needs
-a vol-sized buffer, which is a tuned number. State the claim as "the revert stops being systematic",
-never as "unreachable".
+### 2. Exempt economic skips from backoff
 
-## Design decisions
-
-1. **Replace the cosmetic guard with an economic one.** The min-out floor stops being
-   `quote·(1 − SLIPPAGE_BPS)` and becomes a function of the repay the contract will derive. A floor
-   defined as "break-even plus a retained-surplus share" cannot, by construction, reject a fill that
-   was economically sound — which is the acceptance criterion, met by definition rather than by
-   calibration.
-2. **Add a pre-quote profitability gate, and treat it as the primary deliverable.** The gate compares
-   oracle-referenced headroom against an operator-set expected execution cost, before spending an API
-   call, a simulation, or a gas estimate. This is what converts 138 seconds of doomed thrash into a
-   single correctly-timed attempt once the ramp has cleared cost.
-3. **The gate needs two floors, not one — a ratio floor AND an absolute floor.** Headroom is
-   **scale-invariant** (see below), so a bps threshold is blind to position size: at t+123 s a $10k
-   cap-bound plan and a $1 plan both show 8.93 bps, but their absolute surpluses are $8.94 and
-   $0.00089. Gas is a fixed cost, so only the absolute floor can reject dust. The ratio floor answers
-   "is the ramp far enough along?"; the absolute floor answers "is this position big enough?". The
-   ticket's own aside — eight fills moving $0.00 in aggregate — is the absolute floor missing, and it
-   is adjacent to BOTS-81.
-4. **The ratio floor stays in loan-token units; the absolute floor needs valuation.** Unlike the Blue
-   gate (`docs/plans/crtr-2806-blue-profitability-gate.md`, which explicitly non-goals Midnight), the
-   ratio arithmetic needs no price provider: the Midnight oracle converts collateral → loan natively.
-   The absolute floor does need a loan-token → USD step to compare against gas, which is the
-   `usdValueOf` snapshot BOTS-35 item 1 is already building from
-   `GET /markets/midnight/tokens`. Consume that rather than adding a second price path.
-5. **Do not paper over the stale-quote window.** Re-quoting immediately before `submit` would close it
-   but costs an API round trip in a latency race we are already losing. The profitability gate makes
-   the window matter far less, because attempts only happen when headroom exceeds execution cost by a
-   margin. Revisit only if evidence shows late-ramp attempts still aging out.
-6. **`SLIPPAGE_BPS` remains, as a ceiling.** The derived floor is clamped so it never permits _more_
-   slippage than the operator's configured maximum. Operators keep one comprehensible safety knob.
-7. **The execution-cost estimate is one operator-owned value, not a tuned constant.** Both this gate
-   and the post-quote check in BOTS-35 item 2 compare against an estimate of DEX + gas cost. Two
-   independent estimates would drift, so it is a single env knob with a documented default of `0`
-   (gate off). The incident implies roughly 10 bps realized for cbBTC→USDC at $10k, but one maturity
-   is one data point and that number is not hardcoded.
-
-### Headroom is scale-invariant, and therefore hoistable
-
-Substituting the contract's own derivations for a cap-bound plan (`capBoundPlan`, `plan.ts:88`):
+Clearest link to the lost position. Today an economic failure records exponential backoff, so the bot
+sampled t+73 s then t+137 s across a crossover computable in advance:
 
 ```text
-capEff       = cap · (BPS − marginBps) / BPS
-seizedAssets = maxSeizeForCap(capEff, price, lif)  ≈ capEff · lif / price
-seizedValue  = seizedAssets · price / SCALE        ≈ capEff · lif
-repaidUnits  = impliedRepaidUnits(seized, …)       ≈ capEff
-headroom     = (seizedValue − repaidUnits) / seizedValue = (lif − 1) / lif
+t_cross = 3600 · cost_bps / (maxLif − 1)_bps        // per (market, collateral tier)
+cost  5 bps → t+41s     cost 15 bps → t+123s
+cost 10 bps → t+82s     cost 30 bps → t+246s
 ```
 
-`capEff` cancels. Verified numerically against the real `mulDivUp`/`mulDivDown` paths: the lltv 0.915
-tier at t+123 s yields **8.9325 bps at `SEIZE_CAP_MARGIN_BPS` of both 0 and 30**, identical to four
-decimals. Two consequences:
+- A plan below `t_cross` is skipped **without** `backoff.record` — it is not a failure, and the wait is
+  known exactly.
+- From `t_cross` onward the position is attempted **every block** with no economic backoff. Only
+  transport-class failures keep today's backoff.
+- Cost is itself fast-moving and mean-reverting, so an economic failure carries almost no information
+  about the next ten seconds. That is a second, independent reason not to back off on one.
+- `QuoteFailureReason` already separates `no_route`/`bad_route` from `timeout`/`rate_limited`/`api_error`,
+  so the seam exists. The sim-revert path is the one that currently conflates them.
 
-- **`SEIZE_CAP_MARGIN_BPS` does not eat the headroom.** It shrinks the position by 0.3% and the
-  absolute surplus by 0.3% — three cents on an $8.94 surplus — and moves the break-even instant by
-  zero seconds. It is doing exactly the one-block-oracle-drift job its docstring claims and should be
-  left alone. (An earlier draft of this analysis claimed otherwise by comparing a margin on _size_
-  against a margin on _rate_; that was wrong.)
-- **The ratio floor is not a per-candidate quantity.** It depends only on the market's maturity, the
-  chosen slot's `maxLif`, the mode, and chain time — not on the borrower, the size, the collateral
-  amount, or the price. So it is one value per `(maturity, maxLif, mode)` group per block: a few
-  divisions per tick, hoistable out of the candidate loop. It also rejects all-or-nothing within a
-  group, which is the correct behavior and matches the incident (all 14 candidates failed identically
-  at t+13 s because they shared one `lif`). Tests must assert the **group** property or they pass
-  vacuously.
-- In normal mode `lifAt` returns the full `maxLif` immediately, so headroom is 60–438 bps and the
-  ratio floor is a no-op. It bites post-maturity plans essentially only.
+### 3. Correct the misleading allowance string
 
-## Non-goals
+Floor the min-out at the derived repay so a shortfall reverts at the router (`return too low`) rather than
+at the repay (`exceeds allowance`). Both paths revert; one names the cause. Falls out of change 5.
 
-- Inventory-funded liquidation. It is very likely the actual competitive answer, and it deserves its
-  own issue and TIB — it changes custody, capital, and risk posture, not a guard.
-- Candidate ordering (BOTS-35 item 1) and the allowance revert (item 2).
-- Gas-cost modelling or a USD price provider for Midnight.
-- Venue selection, private submission, or MEV-aware bidding.
+### 4. The gate: `insufficient_headroom`, default off
 
-## Proposed changes
-
-### 1. Expose the derived repay from sizing
-
-`impliedRepaidUnits` is currently module-private in `bots/midnight-liquidation/src/sizing/plan.ts:61`,
-and `LiquidationPlan` carries `repaidUnits: 0n` for every seize-exact plan. The quoting layer needs
-the value the contract _will_ derive.
-
-Add the LIF-at-plan-time and the derived repay to the plan, so the number is computed once, in the
-module that owns the contract-mirroring arithmetic:
+**Prerequisite:** surface the derived repay from sizing. `impliedRepaidUnits` is module-private
+(`sizing/plan.ts:61`) and `LiquidationPlan` carries `repaidUnits: 0n` for every seize-exact plan:
 
 ```ts
 export type LiquidationPlan = {
@@ -542,248 +249,221 @@ export type LiquidationPlan = {
 }
 ```
 
-`planSurplus` already computes exactly this pair internally; the change is to surface it rather than
-recompute it. **Open verification item:** `repaidUnits` are _units_, not assets. Both markets sampled
-have `current_settlement_fee_wad: 0` and `continuous_fee_rate: 0`, so units and assets coincide today,
-but the units→assets conversion must be confirmed against `midnight-contracts.txt:1819` before the
-floor is trusted as a loan-token amount.
+`planSurplus` already computes both internally; the change surfaces rather than recomputes them.
+**Open verification item:** `repaidUnits` are _units_, not assets. Both sampled markets have
+`current_settlement_fee_wad: 0` and `continuous_fee_rate: 0` so they coincide today, but confirm the
+conversion against `midnight-contracts.txt:1819` before trusting the floor as a loan-token amount.
 
-### 2. Pre-quote profitability gate in the tick
-
-Before the `quoteFor` call, and only for non-bad-debt plans. Two independent floors:
+**Two floors, because the ratio floor is scale-invariant and cannot reject dust:**
 
 ```ts
-// Ratio floor — group-level, hoisted out of the candidate loop (one value per maturity/maxLif/mode).
+// Ratio floor — group-level, hoisted out of the candidate loop.
 const headroomBps = ((referenceAmountOut - plan.impliedRepaidUnits) * BPS) / referenceAmountOut
 // Absolute floor — per-candidate, the only one that can reject dust.
 const surplusUsd = usdValueOf(loanToken, referenceAmountOut - plan.impliedRepaidUnits)
 ```
 
-- Bad-debt realizations bypass both floors (they perform no swap), matching the existing
-  `isBadDebtRealization` branch.
-- Marks the cooldown, so a position below threshold is not re-evaluated every block for an hour.
+At t+123 s a $10k plan and a $1 plan both read 8.93 bps, but their surpluses are $8.94 and $0.00089. Gas
+is fixed, so only the absolute floor separates them — which is also the ticket's dust aside (eight fills
+moving $0.00), adjacent to BOTS-81. The absolute floor needs a loan→USD step; consume the `usdValueOf`
+snapshot BOTS-35 item 1 is building from `GET /markets/midnight/tokens` rather than adding a second price
+path. Bad-debt realizations bypass both floors, matching the existing `isBadDebtRealization` branch.
 
-**Placement is settled, and the seam is merged-ready**: branch `fix/bots-35-tick-telemetry-and-submit-outcome`,
-draft PR #181, to be based on with `gh stack`. PR #134 was closed as superseded, its essentials absorbed
-into the BOTS-35 item 1 work: `planWithReason()`, `PlanSkipReason`, `plan.skipped` and
-`LEVEL_BY_REASON` are in `sizing/plan.ts` / `runner/tick.ts`. Two of this document's requirements landed
-as documentation at the type rather than as convention: `PlanOutcome` states that "a skip is NOT a
-failure signal: callers must not record backoff or mark a cooldown on one", with the LIF-ramp reasoning
-attached; and `LEVEL_BY_REASON` states that "a reason that fires identically for every candidate in a
-group belongs at `debug`". No current reason is a group property, so `insufficient_headroom` is the
-first instance. The ratio floor folds in as the `insufficient_headroom` variant: no new counter, no new event.
-#134's sum identities stay intact, with the skip absorbed by
-`liquidatable === inflightSkipped + planSkipped + planned`, because the candidate never enters the
-worked set. The gate is pure arithmetic over `PlanInput` — `blockTimestamp`, `maturity` and
-`bestCollateralMaxLif` are all already there, so `PlanInput` needs no widening, and the threshold
-arrives via the existing `PlanOptions`.
+**Placement, all honored in PR #181.** The floor folds into `planWithReason()` as a `PlanSkipReason`
+variant: no new counter, no new event. The sum identities stay intact, with the skip absorbed by
+`liquidatable === inflightSkipped + planSkipped + planned`. Everything needed is on `PlanInput`
+(`blockTimestamp`, `maturity`, `bestCollateralMaxLif`), so no widening; the threshold arrives via the
+existing `PlanOptions`. PR 2's phase-A seam is on hold, so the loop is still single-pass — the gate drops
+in right after `planWithReason()`.
 
-Requirements on that seam, all now honored in PR #181:
+- **Plan-skip records neither backoff nor cooldown.** Load-bearing (see change 2), documented on
+  `PlanOutcome` — _"A skip is NOT a failure signal… Several reasons clear on their own as chain time
+  advances"_ — and enforced by a test in #181. Any future per-reason suppression policy must default to
+  "no suppression".
+- **`LEVEL_BY_REASON` maps it to `debug`.** It fires identically for every candidate in a group; one line
+  per position per block is how the post-mortem produced hundreds of identical warnings. #181's map is
+  typed to admit `'debug'` and its docstring already carries this rule. Ramp telemetry comes from one
+  group-level line at `info`, cadence-gated by `createBlockSampler` (tracked in BOTS-87 — coordinate
+  there, don't duplicate).
+- **Payload:** `headroomBps`, `lif`, `maxLif`, `secondsSinceMaturity`, `tCrossSeconds`. The last makes the
+  line actionable rather than diagnostic. No `details` bag — a plain widening of `plan.skipped`'s existing
+  `{ marketId, borrower, reason }`; `knip` rejects speculative unused fields.
 
-- **Plan-skip must record neither backoff nor cooldown**, which is today's behavior
-  (`if (!liquidationPlan) continue`). This is load-bearing: see change #4. A per-reason suppression
-  policy, if one is ever added, must default to "no suppression".
-- `LEVEL_BY_REASON` maps `insufficient_headroom` to **`debug`**. Because headroom is a group property
-  it fires identically for every candidate in a group — 14 identical lines per tick is the same defect
-  as the 133 identical warnings the post-mortem had to read. The ramp-curve telemetry comes instead
-  from one group-level line at `info`, cadence-gated by #134's `createBlockSampler`, whose
-  edge-triggered semantics ("a quiet stretch never consumes the window, so the first occurrence after
-  any gap is always reported") are exactly right for this.
-- Payload for this reason: `headroomBps`, `lif`, `maxLif`, `secondsSinceMaturity`, `tCrossSeconds`.
-  `tCrossSeconds` is what makes the line actionable rather than merely diagnostic — it says when the
-  position _will_ be viable. No `details` bag was added and none is needed: `plan.skipped` currently
-  logs `{ marketId, borrower, reason }` and these are a plain widening of that call. A speculative
-  unused field would be rejected by `knip` anyway.
+Naming is agreed with the item 2 fork, split by pipeline stage to match `plan.*` / `quote.*` /
+`simulate.*`: this is `insufficient_headroom` on `plan.skipped`; their post-quote check is
+`quote.unprofitable` / `quoteUnprofitable`. Filter-then-verify, not duplicates.
 
-Event naming is agreed with the BOTS-35 item 2 fork, split by pipeline stage to match the existing
-`plan.*` / `quote.*` / `simulate.*` convention: this gate is `plan.headroom_insufficient`; their
-post-quote check (real swap output vs required repay) is `quote.unprofitable` / `quoteUnprofitable`,
-a sibling of `quoteFailed` in #134's identity. The two are filter-then-verify, not duplicates: this
-one is a cheap necessary condition computed from the oracle, theirs is the accurate check that costs
-the API call this one is trying to save.
+### 5. Economic min-out floor in `@repo/swaps`
 
-### 3. Economic min-out floor in `@repo/swaps`
-
-`QuoteParameters` gains an optional absolute floor alongside `referenceAmountOut`:
+`QuoteParameters` gains an optional absolute floor:
 
 ```ts
 /** Absolute break-even output; the min-out floor must not sit below this. Omitted → legacy behavior. */
 minAcceptableAmountOut?: bigint
 ```
 
-Per-venue derivation, matching how each venue actually binds its floor:
-
-- **uniswap-v3** encodes `amountOutMinimum` locally
-  (`packages/swaps/src/venues/uniswap-v3.ts:50`) → set it to
-  `max(minAcceptableAmountOut, referenceAmountOut·(1 − slippageBps))`. Direct.
+- **uniswap-v3** encodes `amountOutMinimum` locally (`venues/uniswap-v3.ts:50`) → set it to
+  `max(minAcceptableAmountOut, referenceAmountOut·(1 − slippageBps))`.
 - **lifi / 0x / 1inch / liquidswap** have their floor baked by the API from a `slippage` parameter, so
-  an absolute floor is not directly expressible. Derive the _percentage_ instead, from the venue
-  estimate the probe cache already holds (`select()` returns `expectedAmountOut` per venue — no extra
-  API call):
+  derive the _percentage_ that keeps it above break-even:
+  `clamp(((estimate − minAcceptableAmountOut) · BPS) / estimate, 0, slippageBps)`.
 
-  ```ts
-  const allowedBps = ((estimate - minAcceptableAmountOut) * BPS) / estimate
-  const effectiveSlippageBps = clamp(allowedBps, 0, slippageBps)
-  ```
+**The probe cache is not a valid denominator.** `PROBE_STALE_MS` defaults to `600_000` — ten minutes, most
+of the ramp — and the guarantee decays with quote age. Use the firm quote actually being broadcast, and
+never reuse one across the ramp.
 
-  This is the largest slippage that still keeps the aggregator's own min-out above break-even, so it
-  is simultaneously adaptive and never looser than the operator's ceiling. On a cold probe cache, fall
-  back to `referenceAmountOut` as the denominator — the same oracle reference uniswap-v3 already uses.
+The strongest justification is not diagnostic. It is that the floor makes **`SLIPPAGE_BPS` monotone and
+safe to widen**: today raising it loosens the router's protection and pushes shortfalls onto the repay, a
+perverse range. With the floor, widening can never take min-out below break-even.
 
-**Quote freshness is load-bearing here, and the probe cache is not a substitute.** `amountOutMinimum`
-is a frozen integer in calldata while the actual output scales with price, so the guarantee decays with
-quote age: over ~2 blocks the residual is oracle-versus-DEX basis, but over minutes it becomes outright
-price vol. `PROBE_STALE_MS` defaults to `600_000` — ten minutes, most of the ramp — so a probe estimate
-may not be used as the denominator for the derived slippage. Use the firm quote that is actually being
-broadcast, and never reuse a quote across the ramp.
+## Configuration surface
 
-The strongest justification for the floor is not the diagnostic one (both paths revert; the floor just
-names the cause and burns slightly less gas). It is that the floor makes **`SLIPPAGE_BPS` monotone and
-safe to widen**: today, raising it loosens the router's protection and pushes shortfalls onto the
-repay, so the knob has a perverse range. With the floor, widening it can never take min-out below
-break-even.
+| Env                  | Default | Meaning                                                                                                                                                                                   |
+| -------------------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `HEADROOM_FLOOR_BPS` | `0`     | **Lower bound** on execution cost — the cheapest route you would ever expect. Suppresses only the provably-hopeless opening seconds. **Not** a typical-cost estimate; see the note below. |
+| `MIN_NET_PROFIT_USD` | `0`     | The absolute floor. Rejects dust, which the ratio floor structurally cannot.                                                                                                              |
+| `SLIPPAGE_BPS`       | `100`   | Unchanged in name and default; becomes a **ceiling** on the derived min-out floor rather than the floor itself.                                                                           |
 
-### 4. Exempt economic failures from backoff, and schedule on `t_cross`
+**Why `HEADROOM_FLOOR_BPS` and not `EXECUTION_COST_BPS`.** The gate suppresses until
+`headroom(t) ≥ threshold`, so it is a pure time gate:
 
-The change with the clearest link to the lost position. Today an economic failure records exponential
-backoff, so the bot sampled t+73 s then t+137 s across a crossover that was computable in advance.
+```text
+1 bps → no quotes until t+8.2s      10 bps → no quotes until t+82.1s
+5 bps → no quotes until t+41.1s     16 bps → no quotes until t+131.4s
+```
 
-- A plan below `t_cross` is skipped **without** `backoff.record` — it is not a failure, and the wait is
-  already known exactly. The cooldown (or a scheduled wake at `t_cross`) carries it instead.
-- From `t_cross` onward the position is attempted **every block** with no economic backoff. Only
-  transport-class failures (`api_error`, `rate_limited`, `timeout`, RPC faults) keep today's backoff.
-- This is the one item that requires distinguishing failure classes. `QuoteFailureReason` already
-  separates `no_route` / `bad_route` from `timeout` / `rate_limited` / `api_error`, so the seam exists;
-  the sim-revert path is the one that currently conflates them.
+The errors are asymmetric — a wasted quote costs one aggregator call, a blinded window costs the position:
 
-### 5. Configuration surface
+| threshold | futile quotes suppressed | viable window blinded if true cost is 0.56 / 3.09 / 5.0 bps |
+| --------- | ------------------------ | ----------------------------------------------------------- |
+| 3 bps     | 12 of 59 (20%)           | 20.0s / — / —                                               |
+| 5 bps     | 36 of 59 (61%)           | 36.5s / 15.7s / —                                           |
+| 10 bps    | 59 of 59 (100%)          | 77.5s / 56.7s / 41.1s                                       |
 
-| Env                  | Default | Meaning                                                                                                 |
-| -------------------- | ------- | ------------------------------------------------------------------------------------------------------- |
-| `EXECUTION_COST_BPS` | `0`     | Estimated DEX + gas cost. The ratio floor. Shared with the BOTS-35 item 2 gate — one estimate, not two. |
-| `MIN_NET_PROFIT_USD` | `0`     | The absolute floor. Rejects dust, which the ratio floor structurally cannot.                            |
-| `SLIPPAGE_BPS`       | `100`   | Unchanged in name and default; now a **ceiling** on the derived min-out floor rather than the floor.    |
-
-Both gates default off, keeping the open-source posture the repo already takes with
-`ALLOW_BAD_DEBT_ONLY` and `POSITION_LIQUIDATION_COOLDOWN_MS`: existing deployments are unaffected
-until an operator opts in. Prod values come from the next maturity's measured execution cost — the
-incident implies roughly 10 bps for cbBTC→USDC at $10k, which is one data point and deliberately not
-a default.
+0.56 bps was observed at t+240 in this same incident, so the low-basis case is not hypothetical. A 10 bps
+threshold would blind the first 57–78 seconds of a low-basis maturity — the most contested part of the
+auction. A name asking for "cost" invites a reader to enter their _typical_ cost and produce exactly that;
+a name asking for a floor does not. **Default `0`.** For provenance: this maturity implies
+`(8.52, 15.83]`, deliberately **not** adopted, because it fits one observed basis regime.
 
 ## Test plan
 
-Following repo convention — `test/` mirroring `src/`, vitest, additive to the nearest existing file.
+Repo convention — `test/` mirroring `src/`, vitest, additive to the nearest existing file.
 
-- **Sizing** (`bots/midnight-liquidation/test/sizing/plan.test.ts`): `impliedRepaidUnits` and `lif` are
-  surfaced and equal what `planSurplus` uses; the round-trip
-  `impliedRepaidUnits(maxSeizeForCap(cap)) <= cap` invariant still holds; post-maturity ramp endpoints
+- **Sizing** (`test/sizing/plan.test.ts`): `impliedRepaidUnits` and `lif` are surfaced and equal what
+  `planSurplus` uses; `impliedRepaidUnits(maxSeizeForCap(cap)) <= cap` still holds; ramp endpoints
   (t+0 → WAD, t ≥ 3600 → `maxLif`).
-- **Backoff class** (`bots/midnight-liquidation/test/runner/tick.test.ts`): a plan below `t_cross` does
-  NOT call `backoff.record`; a transport-class failure still does; a position at `t_cross + 1 block` is
-  retried on the very next block rather than after a doubled wait. This is the assertion that maps
-  directly to the lost position, so it should fail loudly if the exemption regresses.
-- **Crossover arithmetic** (`bots/midnight-liquidation/test/sizing/lif.test.ts`): `t_cross` for the
-  incident tier (`maxLif = 1.043841`) is t+123 s at 15 bps and t+82 s at 10 bps; a tier whose lifetime
-  maximum headroom is below the configured cost (0.980 tier at 60.4 bps vs 100 bps) yields no crossover
-  at all and must be skipped for the entire post-maturity hour rather than looping.
-- **Tick** (`bots/midnight-liquidation/test/runner/tick.test.ts`): a plan below `EXECUTION_COST_BPS` is
-  skipped with **no `quoteFor` call** (the point of the gate) and marks the cooldown; a bad-debt
-  realization bypasses both floors; both knobs at `0` reproduce current behavior exactly. Because the
-  ratio floor is scale-invariant, assert the **group** property — every candidate sharing a
-  `(maturity, maxLif, mode)` group is skipped or worked together, and a per-candidate threshold test
-  would pass vacuously. Assert separately that a large and a dust candidate in the **same** group
-  diverge under `MIN_NET_PROFIT_USD`, since that is the only floor that can separate them. Assert a
-  normal-mode candidate is never skipped by the ratio floor (`lifAt` returns full `maxLif`, so headroom
-  is 60–438 bps).
-- **Venues** (`packages/swaps/test/venues/*.test.ts`): uniswap-v3 floors at
-  `minAcceptableAmountOut` when it exceeds the slippage-derived value; the aggregators' derived
-  `effectiveSlippageBps` is clamped to `[0, slippageBps]` and computed from the probe estimate;
-  omitting `minAcceptableAmountOut` reproduces every existing expectation byte-for-byte.
+- **Backoff class** (`test/runner/tick.test.ts`): a plan below `t_cross` does **not** call
+  `backoff.record`; a transport-class failure still does; a position at `t_cross + 1 block` is retried on
+  the very next block, not after a doubled wait. This is the assertion that maps to the lost position.
+- **Crossover arithmetic** (`test/sizing/lif.test.ts`): `t_cross` on the incident tier
+  (`maxLif = 1.043841`) is t+123 s at 15 bps and t+82 s at 10 bps; a tier whose ceiling is below the
+  configured floor (0.980 at 60.0 bps) yields no crossover and must be skipped for the whole post-maturity
+  hour rather than looping.
+- **Gate** (`test/runner/tick.test.ts`): a plan below `HEADROOM_FLOOR_BPS` is skipped with **no `quoteFor`
+  call**; a bad-debt realization bypasses both floors; both knobs at `0` reproduce current behavior
+  exactly. Assert the **group** property — every candidate sharing a `(maturity, maxLif, mode)` group is
+  skipped or worked together — because a per-candidate threshold test passes vacuously. Assert separately
+  that a large and a dust candidate in the **same** group diverge under `MIN_NET_PROFIT_USD`. Assert a
+  normal-mode candidate is never skipped by the ratio floor.
+- **Venues** (`packages/swaps/test/venues/*.test.ts`): uniswap-v3 floors at `minAcceptableAmountOut` when
+  it exceeds the slippage-derived value; the aggregators' derived slippage is clamped to
+  `[0, slippageBps]`; omitting `minAcceptableAmountOut` reproduces every existing expectation.
 - **Regression guard**: per CLAUDE.md, break one assertion in each new file, confirm it fails, revert.
 
-Fork coverage in the anvil suite is deliberately not proposed: the gate is pure arithmetic over lens
-output, and the existing fork tests already cover the exec path.
+Anvil fork coverage is deliberately not proposed: the gate is pure arithmetic over lens output and the
+existing fork tests cover the exec path.
 
 ## Verification workflow
 
-Per CLAUDE.md, run once the code is settled — `Promise.all`-concurrent where independent:
+Per CLAUDE.md, once the code is settled — concurrent where independent:
 
 1. `pnpm --filter @morpho-org/midnight-liquidation run typecheck` and `pnpm --filter @repo/swaps run typecheck`
 2. `pnpm lint` (workspace-level, zero warnings)
 3. `pnpm format`
 4. `pnpm test`
 
-## Decisions needed before implementation
+## Decisions needed
 
-1. **Is the competitive work worth doing at all?** The whole-book pool is ~$3–5k/year (above). This is
-   the decision that governs the others: re-scope BOTS-35 to the correctness fixes, and shelve the
-   competitive work until book size justifies it. Depth-aware sizing in particular has no live instance
-   at the measured curve. The cheapest competitive item, if any is wanted, is **venue coverage** — the
-   probes routed via `fly` and `kyberswap` and the bot quotes neither.
-1. **Should BOTS-35's premise be challenged?** It treats a 1.2%-of-notional share as the defect. On
-   coverage — the metric that bears on protocol safety — the bot behaved correctly as a backstop.
-   Recommend rewriting the framing and the third acceptance criterion.
-1. **Should items 2 and 3 be merged?** One economic root cause, two separate accounting defects. The
-   item-2 premise about an exact-amount approve is factually wrong (`approvePair` is balance-based) and
-   should be corrected regardless — it currently reads as an open mystery the encoder already answers.
-   Ticket counts are also off: 131 allowance reverts not 120, 157 `tx.submit_failed` not 133.
-1. **Do the cheap correctness fixes land, and in what order?** All four are small, all are verified
-   against production, and none is justified by revenue: the misleading allowance string (131
-   occurrences), the discarded `SubmitOutcome` clearing backoff on failed sends, the backoff hole across
-   and a computable crossover. **Not** a defect, contrary to an earlier draft: `tx.*` correlation is
-   intact — every line carries `label` (`${id}:${borrower}`), so no instrumentation change is needed.
-1. **Thresholds stay at `0`.** No prod behaviour change is proposed at this book size. The
-   `plan.skipped` telemetry still earns its place by bounding wasted aggregator quotes (81 per burst)
-   and `plan.built` volume (824 per burst), which is rate-limit budget rather than margin.
+1. **Re-scope BOTS-35 to correctness?** The pool is ~$3–5k/year and the ticket's "1.2% of the value"
+   premise measures share-against-third-parties rather than coverage. Recommend rewriting the framing and
+   the third acceptance criterion.
+2. **Merge items 2 and 3, and correct the ticket?** One economic root cause, two accounting defects. The
+   item-2 premise about an exact-amount approve is factually wrong regardless. Counts are also off: 131
+   allowance reverts not 120, 157 `tx.submit_failed` not 133.
+3. **Does the gate ship default-off?** Recommend yes — no prod behaviour change at this book size. It
+   still earns its place by bounding 824 `plan.built` and 81 wasted aggregator quotes per burst, which is
+   rate-limit budget rather than margin.
+4. **Inventory funding as its own deferred issue?** It is the only thing that removes basis exposure
+   entirely, but the basis self-corrected in ~2 minutes and we have one observation. Recommend deferring
+   to the readout (change 1) rather than deciding now.
 
-Settled during exploration, recorded so they are not re-litigated:
+Settled during investigation — recorded so they are not re-litigated:
 
-- **PR #134** is being closed as superseded, its essentials absorbed into the item 1 PR — so the gate
-  folds into `PlanSkipReason` as `insufficient_headroom`, adding no counter and no event.
-- **Repay-exact is closed: no.** Seize-exact already accepts an arbitrary `seizedAssets`, so it does
-  depth-aware sizing without losing the deterministic sell-side amount fixed-calldata venues need.
-- **`SEIZE_CAP_MARGIN_BPS` is fine as-is** — headroom is scale-invariant, so the margin costs 0.3% of
-  surplus and moves the break-even instant by zero seconds.
+- **Repay-exact: no.** Seize-exact already accepts an arbitrary `seizedAssets`, so it does depth-aware
+  sizing without losing the deterministic sell-side amount fixed-calldata venues need.
+- **`SEIZE_CAP_MARGIN_BPS`: leave alone.** Headroom is scale-invariant.
+- **Partial sizing: shelved.** Structurally valid, no live instance at the measured curve.
+- **More venues: dropped.** The cost was basis, which every venue faces.
+- **`tx.*` correlation: not a defect.** Every `tx.*` line carries `label` (`${id}:${borrower}`).
+- **PR #134: closed as superseded** by #181; leftovers tracked in BOTS-87.
+
+## Derivation
+
+How this got here, because the conclusion moved four times and a reader deserves to know which parts are
+load-bearing.
+
+**The path.** I started from the ticket's framing — a mis-tuned `~1%` guard — and found `SLIPPAGE_BPS`
+defaults to 100 with no Railway override, so the guard was config, not code. Reading the contract's LIF
+ramp showed the real constraint: headroom starts at zero and takes an hour to reach a ceiling of a few
+hundred bps, so early attempts are unprofitable by construction and no retune could win. I then argued
+successively that the loss was caused by **the cap margin** (wrong — headroom is scale-invariant), by
+**inventory-funded competitors** (unsupported — the cost ranges overlap), by **the backoff schedule
+sampling across the crossover** (real, observed, but not decisive), and by **price impact on a $10k clip**
+(wrong — measured impact at $10k is ~zero). Each fell when someone queried the underlying log field or
+contract line instead of arguing from a summary. Three sessions worked BOTS-35's three defects in
+parallel; the production log analysis came from the item 2 session, the tier pin and the impact
+measurement from here.
+
+**Nine retracted claims**, kept because several are still readable as live in other people's notes:
+
+| Claim                                                   | Why it fell                                                |
+| ------------------------------------------------------- | ---------------------------------------------------------- |
+| `SEIZE_CAP_MARGIN_BPS` eats the headroom                | Compared a margin on _size_ against a margin on _rate_     |
+| Winners were "almost certainly inventory-funded"        | Cost intervals overlap; a swap-funded competitor fits too  |
+| The backoff schedule lost the position                  | Best-ever quote (16.37) exceeded headroom at the strike    |
+| Route quality on a $10k clip                            | Measured impact at $10k is ~0 bps                          |
+| A gate's fixed LHS carries outright vol                 | Both sides come from one lens read; basis-only             |
+| `EXECUTION_COST_BPS = 10` as an evidence-backed default | Fits one basis regime; blinds 57–78 s on a low-basis day   |
+| "No remote branch carries `planWithReason`"             | A refused command reported as run; 5 hits on #134's branch |
+| PR #134 introduces a `SubmitOutcome` type               | `submit` already returned `Promise<boolean>`               |
+| `tx.*` events carry no correlation field                | Every one carries `label`                                  |
+
+**The pattern matters more than the count.** Claims traced to `Midnight.sol` or the repository source
+held; claims inferred from the incident narrative did not — including BOTS-35's own JIT-approve premise,
+which survived a contested week because a derivation was written up as an observation. The last three rows
+are a distinct and worse category: one asserted a check the tool had **refused to run**, and two
+contradicted source **already read into this session's context**, adopted from a peer's summary without
+reopening the file. So the failure mode is not "didn't check the source" but "checked the source, then let
+a summary overwrite it."
+
+The two conclusions that survived contact are the LIF-ramp economics and the headroom-versus-cost
+asymmetry. Both were derived from the contract. Weight the rest accordingly.
+
+**Evidence provenance.** Economics verified against production logs (Better Stack source 2607569, s3
+archive, 2026-07-31 14:59–15:10). The viability predicate `cost_bps ≤ (maxLif − 1)·t/3600` predicts
+**13 of 13** simulate outcomes at t+138–144 including two dust rejections, and the log fit brackets
+`maxLif − 1 ≥ 432 bps`, independently confirming the tier lookup. Cost curve measured live via LiFi. Book
+sizing from the markets API. Still **not** verified: the winner's t+123 s strike is ticket-derived — no
+on-chain `Liquidate` event was checked.
 
 ## Operational note
 
-At the time of writing, the item 1 work this plan depends on (`planWithReason`, `PlanSkipReason`,
-`LEVEL_BY_REASON`, the sum identities, and `submit` returning a broadcast signal) exists as
-**uncommitted working-tree changes in the shared main checkout** — 443 insertions / 144 deletions across
-7 files, spanning both `bots/midnight-liquidation` and `bots/blue-liquidation`. It is not on
-`origin/main`.
+PR #181 is pushed and green (`fix/bots-35-tick-telemetry-and-submit-outcome`, 443/144 across 7 files, 5/5
+checks passing, MERGEABLE, draft). Base on it with `gh stack` — never merge main into a child.
 
-`origin/fix/tick-submit-and-plan-telemetry` (PR #134's branch) does contain `planWithReason`, so the
-concept is backed — but comparing file contents, the tree versions differ from that branch by 381
-changed lines in `plan.ts` and 176 in `tick.ts`, consistent with a re-derivation rather than a
-cherry-pick. So #134's branch is a recoverable copy of the _older variant being deliberately
-superseded_, which makes it a false comfort rather than a backup.
+PR 2 (phase split + USD ranking) is **on hold**: ordering only matters once something clears a viability
+threshold, and no threshold is approved. So the phase-A seam does not exist yet.
 
-The shared stash stack also carries a leftover `lint-staged automatic backup` entry whose contents
-include `sizing/plan.ts`, so one aborted commit has already happened in that exact file. Because the
-uncommitted set spans two bots, losing it would lose both halves of the same live bug. It should be
-committed and pushed to a branch before anything is stacked on it.
-
-## How much of this to trust
-
-Nine claims in earlier drafts of this document were overturned during the investigation: the
-`SEIZE_CAP_MARGIN_BPS` arithmetic, "the winners were almost certainly inventory-funded", "the backoff
-schedule lost the position", "route quality on a $10k clip", the third drift branch, a fitted `10 bps`
-default, and — a process error rather than a reasoning one — a claim that no remote branch carried
-`planWithReason`, which was asserted after the verifying command had been **refused by the tool** and
-never re-run.
-
-The last two are the most uncomfortable, because both contradicted source that had _already been read
-into this session's own context_: that PR #134 introduced a `SubmitOutcome` type (`submit` already
-returned `Promise<boolean>`, read at `pending-queue.ts:82`), and that `tx.*` events carry no
-correlation field (every one carries `label`, read at `pending-queue.ts:254` and `:282`). Both were
-adopted from a peer's summary that contradicted the file, and the second was escalated as a real defect
-that would have generated work. Each fell to someone querying an underlying log field or contract line
-instead of arguing from a summary.
-
-The pattern is more useful than the tally. **Claims traced to `Midnight.sol` or the repository source
-held; claims inferred from the incident narrative did not** — including BOTS-35's own premise that the
-Executor uses an exact-amount approve, which survived a contested week because it was written up as an
-observation. The two conclusions here that survived contact are the LIF-ramp economics and the
-headroom-versus-cost asymmetry, and both were derived from the contract rather than from the
-post-mortem.
+One stale `lint-staged automatic backup` stash entry containing `sizing/plan.ts` may still be in the
+shared stash stack — worth inspecting before it is mistaken for live work.
