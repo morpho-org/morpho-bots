@@ -90,16 +90,20 @@ cover DEX execution cost is therefore exactly `LIF − 1`.
 
 The incident market is **determined, not inferred**. The ticket names `0x168e3125…a47937`; the markets
 API returns `maturity 1785510000 = 2026-07-31T15:00:00Z` (matching the ticket exactly), loan USDC,
-and a **single** collateral slot: cbBTC at `lltv 0.860 / cursor 0.30`, so `maxLif = 1.043841` and max
-headroom 438.4 bps. Every number below for the incident uses that tier.
+and a **single** collateral slot: cbBTC at `lltv 0.860 / cursor 0.30`, so `maxLif = 1.043841` and a
+headroom ceiling of 420.0 bps. Every number below for the incident uses that tier.
 
 Computed from the live markets API for the three cbBTC/USDC collateral tiers on Base:
 
-| lltv  | cursor | maxLif   | headroom @ t+60s | @ t+123s | @ t+300s | @ t+600s | @ t+3600s |
-| ----- | ------ | -------- | ---------------- | -------- | -------- | -------- | --------- |
-| 0.860 | 0.30   | 1.043841 | 7.3 bps          | 15.0 bps | 36.5 bps | 73.1 bps | 438 bps   |
-| 0.915 | 0.30   | 1.026167 | 4.4 bps          | 8.9 bps  | 21.8 bps | 43.6 bps | 262 bps   |
-| 0.980 | 0.30   | 1.006036 | 1.0 bps          | 2.1 bps  | 5.0 bps  | 10.1 bps | 60 bps    |
+Headroom is the ratio `(lif − 1)/lif`, not `lif − 1`. The two are interchangeable early in the ramp
+(where every decision in this incident was made) but diverge by ~4% at full ramp, and the clamped value
+is the hard ceiling that matters:
+
+| lltv  | cursor | maxLif   | @ t+60s | @ t+123s | @ t+300s | @ t+600s | ceiling (t ≥ 3600 s) |
+| ----- | ------ | -------- | ------- | -------- | -------- | -------- | -------------------- |
+| 0.860 | 0.30   | 1.043841 | 7.3 bps | 15.0 bps | 36.4 bps | 72.6 bps | **420.0 bps**        |
+| 0.915 | 0.30   | 1.026167 | 4.4 bps | 8.9 bps  | 21.8 bps | 43.4 bps | **255.1 bps**        |
+| 0.980 | 0.30   | 1.006036 | 1.0 bps | 2.1 bps  | 5.0 bps  | 10.1 bps | **60.0 bps**         |
 
 On the incident tier the $10,004 fill was lost at **t+123 s**, where headroom was 14.98 bps. Our
 observed quotes on that size never came in below 16.37 bps (see below), so the position was never
