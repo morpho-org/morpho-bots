@@ -183,12 +183,11 @@ moving along it. Inventory funding remains the strategic answer and deserves its
 
 ### The backoff gap is real, observed, and was not decisive here
 
-### What actually lost the position: backoff across a deterministic crossover
-
-If the true crossover sat anywhere in (73 s, 123 s] — the lower half of our bound — we were
-economically viable _before_ the winner struck and simply were not looking. Attempts at t+73 and
-t+137 leave a 64-second gap straddling the crossover; at a crossover of t+90 s that is 47 seconds of
-winnable window sat out by the backoff schedule alone.
+An earlier draft of this document argued the backoff schedule lost the position. The `select.ok` series
+above refutes that: the position's best-ever quote (16.37 bps) exceeded the headroom at the winner's
+strike (14.98 bps), so per-block polling would not have taken it either. The gap is nonetheless real
+and observed — quoted at t+75 s, next attempt scheduled ~t+137 s, winner struck at t+123 s squarely
+inside the hole — and it remains worth fixing on its own merits.
 
 The cause is a category error: exponential backoff treats a **deterministically improving** condition
 as a random failure. Headroom is `(lif − 1)/lif` with `lif` rising linearly in known chain time, so
@@ -203,9 +202,58 @@ cost 10 bps → t+82s        cost 30 bps → t+246s
 
 Backing off doubles the wait exactly when waiting is least justified. This makes the gate two-sided:
 suppress attempts before `t_cross` (killing the thrash), and attempt **every block** from `t_cross`
-onward without economic backoff (winning the position). An economic failure below `t_cross` carries
-no information beyond the clock; one above it is noise, not grounds to sleep 64 seconds. Transport
-failures keep their existing backoff.
+onward without economic backoff. An economic failure below `t_cross` carries no information beyond the
+clock; one above it is noise, not grounds to sleep 64 seconds. Transport failures keep their existing
+backoff.
+
+## What the prize is actually worth
+
+The liquidator's entire margin is the LIF bonus, so the gross prize is `notional × headroom`, not
+notional. On the incident position:
+
+```text
+t+123s (winner strikes)   headroom 14.98 bps  →  gross $14.94
+t+143s (our first ok)     headroom 17.41 bps  →  gross $17.37
+our net at our best observed cost (16.37 bps) →  $1.04
+```
+
+The whole maturity — $11,424 repaid at 15–25 bps clearing headroom — was worth **$17–29 gross**, split
+across every liquidator that participated. Our reported $138.74 was notional, worth cents of margin.
+
+Sizing the entire book from the markets API (186 distinct markets, deduped):
+
+```text
+outstanding notional   USDC $1,805,977 + WETH $175,737   ≈ $1.98M
+markets carrying debt  81 of 186
+maturities             2026-07-17 .. 2027-07-17 (364-day span)
+```
+
+Every market's whole debt becomes liquidatable at its maturity and the maturities span ~one year, so
+roughly one turnover per year. At 15–25 bps clearing headroom that is a total pool of
+**$2,973 – $4,954 per year, shared across all liquidators.** The pool is ≈0.2% of notional per
+turnover, so it scales: $10M book → ~$20k/yr, $100M → ~$200k/yr.
+
+### This changes the objective, not just the budget
+
+The bot's purpose is protocol safety, not profit — if nobody liquidates, bad debt accrues. The prize
+pool does not justify the bot's existence; it justifies (or does not) **competing for contested
+positions.** The logs separate those cleanly:
+
+- The $10k position was cleared promptly, by someone, 123 s after maturity. From the protocol's
+  perspective that is a healthy outcome. Our loss was ~$1.40 of margin, not a safety event.
+- The eleven positions we won were $0.05–$80 — the ones no other liquidator had an economic reason to
+  touch. That is the bot **working as a backstop**, not failing.
+
+So BOTS-35's premise that a 1.2%-of-notional share is a defect measures share-of-value against third
+parties. On coverage — the metric that bears on protocol safety — we did the part nobody else would and
+a cheaper competitor did the part they were better at. That premise deserves challenging on its own,
+separately from the three real bugs.
+
+**Consequence for this plan.** Changes #3 and #4 below are correct but are worth ~$1.41 on the position
+that prompted them; the honest case for them is rate-limit budget and legibility, not revenue. Change
+#2's gate avoids 824 `plan.built` and 81 wasted aggregator quotes per burst, which is real load. All of
+it should stay default-off at this book size. Depth-aware partial sizing, split routing, extra venues
+and inventory funding should be **shelved** and revisited on book size, not on this incident.
 
 ## Items 2 and 3 are one root cause, and the ticket's item-2 premise is wrong
 
@@ -533,26 +581,31 @@ Per CLAUDE.md, run once the code is settled — `Promise.all`-concurrent where i
 
 ## Decisions needed before implementation
 
-0. **Check Better Stack first.** Every number here is derived from ticket text + source + live API;
-   nobody has read the incident logs. The attempt timeline (t+73 / t+137) is reconstructed from the
-   backoff schedule, and it is the load-bearing evidence for change #4. Confirm it before building.
+1. **Is the competitive work worth doing at all?** The whole-book pool is ~$3–5k/year (above). This is
+   the decision that governs the others: shelve depth-aware sizing, split routing, extra venues and
+   inventory funding until book size justifies them, and re-scope BOTS-35 to the correctness fixes.
+   Everything below assumes that answer is "correctness only, for now".
+1. **Should BOTS-35's premise be challenged?** It treats a 1.2%-of-notional share as the defect. On
+   coverage — the metric that bears on protocol safety — the bot behaved correctly as a backstop.
+   Recommend rewriting the framing and the third acceptance criterion.
+1. **Should items 2 and 3 be merged?** One economic root cause, two separate accounting defects. The
+   item-2 premise about an exact-amount approve is factually wrong (`approvePair` is balance-based) and
+   should be corrected regardless — it currently reads as an open mystery the encoder already answers.
+   Ticket counts are also off: 131 allowance reverts not 120, 157 `tx.submit_failed` not 133.
+1. **Do the cheap correctness fixes land, and in what order?** All four are small, all are verified
+   against production, and none is justified by revenue: the misleading allowance string (131
+   occurrences), the discarded `SubmitOutcome` clearing backoff on failed sends, the backoff hole across
+   a computable crossover, and `tx.*` carrying no borrower/id so 157 failures are unattributable — that
+   last one breaks the repo's documented id-join convention exactly where the `SubmitOutcome` fix lands.
+1. **Thresholds stay at `0`.** No prod behaviour change is proposed at this book size. The
+   `plan.skipped` telemetry still earns its place by bounding wasted aggregator quotes (81 per burst)
+   and `plan.built` volume (824 per burst), which is rate-limit budget rather than margin.
 
-1. **Does this reframing stand?** The ticket asks for a retuned guard; this proposes a profitability
-   gate plus an economic floor, and argues the retune is a no-op. If the reframing is accepted,
-   BOTS-35's third acceptance criterion should be rewritten and the inventory-funded strategy split
-   into its own issue.
-1. **Should items 2 and 3 be merged?** They are one economic root cause (above), so a single
-   profitability gate closes both. What remains genuinely separate is their two accounting defects.
-   The ticket's item-2 premise about an exact-amount approve should be corrected regardless, since it
-   currently reads as an open mystery that the encoder already answers.
-1. **Is PR #134 alive?** It decides this change's shape, not just the merge order. Alive → the ratio
-   floor folds into `PlanSkipReason`, adds no counter and no event, and #134 already fixes the
-   submit-accounting bug below. Dead → the gate carries its own exit, counter, and event, and that bug
-   needs picking up separately.
-1. **Threshold values for prod.** Both knobs default to `0`. Setting them needs one maturity's measured
-   cbBTC→USDC execution cost, which the `plan.headroom_insufficient` telemetry is designed to produce.
-1. **Should the adjacent submit-accounting bug ride along?** `runTick` ignores `submit`'s return
-   boolean, so `backoff.clear()` and `counters.submitted += 1` run even on a failed send — no
-   suppression at all, which is what let 133 `tx.submit_failed` pile up in 114 seconds. PR #134 fixes
-   this properly by returning a `SubmitOutcome` so only `kind: 'sent'` clears backoff. Subsumed if
-   #134 lands.
+Settled during exploration, recorded so they are not re-litigated:
+
+- **PR #134** is being closed as superseded, its essentials absorbed into the item 1 PR — so the gate
+  folds into `PlanSkipReason` as `insufficient_headroom`, adding no counter and no event.
+- **Repay-exact is closed: no.** Seize-exact already accepts an arbitrary `seizedAssets`, so it does
+  depth-aware sizing without losing the deterministic sell-side amount fixed-calldata venues need.
+- **`SEIZE_CAP_MARGIN_BPS` is fine as-is** — headroom is scale-invariant, so the margin costs 0.3% of
+  surplus and moves the break-even instant by zero seconds.
