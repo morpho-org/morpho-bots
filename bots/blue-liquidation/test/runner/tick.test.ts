@@ -101,6 +101,8 @@ function runWith(opts: {
   noSwap?: boolean
   seedBackoffAt?: bigint
   cooldown?: CooldownStore
+  /** `false` models the queue returning without broadcasting (send failure / queue refusal). */
+  submitSent?: boolean
 }) {
   const { logger, events } = spyLogger()
   let simulateCalls = 0
@@ -131,6 +133,7 @@ function runWith(opts: {
     },
     submit: async () => {
       submitCalls += 1
+      return opts.submitSent ?? true
     },
     backoff,
     cooldown,
@@ -163,7 +166,8 @@ describe('runTick', () => {
       cooledDown: 0,
       ok: 1,
       reverted: 0,
-      submitted: 1
+      submitted: 1,
+      notSent: 0
     })
     expect(simulateCalls()).toBe(1)
     expect(submitCalls()).toBe(1)
@@ -322,6 +326,25 @@ describe('runTick', () => {
       })
       expect(counters.cooledDown).toBe(0)
       expect(cooldown.shouldSkip(LABEL)).toBe(false)
+    })
+  })
+  describe('submit outcome', () => {
+    it('does not clear backoff and does not count a submit that never broadcast', async () => {
+      // Seeded at block 1 (suppressed until 3) so it does not suppress this tick at 100. The queue
+      // returning false means nothing went out, so the position's failure history must survive.
+      const { counters, backoff, submitCalls } = await runWith({
+        seedBackoffAt: 1n,
+        submitSent: false
+      })
+      expect(submitCalls()).toBe(1)
+      expect(counters).toMatchObject({ ok: 1, submitted: 0, notSent: 1 })
+      expect(backoff.shouldSkip(LABEL, 1n)).toBe(true)
+    })
+
+    it('clears backoff and counts submitted only when the queue broadcast', async () => {
+      const { counters, backoff } = await runWith({ seedBackoffAt: 1n, submitSent: true })
+      expect(counters).toMatchObject({ ok: 1, submitted: 1, notSent: 0 })
+      expect(backoff.shouldSkip(LABEL, 1n)).toBe(false)
     })
   })
 })

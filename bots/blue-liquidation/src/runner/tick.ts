@@ -23,7 +23,10 @@ type TickCounters = {
   cooledDown: number
   ok: number
   reverted: number
+  /** Broadcast: the queue reported a transaction actually went out. */
   submitted: number
+  /** The queue returned without broadcasting (a send failure, or a queue-wide refusal). */
+  notSent: number
 }
 
 /**
@@ -56,7 +59,12 @@ export async function runTick(deps: {
     plan: LiquidationPlan
     swapPlan: SwapPlan
   }) => Promise<SimulateResult>
-  /** Broadcasts a plan via the pending queue (builds the exec tx, derives fees, tracks the nonce). */
+  /**
+   * Broadcasts a plan via the pending queue (builds the exec tx, derives fees, tracks the nonce).
+   * Resolves whether a transaction actually went out: ONLY `true` may clear the position's backoff or
+   * count as `submitted`. Throws when a send claimed a nonce but produced no hash — the tick aborts by
+   * design, so the signer's cursor rollback is not raced.
+   */
   submit: (args: {
     market: MarketParams
     borrower: Address
@@ -64,7 +72,7 @@ export async function runTick(deps: {
     swapPlan: SwapPlan
     blockNumber: bigint
     label: string
-  }) => Promise<void>
+  }) => Promise<boolean>
   /** Per-position exponential backoff suppressing repeated quote/simulate failures (rate-limit defense). */
   backoff: Backoff
   /**
@@ -115,7 +123,8 @@ export async function runTick(deps: {
     cooledDown: 0,
     ok: 0,
     reverted: 0,
-    submitted: 0
+    submitted: 0,
+    notSent: 0
   }
 
   // 3. Compose liquidatability off-chain → plan → quote → simulate → submit. `inflight` is captured
@@ -197,7 +206,7 @@ export async function runTick(deps: {
     // ok-only gate: broadcast only a fully-simulated, swap-funded liquidation. Any revert — not
     // liquidatable, swap slippage, repay shortfall — isn't a fundable plan, so skip it.
     if (result.status === 'ok') {
-      await submit({
+      const sent = await submit({
         market: out.params,
         borrower: pair.borrower,
         plan: liquidationPlan,
@@ -205,8 +214,15 @@ export async function runTick(deps: {
         blockNumber: chainHead,
         label
       })
-      backoff.clear(label)
-      counters.submitted += 1
+      if (sent) {
+        backoff.clear(label)
+        counters.submitted += 1
+      } else {
+        // No broadcast happened, so the position's failure history stands: clearing backoff here is
+        // what let a failing position reset to attempt 1 and re-quote every other block. Not
+        // recording backoff either — a queue refusal says nothing about this position.
+        counters.notSent += 1
+      }
     }
   }
 

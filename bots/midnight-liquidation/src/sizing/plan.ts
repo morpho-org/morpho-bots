@@ -38,6 +38,42 @@ export type LiquidationPlan = {
 }
 
 /**
+ * Why sizing produced no plan. The first three negate {@link isLiquidatable}, so reaching them means
+ * the caller planned a position the chain does not consider liquidatable — they read as live
+ * assertions, not as ordinary outcomes. The last three are ordinary: a liquidatable position can
+ * still be unsizeable.
+ *
+ * - `cap_not_positive`: the normal-mode repay cap came out at or below zero. Reachable whenever
+ *   `debt - badDebt <= maxDebt` while `debt > maxDebt` still holds (e.g. debt 1000, maxDebt 900,
+ *   badDebt 200), because {@link maxRepaidNormalMode} takes `effectiveDebt - maxDebt` as its
+ *   numerator. Guarded rather than sized, since a negative cap propagates through
+ *   {@link maxSeizeForCap} into a negative `seizedAssets`.
+ * - `nothing_to_seize`: the best slot holds no collateral, so a whole-slot seize would build a
+ *   `(0, 0)` plan that {@link isBadDebtRealization} would misclassify as a write-off against a
+ *   still-solvent position.
+ * - `seize_rounds_to_zero`: a cap-binding seize rounded down to zero collateral.
+ */
+export type PlanSkipReason =
+  | 'no_debt'
+  | 'locked'
+  | 'healthy_pre_maturity'
+  | 'cap_not_positive'
+  | 'nothing_to_seize'
+  | 'seize_rounds_to_zero'
+
+/**
+ * Sizing result: exactly one of `plan` / `reason` is set. A skip carries its reason so the caller can
+ * report it (`plan.skipped`) instead of dropping the position silently.
+ *
+ * A skip is NOT a failure signal: callers must not record backoff or mark a cooldown on one. Several
+ * reasons clear on their own as chain time advances (the post-maturity LIF ramp lifts the repay cap),
+ * so suppressing a skipped position would delay re-evaluating it precisely when it becomes viable.
+ */
+type PlanOutcome =
+  | { plan: LiquidationPlan; reason?: undefined }
+  | { plan: null; reason: PlanSkipReason }
+
+/**
  * Operator sizing knobs that are NOT lens-derived (so they live here, not on `PlanInput`). Sourced
  * from `config.quoting`.
  */
@@ -52,15 +88,16 @@ type PlanOptions = {
   seizeCapMarginBps?: number
 }
 
-export function isBadDebtRealization(plan: LiquidationPlan): boolean {
-  return plan.seizedAssets === 0n && plan.repaidUnits === 0n
-}
+const skip = (reason: PlanSkipReason): PlanOutcome => ({ plan: null, reason })
+const sized = (plan: LiquidationPlan): PlanOutcome => ({ plan })
+
+export const isBadDebtRealization = (plan: LiquidationPlan): boolean =>
+  plan.seizedAssets === 0n && plan.repaidUnits === 0n
 
 // Repaid units the contract derives when the caller passes `seizedAssets` (midnight-contracts.txt:2369):
 // two chained ceil-divisions, collateral → loan units → repaid units.
-function impliedRepaidUnits(seizedAssets: bigint, price: bigint, lif: bigint): bigint {
-  return mulDivUp(mulDivUp(seizedAssets, price, ORACLE_PRICE_SCALE), WAD, lif)
-}
+const impliedRepaidUnits = (seizedAssets: bigint, price: bigint, lif: bigint): bigint =>
+  mulDivUp(mulDivUp(seizedAssets, price, ORACLE_PRICE_SCALE), WAD, lif)
 
 /**
  * The largest seize `S` whose contract-derived repaid (`impliedRepaidUnits(S, price, lif)`) stays
@@ -71,43 +108,44 @@ function impliedRepaidUnits(seizedAssets: bigint, price: bigint, lif: bigint): b
  * round down while `impliedRepaidUnits` rounds up against integer thresholds, the round-trip never
  * overshoots: `impliedRepaidUnits(maxSeizeForCap(cap, …)) <= cap` always holds, and the result is the
  * largest such seize (`impliedRepaidUnits(result + 1) > cap`).
+ *
+ * Callers must reject a non-positive `cap` before calling: a negative cap yields a negative seize
+ * (see `cap_not_positive` in {@link PlanSkipReason}).
  */
-export function maxSeizeForCap(cap: bigint, price: bigint, lif: bigint): bigint {
+export const maxSeizeForCap = (cap: bigint, price: bigint, lif: bigint): bigint => {
   if (cap === 0n || price === 0n) return 0n
   return mulDivDown(mulDivDown(cap, lif, WAD), ORACLE_PRICE_SCALE, price)
 }
 
 // Builds a cap-binding seize-exact plan: seize the largest amount whose contract-derived repaid stays
-// within `cap`, after shaving `marginBps` off the cap for one-block drift headroom. Returns null when
-// that rounds to zero — never a `(0, 0)` plan, which `isBadDebtRealization` would misclassify as a
+// within `cap`, after shaving `marginBps` off the cap for one-block drift headroom. Skips when that
+// rounds to zero — never a `(0, 0)` plan, which `isBadDebtRealization` would misclassify as a
 // bad-debt write-off against a solvent position.
-function capBoundPlan(
+const capBoundPlan = (
   input: PlanInput,
   cap: bigint,
   lif: bigint,
   marginBps: number,
   postMaturityMode: boolean
-): LiquidationPlan | null {
+): PlanOutcome => {
   const capEff = mulDivDown(cap, BPS - BigInt(marginBps), BPS)
   const seizedAssets = maxSeizeForCap(capEff, input.bestCollateralPrice, lif)
-  if (seizedAssets === 0n) return null
-  return {
+  if (seizedAssets === 0n) return skip('seize_rounds_to_zero')
+  return sized({
     collateralIndex: input.bestCollateralIndex,
     seizedAssets,
     repaidUnits: 0n,
     postMaturityMode
-  }
+  })
 }
 
 // The whole-slot seize-exact plan in the given mode (the no-cap-binding case for both modes).
-function wholeSlotPlan(input: PlanInput, postMaturityMode: boolean): LiquidationPlan {
-  return {
-    collateralIndex: input.bestCollateralIndex,
-    seizedAssets: input.bestCollateralAmt,
-    repaidUnits: 0n,
-    postMaturityMode
-  }
-}
+const wholeSlotPlan = (input: PlanInput, postMaturityMode: boolean): LiquidationPlan => ({
+  collateralIndex: input.bestCollateralIndex,
+  seizedAssets: input.bestCollateralAmt,
+  repaidUnits: 0n,
+  postMaturityMode
+})
 
 // Normal-mode sizing (gated on-chain by `debt > maxDebt`, before or after maturity alike): LIF is the
 // slot's full `maxLif` immediately. The contract subtracts `repaidUnits` from the post-writeoff debt
@@ -115,7 +153,7 @@ function wholeSlotPlan(input: PlanInput, postMaturityMode: boolean): Liquidation
 // cap (waived when the slot is rcf-exempt) AND never exceeds that debt. Seize the whole slot only when
 // its implied repaid units fit within the bound; otherwise seize the largest amount whose
 // contract-derived repaid stays within it.
-function normalModePlan(input: PlanInput, marginBps: number): LiquidationPlan | null {
+const normalModePlan = (input: PlanInput, marginBps: number): PlanOutcome => {
   const lif = lifAt({
     now: input.blockTimestamp,
     maturity: input.maturity,
@@ -143,8 +181,9 @@ function normalModePlan(input: PlanInput, marginBps: number): LiquidationPlan | 
     rcfThreshold: input.rcfThreshold
   })
   const repayCap = exempt ? effectiveDebt : min(maxRepaid, effectiveDebt)
+  if (repayCap <= 0n) return skip('cap_not_positive')
 
-  if (wholeSlotRepaid <= repayCap) return wholeSlotPlan(input, false)
+  if (wholeSlotRepaid <= repayCap) return sized(wholeSlotPlan(input, false))
   return capBoundPlan(input, repayCap, lif, marginBps, false)
 }
 
@@ -155,7 +194,7 @@ function normalModePlan(input: PlanInput, marginBps: number): LiquidationPlan | 
 // underwater case. When the slot is worth more than the debt (the common case: a solvent borrower who
 // simply missed maturity), seize the largest amount whose contract-derived repaid stays within that
 // debt. `badDebt` is written off before the repay, so the cap is the post-writeoff debt.
-function postMaturityPlan(input: PlanInput, marginBps: number): LiquidationPlan | null {
+const postMaturityPlan = (input: PlanInput, marginBps: number): PlanOutcome => {
   const lif = lifAt({
     now: input.blockTimestamp,
     maturity: input.maturity,
@@ -168,7 +207,7 @@ function postMaturityPlan(input: PlanInput, marginBps: number): LiquidationPlan 
     input.bestCollateralPrice,
     lif
   )
-  if (wholeSlotRepaid <= effectiveDebt) return wholeSlotPlan(input, true)
+  if (wholeSlotRepaid <= effectiveDebt) return sized(wholeSlotPlan(input, true))
   return capBoundPlan(input, effectiveDebt, lif, marginBps, true)
 }
 
@@ -176,7 +215,7 @@ function postMaturityPlan(input: PlanInput, marginBps: number): LiquidationPlan 
 // repaid units the contract will ceil-derive under that plan's mode/LIF. Used only to CHOOSE between
 // two plans whose gates are both open — absolute profitability (gas, slippage, route quality) stays
 // the quoting/simulate layer's job.
-function planSurplus(input: PlanInput, chosen: LiquidationPlan): bigint {
+const planSurplus = (input: PlanInput, chosen: LiquidationPlan): bigint => {
   const lif = lifAt({
     now: input.blockTimestamp,
     maturity: input.maturity,
@@ -188,8 +227,8 @@ function planSurplus(input: PlanInput, chosen: LiquidationPlan): bigint {
 }
 
 /**
- * Turns a fresh lens reading into a liquidation plan, or `null` when the position is not
- * liquidatable. Mirrors the mode and amount policy of `liquidate(...)`:
+ * Turns a fresh lens reading into a liquidation plan, or a {@link PlanSkipReason} when the position
+ * cannot be sized. Mirrors the mode and amount policy of `liquidate(...)`:
  *
  * - past maturity & healthy → post-maturity mode (the only open gate): no RCF cap; seize 100% of the
  *   best slot if its implied repaid units fit within the (post-writeoff) debt, else seize the largest
@@ -211,23 +250,30 @@ function planSurplus(input: PlanInput, chosen: LiquidationPlan): bigint {
  * every venue (Uniswap or aggregator) sells, so there is no sell-side drift. Bad-debt realization is
  * the only `(0, 0)` plan. A cap-binding seize is sized against `cap·(1 - seizeCapMarginBps)` to keep
  * headroom for a one-block oracle move; any residual drift fails closed in `simulate()`, never on-chain.
+ *
+ * Side-effect free. Callers must not treat a skip as a failure — see {@link PlanOutcome}.
  */
-export function plan(input: PlanInput, options: PlanOptions = {}): LiquidationPlan | null {
+export const planWithReason = (input: PlanInput, options: PlanOptions = {}): PlanOutcome => {
   const { seizeCapMarginBps = 0 } = options
 
-  if (!input.hasDebt || input.locked) return null
+  if (!input.hasDebt) return skip('no_debt')
+  if (input.locked) return skip('locked')
 
   const matured = input.blockTimestamp > input.maturity
-  if (!matured && input.healthy) return null
+  if (!matured && input.healthy) return skip('healthy_pre_maturity')
 
   if (input.badDebt >= input.debt) {
-    return {
+    return sized({
       collateralIndex: input.bestCollateralIndex,
       seizedAssets: 0n,
       repaidUnits: 0n,
       postMaturityMode: matured
-    }
+    })
   }
+
+  // Below here every plan seizes collateral, so an empty best slot cannot produce one: a whole-slot
+  // seize of nothing is the `(0, 0)` shape reserved for bad-debt realization.
+  if (input.bestCollateralAmt === 0n) return skip('nothing_to_seize')
 
   if (!matured) return normalModePlan(input, seizeCapMarginBps)
 
@@ -235,8 +281,15 @@ export function plan(input: PlanInput, options: PlanOptions = {}): LiquidationPl
   if (input.healthy) return post
 
   // Matured AND unhealthy: both gates are open, so pick the higher-surplus mode; a tie resolves
-  // toward post-maturity and a one-sided null takes the plan that exists (see the JSDoc mode policy).
+  // toward post-maturity and a one-sided skip takes the plan that exists (see the JSDoc mode policy).
   const normal = normalModePlan(input, seizeCapMarginBps)
-  if (post === null || normal === null) return post ?? normal
-  return planSurplus(input, normal) > planSurplus(input, post) ? normal : post
+  if (post.plan === null) return normal.plan === null ? post : normal
+  if (normal.plan === null) return post
+  return planSurplus(input, normal.plan) > planSurplus(input, post.plan) ? normal : post
 }
+
+/**
+ * {@link planWithReason} projected to just the plan, for callers that do not report the skip reason.
+ */
+export const plan = (input: PlanInput, options: PlanOptions = {}): LiquidationPlan | null =>
+  planWithReason(input, options).plan
