@@ -21,9 +21,11 @@ guard.
 
 A swap-funded liquidation has only `lif − 1` of headroom, which post-maturity ramps from zero over an
 hour, so early attempts are unprofitable by construction. But the decisive finding is narrower and is
-now measured: **our execution cost on the size that mattered exceeded the headroom for the entire
-window in which the position was available.** We did not lose it to a mis-tuned guard, and we did not
-lose it to sampling — we lost it to route quality on a $10k clip.
+now measured: **our execution cost on the position that mattered exceeded the headroom for the entire
+window in which it was available.** We did not lose it to a mis-tuned guard, and we did not lose it to
+sampling. Nor — measured, not assumed — to price impact: at ~$10k, size-related impact on cbBTC→USDC is
+approximately zero. What remains is size-independent cost, most likely oracle-versus-DEX basis plus
+venue coverage, and that is where the competitive question actually sits.
 
 This document records the evidence, then proposes the change that satisfies the criterion's _intent_.
 
@@ -132,7 +134,7 @@ t+123 s strike completely — note that a 15 bps cost puts the deterministic cro
 t+123 s. Inventory funding remains a plausible and strategically interesting answer, but it is not
 what this incident demonstrates.
 
-### What actually lost the position: route quality on a $10k clip
+### What lost the position: our cost exceeded headroom the whole time it was available
 
 **Verified from production `select.ok` lines.** Every quote the $10,004 position (`0x5b878f8e…`) ever
 received:
@@ -151,18 +153,56 @@ at its last. So it was not viable at t+123 s under any observed quote — perfec
 not have taken it. The winner cleared ≤ 14.98 bps; our cheapest route on that size was 16.37 bps. They
 were genuinely cheaper, by 1.4–10 bps.
 
-**Cost is size-dependent, and nothing in the bot knows it.** At t+138–144 the eleven positions we did
-win cost **7.85–10.4 bps** — they were $0.05 to $80. The $10k position cost **16.4–25.1 bps**: an
-8–15 bps price-impact penalty for being the only trade that mattered. Worse, its cost was _rising_
-through the burst (17.4 → 25.1 bps) as competitors drained the cbBTC/USDC pools, so its `t_cross` was
-receding while the LIF ramp advanced toward it. A fixed-size plan races a moving target.
+### The cost was NOT price impact — measured
 
-### Partial sizing is the cheap fix, and it needs no protocol change
+At t+138–144 the eleven positions we won cost 7.85–10.4 bps and were $0.05–$80; the $10k position cost
+16.4–25.1 bps. That looks like a size penalty, and an earlier draft of this document read it as one.
+**It is not.** Measured against the marginal (smallest-probe) rate via LiFi, cbBTC→USDC on Base:
 
-A gate answers "is this trade viable?"; it books $0 on the position that mattered. Sizing answers
-"**what** trade is viable?" — and because headroom ramps monotonically, the affordable slice grows every
-block, so the position is harvested progressively from the moment any slice clears. Three things make
-this plumbing rather than a project:
+| notional   | impact vs marginal | routed via |
+| ---------- | ------------------ | ---------- |
+| $80        | 0.00 bps           | fly        |
+| $845       | 1.13 bps           | fly        |
+| $8,448     | −1.74 bps          | fly        |
+| $84,483    | 1.26 bps           | kyberswap  |
+| $422,417   | 2.88 bps           | kyberswap  |
+| $844,834   | 10.63 bps          | fly        |
+| $1,689,667 | 18.84 bps          | fly        |
+
+Size-related impact at ~$10k is **approximately zero**. So almost none of the observed 16–25 bps was
+price impact, and slicing a trade whose impact is already zero recovers nothing. The residual must be
+size-independent:
+
+- **oracle-versus-DEX basis** at that moment — the likeliest candidate, and precisely the offset this
+  measurement excludes by construction;
+- **route/venue coverage** — prod runs `['lifi','0x']`, while these probes routed via `fly` and
+  `kyberswap`, neither of which the bot quotes;
+- **a confound to check**: whether the eleven cheap positions were even the same collateral. If they
+  were cbETH or wstETH rather than cbBTC, the 7.85–10.4 vs 16.4–25.1 gap is different-basis, not
+  different-size. `select.ok` carries `collateral`, so this is answerable from the logs.
+
+Caveats: this measures **today's calm liquidity**, not 31 Jul during the burst — though a pool that
+absorbs $1.7M at 19 bps does not move on the burst's total $11,424, so drainage is an implausible
+explanation. Readings under ~2 bps are routing noise between probes; treat them as zero.
+
+### Partial sizing: structurally sound, no live instance
+
+Headroom is hard-capped, because `lif = min(maxLif, …)`: the ceiling is `(maxLif − 1)/maxLif` = **420.0
+bps** for the incident tier. A position whose swap cost exceeds that is **permanently** unliquidatable
+single-shot — not "unprofitable for a while", never, at any `t`. That is exact and independent of any
+curve fit. Since repayment is what makes lender funds withdrawable
+(`_marketState.withdrawable += repaidUnits`), the harm is stranded lender capital rather than bad debt;
+a purely underwater position is fine regardless, since bad-debt realization is the `(0,0)` plan and
+needs no swap.
+
+The largest live single position is real and large — **$1,005,266**, borrower `0xC6877a6534…`, market
+`0x549cd072daf9…`, from the candidates endpoint. But at the _measured_ curve ~$1M costs ~11 bps, so it
+clears comfortably inside the ramp. On a concave curve the 420 bps breakpoint sits orders of magnitude
+above the entire current book ($1.98M). **So the argument is structurally valid with no instance at any
+plausible near-term book size**, and it should be re-derived from a measured curve, not a fit, before
+being scheduled.
+
+If it is ever built, three things make it plumbing rather than a project:
 
 1. **The protocol permits it.** `liquidationLocked` reads `UtilsLib.tGet(LIQUIDATION_LOCK_SLOT, …)`,
    i.e. `tload` — **transient storage**, set at `Midnight.sol:1647` and cleared at `:1678` inside the
@@ -179,8 +219,16 @@ this plumbing rather than a project:
    selector already measures the cost-versus-size curve; the bot ranks venues with it and discards the
    size dimension.
 
-Split routing and additional venues belong alongside this — they lower the whole curve rather than
-moving along it. Inventory funding remains the strategic answer and deserves its own issue.
+Because the cost is size-independent, the two candidates that survive are **additional venues** (better
+price discovery — cheap, and the probes routed via `fly`/`kyberswap`, which the bot does not quote) and
+**inventory funding** (removes basis and impact exposure entirely, at the price of holding collateral
+risk). Both deserve their own issues.
+
+One inequality worth recording without over-reading it: if basis was 16–25 bps for us and the winner
+cleared at ≤14.98 bps while facing the same basis, they were plausibly not swapping at all. That
+partially revives inventory funding as the explanation — but it is a hypothesis resting on a single
+inequality, and two diagnoses in this document have already been overturned by exactly that kind of
+reasoning.
 
 ### The backoff gap is real, observed, and was not decisive here
 
@@ -583,9 +631,10 @@ Per CLAUDE.md, run once the code is settled — `Promise.all`-concurrent where i
 ## Decisions needed before implementation
 
 1. **Is the competitive work worth doing at all?** The whole-book pool is ~$3–5k/year (above). This is
-   the decision that governs the others: shelve depth-aware sizing, split routing, extra venues and
-   inventory funding until book size justifies them, and re-scope BOTS-35 to the correctness fixes.
-   Everything below assumes that answer is "correctness only, for now".
+   the decision that governs the others: re-scope BOTS-35 to the correctness fixes, and shelve the
+   competitive work until book size justifies it. Depth-aware sizing in particular has no live instance
+   at the measured curve. The cheapest competitive item, if any is wanted, is **venue coverage** — the
+   probes routed via `fly` and `kyberswap` and the bot quotes neither.
 1. **Should BOTS-35's premise be challenged?** It treats a 1.2%-of-notional share as the defect. On
    coverage — the metric that bears on protocol safety — the bot behaved correctly as a backstop.
    Recommend rewriting the framing and the third acceptance criterion.
