@@ -1320,6 +1320,31 @@ Implementation starts with the deployable skeleton, ahead of any policy surface:
   signing surfaces, policy checks, reservation ledger, IAM topology, and bot-side intent ports
   land in later increments of this TIB.
 
+## Addendum B (2026-08-25) — v1 wire contract and bot-side middleware identity
+
+The second increment defines the wire contract at the code level and the bot-side selection seam,
+still entirely fail-closed:
+
+- **Request DTO**: the versioned JSON intent union (`quote`, `ratify`, `revoke`,
+  `setup-remediation`) is typed and strictly parsed in
+  [`services/quoter-signer/src/intent.utils.ts`](../../services/quoter-signer/src/intent.utils.ts)
+  — canonical decimal strings for uint256-range values, checksummed addresses, explicit
+  consumption groups, market-by-`marketId` only (market parameters stay middleware-resolved), the
+  80-offer (40 per side)/7-market wire caps, and outright rejection of unknown versions, kinds, and keys via a
+  typed `MalformedIntentError`. Well-formed intents still deny with
+  `SigningNotImplementedError`; both denials now carry `retryable`.
+- **Response DTO**: the approval-or-denial envelope union lives in
+  [`services/quoter-signer/src/response.utils.ts`](../../services/quoter-signer/src/response.utils.ts)
+  — per-kind approval payloads (tree signature + encoded publication for quote; signed
+  transaction artifacts with exact bytes, hash, nonce, and fee fields for ratify, revoke, and
+  setup remediation) that the skeleton never produces.
+- **Bot-side trigger**: `signer-identity.utils.ts` gains the `middleware` identity method
+  alongside `private-key`/`keystore`/`aws`, selected by `QUOTER_SIGNER_LAMBDA_ARN`
+  (`identity.quoterSignerLambdaArn`, CLI `--middleware`), deriving the AWS region from the ARN
+  and rejecting `$LATEST`. As specified in §3, the identity is not a drop-in signer:
+  `createMakerAccount` fails closed with `MiddlewareSigningUnsupportedError`, so write flows halt
+  until the intent ports land; read-only operation is unaffected.
+
 <!--
 TIB conventions:
 - Once accepted, do not substantively edit this TIB. If the decision needs to change,

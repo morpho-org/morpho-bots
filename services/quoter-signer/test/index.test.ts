@@ -2,12 +2,40 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { handler } from '../src/index'
 
+const revokeIntent = {
+  contractVersion: 1,
+  kind: 'revoke',
+  chainId: 8453,
+  maker: '0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A',
+  idempotencyKey: 'revoke-1',
+  operation: { type: 'cancel-root', root: `0x${'77'.repeat(32)}` },
+  fees: { maxFeePerGas: '2000000000', maxPriorityFeePerGas: '1000000000', gas: '90000' }
+}
+
 describe('handler', () => {
   afterEach(() => {
     vi.restoreAllMocks()
   })
 
-  it('denies every invocation with the typed fail-closed envelope', async () => {
+  it('denies a well-formed intent with the typed not-implemented envelope', async () => {
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+
+    const response = await handler(revokeIntent)
+
+    expect(response).toStrictEqual({
+      contractVersion: 1,
+      service: 'quoter-signer',
+      approved: false,
+      denial: {
+        name: 'SigningNotImplementedError',
+        message:
+          'no signing surface is implemented in this quoter-signer build; every intent is denied',
+        retryable: false
+      }
+    })
+  })
+
+  it('denies a contract-violating payload with the typed malformed-intent envelope', async () => {
     vi.spyOn(console, 'log').mockImplementation(() => {})
 
     const response = await handler({ kind: 'quote' })
@@ -17,9 +45,9 @@ describe('handler', () => {
       service: 'quoter-signer',
       approved: false,
       denial: {
-        name: 'SigningNotImplementedError',
-        message:
-          'no signing surface is implemented in this quoter-signer build; every intent is denied'
+        name: 'MalformedIntentError',
+        message: 'invalid quoter-signer intent: contractVersion missing',
+        retryable: false
       }
     })
   })
@@ -32,7 +60,7 @@ describe('handler', () => {
       const response = await handler(payload)
 
       expect(response.approved).toBe(false)
-      expect(response.denial.name).toBe('SigningNotImplementedError')
+      expect(!response.approved && response.denial.name).toBe('MalformedIntentError')
     }
   )
 
@@ -50,7 +78,7 @@ describe('handler', () => {
         event: 'middleware.intent_denied',
         intentKind: 'revoke',
         awsRequestId: 'req-1',
-        denial: 'SigningNotImplementedError'
+        denial: 'MalformedIntentError'
       }
     ])
     for (const line of lines) expect(line).not.toContain('caller data')

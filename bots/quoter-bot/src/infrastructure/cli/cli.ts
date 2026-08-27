@@ -167,6 +167,10 @@ export class Cli {
       )
       .option('--interactive', 'prompt without echoing for the selected keystore password')
       .option('--aws', 'sign remotely with the configured non-exportable AWS KMS key')
+      .option(
+        '--middleware',
+        'sign structured intents through the configured quoter-signer Lambda (fail-closed until its intent ports ship)'
+      )
       .exitOverride()
       .configureOutput({ writeOut: () => {}, writeErr: () => {} })
 
@@ -329,8 +333,10 @@ export class Cli {
       password?: string
       interactive?: boolean
       aws?: boolean
+      middleware?: boolean
     }>()
     const readOnly = options.readonly === true
+    if (options.aws === true && options.middleware === true) throw new CliUsageError()
     if (options.password !== undefined && options.interactive === true) throw new CliUsageError()
     if (
       options.keystore === undefined &&
@@ -342,7 +348,8 @@ export class Cli {
       options.keystore !== undefined ||
       options.password !== undefined ||
       options.interactive === true ||
-      options.aws === true
+      options.aws === true ||
+      options.middleware === true
     if (readOnly && hasExplicitSigner) throw new CliUsageError()
     const signerEnvironment: Record<string, string> = {}
     if (options.privateKey !== undefined) {
@@ -362,6 +369,7 @@ export class Cli {
       signerEnvironment.KEYSTORE_INTERACTIVE = 'true'
     }
     if (options.aws === true) signerEnvironment.KEY_STORAGE_METHOD = 'aws'
+    if (options.middleware === true) signerEnvironment.KEY_STORAGE_METHOD = 'middleware'
     return {
       configPath: options.config,
       readOnly,
