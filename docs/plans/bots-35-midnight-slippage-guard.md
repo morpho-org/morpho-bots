@@ -189,6 +189,54 @@ Caveats: this measures **today's calm liquidity**, not 31 Jul during the burst �
 absorbs $1.7M at 19 bps does not move on the burst's total $11,424, so drainage is an implausible
 explanation. Readings under ~2 bps are routing noise between probes; treat them as zero.
 
+### The blind spot, and why the cost term settles the design
+
+The item 2 session's production time series (cbBTC, venue 0x, positions > $1 — all 17 candidates were
+cbBTC, so collateral is not a confound, and the venue was constant throughout):
+
+| t bucket  | quotes | median cost | best cost | headroom    |
+| --------- | ------ | ----------- | --------- | ----------- |
+| 0–20 s    | 12     | 18.33       | 10.45     | 1.22        |
+| 20–40 s   | 24     | 17.56       | 15.89     | 3.65        |
+| 40–60 s   | 12     | 19.87       | 17.85     | 6.09        |
+| 60–80 s   | 11     | 25.45       | 24.19     | 8.52        |
+| 80–120 s  | **0**  | —           | —         | 10.96–14.61 |
+| 120–140 s | 2      | 8.02        | 7.85      | 15.83       |
+| 140–160 s | 37     | 10.04       | 4.64      | 18.27       |
+| 200–220 s | 20     | 5.17        | 3.09      | 25.57       |
+
+Two directly observed facts. **A 58-second total blind spot, t+80 → t+138, across every position over a
+dollar** — the winner struck at t+123, inside it. And **cost collapsed ~16 bps across that gap** at
+constant venue and collateral, which confirms the residual was oracle-versus-DEX basis and that the
+basis mean-reverted within about two minutes.
+
+**The counterfactual is unresolvable, and deliberately so.** Interpolating cost linearly across the gap
+puts the viability crossover at t+114.9 (anchoring at the bucket midpoint) or t+117.3 (bucket edge) —
+6 to 8 seconds ahead of the winner. That margin is well inside the uncertainty of interpolating across a
+58-second hole; mild convexity in the decay pushes it past t+123. The measurements needed to decide it
+are precisely the ones the bug prevented from existing. So the backoff fix must be justified as "it wins
+positions in this regime in general, and it produces the evidence to tell" — never as "it would have won
+this one".
+
+**This also supplies the threshold.** The gate skips when `headroom(t) < EXECUTION_COST_BPS`, so
+reproducing all seven buckets' outcomes requires a threshold above the largest non-viable headroom
+(8.52) and at or below the smallest viable one (15.83):
+
+```text
+EXECUTION_COST_BPS ∈ (8.52, 15.83]   →  10 bps is a round value inside the window
+```
+
+That is an evidence-backed default rather than a guess, from one maturity, and it should ship with that
+provenance attached.
+
+**And it explains why the design holds while the cost term does not.** The cost swung 3× in under a
+minute, so an economic failure carries almost no information about the next ten seconds — which is a
+second, independent reason not to back off on one, beyond the LIF ramp being predictable. The gate
+survives that volatility only because it keys on **headroom**, known exactly from chain time, rather
+than on measured cost. Had it keyed on cost it would be unreliable in exactly the regime that matters.
+The corollary is that on an economic skip the bot should re-quote _more_ often, bounded by rate limit
+rather than by backoff.
+
 ### Partial sizing: structurally sound, no live instance
 
 Headroom is hard-capped, because `lif = min(maxLif, …)`: the ceiling is `(maxLif − 1)/maxLif` = **420.0
