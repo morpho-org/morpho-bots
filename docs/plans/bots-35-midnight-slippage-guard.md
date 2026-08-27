@@ -56,16 +56,21 @@ it as `tx.submit_failed` rather than `simulate.revert` is:
 
 So `simulate.ok` followed by `tx.submit_failed: Error(return too low)` is a _stale-quote_ signature,
 not a configuration error. The **157** observed `tx.submit_failed` events (the ticket says 133) are
-sends whose quote aged out before gas estimation — though `tx.*` carries no borrower or id, so they
-cannot be attributed to positions.
+sends whose quote aged out before gas estimation. They **are** attributable: every `tx.*` line carries
+`label`, which is `${id}:${borrower}` — the same value `select.ok` logs as `id`. An earlier draft of this
+document claimed the send stage lacked a correlation field and that the repo's id-join convention was
+broken there. That was false; the query that produced it was looking for `id`/`borrower` fields the
+stage does not use.
 
 Two adjacent defects sit on the same lines and are worth naming, though neither is this item:
 
-- `submit` returns `boolean`, and `runTick` ignores it: a failed submit still runs `backoff.clear(label)`
-  and `counters.submitted += 1`. That both inflates the `submitted` metric and removes the only
-  brake on immediate re-attempt — the direct cause of the _thrash_ as distinct from the individual
-  failures. PR #134 fixes this properly, returning a `SubmitOutcome` so only `kind: 'sent'` clears
-  backoff.
+- `PendingQueue.submit` already returns `Promise<boolean>` with a documented contract — "a caller
+  counting real broadcasts must not count those" (`pending-queue.ts:82`) — but both bots' `index.ts`
+  closures type the dep as `Promise<void>` and discard it, so a failed submit still runs
+  `backoff.clear(label)` and `counters.submitted += 1`. That inflates the `submitted` metric and removes
+  the only brake on immediate re-attempt. **No new type is needed**: an earlier draft of this document
+  said PR #134 introduced a `SubmitOutcome`, which was wrong — the contract already exists in bot-kit
+  and only the two call sites are defective.
 - The two error strings in this incident share one economic cause (see the next section) but have
   **different amplifiers**, so they need one economic fix and two accounting fixes. The allowance
   failures were at the _simulate_ stage, where `backoff.record` fires and does suppress (**131**
@@ -558,8 +563,8 @@ const surplusUsd = usdValueOf(loanToken, referenceAmountOut - plan.impliedRepaid
   `isBadDebtRealization` branch.
 - Marks the cooldown, so a position below threshold is not re-evaluated every block for an hour.
 
-**Placement is settled, and the seam now exists in code** (uncommitted in the shared checkout at the
-time of writing — see the note at the end). PR #134 was closed as superseded, its essentials absorbed
+**Placement is settled, and the seam is merged-ready**: branch `fix/bots-35-tick-telemetry-and-submit-outcome`,
+draft PR #181, to be based on with `gh stack`. PR #134 was closed as superseded, its essentials absorbed
 into the BOTS-35 item 1 work: `planWithReason()`, `PlanSkipReason`, `plan.skipped` and
 `LEVEL_BY_REASON` are in `sizing/plan.ts` / `runner/tick.ts`. Two of this document's requirements landed
 as documentation at the type rather than as convention: `PlanOutcome` states that "a skip is NOT a
@@ -573,7 +578,7 @@ worked set. The gate is pure arithmetic over `PlanInput` — `blockTimestamp`, `
 `bestCollateralMaxLif` are all already there, so `PlanInput` needs no widening, and the threshold
 arrives via the existing `PlanOptions`.
 
-Requirements on that seam, agreed with the item 1 fork:
+Requirements on that seam, all now honored in PR #181:
 
 - **Plan-skip must record neither backoff nor cooldown**, which is today's behavior
   (`if (!liquidationPlan) continue`). This is load-bearing: see change #4. A per-reason suppression
@@ -586,7 +591,9 @@ Requirements on that seam, agreed with the item 1 fork:
   any gap is always reported") are exactly right for this.
 - Payload for this reason: `headroomBps`, `lif`, `maxLif`, `secondsSinceMaturity`, `tCrossSeconds`.
   `tCrossSeconds` is what makes the line actionable rather than merely diagnostic — it says when the
-  position _will_ be viable.
+  position _will_ be viable. No `details` bag was added and none is needed: `plan.skipped` currently
+  logs `{ marketId, borrower, reason }` and these are a plain widening of that call. A speculative
+  unused field would be rejected by `knip` anyway.
 
 Event naming is agreed with the BOTS-35 item 2 fork, split by pipeline stage to match the existing
 `plan.*` / `quote.*` / `simulate.*` convention: this gate is `plan.headroom_insufficient`; their
@@ -723,8 +730,8 @@ Per CLAUDE.md, run once the code is settled — `Promise.all`-concurrent where i
 1. **Do the cheap correctness fixes land, and in what order?** All four are small, all are verified
    against production, and none is justified by revenue: the misleading allowance string (131
    occurrences), the discarded `SubmitOutcome` clearing backoff on failed sends, the backoff hole across
-   a computable crossover, and `tx.*` carrying no borrower/id so 157 failures are unattributable — that
-   last one breaks the repo's documented id-join convention exactly where the `SubmitOutcome` fix lands.
+   and a computable crossover. **Not** a defect, contrary to an earlier draft: `tx.*` correlation is
+   intact — every line carries `label` (`${id}:${borrower}`), so no instrumentation change is needed.
 1. **Thresholds stay at `0`.** No prod behaviour change is proposed at this book size. The
    `plan.skipped` telemetry still earns its place by bounding wasted aggregator quotes (81 per burst)
    and `plan.built` volume (824 per burst), which is rate-limit budget rather than margin.
@@ -759,13 +766,20 @@ committed and pushed to a branch before anything is stacked on it.
 
 ## How much of this to trust
 
-Seven claims in earlier drafts of this document were overturned during the investigation: the
+Nine claims in earlier drafts of this document were overturned during the investigation: the
 `SEIZE_CAP_MARGIN_BPS` arithmetic, "the winners were almost certainly inventory-funded", "the backoff
 schedule lost the position", "route quality on a $10k clip", the third drift branch, a fitted `10 bps`
 default, and — a process error rather than a reasoning one — a claim that no remote branch carried
 `planWithReason`, which was asserted after the verifying command had been **refused by the tool** and
-never re-run. Each fell to someone querying an underlying log field or contract line instead of arguing
-from a summary.
+never re-run.
+
+The last two are the most uncomfortable, because both contradicted source that had _already been read
+into this session's own context_: that PR #134 introduced a `SubmitOutcome` type (`submit` already
+returned `Promise<boolean>`, read at `pending-queue.ts:82`), and that `tx.*` events carry no
+correlation field (every one carries `label`, read at `pending-queue.ts:254` and `:282`). Both were
+adopted from a peer's summary that contradicted the file, and the second was escalated as a real defect
+that would have generated work. Each fell to someone querying an underlying log field or contract line
+instead of arguing from a summary.
 
 The pattern is more useful than the tally. **Claims traced to `Midnight.sol` or the repository source
 held; claims inferred from the incident narrative did not** — including BOTS-35's own premise that the
