@@ -185,6 +185,20 @@ document quantifies. They differ only in amplifier — the simulate-stage failur
 backoff-suppressed (`backoff.record` fires), the send-stage ones were not (`backoff.clear` fires
 instead) — so they need two accounting fixes but one economic fix.
 
+### Drift bounds: basis versus outright vol
+
+Two distinct exposures, easily conflated:
+
+- **Will the repay clear?** Price-independent to first order. `requiredRepay` and the swap's actual
+  output both scale with price, so only oracle-versus-DEX _basis_ drift matters.
+- **Will the router min-out clear?** Full outright vol exposure, because `amountOutMinimum` is a frozen
+  integer compared against a price-scaling actual output. This is defect #3's error string.
+
+A gate whose two sides are computed from the _same_ lens read at the _same_ instant is price-level
+invariant and therefore basis-only — the frozen-integer reading applies to the calldata that has
+already been minted, not to the decision. Which is why quote age, not price level, is the variable to
+control.
+
 ### Drift bounds on any repay-vs-output gate
 
 A gate comparing `amountOutMinimum >= requiredRepay` at quote time is not a structural guarantee.
@@ -367,6 +381,13 @@ Per-venue derivation, matching how each venue actually binds its floor:
   This is the largest slippage that still keeps the aggregator's own min-out above break-even, so it
   is simultaneously adaptive and never looser than the operator's ceiling. On a cold probe cache, fall
   back to `referenceAmountOut` as the denominator — the same oracle reference uniswap-v3 already uses.
+
+**Quote freshness is load-bearing here, and the probe cache is not a substitute.** `amountOutMinimum`
+is a frozen integer in calldata while the actual output scales with price, so the guarantee decays with
+quote age: over ~2 blocks the residual is oracle-versus-DEX basis, but over minutes it becomes outright
+price vol. `PROBE_STALE_MS` defaults to `600_000` — ten minutes, most of the ramp — so a probe estimate
+may not be used as the denominator for the derived slippage. Use the firm quote that is actually being
+broadcast, and never reuse a quote across the ramp.
 
 The strongest justification for the floor is not the diagnostic one (both paths revert; the floor just
 names the cause and burns slightly less gas). It is that the floor makes **`SLIPPAGE_BPS` monotone and
