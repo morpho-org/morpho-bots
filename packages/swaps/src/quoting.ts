@@ -102,7 +102,7 @@ export function passesRouteQuality(args: {
  * qualifies, however large it looks: it is our reconstruction, so checking it against the floor checks
  * our arithmetic against itself (see {@link Swap.minOutSource}).
  */
-const clearsFloor = (swap: Swap, floor: bigint): boolean =>
+export const clearsFloor = (swap: Swap, floor: bigint): boolean =>
   swap.minOutSource === 'venue' && swap.amountOutMinimum >= floor
 
 const slippageForFloor = (floor: bigint, denominator: bigint): number =>
@@ -186,9 +186,11 @@ async function firmQuoteVenue(args: {
   const { tokenIn, amountIn, steps, request, maxRouteImpactBps } = args
   const { loanToken, referenceAmountOut, minAcceptableAmountOut } = request
 
-  // A floor above the oracle reference would imply negative slippage; clamp rather than reject, since
-  // rounding can put break-even a unit over the reference on a dust seize.
-  const economicFloor =
+  // The clamp exists only because a percentage cannot express a floor above its own denominator: at
+  // `lif == WAD` the double-ceil in break-even can land a unit over the floored oracle reference. It is
+  // an ARITHMETIC bound on what we can ask a venue for — never a relaxation of what we accept, which is
+  // always the requested `minAcceptableAmountOut` (see the postcondition below).
+  const askableFloor =
     minAcceptableAmountOut > referenceAmountOut ? referenceAmountOut : minAcceptableAmountOut
 
   const paramsFor = (denominator: bigint): QuoteParameters => ({
@@ -199,7 +201,8 @@ async function firmQuoteVenue(args: {
     // before the callback. After unwraps it is the chain's worst-case output — a fixed-amount
     // venue can only leave skimmable surplus, never revert on shortfall.
     amountIn,
-    slippageBps: slippageForFloor(economicFloor, denominator),
+    slippageBps: slippageForFloor(askableFloor, denominator),
+    minAcceptableAmountOut,
     executor,
     referenceAmountOut,
     // The request's decimals describe the RAW collateral; after an unwrap they would mislabel
@@ -222,7 +225,13 @@ async function firmQuoteVenue(args: {
   // quoted output puts it back. Uniswap applies the percentage to the reference itself and is already
   // at or above the floor, so it never takes this branch.
   let swap = first.data
-  if (!clearsFloor(swap, economicFloor) && swap.expectedAmountOut > 0n) {
+  // A `derived` minimum can never clear the floor however it is asked for, so a retry there is a second
+  // API call that is guaranteed not to help.
+  if (
+    swap.minOutSource === 'venue' &&
+    !clearsFloor(swap, minAcceptableAmountOut) &&
+    swap.expectedAmountOut > 0n
+  ) {
     const second = await quote(paramsFor(swap.expectedAmountOut))
     if (second.data) swap = second.data
   }
@@ -233,8 +242,8 @@ async function firmQuoteVenue(args: {
   // cannot be checked at all. In every one of those cases the encoded bound does not protect the
   // repay, so the venue is refused and the caller falls through to the next one. Keeping a
   // known-underfloor quote here is what the earlier revision got wrong.
-  if (!clearsFloor(swap, economicFloor)) {
-    return { kind: 'floor_unmet', swap, floor: economicFloor }
+  if (!clearsFloor(swap, minAcceptableAmountOut)) {
+    return { kind: 'floor_unmet', swap, floor: minAcceptableAmountOut }
   }
 
   // The reference stays the FULL-PATH oracle value (collateral → loan): the unwrap chain threads its
@@ -324,6 +333,22 @@ function unwrapOnlyPlan(args: {
       collateral: request.collateralToken,
       expected: resolution.amountIn,
       oracle: request.referenceAmountOut
+    })
+    return { kind: 'failed', reason: 'bad_route' }
+  }
+  // The same economic floor the venue path enforces. `resolution.amountIn` is the chain's threaded
+  // WORST-CASE output, and every hop encodes its own min-out, so it is an on-chain bound rather than an
+  // estimate — but route quality alone does not check it against break-even, and the two thresholds are
+  // unrelated: a chain can clear `maxRouteImpactBps` and still land under the repay.
+  if (resolution.amountIn < request.minAcceptableAmountOut) {
+    logger.warn('quote.floor_unmet', {
+      venue: 'unwrap-only',
+      id: request.id,
+      collateral: request.collateralToken,
+      expected: resolution.amountIn,
+      amountOutMinimum: resolution.amountIn,
+      minOutSource: 'venue',
+      floor: request.minAcceptableAmountOut
     })
     return { kind: 'failed', reason: 'bad_route' }
   }

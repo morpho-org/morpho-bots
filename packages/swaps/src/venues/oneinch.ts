@@ -3,7 +3,7 @@ import { getAddress, isAddressEqual, isHex } from 'viem'
 import type { RateLimitedClient } from '../http-client'
 import type { PriceParameters, PriceQuote, QuoteParameters, Swap } from '../types'
 
-import { BPS, ONEINCH_BASE_URL, ONEINCH_ROUTER } from '../constants'
+import { ONEINCH_BASE_URL, ONEINCH_ROUTER } from '../constants'
 import { QuoteError } from '../types'
 
 /** The 1inch arm of the per-collateral swap config. */
@@ -41,7 +41,10 @@ export async function quoteOneInch(
       from: params.executor,
       origin: params.executor,
       receiver: params.executor,
-      slippage: (params.slippageBps / 100).toString(),
+      // `minReturn` is an ABSOLUTE base-unit minimum, unlike `slippage` which is a percentage the API
+      // applies to its own quote. Asking for the absolute floor is what lets the returned bound be
+      // reported faithfully rather than reconstructed — see {@link Swap.minOutSource}.
+      minReturn: params.minAcceptableAmountOut.toString(),
       disableEstimate: 'true'
     }
   })
@@ -77,12 +80,11 @@ export async function quoteOneInch(
     callData: json.tx.data,
     amountIn: { source: 'fixed', value: params.amountIn },
     expectedAmountOut,
-    // RECONSTRUCTED, not read: 1inch returns opaque calldata with its own bound baked in from the
-    // `slippage` percentage, and nothing here verifies this matches it. Its `minReturn` parameter would
-    // let us set an absolute floor and report it faithfully; until that is wired, a caller enforcing an
-    // economic floor must not use this venue. See {@link Swap.minOutSource}.
-    amountOutMinimum: (expectedAmountOut * (BPS - BigInt(params.slippageBps))) / BPS,
-    minOutSource: 'derived'
+    // The absolute `minReturn` we asked for, which the router enforces — the same trust boundary as
+    // 0x's `minBuyAmount` or LiFi's `toAmountMin`, and unlike the old `slippage` path this is not a
+    // reconstruction of a percentage the API applied to its own quote.
+    amountOutMinimum: params.minAcceptableAmountOut,
+    minOutSource: 'venue'
   }
 }
 

@@ -5,11 +5,11 @@ import { describe, expect, it } from 'vitest'
 
 import type { HttpVenue, RateLimitedClient } from '../src/http-client'
 import type { QuoteLogger, QuoteRequest } from '../src/quoting'
-import type { QuoteOutcome, Venue } from '../src/types'
+import type { QuoteOutcome, Swap, Venue } from '../src/types'
 import type { Unwrapper } from '../src/unwrappers/resolve'
 
 import { ONEINCH_ROUTER, ZEROX_ALLOWANCE_HOLDER } from '../src/constants'
-import { composeMultiVenueQuoting, passesRouteQuality } from '../src/quoting'
+import { clearsFloor, composeMultiVenueQuoting, passesRouteQuality } from '../src/quoting'
 import { QuoteError } from '../src/types'
 
 const NOOP_LOGGER: QuoteLogger = { info: () => {}, warn: () => {} }
@@ -243,6 +243,27 @@ describe('composeMultiVenueQuoting', () => {
     expect(await quoteFor(REQUEST)).toEqual({ kind: 'failed', reason: 'bad_route' })
   })
 
+  // The reviewer's counterexample: an unwrap chain can clear route quality and still land under
+  // break-even, because the two thresholds are unrelated. This path never touches a venue, so the
+  // venue-side postcondition does not cover it.
+  it('holds an unwrap-only plan to the economic floor, not just route quality', async () => {
+    // Reference 1000, route-quality floor 950, unwrap worst case 970 — passes route quality.
+    const unwrapper = fakeUnwrapper({ from: COLLATERAL, to: LOAN, out: 970n })
+    const { quoteFor } = composeMulti(['0x'], [], multiHttp({}), { unwrappers: [unwrapper] })
+
+    // Break-even 960: the chain clears it.
+    expect(await quoteFor({ ...REQUEST, minAcceptableAmountOut: 960n })).toMatchObject({
+      kind: 'swap'
+    })
+
+    // Break-even 990: it does not, and must be refused rather than broadcast with a bound that cannot
+    // fund the repay.
+    expect(await quoteFor({ ...REQUEST, minAcceptableAmountOut: 990n })).toEqual({
+      kind: 'failed',
+      reason: 'bad_route'
+    })
+  })
+
   it('drops the request tokenInDecimals after an unwrap (they described the raw collateral)', async () => {
     const unwrapper = fakeUnwrapper({ from: COLLATERAL, to: UNDERLYING, out: 1000n })
     // LiquidSwap requires tokenInDecimals; the post-unwrap quote must NOT reuse the share token's,
@@ -364,9 +385,11 @@ describe('economic min-out floor', () => {
     return { client, calls }
   }
 
+  // 0x is the venue under test here because it takes a PERCENTAGE, which is what this derivation
+  // produces. 1inch takes an absolute `minReturn` and so never exercises it.
   const quoteWith = async (request: QuoteRequest, body: unknown) => {
     const { client, calls } = capturingHttp(body)
-    const { quoteFor } = composeMulti(['1inch'], [{ venue: '1inch', expectedOut: 1000n }], client)
+    const { quoteFor } = composeMulti(['0x'], [{ venue: '0x', expectedOut: 1000n }], client)
     await quoteFor(request)
     return { calls }
   }
@@ -375,25 +398,27 @@ describe('economic min-out floor', () => {
     // reference 1000, break-even 900 -> the route may give up 100/1000 = 1000bps = 10%.
     const { calls } = await quoteWith(
       { ...REQUEST, minAcceptableAmountOut: 900n },
-      oneInchBody('1000')
+      zeroxBody('1000')
     )
-    expect(calls[0]?.searchParams?.slippage).toBe('10')
+    expect(calls[0]?.searchParams?.slippageBps).toBe('1000')
   })
 
   it('asks for zero slippage when break-even is the whole reference', async () => {
     const { calls } = await quoteWith(
       { ...REQUEST, minAcceptableAmountOut: 1000n },
-      oneInchBody('1000')
+      zeroxBody('1000')
     )
-    expect(calls[0]?.searchParams?.slippage).toBe('0')
+    expect(calls[0]?.searchParams?.slippageBps).toBe('0')
   })
 
   it('clamps a floor above the reference rather than asking for negative slippage', async () => {
     const { calls } = await quoteWith(
       { ...REQUEST, minAcceptableAmountOut: 1200n },
-      oneInchBody('1000')
+      zeroxBody('1000')
     )
-    expect(calls[0]?.searchParams?.slippage).toBe('0')
+    // The clamp is arithmetic only — a percentage cannot express a floor above its own denominator. It
+    // does NOT lower what is accepted: the postcondition still requires the requested 1200.
+    expect(calls[0]?.searchParams?.slippageBps).toBe('0')
   })
 
   // The finding this change exists for: a FIXED allowance is wrong in both directions and crosses
@@ -402,19 +427,19 @@ describe('economic min-out floor', () => {
     const REFERENCE = 10_000n
     const early = await quoteWith(
       { ...REQUEST, referenceAmountOut: REFERENCE, minAcceptableAmountOut: 9985n },
-      oneInchBody('10000')
+      zeroxBody('10000')
     )
     const late = await quoteWith(
       { ...REQUEST, referenceAmountOut: REFERENCE, minAcceptableAmountOut: 9580n },
-      oneInchBody('10000')
+      zeroxBody('10000')
     )
 
     // Early (15bps of incentive) the allowance is FAR tighter than the operator's 1%: a fixed 1%
     // would sit below break-even and let a shortfall through to fail at the repay instead.
-    expect(early.calls[0]?.searchParams?.slippage).toBe('0.15')
+    expect(early.calls[0]?.searchParams?.slippageBps).toBe('15')
     // Late (420bps) it is FAR looser: a fixed 1% would sit above break-even and reject fills that
     // would have settled profitably.
-    expect(late.calls[0]?.searchParams?.slippage).toBe('4.2')
+    expect(late.calls[0]?.searchParams?.slippageBps).toBe('420')
   })
 })
 
@@ -510,21 +535,23 @@ describe('aggregator min-out actually clears break-even', () => {
     expect(sent).toHaveLength(1)
   })
 
-  it('refuses a venue whose min-out is only RECONSTRUCTED, however large it looks', async () => {
-    // 1inch returns opaque calldata and we rebuild its floor arithmetically, so checking that value
-    // against break-even checks our own arithmetic against itself. A floor that cannot be read cannot
-    // be enforced, so the venue is refused rather than trusted.
-    const client: RateLimitedClient = { getJson: async <T>() => oneInchBody('10000') as T }
-    const outcome = await composeMulti(
-      ['1inch'],
-      [{ venue: '1inch', expectedOut: 10_000n }],
-      client
-    ).quoteFor({
-      ...REQUEST,
-      referenceAmountOut: REFERENCE,
-      minAcceptableAmountOut: FLOOR
+  it('refuses a min-out that is only RECONSTRUCTED, however large it looks', () => {
+    // No shipped venue reports a `derived` minimum any more — 1inch moved to an absolute `minReturn` —
+    // so this guards the rule directly rather than through a venue. A reconstruction cannot be checked
+    // against the floor: doing so compares our own arithmetic with itself.
+    const swap = (minOutSource: 'venue' | 'derived'): Swap => ({
+      spender: ROUTER,
+      target: ROUTER,
+      value: 0n,
+      callData: '0xabc',
+      amountIn: { source: 'fixed', value: 1000n },
+      expectedAmountOut: 10_000n,
+      amountOutMinimum: 10_000n,
+      minOutSource
     })
-
-    expect(outcome).toEqual({ kind: 'failed', reason: 'bad_route' })
+    expect(clearsFloor(swap('venue'), 9_580n)).toBe(true)
+    expect(clearsFloor(swap('derived'), 9_580n)).toBe(false)
+    // ...and a venue-reported minimum below the floor is still refused.
+    expect(clearsFloor({ ...swap('venue'), amountOutMinimum: 9_579n }, 9_580n)).toBe(false)
   })
 })

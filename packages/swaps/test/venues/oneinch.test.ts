@@ -23,7 +23,8 @@ const params: QuoteParameters = {
   amountIn: 100n,
   slippageBps: 50, // 0.5%
   executor: EXECUTOR,
-  referenceAmountOut: 2000n
+  referenceAmountOut: 2000n,
+  minAcceptableAmountOut: 1990n
 }
 
 function fakeClient(body: unknown) {
@@ -53,15 +54,17 @@ describe('quoteOneInch', () => {
     expect(swap.expectedAmountOut).toBe(2000n)
     // 2000 × (10000 - 50) / 10000 = 1990.
     expect(swap.amountOutMinimum).toBe(1990n)
+    // Reported, not reconstructed: the absolute floor we asked the router to enforce.
+    expect(swap.minOutSource).toBe('venue')
 
-    // slippage is sent as a percentage (bps / 100); output goes to the Executor.
+    // `minReturn` is an ABSOLUTE base-unit minimum, not a percentage; output goes to the Executor.
     expect(calls[0]?.searchParams).toMatchObject({
       src: COLLATERAL,
       dst: LOAN,
       amount: '100',
       from: EXECUTOR,
       receiver: EXECUTOR,
-      slippage: '0.5'
+      minReturn: '1990'
     })
   })
 

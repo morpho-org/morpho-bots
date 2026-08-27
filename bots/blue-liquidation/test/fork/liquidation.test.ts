@@ -120,6 +120,9 @@ describe.skipIf(!FORK_URL || !FIXTURE)(
           tokenOut: out.params.loanToken,
           amountIn: liquidationPlan.seizedAssets,
           slippageBps: SLIPPAGE_BPS,
+          // The fork suite drives the venue directly, so it sets its own floor rather than deriving
+          // one; 0 means "no economic floor", which is what a raw exec-path test wants.
+          minAcceptableAmountOut: 0n,
           executor: executooor,
           referenceAmountOut: expectedLoanOut(liquidationPlan, out)
         }

@@ -44,6 +44,7 @@ function params(overrides: Partial<QuoteParameters> = {}): QuoteParameters {
     slippageBps: 50,
     executor: EXECUTOR,
     referenceAmountOut: 2000n,
+    minAcceptableAmountOut: 0n,
     ...overrides
   }
 }

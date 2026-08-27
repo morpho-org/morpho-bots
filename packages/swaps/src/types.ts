@@ -34,6 +34,15 @@ export type QuoteParameters = TokenInDecimals & {
   executor: Address
   /** Oracle-priced expected output (no DEX slippage) — the no-route-quality reference. */
   referenceAmountOut: bigint
+  /**
+   * The break-even output the quote must clear, in `tokenOut` units.
+   *
+   * Carried alongside {@link QuoteParameters.slippageBps} because venues express a floor differently:
+   * most accept only a percentage, which the quoting layer derives from this, while 1inch takes an
+   * ABSOLUTE `minReturn` and so needs the value itself. A venue that can pass this straight through can
+   * report the bound faithfully instead of reconstructing it — see {@link Swap.minOutSource}.
+   */
+  minAcceptableAmountOut: bigint
 }
 
 /**
