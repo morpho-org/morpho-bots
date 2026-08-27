@@ -478,6 +478,16 @@ describe('assertIntentWithinPolicy', () => {
       expect(() => assertIntentWithinPolicy(intent, policyFor(), now)).not.toThrow()
     })
 
+    it('treats group ids differing only by hex case as one consumption domain', () => {
+      // Naive summing would breach the 20000000000 per-market cap; the viem-normalized group
+      // identity makes both rungs one domain charged once.
+      const intent = quoteIntent([
+        buyOffer({ group: bytes32('aa'), maxAssets: '15000000000' }),
+        buyOffer({ tick: '124', group: bytes32('AA'), maxAssets: '15000000000' })
+      ])
+      expect(() => assertIntentWithinPolicy(intent, policyFor(), now)).not.toThrow()
+    })
+
     it('denies a maker-wide overflow even when every per-market cap holds', () => {
       const intent = quoteIntent([
         buyOffer({ maxAssets: '20000000000' }),

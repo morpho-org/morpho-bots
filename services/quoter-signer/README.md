@@ -278,17 +278,20 @@ docker push "$ACCOUNT.dkr.ecr.$REGION.amazonaws.com/quoter-signer:<commit-sha>"
 ```
 
 Create the function. The skeleton needs no KMS or other resource permissions — an execution role
-with the `AWSLambdaBasicExecutionRole` managed policy (CloudWatch Logs only) is enough. Provide
-the deployment policy document through the function's environment
-(`--environment "Variables={QUOTER_SIGNER_POLICY=<policy JSON>}"`); without it every well-formed
-intent is denied with `PolicyNotConfiguredError`:
+with the `AWSLambdaBasicExecutionRole` managed policy (CloudWatch Logs only) is enough. The
+deployment policy document rides in the function's environment; without it every well-formed
+intent is denied with `PolicyNotConfiguredError`. The policy is itself JSON, so pass the
+environment as a file (`--environment` shorthand cannot safely carry the nested commas and
+quotes) — with the document from the Deployment policy section saved as `policy.json`:
 
 ```sh
+jq -n --arg policy "$(cat policy.json)" '{Variables: {QUOTER_SIGNER_POLICY: $policy}}' > environment.json
 aws lambda create-function \
   --function-name quoter-signer \
   --package-type Image \
   --code "ImageUri=$ACCOUNT.dkr.ecr.$REGION.amazonaws.com/quoter-signer:<commit-sha>" \
   --role "arn:aws:iam::$ACCOUNT:role/<basic-execution-role>" \
+  --environment file://environment.json \
   --architectures <x86_64|arm64> \
   --region "$REGION"
 ```

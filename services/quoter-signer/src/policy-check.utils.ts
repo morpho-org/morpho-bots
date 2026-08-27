@@ -1,4 +1,4 @@
-import { isAddressEqual, zeroAddress } from 'viem'
+import { hexToBigInt, isAddressEqual, zeroAddress } from 'viem'
 
 import type { IntentFees, IntentOffer, QuoterSignerIntent } from './intent.utils'
 import type {
@@ -107,7 +107,7 @@ const assertOfferWithinPolicy = (
  * stage.
  */
 type GroupBinding = {
-  readonly marketKey: string
+  readonly marketKey: bigint
   readonly buy: boolean
   readonly maxAssets: string
 }
@@ -117,24 +117,26 @@ const assertOffersWithinPolicy = (
   policy: QuoterSignerPolicy,
   nowSeconds: bigint
 ): void => {
-  const markets = new Map(policy.markets.map(market => [market.marketId.toLowerCase(), market]))
+  // Viem-first bytes32 identity: keys are the numeric value of the validated hex, so equality
+  // never depends on local string casing.
+  const markets = new Map(policy.markets.map(market => [hexToBigInt(market.marketId), market]))
   const window: OfferWindowBounds = {
     freshnessCeiling: BigInt(policy.offerWindow.freshnessCeilingSeconds),
     maxStartAge: BigInt(policy.offerWindow.maxStartAgeSeconds)
   }
-  const groupBindings = new Map<string, GroupBinding>()
+  const groupBindings = new Map<bigint, GroupBinding>()
   // One charge per protocol consumption domain (market, group, side, cap value): per-book leaves
   // sharing a side-wide group and cap count once instead of once per rung (TIB-2026-08-12 §6).
-  const lendDomains = new Map<string, { readonly marketKey: string; readonly assets: bigint }>()
+  const lendDomains = new Map<string, { readonly marketKey: bigint; readonly assets: bigint }>()
   offers.forEach((offer, index) => {
     const field = `offers[${index}]`
-    const marketKey = offer.marketId.toLowerCase()
+    const marketKey = hexToBigInt(offer.marketId)
     const market = markets.get(marketKey)
     if (market === undefined) {
       throw new IntentPolicyViolationError('market-allowlist', `${field}.marketId`)
     }
     assertOfferWithinPolicy(offer, field, market, policy, window, nowSeconds)
-    const groupKey = offer.group.toLowerCase()
+    const groupKey = hexToBigInt(offer.group)
     const binding = groupBindings.get(groupKey)
     if (binding === undefined) {
       groupBindings.set(groupKey, { marketKey, buy: offer.buy, maxAssets: offer.maxAssets })
@@ -152,7 +154,7 @@ const assertOffersWithinPolicy = (
       }
     }
   })
-  const marketLendExposure = new Map<string, bigint>()
+  const marketLendExposure = new Map<bigint, bigint>()
   let totalLendExposure = 0n
   for (const domain of lendDomains.values()) {
     marketLendExposure.set(

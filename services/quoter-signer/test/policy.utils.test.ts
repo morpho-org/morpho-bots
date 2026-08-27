@@ -353,6 +353,12 @@ describe('parseQuoterSignerPolicy', () => {
       'missing'
     ],
     [
+      'an empty remediation manifest on the setup-remediation surface',
+      JSON.stringify(document({ surface: 'setup-remediation', remediations: [] })),
+      'remediations',
+      'empty'
+    ],
+    [
       'an invalid remediation variant id',
       JSON.stringify(
         document({ remediations: [{ variant: 'Loan-Asset', feeCeiling: routineCeiling }] })

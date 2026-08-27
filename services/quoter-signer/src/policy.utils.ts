@@ -1,7 +1,7 @@
 import type { Address, Hex } from 'viem'
 
 import { MAX_CONTINUOUS_FEE, MAX_TICK } from '@morpho-org/midnight-sdk'
-import { getAddress, isAddress, isHex, size } from 'viem'
+import { getAddress, hexToBigInt, isAddress, isHex, size } from 'viem'
 
 import type { UnsignedDecimal } from './intent.utils'
 
@@ -127,7 +127,11 @@ export type QuoterSignerPolicy = {
     /** Ceilings for the operator-only break-glass revoke surface. */
     readonly protected: PolicyFeeCeiling
   }
-  /** Manifest-pinned setup-remediation variants; may be empty on non-remediation deployments. */
+  /**
+   * Manifest-pinned setup-remediation variants. Must be non-empty on the setup-remediation
+   * surface (enforced at parse — a remediation deployment with nothing to permit is an empty
+   * policy); may be empty on every other surface.
+   */
   readonly remediations: readonly PolicyRemediation[]
 }
 
@@ -247,9 +251,10 @@ const marketsValue = (value: unknown, field: string): readonly PolicyMarket[] =>
   const entries = arrayValue(value, field)
   if (entries.length === 0) throw new PolicyNotConfiguredError(field, 'empty')
   const markets = entries.map((entry, index) => marketValue(entry, `${field}[${index}]`))
-  const seen = new Set<string>()
+  // Viem-first bytes32 identity: numeric equality of the validated hex, not local string casing.
+  const seen = new Set<bigint>()
   markets.forEach((market, index) => {
-    const key = market.marketId.toLowerCase()
+    const key = hexToBigInt(market.marketId)
     if (seen.has(key)) {
       throw new PolicyNotConfiguredError(`${field}[${index}].marketId`, 'duplicate')
     }
@@ -406,6 +411,12 @@ export const parseQuoterSignerPolicy = (source: string | undefined): QuoterSigne
       'insufficient-protected-ceiling'
     )
   }
+  const remediations = remediationsValue(record.remediations, 'remediations')
+  // A remediation deployment with nothing to permit is an empty policy — refuse to serve rather
+  // than deny every otherwise valid variant as an intent violation.
+  if (surface === 'setup-remediation' && remediations.length === 0) {
+    throw new PolicyNotConfiguredError('remediations', 'empty')
+  }
   return {
     policyVersion: QUOTER_SIGNER_POLICY_VERSION,
     surface,
@@ -420,6 +431,6 @@ export const parseQuoterSignerPolicy = (source: string | undefined): QuoterSigne
       'maxTotalLendExposureAssets'
     ),
     feeCeilings: { routine, protected: protectedCeiling },
-    remediations: remediationsValue(record.remediations, 'remediations')
+    remediations
   }
 }

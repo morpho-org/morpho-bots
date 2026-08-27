@@ -1,6 +1,6 @@
 import type { Address, Hex } from 'viem'
 
-import { getAddress, isAddress, isHex, size } from 'viem'
+import { getAddress, hexToBigInt, isAddress, isHex, size } from 'viem'
 
 import { MalformedIntentError } from './malformed-intent.error'
 
@@ -371,7 +371,8 @@ const offersValue = (value: unknown, field: string): readonly IntentOffer[] => {
   if (buys > MAX_INTENT_OFFERS_PER_SIDE || offers.length - buys > MAX_INTENT_OFFERS_PER_SIDE) {
     throw new MalformedIntentError(field, 'too-many-offers')
   }
-  if (new Set(offers.map(offer => offer.marketId.toLowerCase())).size > MAX_INTENT_MARKETS) {
+  // Viem-first bytes32 identity: count distinct markets by the validated hex's numeric value.
+  if (new Set(offers.map(offer => hexToBigInt(offer.marketId))).size > MAX_INTENT_MARKETS) {
     throw new MalformedIntentError(field, 'too-many-markets')
   }
   return offers
