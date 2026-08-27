@@ -28,6 +28,7 @@ import {
 import {
   BOOTSTRAP_FIELDS,
   LADDER_FIELDS,
+  clampPlotPercent,
   createDefaultBootstrap,
   createDefaultLadder,
   createDefaultPlaygroundState,
@@ -194,7 +195,11 @@ const BootstrapGraphic = ({
 }
 
 const LadderGraphic = ({ graphic, index }: { graphic: LadderGraphicModel; index: number }) => {
-  const description = `Ladder market ${index + 1}, ${graphic.marketId}. Range ${graphic.minimumRateBps} to ${graphic.maximumRateBps} BPS. Deterministic reference ${graphic.referenceRateBps} BPS and center ${graphic.centerRateBps} BPS. Triangle markers are lend rungs and circle markers are reduce-only rungs. Exact allocations and caps are in the semantic table. No live offers, balances, positions, or book.`
+  const maturityText =
+    graphic.maximumCenterRateBps === undefined
+      ? ''
+      : ` The maturity premium raises the center to ${graphic.maximumCenterRateBps} BPS at far maturities.`
+  const description = `Ladder market ${index + 1}, ${graphic.marketId}. Range ${graphic.minimumRateBps} to ${graphic.maximumRateBps} BPS. Deterministic reference ${graphic.referenceRateBps} BPS and center ${graphic.centerRateBps} BPS.${maturityText} Triangle markers are lend rungs and circle markers are reduce-only rungs. Exact allocations and caps are in the semantic table. No live offers, balances, positions, or book.`
   return (
     <article className="preview-card ladder-preview" data-preview="ladder">
       <h3 id={`ladder-title-${index}`}>Ladder market {index + 1}</h3>
@@ -221,10 +226,20 @@ const LadderGraphic = ({ graphic, index }: { graphic: LadderGraphicModel; index:
           </b>
           <b
             className="ladder-marker ladder-center-marker"
-            style={{ top: `${graphic.rateToY(graphic.centerRateBps)}%` }}
+            style={{ top: `${clampPlotPercent(graphic.rateToY(graphic.centerRateBps))}%` }}
           >
             Center {graphic.centerRateBps} BPS
           </b>
+          {graphic.maximumCenterRateBps === undefined ? null : (
+            <b
+              className="ladder-marker ladder-center-marker ladder-center-marker--maximum"
+              style={{
+                top: `${clampPlotPercent(graphic.rateToY(graphic.maximumCenterRateBps))}%`
+              }}
+            >
+              Far-maturity center {graphic.maximumCenterRateBps} BPS
+            </b>
+          )}
         </div>
         <figcaption>▲ Lend · ● Reduce-only · values are also available in the table</figcaption>
       </figure>
@@ -432,7 +447,9 @@ const Playground = () => {
             if (id) next[kind].splice(to, 0, id)
             return next
           })
-          requestAnimationFrame(() => document.getElementById(`${kind}-${to}-marketId`)?.focus())
+          // A zero-delay timer runs after React's commit without requestAnimationFrame's
+          // paint-coupled scheduling, which throttled headless/background documents can starve.
+          setTimeout(() => document.getElementById(`${kind}-${to}-marketId`)?.focus(), 0)
         }
         const remove = (kind: CollectionKind, index: number) => {
           void form.removeFieldValue(kind, index)
@@ -440,7 +457,7 @@ const Playground = () => {
             ...previous,
             [kind]: previous[kind].filter((_, i) => i !== index)
           }))
-          requestAnimationFrame(() => document.getElementById(`add-${kind}`)?.focus())
+          setTimeout(() => document.getElementById(`add-${kind}`)?.focus(), 0)
         }
         const add = (kind: CollectionKind) => {
           const marketId = nextMarketId(state[kind])
@@ -448,8 +465,9 @@ const Playground = () => {
             kind === 'bootstrap' ? createDefaultBootstrap(marketId) : createDefaultLadder(marketId)
           form.pushFieldValue(kind, item as never)
           setUiIds(previous => ({ ...previous, [kind]: [...previous[kind], newId(kind)] }))
-          requestAnimationFrame(() =>
-            document.getElementById(`${kind}-${state[kind].length}-marketId`)?.focus()
+          setTimeout(
+            () => document.getElementById(`${kind}-${state[kind].length}-marketId`)?.focus(),
+            0
           )
         }
         const editor = <Item extends BootstrapInput | LadderInput>(
@@ -625,7 +643,7 @@ const Playground = () => {
         )
         const activateTab = (format: ExportFormat, focus = false) => {
           setActiveExport(format)
-          if (focus) requestAnimationFrame(() => document.getElementById(`tab-${format}`)?.focus())
+          if (focus) setTimeout(() => document.getElementById(`tab-${format}`)?.focus(), 0)
         }
         const tabKey = (event: React.KeyboardEvent, index: number) => {
           let next = index

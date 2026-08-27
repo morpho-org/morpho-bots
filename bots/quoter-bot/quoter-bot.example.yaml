@@ -83,15 +83,24 @@ bootstrap:
     maximumRateBps: 800
     autoRefill: true
 
-# C = reference + quotePremiumBps. Rung k (zero-based) is C-spread/2-k*step on the
-# lower side and C+spread/2+k*step on the higher side. Runtime rates never clamp.
-# Only closest rungs that each satisfy minimumOfferAssets are funded. Weight k is
-# 10000+k*sizeSkewBps; the outermost funded rung receives division remainder.
+# C = reference + quotePremiumBps + resolved maturityPremium. Rung k (zero-based) is
+# C-spread/2-k*step on the lower side and C+spread/2+k*step on the higher side.
+# Runtime rungs saturate at the hard bounds instead of failing. Only closest rungs
+# that each satisfy minimumOfferAssets are funded. Weight k is 10000+k*sizeSkewBps;
+# the outermost funded rung receives division remainder.
 ladder:
   - marketId: '0x5555555555555555555555555555555555555555555555555555555555555555'
     targetRate:
       strategy: 'variable_rate_avg'
     quotePremiumBps: '0'
+    # Optional term structure: the center gains
+    # min(floor(premiumPerYearBps * secondsToMaturity / 31536000), maximumPremiumBps).
+    # Omit maximumPremiumBps for an uncapped linear premium; omit the whole block to
+    # keep the static center only.
+    maturityPremium:
+      shape: 'linear'
+      premiumPerYearBps: '120'
+      maximumPremiumBps: '300'
     spreadBps: '200'
     stepBps: '100'
     rungCount: '3'

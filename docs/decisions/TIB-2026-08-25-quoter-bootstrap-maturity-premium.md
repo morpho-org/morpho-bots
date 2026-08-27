@@ -1,14 +1,20 @@
 # TIB-2026-08-25: Quoter-bot bootstrap maturity premium
 
-| Field          | Value                                            |
-| -------------- | ------------------------------------------------ |
-| **Status**     | Proposed                                         |
-| **Date**       | 2026-08-25                                       |
-| **Author**     | @julien                                          |
-| **Scope**      | Bot: quoter-bot                                  |
-| **Supersedes** | TIB-2026-07-27-midnight-quoter-bot _(partially)_ |
+| Field             | Value                                                                  |
+| ----------------- | ---------------------------------------------------------------------- |
+| **Status**        | Proposed                                                               |
+| **Date**          | 2026-08-25                                                             |
+| **Author**        | @julien                                                                |
+| **Scope**         | Bot: quoter-bot                                                        |
+| **Supersedes**    | TIB-2026-07-27-midnight-quoter-bot _(partially)_                       |
+| **Superseded by** | TIB-2026-08-25-quoter-ladder-maturity-premium _(ladder non-goal only)_ |
 
 ---
+
+> **Partially superseded (2026-08-25).** The "maturity curves for the ladder workflow" non-goal is
+> no longer current: the same per-entry model now prices ladder effective centers — see
+> [TIB-2026-08-25-quoter-ladder-maturity-premium](./TIB-2026-08-25-quoter-ladder-maturity-premium.md).
+> Every other decision in this TIB remains in force.
 
 ## Context
 

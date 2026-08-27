@@ -73,6 +73,27 @@ describe('maturityReadsByMarket', () => {
     expect(providers.counts()).toEqual({ marketReads: 2, blockReads: 1 })
   })
 
+  test('caps block sharing at the caller cadence so faster cycles refresh the timestamp', async () => {
+    const providers = harness()
+    const now = vi.spyOn(performance, 'now')
+    now.mockReturnValue(0)
+    const reads = maturityReadsByMarket({
+      entries: [premiumEntry(marketId)],
+      midnight: providers.midnight,
+      client: providers.client,
+      blockShareMs: 1_000
+    })
+
+    await reads.get(marketId)?.()
+    now.mockReturnValue(999)
+    await reads.get(marketId)?.()
+    expect(providers.counts().blockReads).toBe(1)
+
+    now.mockReturnValue(1_000)
+    await reads.get(marketId)?.()
+    expect(providers.counts().blockReads).toBe(2)
+  })
+
   test('refreshes the shared block read after the monotonic share window elapses', async () => {
     const providers = harness()
     const now = vi.spyOn(performance, 'now')

@@ -69,10 +69,12 @@ same make port to clean all strategy-owned bootstrap groups.
 ### Ladder quoter-bot
 
 `LadderQuoterService` consumes the analogous `LadderPositionService`,
-`LadderReferenceRateService`, and `LadderMakeService` ports. The domain module validates ladder
-configuration, generates deterministic quote sets, and decides whether a live center must be
-recentered. The application service reconstructs the active quote, derives a complete desired quote
-from fresh capacity, and selects `publish`, `rest`, `resize`, or `recenter`.
+`LadderReferenceRateService` (whose observation is extended with the market's fresh seconds to
+maturity when a maturity premium is configured), and `LadderMakeService` ports. The domain module
+validates ladder configuration, generates deterministic quote sets around the premium-adjusted
+effective center, and decides whether a live center must be recentered. The application service
+reconstructs the active quote, derives a complete desired quote from fresh capacity, and selects
+`publish`, `rest`, `resize`, or `recenter`.
 
 `MidnightLadderMakeService` implements live reconciliation. Its infrastructure collaborators handle
 inventory reads, tick conversion, lower/higher-rate to buy/sell mapping, offer-tree encoding,

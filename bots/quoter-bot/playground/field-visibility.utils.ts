@@ -9,7 +9,8 @@ const DEFAULT_MATURITY_PREMIUM_PER_YEAR_BPS = '100'
  * Filters an editor's field definitions down to the rows valid for one market item.
  * @param fields - Complete ordered field definitions for the collection kind.
  * @param targetRate - The item's target-rate selection controlling the hardcoded-rate row.
- * @param maturityPremium - The item's maturity-premium selection; only bootstrap items supply it.
+ * @param maturityPremium - The item's maturity-premium selection; bootstrap and ladder items
+ * supply it.
  * @returns The fields to render: the hardcoded-rate row only for the `hardcoded` strategy, the
  * maturity-premium shape row always, and its detail rows only while a premium is selected.
  */
@@ -21,9 +22,7 @@ export const visibleFields = (
   fields.filter(
     ([key]) =>
       (key !== 'targetRate.hardcodedRateBps' || targetRate.strategy === 'hardcoded') &&
-      (!key.startsWith('maturityPremium.') ||
-        key === 'maturityPremium.shape' ||
-        maturityPremium !== undefined)
+      (!key.startsWith('maturityPremium.') || maturityPremium !== undefined)
   )
 
 /**

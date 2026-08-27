@@ -95,6 +95,7 @@ export const LADDER_MARKET_FIELDS = [
   'marketId',
   'targetRate',
   'quotePremiumBps',
+  'maturityPremium',
   'spreadBps',
   'stepBps',
   'rungCount',
@@ -404,6 +405,13 @@ const safeInteger = (value: unknown, field: string) => {
  * @param value - Untrusted collection value at the JSON or YAML boundary.
  * @param allowlistedMarkets - Canonical markets allowed for this complete replacement collection.
  * @returns Validated ladder configurations in input order.
+ * @throws `ConfigValidationError` for a non-list value, an unknown or missing entry field, a
+ * malformed integer or group mode, a malformed optional `maturityPremium` (unknown nested key,
+ * unsupported shape, missing slope, non-positive slope or cap, or an unquoted integer), a
+ * non-allowlisted or duplicate market, any domain shape invariant violation, and a hardcoded
+ * target whose full shape no attainable premium can place inside the hard bounds.
+ * @remarks Pure parsing and validation with no environment, provider, logging, or persistence
+ * access; browser-safe, so the playground reuses it verbatim for editing and previews.
  */
 export const ladderConfigsValue = (
   value: unknown,
@@ -414,7 +422,10 @@ export const ladderConfigsValue = (
   }
   const configs = value.map((item, index) => {
     const prefix = `ladder[${index}]`
-    const record = exactRecord(item, prefix, LADDER_MARKET_FIELDS, ['targetRate'])
+    const record = exactRecord(item, prefix, LADDER_MARKET_FIELDS, [
+      'targetRate',
+      'maturityPremium'
+    ])
     const required = (name: (typeof LADDER_MARKET_FIELDS)[number]) => record[name]
     const marketValue = required('marketId')
     const groupMode = required('groupMode')
@@ -425,6 +436,10 @@ export const ladderConfigsValue = (
         `${prefix} string fields must be strings`
       )
     }
+    const maturityPremium = maturityPremiumValue(
+      record.maturityPremium,
+      `${prefix}.maturityPremium`
+    )
     const config: TargetRateConfigured<LadderConfig> = {
       marketId: parseBytes32(marketValue, `${prefix}.marketId`),
       targetRate: targetRateStrategyValue(record.targetRate, `${prefix}.targetRate`),
@@ -433,6 +448,7 @@ export const ladderConfigsValue = (
         `${prefix}.quotePremiumBps`,
         true
       ),
+      ...(maturityPremium === undefined ? {} : { maturityPremium }),
       spreadBps: integerBigInt(required('spreadBps'), `${prefix}.spreadBps`, false),
       stepBps: integerBigInt(required('stepBps'), `${prefix}.stepBps`, false),
       rungCount: safeInteger(required('rungCount'), `${prefix}.rungCount`),
