@@ -741,19 +741,31 @@ Settled during exploration, recorded so they are not re-litigated:
 ## Operational note
 
 At the time of writing, the item 1 work this plan depends on (`planWithReason`, `PlanSkipReason`,
-`LEVEL_BY_REASON`, the sum identities, and `submit` returning a broadcast signal) exists **only as
-uncommitted working-tree changes in the shared main checkout** — not on `origin/main` and not on any
-remote branch. The shared stash stack also carries a leftover `lint-staged automatic backup` entry whose
-contents include `sizing/plan.ts`, so one aborted commit has already happened in that file. It should be
+`LEVEL_BY_REASON`, the sum identities, and `submit` returning a broadcast signal) exists as
+**uncommitted working-tree changes in the shared main checkout** — 443 insertions / 144 deletions across
+7 files, spanning both `bots/midnight-liquidation` and `bots/blue-liquidation`. It is not on
+`origin/main`.
+
+`origin/fix/tick-submit-and-plan-telemetry` (PR #134's branch) does contain `planWithReason`, so the
+concept is backed — but comparing file contents, the tree versions differ from that branch by 381
+changed lines in `plan.ts` and 176 in `tick.ts`, consistent with a re-derivation rather than a
+cherry-pick. So #134's branch is a recoverable copy of the _older variant being deliberately
+superseded_, which makes it a false comfort rather than a backup.
+
+The shared stash stack also carries a leftover `lint-staged automatic backup` entry whose contents
+include `sizing/plan.ts`, so one aborted commit has already happened in that exact file. Because the
+uncommitted set spans two bots, losing it would lose both halves of the same live bug. It should be
 committed and pushed to a branch before anything is stacked on it.
 
 ## How much of this to trust
 
-Six claims in earlier drafts of this document were overturned during the investigation: the
+Seven claims in earlier drafts of this document were overturned during the investigation: the
 `SEIZE_CAP_MARGIN_BPS` arithmetic, "the winners were almost certainly inventory-funded", "the backoff
-schedule lost the position", "route quality on a $10k clip", the third drift branch, and a fitted
-`10 bps` default. Each fell to someone querying an underlying log field or contract line instead of
-arguing from a summary.
+schedule lost the position", "route quality on a $10k clip", the third drift branch, a fitted `10 bps`
+default, and — a process error rather than a reasoning one — a claim that no remote branch carried
+`planWithReason`, which was asserted after the verifying command had been **refused by the tool** and
+never re-run. Each fell to someone querying an underlying log field or contract line instead of arguing
+from a summary.
 
 The pattern is more useful than the tally. **Claims traced to `Midnight.sol` or the repository source
 held; claims inferred from the incident narrative did not** — including BOTS-35's own premise that the
