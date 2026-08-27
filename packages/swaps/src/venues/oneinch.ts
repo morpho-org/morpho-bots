@@ -18,9 +18,10 @@ type OneInchSwap = {
 /**
  * Quotes 1inch via the one-step Classic Swap `/swap` endpoint, which returns ready-to-use `tx`
  * calldata. Approval is a plain ERC20 `approve` to the static AggregationRouterV6 (no Permit2). Output
- * is sent to `receiver` (the Executor). `slippage` is a percentage (bps / 100). `amount` is committed
- * off-chain, so the {@link Swap} carries `amountIn: { source: 'fixed' }`; the on-chain min-out is the
- * router's own bound (we record an oracle-derived floor for observability).
+ * is sent to `receiver` (the Executor). The floor is requested as an absolute `minReturn` rather than a
+ * `slippage` percentage, so the returned {@link Swap} reports the router's own bound
+ * (`minOutSource: 'venue'`) instead of reconstructing one. `amount` is committed off-chain, so the
+ * {@link Swap} carries `amountIn: { source: 'fixed' }`.
  */
 export async function quoteOneInch(
   client: RateLimitedClient,

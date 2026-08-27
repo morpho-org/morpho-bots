@@ -27,8 +27,8 @@ export type QuoteParameters = TokenInDecimals & {
   /**
    * Max output discount the venue may accept, in bps. **Derived**, not operator-set: the quoting layer
    * computes it from the liquidation's break-even output (`QuoteRequest.minAcceptableAmountOut`) so the
-   * resulting floor is economic. A percentage is all the aggregators accept, which is why this — and
-   * not the absolute floor — is the shape a venue sees.
+   * resulting floor is economic. Most venues accept only a percentage; the ones that take an absolute
+   * minimum read {@link QuoteParameters.minAcceptableAmountOut} instead.
    */
   slippageBps: number
   executor: Address
