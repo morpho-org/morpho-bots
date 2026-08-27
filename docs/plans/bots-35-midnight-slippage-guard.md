@@ -92,6 +92,10 @@ Consequences:
 - In normal mode `lifAt` returns full `maxLif` immediately, so headroom is 60–420 bps and the ratio floor
   is a no-op. It bites post-maturity plans essentially only.
 
+Pre-crossover volume, observed: **824 `plan.built`, of which backoff suppressed 743**; the surviving 81
+produced **81 `select.ok` and 81 `simulate.revert` — exactly 1:1**. Every quote spent before the crossover
+bought a guaranteed revert.
+
 **A gate must key on headroom, never on cost.** Headroom is known exactly from chain time. Cost is not:
 it moved 25 bps → 8 bps in under sixty seconds during the incident, at constant venue and collateral. That
 asymmetry is what makes "gate on a threshold" and "re-quote often because cost is volatile" consistent
@@ -160,6 +164,10 @@ not a confound, and the venue was constant):
 | 120–140 s | 2      | 8.02        | 7.85      | 15.83       |
 | 140–160 s | 37     | 10.04       | 4.64      | 18.27       |
 | 200–220 s | 20     | 5.17        | 3.09      | 25.57       |
+
+The 157 send-stage failures **are** attributable (every `tx.*` line carries `label`), and they concentrate
+hard: `0xe3867590` 49, `0x2aa923e0` 47, `0x37a87ca1` 19 (never landed), `0x9b2ce248` 18, `0xb98e7ebf` 13,
+`0xba22ef2e` 11 — **two positions absorbed 96 of 157** — while the five smallest landed on the first try.
 
 **A 58-second total blind spot, t+80 → t+138, across every position over a dollar** — and the winner
 struck at t+123 inside it. Cost collapsed ~16 bps across the gap at constant venue and collateral, which
@@ -418,6 +426,17 @@ Per CLAUDE.md, once the code is settled — concurrent where independent:
 - **The BOTS-35 comment** covering the re-scoping argument, the item 2+3 merge, and the ticket's factual
   corrections (the JIT-approve premise; 131 not 120; 157 not 133). One consolidated comment, coordinated
   with the item 2 session rather than three separate ones.
+- **Why did two positions absorb 96 of 157 send failures?** Unmeasured, and it is this change's stage. The
+  tempting reading is size (the six that struggled were the six largest remaining; the five clean sends
+  were the five smallest). But the mechanism predicts something else: `backoff.clear` fires on a failed
+  send, so a position retries every tick and the failure count is **ticks spent in the sim-ok /
+  estimate-fails state** — a duration, hence a marginality measure, not a size one. Size and marginality
+  correlate only through cost, which measured as ~size-independent at these notionals. The two readings
+  make distinguishable predictions and have not been distinguished. This incident has already produced two
+  size stories that were sampling artifacts.
+- **One join key, three shapes**: `select.ok` carries `id`, `tx.*` carries `label` (same composite),
+  `simulate.*` carries `marketId` and `borrower` separately. All mean the same thing; the inconsistency
+  cost real analysis time. Noted in BOTS-87 as wanting its own ticket.
 - **`repaidUnits` are units, not assets.** Confirm the conversion against `midnight-contracts.txt:1819`
   before the min-out floor is trusted as a loan-token amount. Both sampled markets have zero settlement
   and continuous fees, so they coincide today.
@@ -478,11 +497,24 @@ The two conclusions that survived contact are the LIF-ramp economics and the hea
 asymmetry. Both were derived from the contract. Weight the rest accordingly.
 
 **Evidence provenance.** Economics verified against production logs (Better Stack source 2607569, s3
-archive, 2026-07-31 14:59–15:10). The viability predicate `cost_bps ≤ (maxLif − 1)·t/3600` predicts
-**13 of 13** simulate outcomes at t+138–144 including two dust rejections, and the log fit brackets
-`maxLif − 1 ≥ 432 bps`, independently confirming the tier lookup. Cost curve measured live via LiFi. Book
-sizing from the markets API. Still **not** verified: the winner's t+123 s strike is ticket-derived — no
-on-chain `Liquidate` event was checked.
+archive, 2026-07-31 14:59–15:10). The viability predicate predicts **13 of 13** simulate outcomes at
+t+138–144 including two dust rejections, and the log fit brackets `maxLif − 1 ≥ 432 bps`, independently
+confirming the tier lookup. Cost curve measured live via LiFi. Book sizing from the markets API.
+
+**Nothing has been reproduced by anyone.** The mechanism is verified in source and the predicate matches
+the outcomes, but there is no repro — and BOTS-35's own acceptance criterion for item 2 demands the
+allowance revert be "reproduced, root-caused, and fixed — not just observed to have stopped." Source
+verification plus a matching predicate is not that. Do not let "verified against production logs" be read
+as satisfying it.
+
+Also **not** verified: the winner's t+123 s strike is ticket-derived — no on-chain `Liquidate` event was
+checked.
+
+**One number to watch for.** "Break-even at 10 bps lands at t+138 s" has now surfaced three times and is
+wrong on the pinned tier: at t+138 s the 0.860 tier's headroom is **16.78 bps**, and 10 bps breaks even at
+**t+82 s**. The 10-bps/t+138 pairing is a property of the 0.915 tier, which the market id excluded. On the
+correct tier, t+138 s implies ~16.8 bps — the upper bound of the (8.89, 16.68] interval, so a restatement
+of it rather than independent confirmation.
 
 ## Operational note
 
