@@ -1,0 +1,36 @@
+quoter-bot deployed as {{ include "quoter-bot.fullname" . }} ({{ include "quoter-bot.image" . }}).
+
+{{- if and .Values.config (not .Values.existingConfigSecret) }}
+Configuration: chart-managed Secret {{ include "quoter-bot.configSecretName" . }}, mounted at
+/repo/bots/quoter-bot/quoter-bot.yaml. Upgrades that change `config` roll the pod automatically.
+{{- else if .Values.existingConfigSecret }}
+Configuration: existing Secret {{ .Values.existingConfigSecret }} (key quoter-bot.yaml). The
+file is read once at startup; after editing the Secret, restart with:
+  kubectl --namespace {{ .Release.Namespace }} rollout restart statefulset/{{ include "quoter-bot.fullname" . }}
+{{- else }}
+WARNING: no `config` mapping and no `existingConfigSecret` were provided. The bot starts in
+environment-only mode and fails loudly unless `env`/`envFrom` supply every required variable.
+{{- end }}
+
+{{- if not .Values.persistence.enabled }}
+
+WARNING: persistence is disabled. Durable offer-group ownership state is lost on every
+restart, and previously bot-issued groups become unknown, which fails readiness until an
+operator invalidates or adopts them.
+{{- end }}
+
+Follow the JSON Lines log stream:
+  kubectl --namespace {{ .Release.Namespace }} logs statefulset/{{ include "quoter-bot.fullname" . }} --follow
+
+Operational notes:
+  - The bot is a singleton writer; the chart runs a one-replica StatefulSet so a replacement
+    pod is never created until the old one has fully terminated. Never scale it, never run a
+    second release against the same maker, and never force delete the pod or its Node
+    (kubectl delete --force / --grace-period=0) — force deletion is Kubernetes' documented
+    exception to StatefulSet at-most-one semantics. Fence a failed node before replacement.
+  - Shutdown drains the in-flight cycle, then invalidates owned bootstrap and ladder groups
+    serially, each wait bounded by the receipt timeout; the pod may legitimately take minutes
+    to stop (for a chart-managed config the grace period budgets one receipt-bounded wait per serialized shutdown step, derived from the configured markets and groups).
+  - The image is only re-pulled when the pod template changes: after a mutable tag such as
+    `latest` moves, roll the pod with `kubectl rollout restart`, or set
+    forceRestartOnUpgrade=true to roll on every `helm upgrade`.

@@ -1,0 +1,26 @@
+# The chart is consumed from this repository checkout only; it is not published to any Helm
+# registry yet. Install it with a local path, for example:
+#   helm install quoter-bot bots/quoter-bot/helm/quoter-bot --values my-values.yaml
+apiVersion: v2
+name: quoter-bot
+description: >-
+  Morpho Midnight maker bot: validates Base and Midnight setup, bootstraps target lending
+  positions, and maintains two-sided rate ladders from one long-running container.
+type: application
+version: 0.1.0
+# Default image tag. The Docker Hub repository morphoorg/quoter publishes `latest` plus one
+# immutable tag per release commit hash; pin a commit tag through `image.tag` for reproducible
+# deployments.
+appVersion: 'latest'
+home: https://github.com/morpho-org/morpho-bots
+sources:
+  - https://github.com/morpho-org/morpho-bots/tree/main/bots/quoter-bot
+  - https://hub.docker.com/r/morphoorg/quoter
+keywords:
+  - morpho
+  - midnight
+  - market-maker
+  - bot
+maintainers:
+  - name: Morpho
+    url: https://github.com/morpho-org

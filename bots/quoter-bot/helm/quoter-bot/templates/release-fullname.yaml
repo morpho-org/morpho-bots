@@ -1,0 +1,13 @@
+# Pins this release's installed StatefulSet name under a release-name-derived key (release
+# names are immutable across upgrades, unlike name overrides). The rename guard in
+# statefulset.yaml reads it back with a name-scoped lookup — a plain get, so least-privilege
+# deployers never need list permission on StatefulSets.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  # Quoted: a numeric-looking release name must stay a YAML string.
+  name: {{ include "quoter-bot.releaseFullnameConfigMapName" . | quote }}
+  labels:
+    {{- include "quoter-bot.labels" . | nindent 4 }}
+data:
+  fullname: {{ include "quoter-bot.fullname" . | quote }}

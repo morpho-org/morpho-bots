@@ -1,0 +1,14 @@
+# Headless governing Service required by the StatefulSet's serviceName. The bot exposes no
+# ports; this Service exists only so the StatefulSet controller can manage pod identity, and a
+# headless Service is allowed to declare no ports.
+apiVersion: v1
+kind: Service
+metadata:
+  # Quoted: a numeric-looking override must stay a YAML string.
+  name: {{ include "quoter-bot.fullname" . | quote }}
+  labels:
+    {{- include "quoter-bot.labels" . | nindent 4 }}
+spec:
+  clusterIP: None
+  selector:
+    {{- include "quoter-bot.selectorLabels" . | nindent 4 }}

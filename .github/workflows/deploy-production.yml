@@ -6,7 +6,10 @@ name: Deploy production
 # branch policy and giving the correct main HEAD in github.sha. Releasing publishes the tag, which
 # fires release-slack-notify.yml. A quoter-bot release also pushes the bot image to Docker Hub
 # (commit-hash + `latest` tags) after the Railway deploy succeeds, without gating the release.
-# Runs on every push; when no release-* label is present, the deploy jobs are simply skipped.
+# Once this pipeline completes, publish-quoter-bot-npm.yml (a workflow_run chain, kept standalone
+# for npm trusted publishing) publishes the CLI to npm when the commit carries a quoter-bot
+# release tag. Runs on every push; when no release-* label is present, the deploy jobs are simply
+# skipped.
 
 on:
   push:
