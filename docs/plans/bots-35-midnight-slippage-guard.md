@@ -218,16 +218,36 @@ are precisely the ones the bug prevented from existing. So the backoff fix must 
 positions in this regime in general, and it produces the evidence to tell" — never as "it would have won
 this one".
 
-**This also supplies the threshold.** The gate skips when `headroom(t) < EXECUTION_COST_BPS`, so
-reproducing all seven buckets' outcomes requires a threshold above the largest non-viable headroom
-(8.52) and at or below the smallest viable one (15.83):
+**It does NOT supply a default threshold, and the knob's semantics are the real finding.** Reproducing
+all seven buckets requires a threshold in `(8.52, 15.83]` — but that fits _this_ maturity's basis
+regime, observed once, and the same series shows basis is volatile. Because the gate suppresses until
+`headroom(t) ≥ threshold`, it is a pure time gate:
 
 ```text
-EXECUTION_COST_BPS ∈ (8.52, 15.83]   →  10 bps is a round value inside the window
+threshold  1 bps → no quotes until t+8.2s      threshold 10 bps → no quotes until t+82.1s
+threshold  5 bps → no quotes until t+41.1s     threshold 16 bps → no quotes until t+131.4s
 ```
 
-That is an evidence-backed default rather than a guess, from one maturity, and it should ship with that
-provenance attached.
+The two errors are asymmetric — a wasted quote costs one aggregator call, a blinded window costs the
+position — and the incident supplies both sides:
+
+| threshold | futile quotes suppressed | viable window blinded if true cost is 0.56 / 3.09 / 5.0 bps |
+| --------- | ------------------------ | ----------------------------------------------------------- |
+| 3 bps     | 12 of 59 (20%)           | 20.0s / — / —                                               |
+| 5 bps     | 36 of 59 (61%)           | 36.5s / 15.7s / —                                           |
+| 10 bps    | 59 of 59 (100%)          | 77.5s / 56.7s / 41.1s                                       |
+
+0.56 bps is not hypothetical — it was observed at t+240 in this same incident. So a 10 bps threshold
+would blind the first 57–78 seconds of a low-basis maturity: the earliest and most contested part of the
+auction, and precisely the window this document argues we cannot afford to miss. That would replace a
+backoff hole with a configured one.
+
+**So the knob is a cost _lower bound_, not a cost estimate**, and it is renamed accordingly:
+`HEADROOM_FLOOR_BPS`, documented as "the cheapest execution you would ever expect; the gate suppresses
+only the provably-hopeless opening seconds." The old name `EXECUTION_COST_BPS` invites a reader to enter
+their _typical_ cost, which is how the fitted 10 was arrived at in the first place. **Default `0`**, with
+the provenance recorded rather than adopted: one maturity implies `(8.52, 15.83]` under that maturity's
+basis regime, and that is a reason not to trust it as a default.
 
 **And it explains why the design holds while the cost term does not.** The cost swung 3× in under a
 minute, so an economic failure carries almost no information about the next ten seconds — which is a
