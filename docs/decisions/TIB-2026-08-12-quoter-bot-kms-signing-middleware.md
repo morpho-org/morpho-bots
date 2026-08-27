@@ -1347,6 +1347,59 @@ still entirely fail-closed:
   `createMakerAccount` fails closed with `MiddlewareSigningUnsupportedError`, so write flows halt
   until the intent ports land; read-only operation is unaffected.
 
+## Addendum C (2026-08-25) — deterministic deployment-policy checks
+
+The third increment lands the policy checks decidable from deployment parameters and the
+middleware clock alone, still entirely fail-closed (no KMS access, no signing surface):
+
+- **Policy document**: the `QUOTER_SIGNER_POLICY` environment variable carries one versioned JSON
+  policy document, strictly parsed in
+  [`services/quoter-signer/src/policy.utils.ts`](../../services/quoter-signer/src/policy.utils.ts)
+  with the wire contract's fail-closed discipline. It pins the signing `surface` (the five-function
+  shape's per-deployment intent-kind and budget-class pin, never read from caller data), the
+  ratifier mode, chain id, maker, and ratifier address, the offer freshness/start windows, a
+  non-empty per-market allowlist (maturity, tick bounds within the protocol `MAX_TICK`,
+  continuous-fee-cap ceiling within `MAX_CONTINUOUS_FEE`, per-market lend-exposure cap), the
+  maker-wide lend-exposure cap, routine and protected fee/gas ceilings, and the manifest-pinned
+  setup-remediation variants with per-variant ceilings. Parse-time deployment validation enforces
+  quote↔Ecrecover and ratify↔Setter coherence and this TIB's emergency-bump reserve: each protected
+  ceiling must cover `max(floor(routine * 1125 / 1000), routine + 1 wei)`, with `protected.gas ≥
+routine.gas`. A missing or invalid document refuses to serve with a typed
+  `PolicyNotConfiguredError` on every intent ("never run a partial or empty policy").
+- **Checks**:
+  [`services/quoter-signer/src/policy-check.utils.ts`](../../services/quoter-signer/src/policy-check.utils.ts)
+  denies out-of-policy intents with a typed `IntentPolicyViolationError` naming the violated check
+  (logged on the `middleware.intent_denied` line, per Observability): surface/intent-kind, chain and
+  maker pins, per-kind fee ceilings (protected only on the break-glass surface, per-variant for
+  remediation), `cancel-root`/`unratify-root` ratifier-mode coherence, the remediation-variant
+  allowlist, and for offer sets: market allowlist, tick price bounds, offer field pins (configured
+  ratifier; no callback surface; zero receiver on buys and the maker on sells, the protocol rule),
+  reduce-only side pins, per-market continuous-fee-cap ceilings, time windows
+  (`start < expiry`, unexpired, `expiry ≤ min(maturity, now + freshness)`,
+  `start ≥ now − maxStartAge`), and static lend-exposure caps charged once per consumption domain
+  `(market, group, side, cap value)` per §6, so per-book rungs sharing a group count once.
+- **Group namespace, resolved**: Midnight consumption groups are content-addressed (the SDK derives
+  singleton and shared group ids from offer contents) and consumption is keyed per maker on chain,
+  so no maker-owned id namespace exists to pattern-match. The "owned group namespace" field check
+  materializes as (a) the static group-coherence rule above — one group id binds one market, side,
+  and cap inside an intent, the identity §6's capacity domains rely on — and (b) canonical group and
+  root re-derivation from full market parameters at the encoding increment, where the middleware
+  injects the pinned maker into every offer it encodes.
+- **Explicitly deferred** to later increments: every independent-read property (crossed books, PnL,
+  snapshot-derived market fees bounding `continuousFeeCap`, position state), the reservation ledger
+  (aggregate signed exposure, signed-gas budgets, nonce leases, occupied-nonce caps,
+  native-balance admission), and the recorded-transaction validation of `self-cancel`. Passing every
+  deterministic check therefore still ends in the typed `SigningNotImplementedError` denial.
+- **Sequencing note**: the freshness ceiling is deliberately ahead of the bot. Today's ladder and
+  bootstrap builders pin `expiry = market maturity`, so enforcing this middleware against them
+  would deny every quote/ratify intent; the §3 builder change to
+  `expiry = min(maturity, signedAt + freshness ceiling)` is a prerequisite of the increment that
+  enables quote/ratify signing, and the middleware clock's skew against the bot's block-timestamp
+  `signedAt` must be absorbed by the builder's margin and the `maxStartAgeSeconds` window. The
+  package README carries the operator guidance for the policy values (tick-band drift with
+  time-to-maturity, `maxContinuousFeeCap` defaulting to the protocol maximum so exit sells are
+  never blocked by a governance fee raise, start-age sizing for Setter ratify retries).
+
 <!--
 TIB conventions:
 - Once accepted, do not substantively edit this TIB. If the decision needs to change,

@@ -72,7 +72,12 @@ export type IntentOffer = {
   readonly expiry: UnsignedDecimal
   /** Midnight price tick (uint256; the protocol offer struct carries no signed fields). */
   readonly tick: UnsignedDecimal
-  /** Explicit consumption-group id (bytes32); must fall in the maker-owned group namespace. */
+  /**
+   * Explicit consumption-group id (bytes32). Midnight groups are content-addressed (derived from
+   * offer contents) and consumption is keyed per maker on chain; policy enforces that one group
+   * binds one market, side, and cap inside an intent, and canonical group re-derivation happens at
+   * encoding time.
+   */
   readonly group: Hex
   /** Maker callback contract; policy pins the expected value. */
   readonly callback: Address
@@ -216,7 +221,12 @@ export const classifyIntentKind = (event: unknown): ClassifiedIntentKind => {
 
 const UNSIGNED_DECIMAL_PATTERN = /^(0|[1-9]\d{0,77})$/
 const IDEMPOTENCY_KEY_PATTERN = /^[A-Za-z0-9._-]{1,128}$/
-const REMEDIATION_VARIANT_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/
+
+/**
+ * Shape of a setup-remediation deployment-manifest variant id, shared by the wire contract and
+ * the policy document so callers and deployments name variants identically.
+ */
+export const REMEDIATION_VARIANT_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/
 const MAX_UINT256 = 2n ** 256n - 1n
 const MAX_UINT128 = 2n ** 128n - 1n
 
