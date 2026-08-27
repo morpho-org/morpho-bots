@@ -558,9 +558,15 @@ const surplusUsd = usdValueOf(loanToken, referenceAmountOut - plan.impliedRepaid
   `isBadDebtRealization` branch.
 - Marks the cooldown, so a position below threshold is not re-evaluated every block for an hour.
 
-**Placement is settled.** PR #134 is being closed as superseded, with its essentials absorbed into the
-BOTS-35 item 1 PR — so `planWithReason()`, `PlanSkipReason`, `plan.skipped` and `LEVEL_BY_REASON` will
-exist. The ratio floor folds in as the `insufficient_headroom` variant: no new counter, no new event.
+**Placement is settled, and the seam now exists in code** (uncommitted in the shared checkout at the
+time of writing — see the note at the end). PR #134 was closed as superseded, its essentials absorbed
+into the BOTS-35 item 1 work: `planWithReason()`, `PlanSkipReason`, `plan.skipped` and
+`LEVEL_BY_REASON` are in `sizing/plan.ts` / `runner/tick.ts`. Two of this document's requirements landed
+as documentation at the type rather than as convention: `PlanOutcome` states that "a skip is NOT a
+failure signal: callers must not record backoff or mark a cooldown on one", with the LIF-ramp reasoning
+attached; and `LEVEL_BY_REASON` states that "a reason that fires identically for every candidate in a
+group belongs at `debug`". No current reason is a group property, so `insufficient_headroom` is the
+first instance. The ratio floor folds in as the `insufficient_headroom` variant: no new counter, no new event.
 #134's sum identities stay intact, with the skip absorbed by
 `liquidatable === inflightSkipped + planSkipped + planned`, because the candidate never enters the
 worked set. The gate is pure arithmetic over `PlanInput` — `blockTimestamp`, `maturity` and
@@ -731,3 +737,27 @@ Settled during exploration, recorded so they are not re-litigated:
   depth-aware sizing without losing the deterministic sell-side amount fixed-calldata venues need.
 - **`SEIZE_CAP_MARGIN_BPS` is fine as-is** — headroom is scale-invariant, so the margin costs 0.3% of
   surplus and moves the break-even instant by zero seconds.
+
+## Operational note
+
+At the time of writing, the item 1 work this plan depends on (`planWithReason`, `PlanSkipReason`,
+`LEVEL_BY_REASON`, the sum identities, and `submit` returning a broadcast signal) exists **only as
+uncommitted working-tree changes in the shared main checkout** — not on `origin/main` and not on any
+remote branch. The shared stash stack also carries a leftover `lint-staged automatic backup` entry whose
+contents include `sizing/plan.ts`, so one aborted commit has already happened in that file. It should be
+committed and pushed to a branch before anything is stacked on it.
+
+## How much of this to trust
+
+Six claims in earlier drafts of this document were overturned during the investigation: the
+`SEIZE_CAP_MARGIN_BPS` arithmetic, "the winners were almost certainly inventory-funded", "the backoff
+schedule lost the position", "route quality on a $10k clip", the third drift branch, and a fitted
+`10 bps` default. Each fell to someone querying an underlying log field or contract line instead of
+arguing from a summary.
+
+The pattern is more useful than the tally. **Claims traced to `Midnight.sol` or the repository source
+held; claims inferred from the incident narrative did not** — including BOTS-35's own premise that the
+Executor uses an exact-amount approve, which survived a contested week because it was written up as an
+observation. The two conclusions here that survived contact are the LIF-ramp economics and the
+headroom-versus-cost asymmetry, and both were derived from the contract rather than from the
+post-mortem.
