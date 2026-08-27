@@ -9,6 +9,8 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@morpho-org/midnight-sdk": "catalog:",
+    "@morpho-org/morpho-ts": "catalog:",
     "viem": "catalog:"
   },
   "devDependencies": {

@@ -6,10 +6,15 @@ Lambda container image that will become the **only** `kms:Sign` principal on the
 validating structured intents (quote, ratify, revoke, setup remediation) against its own
 independent reads before signing anything.
 
-**Current status: fail-closed skeleton with the v1 wire contract.** The handler holds no KMS
-access and implements no signing surface, but it now enforces the typed request/response contract
-below at the invocation boundary. Payloads outside the contract are denied with a
-`MalformedIntentError`; well-formed intents are denied with a `SigningNotImplementedError`:
+**Current status: fail-closed skeleton with the v1 wire contract and the deterministic
+deployment-policy checks.** The handler holds no KMS access and implements no signing surface, but
+it now enforces the typed request/response contract below at the invocation boundary and validates
+every well-formed intent against the deployment policy document (see
+[Deployment policy](#deployment-policy-quoter_signer_policy)). Payloads outside the contract are
+denied with a `MalformedIntentError`; when the policy document is missing or invalid the build
+refuses to serve with a `PolicyNotConfiguredError`; out-of-policy intents are denied with an
+`IntentPolicyViolationError` naming the violated check; and intents that pass every deterministic
+check are still denied with a `SigningNotImplementedError`:
 
 ```json
 {
@@ -26,9 +31,9 @@ below at the invocation boundary. Payloads outside the contract are denied with 
 
 Each invocation also emits the TIB's `middleware.intent_received` / `middleware.intent_denied`
 JSON log lines to CloudWatch Logs, carrying only the allowlist-classified intent kind
-(`quote`, `ratify`, `revoke`, `setup-remediation`, or `unknown`), the denial class name, and the
-AWS request id — never caller-supplied data. The image is safe to deploy anywhere: it can sign
-nothing.
+(`quote`, `ratify`, `revoke`, `setup-remediation`, or `unknown`), the denial class name, the
+violated policy check id on a policy denial, and the AWS request id — never caller-supplied data.
+The image is safe to deploy anywhere: it can sign nothing.
 
 ## Wire contract (v1)
 
@@ -84,7 +89,99 @@ A complete well-formed revoke intent:
 }
 ```
 
-This build answers it with the `SigningNotImplementedError` denial above.
+This build answers it with the `SigningNotImplementedError` denial above (once the deployment
+policy below is configured; without it, the answer is the `PolicyNotConfiguredError` denial).
+
+## Deployment policy (`QUOTER_SIGNER_POLICY`)
+
+Policy parameters live in the middleware's deployment, never in the request (TIB-2026-08-12): the
+`QUOTER_SIGNER_POLICY` environment variable carries one JSON policy document, strictly parsed by
+[`src/policy.utils.ts`](./src/policy.utils.ts) with the same fail-closed discipline as the wire
+contract — unknown keys, unknown versions, and out-of-domain values refuse to serve
+(`PolicyNotConfiguredError`; "never run a partial or empty policy"). A complete document:
+
+```json
+{
+  "policyVersion": 1,
+  "surface": "routine-revoke",
+  "ratifierMode": "ecrecover",
+  "chainId": 8453,
+  "maker": "0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A",
+  "ratifier": "0xd6e70365C8E8DDa9a4ca662C07bbE663b017755E",
+  "offerWindow": { "freshnessCeilingSeconds": "3600", "maxStartAgeSeconds": "900" },
+  "markets": [
+    {
+      "marketId": "0x5555555555555555555555555555555555555555555555555555555555555555",
+      "maturity": "1800000000",
+      "minTick": "100",
+      "maxTick": "5000",
+      "maxContinuousFeeCap": "317097919",
+      "maxLendExposureAssets": "20000000000"
+    }
+  ],
+  "maxTotalLendExposureAssets": "30000000000",
+  "feeCeilings": {
+    "routine": { "maxFeePerGas": "3000000000", "maxPriorityFeePerGas": "1500000000", "gas": "400000" },
+    "protected": { "maxFeePerGas": "30000000000", "maxPriorityFeePerGas": "15000000000", "gas": "800000" }
+  },
+  "remediations": [
+    {
+      "variant": "loan-asset-approval",
+      "feeCeiling": { "maxFeePerGas": "3000000000", "maxPriorityFeePerGas": "1500000000", "gas": "120000" }
+    }
+  ]
+}
+```
+
+Every field is required on every surface so one reviewed document serves all deployments of the
+shared image; `surface` is the only per-deployment difference and pins which intent kind the
+function accepts (`quote`, `ratify`, `revoke` on both revoke surfaces, `setup-remediation`) and
+which fee-ceiling class applies. Parse-time deployment validation enforces the TIB's cross-field
+rules: the quote surface requires `ratifierMode: "ecrecover"` and ratify requires `"setter"`;
+tick bounds must be coherent and within the protocol `MAX_TICK` (6744); continuous-fee ceilings
+within the protocol `MAX_CONTINUOUS_FEE`; and each protected fee ceiling must cover one complete
+emergency replacement bump — `max(floor(routine × 1125 / 1000), routine + 1 wei)` — of its
+routine counterpart, with `protected.gas` at least `routine.gas`, so a routine bid can never
+strand the break-glass replacement path.
+
+A well-formed intent is then checked against every rule decidable from these parameters and the
+middleware clock ([`src/policy-check.utils.ts`](./src/policy-check.utils.ts)): the surface's
+pinned intent kind, chain and maker pins, per-kind fee/gas ceilings (`protected` on the
+break-glass surface, per-variant for setup remediation, `routine` otherwise), Ecrecover/Setter
+coherence of `cancel-root`/`unratify-root` revocations, the remediation-variant allowlist, and —
+for quote and ratify offer sets — the market allowlist, tick price bounds, offer field pins (the
+configured ratifier; no callback surface; the zero receiver on buys and the maker itself on
+sells), reduce-only side pins (sells must be `reduceOnly: true`, buys must not), per-market
+continuous-fee-cap ceilings, the offer time windows (`start < expiry`, not yet expired,
+`expiry ≤ min(maturity, now + freshnessCeilingSeconds)`, `start ≥ now − maxStartAgeSeconds`),
+group coherence (Midnight groups are content-addressed, so one group id must bind one market,
+side, and cap value), and the static lend-exposure caps — buy offers charge their `maxAssets`
+once per consumption domain `(market, group, side, cap value)`, so per-book rungs sharing a group
+count once, against both the per-market and the maker-wide cap. Violations are denied with
+`IntentPolicyViolationError` naming the check; the denial log line carries the same check id.
+
+These are the deterministic checks only. The TIB's independent-read properties — crossed books,
+PnL, snapshot-derived market fees, aggregate reservations, nonce leases, and native-balance
+admission — land in later increments, so passing every current check still ends in the
+`SigningNotImplementedError` denial.
+
+Operator guidance for the policy values (all fail closed, so a tight value halts quoting rather
+than leaking exposure — revocation stays the kill switch):
+
+- **Freshness sequencing**: today's ladder/bootstrap builders pin `expiry = market maturity`, so
+  any freshness ceiling shorter than time-to-maturity denies their offers. That is the TIB's
+  intended order — the bot-side builder change to `expiry = min(maturity, signedAt + freshness
+ceiling)` is a prerequisite of the same increment that enables quote/ratify signing — and is
+  irrelevant while this build signs nothing.
+- **Tick bounds**: a Midnight tick maps to a rate through time-to-maturity, so the tick for a
+  fixed APR drifts upward as the market ages. Set `minTick`/`maxTick` as an envelope over the
+  market's whole quoting horizon, not today's rate window.
+- **`maxContinuousFeeCap`**: default it to the protocol `MAX_CONTINUOUS_FEE` (317097919) unless a
+  market-specific reason exists — a tighter value denies fee-tracking offers, including the
+  reduce-only exit sells, after a governance fee raise until the policy is redeployed.
+- **`maxStartAgeSeconds`**: offers carry the block timestamp at build time as `start`, and a
+  Setter ratify re-presents the same offers later, so size this for block-timestamp lag plus
+  build→invoke and ratify-retry latency.
 
 ## Bot integration
 
@@ -144,8 +241,10 @@ curl -s -XPOST 'http://localhost:9000/2015-03-31/functions/function/invocations'
 
 Expect a fail-closed `MalformedIntentError` denial (the payload names a kind but violates the
 wire contract), and the two `middleware.*` JSON log lines in the container's output. Sending the
-complete revoke intent from the wire-contract section yields the `SigningNotImplementedError`
-denial instead.
+complete revoke intent from the wire-contract section yields the `PolicyNotConfiguredError`
+denial — no policy document is configured — and re-running the container with
+`-e QUOTER_SIGNER_POLICY='<policy JSON>'` turns that into the policy checks plus the final
+`SigningNotImplementedError` denial.
 
 ## Publish to Docker Hub (maintainers)
 
@@ -179,14 +278,20 @@ docker push "$ACCOUNT.dkr.ecr.$REGION.amazonaws.com/quoter-signer:<commit-sha>"
 ```
 
 Create the function. The skeleton needs no KMS or other resource permissions — an execution role
-with the `AWSLambdaBasicExecutionRole` managed policy (CloudWatch Logs only) is enough:
+with the `AWSLambdaBasicExecutionRole` managed policy (CloudWatch Logs only) is enough. The
+deployment policy document rides in the function's environment; without it every well-formed
+intent is denied with `PolicyNotConfiguredError`. The policy is itself JSON, so pass the
+environment as a file (`--environment` shorthand cannot safely carry the nested commas and
+quotes) — with the document from the Deployment policy section saved as `policy.json`:
 
 ```sh
+jq -n --arg policy "$(cat policy.json)" '{Variables: {QUOTER_SIGNER_POLICY: $policy}}' > environment.json
 aws lambda create-function \
   --function-name quoter-signer \
   --package-type Image \
   --code "ImageUri=$ACCOUNT.dkr.ecr.$REGION.amazonaws.com/quoter-signer:<commit-sha>" \
   --role "arn:aws:iam::$ACCOUNT:role/<basic-execution-role>" \
+  --environment file://environment.json \
   --architectures <x86_64|arm64> \
   --region "$REGION"
 ```
@@ -212,6 +317,8 @@ Expect a fail-closed denial envelope in `response.json` and the `middleware.inte
 Everything else in the TIB, in later increments: the mode-aware five-function deployment shape
 (setup/health, quote or ratify, routine revoke, break-glass revoke, setup remediation)
 instantiated from this one image, the invoke-only IAM chain that removes `kms:Sign` from the bot,
-the policy surfaces (crossed-book, price-bound, and PnL checks over independent reads), the
-reservation ledger, and the bot-side intent ports that speak the wire contract above. Until then,
+the independent-read policy properties (crossed books, PnL, snapshot-derived fees and
+`continuousFeeCap`, canonical group and root re-derivation), the reservation ledger with its
+aggregate signed-exposure, signed-gas, and nonce-lease accounting, sign-what-you-encode with the
+actual KMS call, and the bot-side intent ports that speak the wire contract above. Until then,
 deploying this image grants nothing and signs nothing.
