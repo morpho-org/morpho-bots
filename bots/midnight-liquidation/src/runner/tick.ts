@@ -93,9 +93,9 @@ const LEVEL_BY_REASON: Record<PlanSkipReason, 'debug' | 'info' | 'warn'> = {
   // Unliquidatable in normal mode rather than transient: it clears only when the oracle moves or the
   // position matures into post-maturity mode, where the RCF cap does not apply.
   writeoff_below_max_debt: 'info',
-  // Group property, not a per-position one: headroom is `(lif - 1)/lif`, so every candidate sharing a
-  // (maturity, maxLif, chosen mode) group is skipped together. At `info` that is one line per position
-  // per block — the shape that gave the 31 Jul post-mortem hundreds of identical warnings.
+  // A rate, not a per-position quantity: headroom is `(lif - 1)/lif`, so every candidate sharing a
+  // (maturity, maxLif, chosen mode) group evaluates identically. At `info` that is one line per
+  // position per block — the shape that gave the 31 Jul post-mortem hundreds of identical warnings.
   insufficient_headroom: 'debug'
 }
 
@@ -165,10 +165,23 @@ const sizeCandidates = (deps: {
     const outcome = planWithReason(input, { seizeCapMarginBps, headroomFloorBps })
     if (outcome.plan === null) {
       counters.planSkipped += 1
+      // `insufficient_headroom` is a threshold decision, so it carries the inputs behind it — the
+      // reason alone says a position was skipped without saying whether the floor is mis-set or the
+      // ramp is simply early. The realized headroom itself is NOT here: it is `(lif - 1)/lif` of the
+      // CHOSEN plan, and a skip discards the plan, so the tick cannot recover which mode won. `maxLif`
+      // plus `secondsSinceMaturity` lets an operator reconstruct the post-maturity case, which is the
+      // one this gate fires in.
       logger[LEVEL_BY_REASON[outcome.reason]]('plan.skipped', {
         marketId: pair.id,
         borrower: pair.borrower,
-        reason: outcome.reason
+        reason: outcome.reason,
+        ...(outcome.reason === 'insufficient_headroom'
+          ? {
+              headroomFloorBps,
+              maxLif: out.bestCollateralMaxLif,
+              secondsSinceMaturity: out.blockTimestamp - out.market.maturity
+            }
+          : {})
       })
       continue
     }
@@ -401,12 +414,17 @@ export async function runTick(deps: {
           // by the pre-quote headroom gate in sizing, not by suppressing a position that may be one
           // block of LIF ramp away from being fundable.
           counters.quoteUnprofitable += 1
+          // `requiredThreshold` and `minSurplusBps` are both here on purpose: with a nonzero buffer
+          // the route can clear `requiredRepay` and still be rejected, and an operator cannot tell
+          // which rule fired without seeing the bar that was applied.
           logger.info('quote.unprofitable', {
             marketId: pair.id,
             borrower: pair.borrower,
             requiredRepay: economics.requiredRepay,
+            requiredThreshold: economics.requiredThreshold,
             achievableOut: economics.achievableOut,
-            shortfallBps: economics.shortfallBps
+            shortfallBps: economics.shortfallBps,
+            minSurplusBps
           })
           continue
         }

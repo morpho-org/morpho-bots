@@ -415,3 +415,80 @@ describe('economic min-out floor', () => {
     expect(late.calls[0]?.searchParams?.slippage).toBe('4.2')
   })
 })
+
+// The defect these cover: the aggregators apply the slippage percentage to THEIR OWN quote, which sits
+// under the oracle reference by the execution cost. A percentage derived against the reference lands
+// their min-out BELOW break-even, so a drifted fill clears the router and then reverts at the
+// protocol's repay pull — the exact failure the floor exists to prevent. The earlier tests asserted
+// only the percentage sent, which is why this escaped them.
+describe('aggregator min-out actually clears break-even', () => {
+  const countingHttp = (bodies: unknown[]) => {
+    const sent: (Record<string, string> | undefined)[] = []
+    const client: RateLimitedClient = {
+      getJson: async <T>(args: { searchParams?: Record<string, string> }) => {
+        sent.push(args.searchParams)
+        return (bodies[sent.length - 1] ?? bodies.at(-1)) as T
+      }
+    }
+    return { client, sent }
+  }
+
+  // reference 10_000, break-even 9_580 (the incident tier at full ramp), venue quote 9_700.
+  const REFERENCE = 10_000n
+  const FLOOR = 9_580n
+  const QUOTE = '9700'
+
+  it('re-derives against the venue quote so the floor is not undercut', async () => {
+    const { client, sent } = countingHttp([oneInchBody(QUOTE), oneInchBody(QUOTE)])
+    const { quoteFor } = composeMulti(['1inch'], [{ venue: '1inch', expectedOut: 9700n }], client)
+    const outcome = await quoteFor({
+      ...REQUEST,
+      referenceAmountOut: REFERENCE,
+      minAcceptableAmountOut: FLOOR
+    })
+
+    expect(outcome.kind).toBe('swap')
+    if (outcome.kind !== 'swap') return
+    // First pass asks 420bps against the reference; applied to 9700 that would floor at ~9292 — 288
+    // units BELOW break-even. The second pass asks against the quote instead.
+    expect(sent[0]?.slippage).toBe('4.2')
+    expect(sent[1]?.slippage).toBe('1.23')
+    expect(outcome.plan.amountOutMinimum).toBeGreaterThanOrEqual(FLOOR)
+  })
+
+  it('spends the second call only when the first floor is short', async () => {
+    // Break-even equal to the reference asks for zero slippage, so the first min-out already clears it.
+    const { client, sent } = countingHttp([oneInchBody('10000')])
+    const { quoteFor } = composeMulti(['1inch'], [{ venue: '1inch', expectedOut: 10_000n }], client)
+    const outcome = await quoteFor({
+      ...REQUEST,
+      referenceAmountOut: REFERENCE,
+      minAcceptableAmountOut: REFERENCE
+    })
+
+    expect(outcome.kind).toBe('swap')
+    expect(sent).toHaveLength(1)
+  })
+
+  it('keeps the first quote when the re-quote fails rather than losing the position', async () => {
+    let call = 0
+    const client: RateLimitedClient = {
+      getJson: async <T>() => {
+        call += 1
+        if (call === 2) throw new QuoteError('rate_limited', 'second pass throttled')
+        return oneInchBody(QUOTE) as T
+      }
+    }
+    const { quoteFor } = composeMulti(['1inch'], [{ venue: '1inch', expectedOut: 9700n }], client)
+    const outcome = await quoteFor({
+      ...REQUEST,
+      referenceAmountOut: REFERENCE,
+      minAcceptableAmountOut: FLOOR
+    })
+
+    // Executable, just with a looser on-chain floor than break-even. Simulation and the caller's
+    // pre-broadcast profitability check both still stand between it and a broadcast.
+    expect(call).toBe(2)
+    expect(outcome.kind).toBe('swap')
+  })
+})

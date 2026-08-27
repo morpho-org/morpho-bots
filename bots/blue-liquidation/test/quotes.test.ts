@@ -33,7 +33,9 @@ const PARAMS: MarketParams = {
 }
 
 // price = 1e36 → expectedLoanOut = seizedAssets = 1000 (the route-quality reference).
-const PLAN: LiquidationPlan = { seizedAssets: 1000n }
+// break-even at lif 1.0 with no shares skew — the strictest floor, so the first quote pass
+// already clears it and these projection cases spend no second call.
+const PLAN: LiquidationPlan = { seizedAssets: 1000n, impliedRepaidAssets: 1000n }
 
 const OUT: LensOut = {
   params: PARAMS,

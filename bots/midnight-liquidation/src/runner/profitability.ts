@@ -11,7 +11,14 @@ type ProfitabilityAssessment = {
   requiredRepay: bigint
   /** Loan units the quoted route is expected to deliver. */
   achievableOut: bigint
-  /** How far the route falls short of `requiredRepay`, in bps of it. Negative when profitable. */
+  /** `requiredRepay` plus the configured surplus — the value `viable` actually compares against. */
+  requiredThreshold: bigint
+  /**
+   * How far the route falls short of {@link ProfitabilityAssessment.requiredThreshold}, in bps of
+   * `requiredRepay`. Measured against the threshold, not against break-even, so a rejected route never
+   * reports a non-positive shortfall: with `minSurplusBps > 0` a route can clear the repay and still
+   * miss the bar, and a "shortfall" of -12 bps on a rejection is not diagnosable.
+   */
   shortfallBps: bigint
 }
 
@@ -56,7 +63,7 @@ export const assessProfitability = ({
     viable: achievableOut >= threshold,
     requiredRepay,
     achievableOut,
-    shortfallBps:
-      requiredRepay === 0n ? 0n : ((requiredRepay - achievableOut) * BPS) / requiredRepay
+    requiredThreshold: threshold,
+    shortfallBps: requiredRepay === 0n ? 0n : ((threshold - achievableOut) * BPS) / requiredRepay
   }
 }

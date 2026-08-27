@@ -90,6 +90,19 @@ export function passesRouteQuality(args: {
 }
 
 /**
+ * The slippage percentage (bps) that puts a venue's min-out at `floor`, given that the venue applies
+ * the percentage to `denominator`.
+ *
+ * Which denominator is correct depends on the venue: Uniswap applies the percentage to the oracle
+ * reference we hand it, while the aggregators apply it to their own quoted output. Passing the wrong
+ * one silently lands the floor below break-even — see the second pass in `firmQuoteVenue`.
+ */
+const slippageForFloor = (floor: bigint, denominator: bigint): number =>
+  denominator <= 0n || floor >= denominator
+    ? 0
+    : Number(((denominator - floor) * BPS) / denominator)
+
+/**
  * One liquidatable position's swap request, already projected out of the protocol's lens shape by
  * the calling bot (which knows how its markets address collateral).
  */
@@ -164,22 +177,12 @@ async function firmQuoteVenue(args: {
   const { tokenIn, amountIn, steps, request, maxRouteImpactBps } = args
   const { loanToken, referenceAmountOut, minAcceptableAmountOut } = request
 
-  // An economic floor beats the operator percentage when one is supplied. Expressed as a percentage of
-  // the oracle reference rather than as an absolute, because the aggregators' only lever IS a slippage
-  // parameter — they bake the min-out themselves from it. Uniswap derives its min-out as
-  // `reference · (1 - slippage)`, so the same percentage lands it on `minAcceptableAmountOut` exactly;
-  // an aggregator lands slightly below it (its own quote is under the oracle by the execution cost),
-  // which is the safe direction — it can never reject a fill that would have settled.
   // A floor above the oracle reference would imply negative slippage; clamp rather than reject, since
   // rounding can put break-even a unit over the reference on a dust seize.
   const economicFloor =
     minAcceptableAmountOut > referenceAmountOut ? referenceAmountOut : minAcceptableAmountOut
-  const slippageBps =
-    referenceAmountOut <= 0n
-      ? 0
-      : Number(((referenceAmountOut - economicFloor) * BPS) / referenceAmountOut)
 
-  const params: QuoteParameters = {
+  const paramsFor = (denominator: bigint): QuoteParameters => ({
     chainId,
     tokenIn,
     tokenOut: loanToken,
@@ -187,20 +190,38 @@ async function firmQuoteVenue(args: {
     // before the callback. After unwraps it is the chain's worst-case output — a fixed-amount
     // venue can only leave skimmable surplus, never revert on shortfall.
     amountIn,
-    slippageBps,
+    slippageBps: slippageForFloor(economicFloor, denominator),
     executor,
     referenceAmountOut,
     // The request's decimals describe the RAW collateral; after an unwrap they would mislabel
     // the underlying, so they are only forwarded on the direct (no-unwrap) path.
     tokenInDecimals: steps.length === 0 ? request.tokenInDecimals : undefined
+  })
+
+  const quote = async (params: QuoteParameters) =>
+    tryCatch((async () => quoteByVenue(httpClient, venueEntry(), params))())
+
+  const first = await quote(paramsFor(referenceAmountOut))
+  if (first.error || !first.data) {
+    const reason = first.error instanceof QuoteError ? first.error.reason : 'api_error'
+    return { kind: 'quote_failed', reason, detail: ensureError(first.error).message }
   }
 
-  const { data: swap, error } = await tryCatch(
-    (async () => quoteByVenue(httpClient, venueEntry(), params))()
-  )
-  if (error || !swap) {
-    const reason = error instanceof QuoteError ? error.reason : 'api_error'
-    return { kind: 'quote_failed', reason, detail: ensureError(error).message }
+  // Second pass, and the reason it exists: the aggregators apply the slippage percentage to THEIR OWN
+  // quote, which sits under the oracle reference by the execution cost. A percentage derived against
+  // the reference therefore lands their min-out at `quote · floor / reference` — strictly BELOW
+  // break-even — so a drifted fill would clear the router and then revert at the protocol's repay
+  // pull, which is exactly the misleading failure this floor exists to prevent. Re-deriving against
+  // the venue's own quoted output puts the floor where it belongs. Uniswap already lands at or above
+  // break-even on the first pass (it applies the percentage to the reference itself), so it never
+  // takes this branch.
+  let swap = first.data
+  if (swap.amountOutMinimum < economicFloor && swap.expectedAmountOut > 0n) {
+    const second = await quote(paramsFor(swap.expectedAmountOut))
+    // A failed re-quote is not fatal: the first quote is still executable, just with a looser on-chain
+    // floor than break-even. Simulation and the caller's pre-broadcast profitability check both still
+    // stand between it and a broadcast.
+    if (second.data) swap = second.data
   }
 
   // The reference stays the FULL-PATH oracle value (collateral → loan): the unwrap chain threads its

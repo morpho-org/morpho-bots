@@ -297,18 +297,20 @@ export const planSurplus = (input: PlanInput, chosen: LiquidationPlan): bigint =
   seizedValueOf(chosen.seizedAssets, input.bestCollateralPrice) - chosen.impliedRepaidUnits
 
 /**
- * Incentive headroom of a sized plan, in bps: `surplus / seizedValue`, which for a seize-exact plan
- * reduces to `(lif - 1) / lif` and is therefore **scale-invariant** — a $10k and a $1 plan at the same
- * LIF read identically. That is why this cannot reject dust; only an absolute floor can.
+ * Incentive headroom of a sized plan, in bps: `(lif - 1) / lif`.
  *
- * Returns `0n` when the seized slot's oracle value floors to zero, so a valueless plan fails any
- * non-zero floor rather than dividing by zero.
+ * Computed from the LIF, NOT from the plan's amounts. The amount-wise ratio
+ * `(seizedValue - impliedRepaidUnits) / seizedValue` is the same quantity in exact arithmetic, but the
+ * implementation cannot be: `seizedValueOf` floors while `impliedRepaidUnits` double-ceils, so at
+ * sub-dollar sizes the two roundings disagree and the ratio is neither exact nor monotone in size —
+ * 167 units reported 0 bps where 168 reported 59, at one LIF. Deriving from `lif` makes this
+ * **exactly scale-invariant** by construction: no amount enters it, so two candidates at the same LIF
+ * cannot disagree.
+ *
+ * Being a rate, it is blind to position size — it cannot reject dust, whose surplus is real but
+ * smaller than the gas to collect it. That needs an absolute floor (BOTS-81), not this.
  */
-const headroomBps = (input: PlanInput, chosen: LiquidationPlan): bigint => {
-  const seizedValue = seizedValueOf(chosen.seizedAssets, input.bestCollateralPrice)
-  if (seizedValue <= 0n) return 0n
-  return ((seizedValue - chosen.impliedRepaidUnits) * BPS) / seizedValue
-}
+const headroomBps = (chosen: LiquidationPlan): bigint => ((chosen.lif - WAD) * BPS) / chosen.lif
 
 /**
  * Turns a fresh lens reading into a liquidation plan, or a {@link PlanSkipReason} when the position
@@ -368,7 +370,7 @@ export const planWithReason = (input: PlanInput, options: PlanOptions = {}): Pla
   // seize of nothing is the `(0, 0)` shape reserved for bad-debt realization.
   if (input.bestCollateralAmt === 0n) return skip('nothing_to_seize')
 
-  return gateOnHeadroom(input, selectMode(input, seizeCapMarginBps), headroomFloorBps)
+  return gateOnHeadroom(selectMode(input, seizeCapMarginBps), headroomFloorBps)
 }
 
 // The mode policy of `liquidate(...)` — see {@link planWithReason}'s JSDoc. Split out so the headroom
@@ -392,13 +394,9 @@ const selectMode = (input: PlanInput, seizeCapMarginBps: number): PlanOutcome =>
 
 // Rejects a sized plan whose incentive headroom cannot cover the operator's floor on execution cost.
 // Reads the CHOSEN plan's own `lif`, so it cannot disagree with the mode `selectMode` picked.
-const gateOnHeadroom = (
-  input: PlanInput,
-  outcome: PlanOutcome,
-  headroomFloorBps: number
-): PlanOutcome => {
+const gateOnHeadroom = (outcome: PlanOutcome, headroomFloorBps: number): PlanOutcome => {
   if (headroomFloorBps <= 0 || outcome.plan === null) return outcome
-  if (headroomBps(input, outcome.plan) >= BigInt(headroomFloorBps)) return outcome
+  if (headroomBps(outcome.plan) >= BigInt(headroomFloorBps)) return outcome
   return skip('insufficient_headroom')
 }
 

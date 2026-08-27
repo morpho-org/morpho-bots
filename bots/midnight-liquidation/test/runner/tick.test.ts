@@ -532,7 +532,15 @@ describe('runTick', () => {
       // debug, not info: headroom is a group property, so this fires identically for every candidate
       // in the group — one line per position per block is the shape that buried the 31 Jul post-mortem.
       expect(skipped?.level).toBe('debug')
-      expect(skipped?.fields).toMatchObject({ reason: 'insufficient_headroom' })
+      expect(skipped?.fields).toMatchObject({
+        reason: 'insufficient_headroom',
+        // The inputs behind the decision: without these an operator cannot tell a mis-set floor from
+        // an early ramp. The realized headroom is absent by design — a skip discards the plan, so the
+        // chosen mode's LIF is not recoverable here.
+        headroomFloorBps: 3,
+        maxLif: MAX_LIF,
+        secondsSinceMaturity: 20n
+      })
       expect(backoff.shouldSkip(LABEL, 100n)).toBe(false)
       expect(cooldown.shouldSkip(LABEL)).toBe(false)
       expectCounterIdentities(counters)
@@ -632,6 +640,26 @@ describe('runTick', () => {
       })
       expect(withSurplus.counters).toMatchObject({ quoteUnprofitable: 1, ok: 0 })
       expect(withSurplus.simulateCalls()).toBe(0)
+    })
+
+    it('reports the threshold it applied, so a rejection above break-even is diagnosable', async () => {
+      // With a surplus required, a route can clear `requiredRepay` and still be rejected. Measuring the
+      // shortfall against break-even would then report a NEGATIVE shortfall on a rejection, which tells
+      // an operator nothing; it is measured against the threshold that actually fired.
+      const { events, counters } = await runWith({
+        quoteOutcome: quoting(REQUIRED_REPAY),
+        minSurplusBps: 100
+      })
+      expect(counters).toMatchObject({ quoteUnprofitable: 1, ok: 0 })
+      const skipped = events.find(e => e.event === 'quote.unprofitable')
+      expect(skipped?.fields).toMatchObject({
+        requiredRepay: REQUIRED_REPAY,
+        achievableOut: REQUIRED_REPAY,
+        minSurplusBps: 100
+      })
+      // The bar that fired is above break-even, and the shortfall is positive against it.
+      expect(skipped?.fields?.requiredThreshold as bigint).toBeGreaterThan(REQUIRED_REPAY)
+      expect(skipped?.fields?.shortfallBps as bigint).toBeGreaterThan(0n)
     })
 
     it('uses the LIF the plan was sized at, not the one chain time implies', async () => {
