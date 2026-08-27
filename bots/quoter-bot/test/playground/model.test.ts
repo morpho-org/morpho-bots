@@ -88,6 +88,92 @@ describe('bootstrap + ladder only playground follow-up', () => {
     expect(() => deriveBootstrapGraphicModels(state.bootstrap)).toThrow('configured bounds')
   })
 
+  test('round-trips, validates, and annotates a bootstrap maturity premium', () => {
+    const state = createDefaultPlaygroundState()
+    state.bootstrap[0]!.maturityPremium = {
+      shape: 'linear',
+      premiumPerYearBps: '120',
+      maximumPremiumBps: '300'
+    }
+
+    expect(validateBootstrapCollection(state.bootstrap).valid).toBe(true)
+    const exported = exportBootstrapMarketsEnvValue(state.bootstrap)
+    expect(JSON.parse(exported)[0].maturityPremium).toEqual({
+      shape: 'linear',
+      premiumPerYearBps: '120',
+      maximumPremiumBps: '300'
+    })
+    const imported = parseCollectionsImport(exported)
+    expect(imported.bootstrap?.[0]?.maturityPremium).toEqual({
+      shape: 'linear',
+      premiumPerYearBps: '120',
+      maximumPremiumBps: '300'
+    })
+    const decoded = decodePlaygroundFragment(encodePlaygroundFragment(state))
+    expect(decoded.bootstrap[0]?.maturityPremium).toEqual({
+      shape: 'linear',
+      premiumPerYearBps: '120',
+      maximumPremiumBps: '300'
+    })
+    const graphic = deriveBootstrapGraphicModels(state.bootstrap)[0]
+    expect(graphic?.callouts).toContainEqual({
+      label: 'Maturity premium',
+      value:
+        'Linear +120 BPS per year to maturity, capped at 300 BPS; the preview quote range spans the clamped rates reachable from live time to maturity'
+    })
+    expect(graphic).toMatchObject({
+      referenceRateBps: '550',
+      quotedRateBps: '500',
+      maximumQuotedRateBps: '800'
+    })
+
+    delete state.bootstrap[0]!.maturityPremium
+    const withoutPremium = deriveBootstrapGraphicModels(state.bootstrap)[0]
+    expect(withoutPremium?.callouts.some(callout => callout.label === 'Maturity premium')).toBe(
+      false
+    )
+    expect(withoutPremium?.maximumQuotedRateBps).toBeUndefined()
+  })
+
+  test('renders the clamped reachable quote range for a curve-dependent hardcoded rate', () => {
+    const state = createDefaultPlaygroundState()
+    state.bootstrap[0]!.targetRate = { strategy: 'hardcoded', hardcodedRateBps: '400' }
+    state.bootstrap[0]!.premiumBps = '-300'
+    state.bootstrap[0]!.maturityPremium = { shape: 'linear', premiumPerYearBps: '200' }
+
+    expect(validateBootstrapCollection(state.bootstrap).valid).toBe(true)
+    expect(deriveBootstrapGraphicModels(state.bootstrap)[0]).toMatchObject({
+      referenceRateBps: '400',
+      quotedRateBps: '200',
+      maximumQuotedRateBps: '800'
+    })
+
+    state.bootstrap[0]!.maturityPremium = {
+      shape: 'linear',
+      premiumPerYearBps: '200',
+      maximumPremiumBps: '150'
+    }
+    expect(deriveBootstrapGraphicModels(state.bootstrap)[0]).toMatchObject({
+      quotedRateBps: '200',
+      maximumQuotedRateBps: '250'
+    })
+
+    state.bootstrap[0]!.maturityPremium = {
+      shape: 'linear',
+      premiumPerYearBps: '200',
+      maximumPremiumBps: '50'
+    }
+    expect(validateBootstrapCollection(state.bootstrap).valid).toBe(false)
+  })
+
+  test('rejects an invalid maturity premium in the shared collection validation', () => {
+    const state = createDefaultPlaygroundState()
+    state.bootstrap[0]!.maturityPremium = { shape: 'linear', premiumPerYearBps: '0' }
+    expect(validateBootstrapCollection(state.bootstrap).valid).toBe(false)
+    state.bootstrap[0]!.maturityPremium = { shape: 'linear', premiumPerYearBps: '120' }
+    expect(validateBootstrapCollection(state.bootstrap).valid).toBe(true)
+  })
+
   test('renders a hardcoded bootstrap reference outside bounds when its premium-adjusted quote is valid', () => {
     const state = createDefaultPlaygroundState()
     state.bootstrap[0]!.minimumRateBps = '200'

@@ -111,6 +111,7 @@ const yamlKeys = {
     'acceptanceAssets',
     'offerSize',
     'premiumBps',
+    'maturityPremium',
     'maximumMarketExposure',
     'maximumTotalExposure',
     'minimumRateBps',

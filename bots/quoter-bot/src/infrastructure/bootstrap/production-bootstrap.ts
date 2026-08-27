@@ -36,6 +36,7 @@ import { createLadderGroupOwnership } from '../ladder/ladder-group-ownership.uti
 import { buildLadderTree } from '../ladder/ladder-offer.utils'
 import { createMakerAccount } from '../make/maker-account.utils'
 import { ReadOnlyBootstrapMakeService } from '../make/read-only-bootstrap-make.service'
+import { maturityReadsByMarket } from '../maturity-read.utils'
 import { createBlueReferenceReader } from '../reference/blue-reference-reader.utils'
 import { mapSelectedMarketItems } from '../selected-market-items.utils'
 import { BootstrapAdapterError } from './bootstrap-adapter.error'
@@ -445,7 +446,8 @@ export const createProductionBootstrapAdapters = (
   )
   const rates = new StrategyBootstrapReferenceRateService(
     new Map(config.bootstrap.map(item => [item.marketId, item.targetRate] as const)),
-    blueRates
+    blueRates,
+    maturityReadsByMarket({ entries: config.bootstrap, midnight, client })
   )
   const completeBookOffers = async (marketId: Hex) => {
     const [groups, ladderPublications, wholeBook, ownedBootstrapIds] = await Promise.all([

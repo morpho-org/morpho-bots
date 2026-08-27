@@ -42,13 +42,25 @@ jobs:
         uses: ./.github/actions/setup
 
       - name: Install Foundry (includes anvil)
-        # v1.9.1: runs the built foundryup directly instead of `bash foundryup`, which broke when
-        # upstream foundryup became a binary (older pins fail with "cannot execute binary file").
-        uses: foundry-rs/foundry-toolchain@908c540300062bd5a7e473851cdb4282204cee09 # v1.9.1
-        with:
-          # anvil 1.4.4 rejects same-nonce EIP-1559 replacements ("nonce lower than current"), which
-          # breaks the pending-queue bump/replace fork test (real nodes + anvil >=1.5 accept them).
-          version: v1.5.1
+        # anvil 1.4.4 rejects same-nonce EIP-1559 replacements ("nonce lower than current"), which
+        # breaks the pending-queue bump/replace fork test (real nodes + anvil >=1.5 accept them).
+        # The pinned release archive is downloaded directly because the foundry-toolchain action
+        # shells the live foundryup installer, which upstream replaced with a native binary on
+        # 2026-08-25 and broke every `bash foundryup` invocation until the action catches up.
+        # The SHA-256 pins the exact reviewed artifact (release tags are mutable), matching
+        # https://github.com/foundry-rs/foundry/releases/download/v1.5.1/foundry_v1.5.1_linux_amd64.attestation.txt;
+        # binaries are extracted without sudo into an ephemeral PATH entry.
+        run: |
+          curl --fail --silent --show-error --location \
+            https://github.com/foundry-rs/foundry/releases/download/v1.5.1/foundry_v1.5.1_linux_amd64.tar.gz \
+            --output "$RUNNER_TEMP/foundry.tar.gz"
+          echo "73640b01bd9ed29fdb4965085099371f8cf0dbbec3e2086cf54564efc4dcfe88  $RUNNER_TEMP/foundry.tar.gz" \
+            | sha256sum --check --strict
+          mkdir -p "$RUNNER_TEMP/foundry-bin"
+          tar -xzf "$RUNNER_TEMP/foundry.tar.gz" -C "$RUNNER_TEMP/foundry-bin"
+          echo "$RUNNER_TEMP/foundry-bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/foundry-bin/forge" --version
+          "$RUNNER_TEMP/foundry-bin/anvil" --version
 
       - name: Run contract tests
         run: forge test --root packages/contracts -vv

@@ -20,7 +20,11 @@ import type {
 } from './model'
 
 import { CollectionImportError } from './collection-import.error'
-import { visibleFields } from './field-visibility.utils'
+import {
+  maturityPremiumSelection,
+  visibleFields,
+  withoutMaximumPremium
+} from './field-visibility.utils'
 import {
   BOOTSTRAP_FIELDS,
   LADDER_FIELDS,
@@ -144,7 +148,11 @@ const BootstrapGraphic = ({
   const maximum = BigInt(graphic.maximumRateBps)
   const range = maximum - minimum || 1n
   const position = (value: string) => Number(((BigInt(value) - minimum) * 10_000n) / range) / 100
-  const description = `${title}, market ${graphic.marketId}. Configured range ${graphic.minimumRateBps} to ${graphic.maximumRateBps} BPS. Deterministic reference ${graphic.referenceRateBps} BPS produces quote ${graphic.quotedRateBps} BPS. Credit target ${graphic.creditTarget}, completion threshold ${graphic.acceptedCredit}, pending-offer cap ${graphic.offerSize}. ${graphic.callouts.map(item => `${item.label}: ${item.value}.`).join(' ')} Explicitly no live offers or balances.`
+  const quoteText =
+    graphic.maximumQuotedRateBps === undefined
+      ? `quote ${graphic.quotedRateBps} BPS`
+      : `quote range ${graphic.quotedRateBps} to ${graphic.maximumQuotedRateBps} BPS across maturities`
+  const description = `${title}, market ${graphic.marketId}. Configured range ${graphic.minimumRateBps} to ${graphic.maximumRateBps} BPS. Deterministic reference ${graphic.referenceRateBps} BPS produces ${quoteText}. Credit target ${graphic.creditTarget}, completion threshold ${graphic.acceptedCredit}, pending-offer cap ${graphic.offerSize}. ${graphic.callouts.map(item => `${item.label}: ${item.value}.`).join(' ')} Explicitly no live offers or balances.`
   return (
     <article className="preview-card bootstrap-preview" data-preview="bootstrap">
       <h3 id={`bootstrap-title-${index}`}>{title}</h3>
@@ -158,9 +166,19 @@ const BootstrapGraphic = ({
             style={{ left: `${position(graphic.referenceRateBps)}%` }}
           />
           <i className="quote-marker" style={{ left: `${position(graphic.quotedRateBps)}%` }} />
+          {graphic.maximumQuotedRateBps === undefined ? null : (
+            <i
+              className="quote-marker quote-marker--maximum"
+              style={{ left: `${position(graphic.maximumQuotedRateBps)}%` }}
+            />
+          )}
         </div>
         <figcaption>
-          Reference {graphic.referenceRateBps} BPS ◆ Quote {graphic.quotedRateBps} BPS ●
+          Reference {graphic.referenceRateBps} BPS ◆ Quote {graphic.quotedRateBps}
+          {graphic.maximumQuotedRateBps === undefined
+            ? ''
+            : `–${graphic.maximumQuotedRateBps}`} BPS
+          ●
         </figcaption>
       </figure>
       <dl className="callouts">
@@ -481,7 +499,11 @@ const Playground = () => {
                   </button>
                 </div>
                 <div className="field-grid">
-                  {visibleFields(fields, item.targetRate).map(([key, label, help, type]) => (
+                  {visibleFields(
+                    fields,
+                    item.targetRate,
+                    'maturityPremium' in item ? item.maturityPremium : undefined
+                  ).map(([key, label, help, type]) => (
                     <form.Field
                       key={`${uiIds[kind][index]}-${key}`}
                       name={`${kind}.${index}.${key}` as never}
@@ -515,6 +537,28 @@ const Playground = () => {
                               <option value="variable_rate_avg">variable_rate_avg</option>
                               <option value="hardcoded">hardcoded</option>
                             </select>
+                          ) : type === 'maturity-premium-select' ? (
+                            <select
+                              id={`${kind}-${index}-${key}`}
+                              value={
+                                'maturityPremium' in item && item.maturityPremium
+                                  ? 'linear'
+                                  : 'none'
+                              }
+                              onBlur={field.handleBlur}
+                              onChange={event =>
+                                form.setFieldValue(
+                                  `${kind}.${index}.maturityPremium` as never,
+                                  maturityPremiumSelection(
+                                    'maturityPremium' in item ? item.maturityPremium : undefined,
+                                    event.target.value
+                                  ) as never
+                                )
+                              }
+                            >
+                              <option value="none">none</option>
+                              <option value="linear">linear</option>
+                            </select>
                           ) : type === 'select' ? (
                             <select
                               id={`${kind}-${index}-${key}`}
@@ -530,7 +574,9 @@ const Playground = () => {
                               id={`${kind}-${index}-${key}`}
                               type={type === 'checkbox' ? 'checkbox' : 'text'}
                               inputMode={
-                                type === 'number' || type === 'target-rate-number'
+                                type === 'number' ||
+                                type === 'target-rate-number' ||
+                                type === 'maturity-premium-number'
                                   ? 'numeric'
                                   : undefined
                               }
@@ -547,13 +593,25 @@ const Playground = () => {
                                 item.targetRate.strategy !== 'hardcoded'
                               }
                               onBlur={field.handleBlur}
-                              onChange={event =>
+                              onChange={event => {
+                                if (
+                                  key === 'maturityPremium.maximumPremiumBps' &&
+                                  event.target.value.trim() === ''
+                                ) {
+                                  form.setFieldValue(
+                                    `${kind}.${index}.maturityPremium` as never,
+                                    withoutMaximumPremium(
+                                      'maturityPremium' in item ? item.maturityPremium : undefined
+                                    ) as never
+                                  )
+                                  return
+                                }
                                 field.handleChange(
                                   (type === 'checkbox'
                                     ? event.target.checked
                                     : event.target.value) as never
                                 )
-                              }
+                              }}
                             />
                           )}
                         </label>
