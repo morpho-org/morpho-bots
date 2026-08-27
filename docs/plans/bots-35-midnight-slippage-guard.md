@@ -2,7 +2,7 @@
 
 | Field        | Value                                                                                                                                     |
 | ------------ | ----------------------------------------------------------------------------------------------------------------------------------------- |
-| Status       | Exploration complete; direction needs a decision (the ticket's framing does not survive the arithmetic)                                   |
+| Status       | Exploration complete, economics verified against production logs; recommend re-scoping BOTS-35 to correctness fixes only                  |
 | Linear issue | [BOTS-35](https://linear.app/morpho-labs/issue/BOTS-35/fixmidnight-liquidation-order-by-profit-fix-allowance-and-slippage) — third defect |
 | Scope        | `bots/midnight-liquidation` sizing + quoting seam, `@repo/swaps` min-out derivation, operator documentation                               |
 | Prod config  | Base 8453, venues `['lifi', '0x']`, `SLIPPAGE_BPS` unset → default `100`                                                                  |
@@ -53,8 +53,9 @@ it as `tx.submit_failed` rather than `simulate.revert` is:
    reason.
 
 So `simulate.ok` followed by `tx.submit_failed: Error(return too low)` is a _stale-quote_ signature,
-not a configuration error. The 133 occurrences between 15:02:19 and 15:04:13 are 133 positions whose
-quote aged out before gas estimation.
+not a configuration error. The **157** observed `tx.submit_failed` events (the ticket says 133) are
+sends whose quote aged out before gas estimation — though `tx.*` carries no borrower or id, so they
+cannot be attributed to positions.
 
 Two adjacent defects sit on the same lines and are worth naming, though neither is this item:
 
@@ -65,10 +66,10 @@ Two adjacent defects sit on the same lines and are worth naming, though neither 
   backoff.
 - The two error strings in this incident share one economic cause (see the next section) but have
   **different amplifiers**, so they need one economic fix and two accounting fixes. The allowance
-  failures were at the _simulate_ stage, where `backoff.record` fires and does suppress (120
-  occurrences over 390 s across 14 candidates ≈ 8.6 attempts each — backoff working as designed); the
-  min-out failures were at the _send_ stage, where `backoff.clear` fires instead and suppresses
-  nothing (133 over 114 s). Only the send-stage amplifier is what PR #134 fixes.
+  failures were at the _simulate_ stage, where `backoff.record` fires and does suppress (**131**
+  observed, t+13 → t+595 — backoff working as designed); the min-out failures were at the _send_ stage,
+  where `backoff.clear` fires instead and suppresses nothing (**157** observed). Only the send-stage
+  amplifier is what PR #134 fixes.
 - `cooldown.mark(label)` is called on quote failure and sim revert but not on submit failure, so the
   opt-in cooldown cannot damp this loop either (it is also disabled by default:
   `POSITION_LIQUIDATION_COOLDOWN_MS=0`).
@@ -98,9 +99,9 @@ Computed from the live markets API for the three cbBTC/USDC collateral tiers on 
 | 0.915 | 0.30   | 1.026167 | 4.4 bps          | 8.9 bps  | 21.8 bps | 43.6 bps | 262 bps   |
 | 0.980 | 0.30   | 1.006036 | 1.0 bps          | 2.1 bps  | 5.0 bps  | 10.1 bps | 60 bps    |
 
-On the incident tier the $10,004 fill was lost at **t+123 s**, where headroom was 14.98 bps. A
-cbBTC→USDC swap on Base is not comfortably inside that: the cheapest Uniswap v3 tier alone is 5 bps,
-before spread, price impact on a $10k clip, and the oracle-versus-market basis.
+On the incident tier the $10,004 fill was lost at **t+123 s**, where headroom was 14.98 bps. Our
+observed quotes on that size never came in below 16.37 bps (see below), so the position was never
+affordable to us while it was available.
 
 Consequences that follow directly:
 
