@@ -5,6 +5,7 @@ import { describe, expect, test } from 'vitest'
 import { BootstrapConfigurationError } from '../../../src/domain/bootstrap/bootstrap-configuration.error'
 import {
   decidePositionBootstrap,
+  decidePositionBootstrapWithDiagnostics,
   effectiveBootstrapPremiumBps,
   validateBootstrapConfig
 } from '../../../src/domain/bootstrap/position-bootstrap'
@@ -639,5 +640,90 @@ describe('effectiveBootstrapPremiumBps', () => {
         undefined
       )
     ).toThrow(new BootstrapConfigurationError('maturityPremium', 'requires a maturity observation'))
+  })
+})
+
+describe('decidePositionBootstrapWithDiagnostics', () => {
+  const funding = { ...parameters, position: { ...parameters.position, credit: 0n } }
+
+  test('reports the unclamped rate and no bound while the premium keeps it in range', () => {
+    const { diagnostics } = decidePositionBootstrapWithDiagnostics(funding)
+
+    expect(diagnostics).toEqual({
+      requestedRateBps: 450n,
+      clampedRateBps: 450n,
+      requestedAssets: 500n,
+      cappedAssets: 500n,
+      cap: 'offer-size'
+    })
+    expect(diagnostics && 'clampedBound' in diagnostics).toBe(false)
+  })
+
+  test('reports the bound a saturated premium-adjusted rate settled on', () => {
+    expect(
+      decidePositionBootstrapWithDiagnostics({
+        ...funding,
+        rate: { mode: 'static', rateBps: 900n, observationId: 'static:900' }
+      }).diagnostics
+    ).toMatchObject({
+      requestedRateBps: 850n,
+      clampedRateBps: 800n,
+      clampedBound: 'maximum'
+    })
+
+    expect(
+      decidePositionBootstrapWithDiagnostics({
+        ...funding,
+        rate: { mode: 'static', rateBps: 200n, observationId: 'static:200' }
+      }).diagnostics
+    ).toMatchObject({
+      requestedRateBps: 150n,
+      clampedRateBps: 200n,
+      clampedBound: 'minimum'
+    })
+  })
+
+  test('names the cash balance as the binding size cap', () => {
+    expect(
+      decidePositionBootstrapWithDiagnostics({
+        ...funding,
+        position: { ...funding.position, cashBalance: 300n }
+      }).diagnostics
+    ).toMatchObject({ requestedAssets: 500n, cappedAssets: 300n, cap: 'cash-balance' })
+  })
+
+  test('names the remaining credit target as the binding size cap', () => {
+    expect(
+      decidePositionBootstrapWithDiagnostics({
+        ...funding,
+        position: { ...funding.position, credit: 700n }
+      }).diagnostics
+    ).toMatchObject({ requestedAssets: 500n, cappedAssets: 300n, cap: 'credit-target' })
+  })
+
+  test('floors the reported size at zero while naming the exceeded exposure bound', () => {
+    const { decision, diagnostics } = decidePositionBootstrapWithDiagnostics({
+      ...funding,
+      position: { ...funding.position, marketExposure: 2_500n }
+    })
+
+    expect(diagnostics).toMatchObject({
+      requestedAssets: 500n,
+      cappedAssets: 0n,
+      cap: 'market-exposure'
+    })
+    expect(decision).toEqual({ kind: 'observe', reason: 'no-capacity', assets: 0n })
+  })
+
+  test('omits diagnostics for a transition that never derives a rate', () => {
+    const { decision, diagnostics } = decidePositionBootstrapWithDiagnostics(parameters)
+
+    expect(decision).toEqual({
+      kind: 'target-reached',
+      completesInitialTarget: true,
+      credit: 900n,
+      acceptedCredit: 900n
+    })
+    expect(diagnostics).toBeUndefined()
   })
 })

@@ -11,6 +11,7 @@ import {
   QUOTER_BOT_VERBOSE_COMMANDS,
   runQuoterBotEntrypoint
 } from './infrastructure/cli/quoter-bot-entrypoint'
+import { createMonitoringLogger } from './infrastructure/observability/monitoring-logger.utils'
 
 // oxlint-disable-next-line eslint/no-extend-native -- CLI root policy requested by maintainers.
 Object.defineProperty(BigInt.prototype, 'toJSON', {
@@ -28,7 +29,8 @@ process.once('SIGTERM', requestShutdown)
 const observability = createBotObservability({
   bot: 'quoter-bot',
   chainId: BASE_CHAIN_ID,
-  errorName: operatorErrorName
+  errorName: operatorErrorName,
+  logger: createMonitoringLogger({ bot: 'quoter-bot', chainId: BASE_CHAIN_ID })
 })
 const removeProcessObservers = installProcessObservers(observability)
 await observability.start()

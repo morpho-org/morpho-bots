@@ -53,6 +53,10 @@ export type LadderConfig = {
  * that higher-rate exposure-increasing side. `bootstrapBuyRateBps` is the highest live own
  * bootstrap-buy rate; sells quote at least {@link CROSS_BOOK_CLEARANCE_BPS} below it so the ladder
  * cannot cross the own bootstrap offer.
+ *
+ * The trailing fields are observation-only accounting primitives. Generation ignores them entirely;
+ * they exist because the capacities above are saturating minima from which no position value can be
+ * reconstructed downstream.
  */
 export type LadderMarketState = {
   lowerRateCapacityAssets?: bigint
@@ -60,6 +64,12 @@ export type LadderMarketState = {
   targetMarketCapacityAssets?: bigint
   maximumTotalCapacityAssets?: bigint
   bootstrapBuyRateBps?: bigint
+  cashBalanceAssets?: bigint
+  creditAssets?: bigint
+  otherMarketCreditAssets?: bigint
+  reservedAssets?: bigint
+  marketReservedAssets?: bigint
+  maturityTimestamp?: bigint
 }
 
 /** One exact domain rung before protocol-specific tick and buy/sell conversion. */
@@ -323,26 +333,38 @@ export const effectiveLadderPremiumBps = (
 }
 
 /**
- * Generates exact lower/higher rates and deterministic bigint allocations for one market snapshot.
- * @param parameters - Input object: `config` defines the static shape, budgets, cadence, and hard
- * rate range; `referenceRateBps` is the fresh reference in integer basis points; `capacities`
- * optionally supplies fresh balance, credit, exposure-increasing lend caps, and the live own
- * bootstrap-buy rate; `retainedCenterRateBps` optionally keeps a previously active center
- * inside movement tolerance while still clamping every resulting rung into the hard range; and
- * `secondsToMaturity` supplies the fresh maturity observation a configured maturity premium
- * requires to raise the center by its resolved duration compensation.
- * @returns Exact desired quote set; only the nearest rates are funded when the side cannot support
- * every rung at `minimumOfferAssets`, and the outermost funded rung receives division remainders.
- * @throws LadderConfigurationError for an invalid config, a negative capacity input, or a
- * configured maturity premium missing its maturity observation — even at a retained center, so a
- * wiring gap can never quote silently without its configured duration compensation.
- * @remarks Pure derivation with no provider, logging, persistence, or publication access. Rungs
- * walking outside the hard range saturate at the bound instead of failing: sells
- * settle on `minimumRateBps` and buys on `maximumRateBps`. Sells additionally quote at least
- * {@link CROSS_BOOK_CLEARANCE_BPS} below any live own bootstrap buy so both strategies cannot cross.
- * Saturated neighbouring rungs may share one rate; protocol tick mapping merges equal-tick rungs.
+ * Guardrail counts observed while generating one ladder side.
+ * @remarks Counts, never per-rung records: a side may hold up to 512 rungs and regenerate every
+ * second, so only aggregates are cheap enough to ship. `clampedToMinimumRungs` and
+ * `clampedToMaximumRungs` are disjoint, and a rung cleared below the own bootstrap buy may also be
+ * clamped, so `clearedRungs` and the clamp counts can both include it.
  */
-export const generateLadder = (parameters: GenerateLadderParameters): LadderQuoteSet => {
+export type LadderSideDiagnostics = {
+  configuredRungs: number
+  fundedRungs: number
+  clampedToMinimumRungs: number
+  clampedToMaximumRungs: number
+  clearedRungs: number
+}
+
+/** Guardrail counts for both sides of one generated quote set. */
+export type LadderDiagnostics = {
+  lower: LadderSideDiagnostics
+  higher: LadderSideDiagnostics
+}
+
+/**
+ * Generates one ladder quote set alongside the guardrail counts that shaped it.
+ * @param parameters - Same inputs as {@link generateLadder}.
+ * @returns The desired quote set and the per-side clamp, clearance, and funding counts.
+ * @throws LadderConfigurationError for an invalid config, a negative capacity input, or a
+ * configured maturity premium missing its maturity observation.
+ * @remarks Exists so silent rate saturation and cross-book repricing stay observable without a
+ * logger reaching into this pure module; see {@link generateLadder} for the generation contract.
+ */
+export const generateLadderWithDiagnostics = (
+  parameters: GenerateLadderParameters
+): { quote: LadderQuoteSet; diagnostics: LadderDiagnostics } => {
   const {
     config,
     referenceRateBps,
@@ -362,8 +384,15 @@ export const generateLadder = (parameters: GenerateLadderParameters): LadderQuot
   const lowerAllocations = allocateBudget(lowerBudget, weights, config.minimumOfferAssets)
   const higherAllocations = allocateBudget(higherBudget, weights, config.minimumOfferAssets)
   const halfSpread = config.spreadBps / 2n
-  const buildRungs = (side: 'lower' | 'higher', allocations: readonly bigint[]) =>
-    allocations.flatMap((assets, index) => {
+  const buildRungs = (side: 'lower' | 'higher', allocations: readonly bigint[]) => {
+    const diagnostics: LadderSideDiagnostics = {
+      configuredRungs: config.rungCount,
+      fundedRungs: 0,
+      clampedToMinimumRungs: 0,
+      clampedToMaximumRungs: 0,
+      clearedRungs: 0
+    }
+    const rungs = allocations.flatMap((assets, index) => {
       if (assets === 0n) return []
       const offset = halfSpread + BigInt(index) * config.stepBps
       const shapedRateBps = side === 'lower' ? centerRateBps - offset : centerRateBps + offset
@@ -372,12 +401,51 @@ export const generateLadder = (parameters: GenerateLadderParameters): LadderQuot
           ? clearedSellRateBps(shapedRateBps, capacities.bootstrapBuyRateBps)
           : shapedRateBps
       const rateBps = clampRateBps(clearedRateBps, config.minimumRateBps, config.maximumRateBps)
+      diagnostics.fundedRungs += 1
+      if (clearedRateBps !== shapedRateBps) diagnostics.clearedRungs += 1
+      if (clearedRateBps < config.minimumRateBps) diagnostics.clampedToMinimumRungs += 1
+      else if (clearedRateBps > config.maximumRateBps) diagnostics.clampedToMaximumRungs += 1
       return [{ index, rateBps, assets }]
     })
+    return { rungs, diagnostics }
+  }
   const lower = buildRungs('lower', lowerAllocations)
   const higher = buildRungs('higher', higherAllocations)
-  return { marketId: config.marketId, centerRateBps, groupMode: config.groupMode, lower, higher }
+  return {
+    quote: {
+      marketId: config.marketId,
+      centerRateBps,
+      groupMode: config.groupMode,
+      lower: lower.rungs,
+      higher: higher.rungs
+    },
+    diagnostics: { lower: lower.diagnostics, higher: higher.diagnostics }
+  }
 }
+
+/**
+ * Generates exact lower/higher rates and deterministic bigint allocations for one market snapshot.
+ * @param parameters - Input object: `config` defines the static shape, budgets, cadence, and hard
+ * rate range; `referenceRateBps` is the fresh reference in integer basis points; `capacities`
+ * optionally supplies fresh balance, credit, exposure-increasing lend caps, and the live own
+ * bootstrap-buy rate; `retainedCenterRateBps` optionally keeps a previously active center
+ * inside movement tolerance while still clamping every resulting rung into the hard range; and
+ * `secondsToMaturity` supplies the fresh maturity observation a configured maturity premium
+ * requires to raise the center by its resolved duration compensation.
+ * @returns Exact desired quote set; only the nearest rates are funded when the side cannot support
+ * every rung at `minimumOfferAssets`, and the outermost funded rung receives division remainders.
+ * @throws LadderConfigurationError for an invalid config, a negative capacity input, or a
+ * configured maturity premium missing its maturity observation — even at a retained center, so a
+ * wiring gap can never quote silently without its configured duration compensation.
+ * @remarks Pure derivation with no provider, logging, persistence, or publication access. Rungs
+ * walking outside the hard range saturate at the bound instead of failing: sells
+ * settle on `minimumRateBps` and buys on `maximumRateBps`. Sells additionally quote at least
+ * {@link CROSS_BOOK_CLEARANCE_BPS} below any live own bootstrap buy so both strategies cannot cross.
+ * Saturated neighbouring rungs may share one rate; protocol tick mapping merges equal-tick rungs.
+ * Use {@link generateLadderWithDiagnostics} when those saturations must be observable.
+ */
+export const generateLadder = (parameters: GenerateLadderParameters): LadderQuoteSet =>
+  generateLadderWithDiagnostics(parameters).quote
 
 /**
  * Determines whether a retained center must move after a fresh effective-center observation.

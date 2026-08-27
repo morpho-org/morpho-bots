@@ -6,6 +6,7 @@ import {
   assertLadderShapeAtReference,
   effectiveLadderPremiumBps,
   generateLadder,
+  generateLadderWithDiagnostics,
   shouldRecenter,
   validateLadderConfig,
   type LadderConfig
@@ -255,6 +256,109 @@ describe('ladder domain', () => {
     expect(shouldRecenter(500n, 510n, 10n)).toBe(false)
     expect(shouldRecenter(500n, 490n, 10n)).toBe(false)
     expect(shouldRecenter(500n, 511n, 10n)).toBe(true)
+  })
+})
+
+describe('generateLadderWithDiagnostics', () => {
+  test('reports every configured rung funded, unclamped, and uncleared', () => {
+    const parameters = { config: config(), referenceRateBps: 500n }
+    const { diagnostics } = generateLadderWithDiagnostics(parameters)
+
+    expect(diagnostics).toEqual({
+      lower: {
+        configuredRungs: 3,
+        fundedRungs: 3,
+        clampedToMinimumRungs: 0,
+        clampedToMaximumRungs: 0,
+        clearedRungs: 0
+      },
+      higher: {
+        configuredRungs: 3,
+        fundedRungs: 3,
+        clampedToMinimumRungs: 0,
+        clampedToMaximumRungs: 0,
+        clearedRungs: 0
+      }
+    })
+  })
+
+  test('reports fewer funded rungs than configured when a side budget truncates the ladder', () => {
+    const { quote, diagnostics } = generateLadderWithDiagnostics({
+      config: config(),
+      referenceRateBps: 500n,
+      capacities: { lowerRateCapacityAssets: 2n, higherRateCapacityAssets: 10n }
+    })
+
+    expect(quote.lower).toHaveLength(2)
+    expect(diagnostics.lower.configuredRungs).toBe(3)
+    expect(diagnostics.lower.fundedRungs).toBe(2)
+    expect(diagnostics.higher.configuredRungs).toBe(3)
+    expect(diagnostics.higher.fundedRungs).toBe(3)
+  })
+
+  test('counts sells saturated on the minimum and buys saturated on the maximum', () => {
+    const belowRange = { config: config(), referenceRateBps: 350n }
+    const below = generateLadderWithDiagnostics(belowRange)
+
+    expect(below.quote.lower.map(rung => rung.rateBps)).toEqual([250n, 200n, 200n])
+    expect(below.diagnostics.lower).toEqual({
+      configuredRungs: 3,
+      fundedRungs: 3,
+      clampedToMinimumRungs: 2,
+      clampedToMaximumRungs: 0,
+      clearedRungs: 0
+    })
+    expect(below.diagnostics.higher.clampedToMinimumRungs).toBe(0)
+    expect(below.diagnostics.higher.clampedToMaximumRungs).toBe(0)
+
+    const aboveRange = { config: config(), referenceRateBps: 650n }
+    const above = generateLadderWithDiagnostics(aboveRange)
+
+    expect(above.quote.higher.map(rung => rung.rateBps)).toEqual([750n, 800n, 800n])
+    expect(above.diagnostics.higher).toEqual({
+      configuredRungs: 3,
+      fundedRungs: 3,
+      clampedToMinimumRungs: 0,
+      clampedToMaximumRungs: 2,
+      clearedRungs: 0
+    })
+    expect(above.diagnostics.lower.clampedToMinimumRungs).toBe(0)
+    expect(above.diagnostics.lower.clampedToMaximumRungs).toBe(0)
+  })
+
+  test('counts only the sells the own bootstrap buy repriced', () => {
+    const { quote, diagnostics } = generateLadderWithDiagnostics({
+      config: config(),
+      referenceRateBps: 500n,
+      capacities: { bootstrapBuyRateBps: 380n }
+    })
+
+    expect(quote.lower.map(rung => rung.rateBps)).toEqual([370n, 300n, 200n])
+    expect(diagnostics.lower).toEqual({
+      configuredRungs: 3,
+      fundedRungs: 3,
+      clampedToMinimumRungs: 0,
+      clampedToMaximumRungs: 0,
+      clearedRungs: 1
+    })
+    expect(diagnostics.higher.clearedRungs).toBe(0)
+  })
+
+  test('counts a cleared sell that the minimum bound also saturates on both guardrails', () => {
+    const { quote, diagnostics } = generateLadderWithDiagnostics({
+      config: config(),
+      referenceRateBps: 500n,
+      capacities: { bootstrapBuyRateBps: 205n }
+    })
+
+    expect(quote.lower.map(rung => rung.rateBps)).toEqual([200n, 200n, 200n])
+    expect(diagnostics.lower).toEqual({
+      configuredRungs: 3,
+      fundedRungs: 3,
+      clampedToMinimumRungs: 3,
+      clampedToMaximumRungs: 0,
+      clearedRungs: 3
+    })
   })
 })
 

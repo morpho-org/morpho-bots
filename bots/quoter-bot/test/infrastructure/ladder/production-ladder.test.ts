@@ -68,7 +68,37 @@ describe('calculateProductionLadderCapacities', () => {
       lowerRateCapacityAssets: 90n,
       higherRateCapacityAssets: 10n,
       targetMarketCapacityAssets: 100n,
-      maximumTotalCapacityAssets: 1_000n
+      maximumTotalCapacityAssets: 1_000n,
+      cashBalanceAssets: 100n,
+      creditAssets: 90n,
+      otherMarketCreditAssets: 0n,
+      reservedAssets: 0n,
+      marketReservedAssets: 0n
+    })
+  })
+
+  test('reports the wallet balance when the allowance narrows spendable capacity', () => {
+    expect(
+      calculateProductionLadderCapacities({
+        marketId,
+        balance: 40n,
+        walletBalance: 100n,
+        currentCredit: 0n,
+        otherMarketCredit: 0n,
+        targetMarketExposureAssets: 100n,
+        maximumTotalExposureAssets: 1_000n,
+        reservations: []
+      })
+    ).toEqual({
+      lowerRateCapacityAssets: 0n,
+      higherRateCapacityAssets: 40n,
+      targetMarketCapacityAssets: 40n,
+      maximumTotalCapacityAssets: 1_000n,
+      cashBalanceAssets: 100n,
+      creditAssets: 0n,
+      otherMarketCreditAssets: 0n,
+      reservedAssets: 0n,
+      marketReservedAssets: 0n
     })
   })
 })
@@ -313,6 +343,7 @@ describe('publishLadderPublication', () => {
     const retained = new Set<Hex>()
     const service = new MidnightLadderMakeService({
       readActive: async () => undefined,
+      readActiveState: async () => ({ consumption: [] }),
       listOwnedGroups: async () => [],
       readGroupConsumed: async () => 0n,
       listActiveGroupIds: async () => [],
@@ -356,6 +387,7 @@ describe('publishLadderPublication', () => {
     const retained = new Set<Hex>()
     const service = new MidnightLadderMakeService({
       readActive: async () => undefined,
+      readActiveState: async () => ({ consumption: [] }),
       listOwnedGroups: async () => [],
       readGroupConsumed: async () => 0n,
       listActiveGroupIds: async () => [],

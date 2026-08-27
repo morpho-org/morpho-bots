@@ -6,6 +6,7 @@ import { zeroFloorSub } from '@repo/utils'
 
 import type {
   BootstrapConfig,
+  BootstrapDecisionDiagnostics,
   BootstrapOffer,
   BootstrapPosition,
   BootstrapRate,
@@ -23,16 +24,21 @@ import type {
 
 import { BootstrapConfigurationError } from '../../domain/bootstrap/bootstrap-configuration.error'
 import {
-  decidePositionBootstrap,
   decidePositionBootstrapTransition,
+  decidePositionBootstrapWithDiagnostics,
   effectiveBootstrapPremiumBps,
   validateBootstrapConfig
 } from '../../domain/bootstrap/position-bootstrap'
 import { BootstrapAdapterError } from '../../infrastructure/bootstrap/bootstrap-adapter.error'
-import { operatorErrorDetails, operatorErrorName } from '../operator-error-name.utils'
+import {
+  adapterOperationField,
+  operatorErrorDetails,
+  operatorErrorName
+} from '../operator-error-name.utils'
 import { BootstrapOwnershipCleanupError } from './bootstrap-ownership-cleanup.error'
 
-const BOOTSTRAP_MONITOR_INTERVAL_MS = 60_000
+/** Fixed cadence of the bootstrap monitor loop, in milliseconds. */
+export const BOOTSTRAP_MONITOR_INTERVAL_MS = 60_000
 
 type DecisionInvalidationReason = Extract<
   PositionBootstrapDecision,
@@ -160,6 +166,7 @@ type BootstrapRunOutcome =
       invalidated: boolean
       invalidationLogged?: boolean
       errorName: string
+      adapterOperation?: string
       minimumAssets?: string
       invalidationErrorName?: string
       ownershipCleanupErrorName?: string
@@ -172,6 +179,7 @@ type BootstrapRunOutcome =
       strategyInvalidated: boolean
       strategyInvalidationLogged?: boolean
       errorName: string
+      adapterOperation?: string
       invalidationErrorName?: string
     }
   | {
@@ -210,6 +218,7 @@ type BootstrapRunPlan =
       decision: PositionBootstrapDecision
       plannedOfferAssets?: bigint
       verbose?: BootstrapVerbosePlan
+      plannedMs: number
     }
   | { result: BootstrapRunResult }
 
@@ -433,6 +442,7 @@ export class PositionBootstrapService {
     const reservedAssetsDeltaByMarket = new Map<Hex, bigint>()
 
     for (const config of this.configs) {
+      const plannedAt = Date.now()
       let observedPosition: Awaited<ReturnType<BootstrapPositionService['readPosition']>>
       try {
         observedPosition = await this.positions.readPosition(config.marketId)
@@ -456,7 +466,8 @@ export class PositionBootstrapService {
             }
           },
           true,
-          failure.makeResult
+          failure.makeResult,
+          Date.now() - plannedAt
         )
         if (failure.result.status === 'halted') {
           return [...preflightResults(), completedResult]
@@ -516,6 +527,7 @@ export class PositionBootstrapService {
       }
       let decision: PositionBootstrapDecision
       let rate: BootstrapRate | undefined
+      let diagnostics: BootstrapDecisionDiagnostics | undefined
 
       if (transition) {
         decision = transition
@@ -547,7 +559,7 @@ export class PositionBootstrapService {
         }
 
         try {
-          decision = decidePositionBootstrap({
+          const derived = decidePositionBootstrapWithDiagnostics({
             config,
             position,
             rate,
@@ -555,6 +567,8 @@ export class PositionBootstrapService {
             requiresReconciliation: position.requiresReconciliation,
             initialTargetCompleted: this.completedMarkets.has(config.marketId)
           })
+          decision = derived.decision
+          diagnostics = derived.diagnostics
         } catch (error) {
           const halt = await this.haltStrategy(
             config.marketId,
@@ -613,6 +627,7 @@ export class PositionBootstrapService {
       plans.push({
         config,
         decision,
+        plannedMs: Date.now() - plannedAt,
         ...(plannedOfferAssets === undefined ? {} : { plannedOfferAssets }),
         ...(verbose
           ? {
@@ -627,7 +642,8 @@ export class PositionBootstrapService {
                     }
                   : {}),
                 decision,
-                ...('offer' in decision ? { bootstrapOffer: decision.offer } : {})
+                ...('offer' in decision ? { bootstrapOffer: decision.offer } : {}),
+                ...(diagnostics ? { diagnostics } : {})
               }
             }
           : {})
@@ -650,7 +666,9 @@ export class PositionBootstrapService {
         results.push(plan.result)
         continue
       }
-      const { config, decision } = plan
+      const { config, decision, plannedMs } = plan
+      const mutationStartedAt = Date.now()
+      const attributedMs = () => plannedMs + (Date.now() - mutationStartedAt)
 
       if ('completesInitialTarget' in decision && decision.completesInitialTarget) {
         this.completedMarkets.add(config.marketId)
@@ -665,7 +683,10 @@ export class PositionBootstrapService {
               action: 'target-reached' as const
             },
             verbose,
-            plan.verbose
+            plan.verbose,
+            false,
+            undefined,
+            attributedMs()
           )
         )
         continue
@@ -679,7 +700,10 @@ export class PositionBootstrapService {
               action: decision.reason
             },
             verbose,
-            plan.verbose
+            plan.verbose,
+            false,
+            undefined,
+            attributedMs()
           )
         )
         continue
@@ -693,7 +717,10 @@ export class PositionBootstrapService {
               action: 'rest' as const
             },
             verbose,
-            plan.verbose
+            plan.verbose,
+            false,
+            undefined,
+            attributedMs()
           )
         )
         continue
@@ -722,7 +749,8 @@ export class PositionBootstrapService {
                 verbose,
                 plan.verbose,
                 true,
-                { submittedTransactions: error.submittedTransactions }
+                { submittedTransactions: error.submittedTransactions },
+                attributedMs()
               )
             )
             return results
@@ -734,7 +762,14 @@ export class PositionBootstrapService {
             this.transactionObserver(parameters, verbose)
           )
           results.push(
-            await this.withVerboseDetails(halt.result, verbose, plan.verbose, true, halt.makeResult)
+            await this.withVerboseDetails(
+              halt.result,
+              verbose,
+              plan.verbose,
+              true,
+              halt.makeResult,
+              attributedMs()
+            )
           )
           return results
         }
@@ -748,7 +783,8 @@ export class PositionBootstrapService {
             verbose,
             plan.verbose,
             false,
-            reconciliation
+            reconciliation,
+            attributedMs()
           )
         )
         continue
@@ -790,7 +826,8 @@ export class PositionBootstrapService {
             true,
             confirmedTransactions.length > 0
               ? { submittedTransactions: confirmedTransactions }
-              : undefined
+              : undefined,
+            attributedMs()
           )
         )
         return results
@@ -808,7 +845,14 @@ export class PositionBootstrapService {
               action: decision.kind
             } satisfies BootstrapRunOutcome)
       results.push(
-        await this.withVerboseDetails(outcome, verbose, plan.verbose, false, reconciliation)
+        await this.withVerboseDetails(
+          outcome,
+          verbose,
+          plan.verbose,
+          false,
+          reconciliation,
+          attributedMs()
+        )
       )
     }
     return results
@@ -924,7 +968,8 @@ export class PositionBootstrapService {
           stage,
           strategyInvalidated: invalidation !== 'logged',
           ...(invalidation === 'logged' ? { strategyInvalidationLogged: true } : {}),
-          errorName: operatorErrorName(failure)
+          errorName: operatorErrorName(failure),
+          ...adapterOperationField(failure)
         },
         makeResult: invalidation
       }
@@ -936,6 +981,7 @@ export class PositionBootstrapService {
           stage,
           strategyInvalidated: false,
           errorName: operatorErrorName(failure),
+          ...adapterOperationField(failure),
           invalidationErrorName: operatorErrorName(invalidationError)
         }
       }
@@ -994,14 +1040,21 @@ export class PositionBootstrapService {
     }
   }
 
+  /**
+   * `attributedMs` is the time already spent on this market alone — its planning iteration plus its
+   * own mutation segment — and never covers work done for other markets in between the two passes.
+   * The post-check verbose re-read performed here is added to it.
+   */
   private async withVerboseDetails(
     result: BootstrapRunOutcome,
     verbose: boolean,
     details?: BootstrapVerbosePlan,
     forceStateRead = false,
-    makeResult?: BootstrapMakeResult
+    makeResult?: BootstrapMakeResult,
+    attributedMs?: number
   ): Promise<BootstrapRunResult> {
     if (!verbose || !details) return result
+    const stateReadStartedAt = Date.now()
     const submittedTransactions = this.submittedTransactions(makeResult)
     return {
       ...result,
@@ -1011,7 +1064,10 @@ export class PositionBootstrapService {
         stateAfterCheck:
           forceStateRead || details.currentState.status !== 'not-read'
             ? await this.readVerboseState(result.marketId)
-            : details.currentState
+            : details.currentState,
+        ...(attributedMs === undefined
+          ? {}
+          : { durationMs: attributedMs + (Date.now() - stateReadStartedAt) })
       }
     }
   }
