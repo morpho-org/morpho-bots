@@ -37,7 +37,8 @@ approval-or-denial envelope**; the typed source of truth is
 [`src/intent.utils.ts`](./src/intent.utils.ts) (request union plus the strict parser) and
 [`src/response.utils.ts`](./src/response.utils.ts) (response union). Encoding rules: JSON cannot
 carry bigint, so every uint256-range value — wei, assets, ticks, timestamps, fees, gas — is a
-canonical decimal string (no sign except ticks, no leading zeros); small protocol integers
+canonical decimal string (unsigned — every protocol offer field is unsigned — no leading
+zeros, and bounded to the struct width, e.g. uint128 offer caps); small protocol integers
 (`chainId`, nonces) are JSON numbers; addresses are validated and checksummed; unknown keys,
 unknown kinds, and unknown contract versions are rejected outright — no best-effort
 interpretation.
@@ -90,7 +91,9 @@ This build answers it with the `SigningNotImplementedError` denial above.
 `bots/quoter-bot` selects this middleware as its fourth maker signing method: setting
 `QUOTER_SIGNER_LAMBDA_ARN` (or `identity.quoterSignerLambdaArn`, or the `--middleware` flag with
 `KEY_STORAGE_METHOD=middleware`) picks the `middleware` identity alongside
-`private-key`/`keystore`/`aws`, deriving the AWS region from the ARN. Per the TIB, that identity
+`private-key`/`keystore`/`aws`. The value must be an alias-qualified Lambda ARN — the TIB's
+production-alias invocation rule, enforced at configuration time: unqualified ARNs, version
+qualifiers, and `$LATEST` are rejected — and the AWS region is derived from the ARN. Per the TIB, that identity
 is deliberately **not** a drop-in signer: the bot-side generic digest-signing path fails closed
 with `MiddlewareSigningUnsupportedError`, and write flows stay halted until the intent ports that
 speak this wire contract land.

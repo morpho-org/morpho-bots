@@ -1340,8 +1340,10 @@ still entirely fail-closed:
   setup remediation) that the skeleton never produces.
 - **Bot-side trigger**: `signer-identity.utils.ts` gains the `middleware` identity method
   alongside `private-key`/`keystore`/`aws`, selected by `QUOTER_SIGNER_LAMBDA_ARN`
-  (`identity.quoterSignerLambdaArn`, CLI `--middleware`), deriving the AWS region from the ARN
-  and rejecting `$LATEST`. As specified in §3, the identity is not a drop-in signer:
+  (`identity.quoterSignerLambdaArn`, CLI `--middleware`). The value must be an alias-qualified
+  Lambda ARN — this TIB's production-alias invocation rule enforced at configuration time, so
+  unqualified ARNs, version qualifiers, and `$LATEST` are rejected — and the AWS region derives
+  from the ARN. As specified in §3, the identity is not a drop-in signer:
   `createMakerAccount` fails closed with `MiddlewareSigningUnsupportedError`, so write flows halt
   until the intent ports land; read-only operation is unaffected.
 

@@ -37,10 +37,11 @@ const hasForeignSignerSource = (environment: Environment, method: SignerMethod) 
         (candidate === 'keystore' && environment.KEYSTORE_INTERACTIVE?.trim() === 'true'))
   )
 
-// Function or alias-qualified AWS Lambda ARN in the standard partition; the qualifier charset
-// excludes `$`, so `$LATEST` — which TIB-2026-08-12 forbids invoking — never validates.
-const LAMBDA_FUNCTION_ARN_PATTERN =
-  /^arn:aws:lambda:([a-z]{2}(?:-[a-z]+)+-\d):\d{12}:function:[A-Za-z0-9_-]{1,64}(?::[A-Za-z0-9_-]{1,128})?$/
+// Alias-qualified AWS Lambda ARN in the standard partition. TIB-2026-08-12 requires the bot to
+// invoke exact production-alias ARNs only, so the qualifier is mandatory and must be an alias
+// name: all-digit version qualifiers are excluded by the lookahead and `$LATEST` by the charset.
+const LAMBDA_ALIAS_ARN_PATTERN =
+  /^arn:aws:lambda:([a-z]{2}(?:-[a-z]+)+-\d):\d{12}:function:[A-Za-z0-9_-]{1,64}:(?![0-9]+$)[A-Za-z0-9_-]{1,128}$/
 
 const protectedIdentity = <Identity extends Exclude<MakerIdentity, { readOnly: true }>>(
   identity: Identity
@@ -73,12 +74,12 @@ const required = (values: Environment, name: string) => {
 
 const middlewareFunctionArn = (environment: Environment) => {
   const functionArn = required(environment, 'QUOTER_SIGNER_LAMBDA_ARN')
-  const region = LAMBDA_FUNCTION_ARN_PATTERN.exec(functionArn)?.[1]
+  const region = LAMBDA_ALIAS_ARN_PATTERN.exec(functionArn)?.[1]
   if (region === undefined) {
     throw new ConfigValidationError(
       'QUOTER_SIGNER_LAMBDA_ARN',
       'invalid-arn',
-      'QUOTER_SIGNER_LAMBDA_ARN must be an AWS Lambda function or alias ARN'
+      'QUOTER_SIGNER_LAMBDA_ARN must be an alias-qualified AWS Lambda ARN'
     )
   }
   return { functionArn, region }

@@ -118,7 +118,13 @@ describe('createApplication', () => {
   test('applies CLI signer selection over environment configuration', async () => {
     let method: string | undefined
     const application = createApplication(
-      { ...environment, AWS_KMS_KEY_ID: 'alias/cli-selected', AWS_REGION: 'eu-west-1' },
+      {
+        ...environment,
+        AWS_KMS_KEY_ID: 'alias/cli-selected',
+        AWS_REGION: 'eu-west-1',
+        QUOTER_SIGNER_LAMBDA_ARN:
+          'arn:aws:lambda:eu-west-1:123456789012:function:quoter-signer:prod'
+      },
       {
         createState: config => {
           method = config.keyStorageMethod
@@ -130,6 +136,30 @@ describe('createApplication', () => {
     await application.run(['--aws', 'setup-check'])
 
     expect(method).toBe('aws')
+  })
+
+  test('applies CLI --middleware selection over ambient signer environment', async () => {
+    let identity: { method?: string; functionArn?: string } | undefined
+    const application = createApplication(
+      {
+        ...environment,
+        QUOTER_SIGNER_LAMBDA_ARN:
+          'arn:aws:lambda:eu-west-1:123456789012:function:quoter-signer:prod'
+      },
+      {
+        createState: config => {
+          identity = config.identity.readOnly ? undefined : config.identity
+          return readyState()
+        }
+      }
+    )
+
+    await application.run(['--middleware', 'setup-check'])
+
+    expect(identity).toMatchObject({
+      method: 'middleware',
+      functionArn: 'arn:aws:lambda:eu-west-1:123456789012:function:quoter-signer:prod'
+    })
   })
 
   test('CLI --interactive clears an environment keystore password', async () => {
