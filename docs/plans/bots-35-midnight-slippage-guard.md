@@ -19,19 +19,21 @@ floor would demand 100 bps of headroom against a tier whose lifetime maximum can
 it in either direction cannot produce a won position, because the binding constraint was never the
 guard.
 
-Two things it took the arithmetic to see. First, a swap-funded liquidation has only `lif − 1` of
-headroom, which post-maturity ramps from zero over an hour — so early attempts are unprofitable by
-construction. Second, and more actionable: the moment that headroom clears is a **closed form**, and
-the bot's exponential backoff sampled straight across it. The evidence is consistent with the position
-having been winnable and missed for lack of looking, not lost to economics.
+A swap-funded liquidation has only `lif − 1` of headroom, which post-maturity ramps from zero over an
+hour, so early attempts are unprofitable by construction. But the decisive finding is narrower and is
+now measured: **our execution cost on the size that mattered exceeded the headroom for the entire
+window in which the position was available.** We did not lose it to a mis-tuned guard, and we did not
+lose it to sampling — we lost it to route quality on a $10k clip.
 
 This document records the evidence, then proposes the change that satisfies the criterion's _intent_.
 
-> **Evidence provenance.** Everything here derives from the ticket text, the repository source, and
-> the live markets API. The `t+123 s` and `t+138 s` timestamps are the ticket's. **Nobody has checked
-> Better Stack.** Three parallel sessions worked BOTS-35's three defects and none had the incident
-> logs. Confirming the attempt timeline against the real `simulate.revert` / `tx.submit_failed` lines
-> is the first thing to do before implementing.
+> **Evidence provenance.** The economics below are **verified against production logs** (Better Stack
+> source 2607569, s3 archive, 2026-07-31 14:59–15:10), obtained by the BOTS-35 item 2 session. The
+> viability predicate `cost_bps ≤ (maxLif − 1)·t/3600` predicts **13 of 13** simulate outcomes at
+> t+138–144, including two dust rejections, and the log fit brackets `maxLif − 1 ≥ 432 bps`
+> independently confirming the 438.4 bps tier lookup. Still _not_ verified: the winner's t+123 s strike
+> is ticket-derived (no on-chain `Liquidate` event was checked). Ticket counts are slightly off —
+> 131 allowance reverts, not 120; 157 `tx.submit_failed`, not 133.
 
 ## The mechanism behind `Error(return too low)`
 
@@ -128,6 +130,58 @@ inventory-funded". A swap-funded liquidator with ~15 bps execution, polling ever
 t+123 s strike completely — note that a 15 bps cost puts the deterministic crossover at exactly
 t+123 s. Inventory funding remains a plausible and strategically interesting answer, but it is not
 what this incident demonstrates.
+
+### What actually lost the position: route quality on a $10k clip
+
+**Verified from production `select.ok` lines.** Every quote the $10,004 position (`0x5b878f8e…`) ever
+received:
+
+| t     | quoted cost | headroom then | viable |
+| ----- | ----------- | ------------- | ------ |
+| +14 s | 17.37 bps   | 1.70 bps      | no     |
+| +21 s | 18.29 bps   | 2.56 bps      | no     |
+| +29 s | 16.37 bps   | 3.53 bps      | no     |
+| +43 s | 18.75 bps   | 5.24 bps      | no     |
+| +75 s | 25.12 bps   | 9.13 bps      | no     |
+
+It never appears in `simulate.ok`, all window. Headroom at the winner's t+123 s strike was 14.98 bps;
+the position's **best-ever** quote was 16.37 bps. Its `t_cross` was ~134 s at that best cost and ~206 s
+at its last. So it was not viable at t+123 s under any observed quote — perfect per-block polling would
+not have taken it. The winner cleared ≤ 14.98 bps; our cheapest route on that size was 16.37 bps. They
+were genuinely cheaper, by 1.4–10 bps.
+
+**Cost is size-dependent, and nothing in the bot knows it.** At t+138–144 the eleven positions we did
+win cost **7.85–10.4 bps** — they were $0.05 to $80. The $10k position cost **16.4–25.1 bps**: an
+8–15 bps price-impact penalty for being the only trade that mattered. Worse, its cost was _rising_
+through the burst (17.4 → 25.1 bps) as competitors drained the cbBTC/USDC pools, so its `t_cross` was
+receding while the LIF ramp advanced toward it. A fixed-size plan races a moving target.
+
+### Partial sizing is the cheap fix, and it needs no protocol change
+
+A gate answers "is this trade viable?"; it books $0 on the position that mattered. Sizing answers
+"**what** trade is viable?" — and because headroom ramps monotonically, the affordable slice grows every
+block, so the position is harvested progressively from the moment any slice clears. Three things make
+this plumbing rather than a project:
+
+1. **The protocol permits it.** `liquidationLocked` reads `UtilsLib.tGet(LIQUIDATION_LOCK_SLOT, …)`,
+   i.e. `tload` — **transient storage**, set at `Midnight.sol:1647` and cleared at `:1678` inside the
+   same call. It is a re-entrancy guard, transaction-scoped; nothing rate-limits liquidation across
+   blocks. Post-maturity mode also skips the RCF cap (`if (!postMaturityMode && lltv < WAD)`), leaving
+   debt as the only ceiling.
+2. **It does not need repay-exact.** Seize-exact accepts an arbitrary `seizedAssets`, so passing a
+   partial amount instead of `wholeSlotPlan`'s `bestCollateralAmt` gives depth-aware sizing while
+   keeping the deterministic sell-side amount that LiFi and 0x require for fixed-amount calldata.
+   This supersedes an earlier note in this document that depth-aware sizing was repay-exact's one
+   surviving merit — repay-exact now has no argument left.
+3. **The size ladder already exists.** `PROBE_LADDER` defaults to `['0.01','0.1','1','10','100']` whole
+   collateral tokens and `select(pair, amountIn)` returns per-venue estimates _for a size_. The venue
+   selector already measures the cost-versus-size curve; the bot ranks venues with it and discards the
+   size dimension.
+
+Split routing and additional venues belong alongside this — they lower the whole curve rather than
+moving along it. Inventory funding remains the strategic answer and deserves its own issue.
+
+### The backoff gap is real, observed, and was not decisive here
 
 ### What actually lost the position: backoff across a deterministic crossover
 
