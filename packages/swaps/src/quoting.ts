@@ -102,6 +102,20 @@ export type QuoteRequest = {
   amountIn: bigint
   /** Oracle-priced expected output (no DEX slippage) — the route-quality reference. */
   referenceAmountOut: bigint
+  /**
+   * Break-even output: the loan-token amount the protocol will pull to settle the repay. When set, the
+   * min-out floor is derived from it instead of from the operator's `slippageBps`.
+   *
+   * A liquidation's entire margin is the protocol's liquidation incentive, so break-even — not a
+   * percentage — is the economically correct floor. A fixed allowance is wrong in both directions and
+   * crosses over as the incentive changes: below break-even it lets a shortfall through to fail at the
+   * repay instead (surfacing as a misleading allowance error), and above break-even it makes the
+   * router reject fills that would have settled profitably. Deriving the allowance from break-even is
+   * right at every point, and cannot be tuned wrong.
+   *
+   * Omit it to keep the pre-existing `slippageBps` behavior exactly.
+   */
+  minAcceptableAmountOut?: bigint
   /** `collateralToken` decimals — required only for decimal-denominated venues (LiquidSwap). */
   tokenInDecimals?: number
   /** The position's correlation id — threaded into log events only, never parsed. */
@@ -148,9 +162,24 @@ async function firmQuoteVenue(args: {
   request: QuoteRequest
   maxRouteImpactBps: number
 }): Promise<FirmQuoteOutcome> {
-  const { httpClient, chainId, executor, venueEntry, slippageBps } = args
+  const { httpClient, chainId, executor, venueEntry } = args
   const { tokenIn, amountIn, steps, request, maxRouteImpactBps } = args
-  const { loanToken, referenceAmountOut } = request
+  const { loanToken, referenceAmountOut, minAcceptableAmountOut } = request
+
+  // An economic floor beats the operator percentage when one is supplied. Expressed as a percentage of
+  // the oracle reference rather than as an absolute, because the aggregators' only lever IS a slippage
+  // parameter — they bake the min-out themselves from it. Uniswap derives its min-out as
+  // `reference · (1 - slippage)`, so the same percentage lands it on `minAcceptableAmountOut` exactly;
+  // an aggregator lands slightly below it (its own quote is under the oracle by the execution cost),
+  // which is the safe direction — it can never reject a fill that would have settled.
+  const economicFloor =
+    minAcceptableAmountOut !== undefined && minAcceptableAmountOut > referenceAmountOut
+      ? referenceAmountOut // a floor above the oracle reference would imply negative slippage
+      : minAcceptableAmountOut
+  const slippageBps =
+    economicFloor === undefined || referenceAmountOut <= 0n
+      ? args.slippageBps
+      : Number(((referenceAmountOut - economicFloor) * BPS) / referenceAmountOut)
 
   const params: QuoteParameters = {
     chainId,
@@ -163,6 +192,7 @@ async function firmQuoteVenue(args: {
     slippageBps,
     executor,
     referenceAmountOut,
+    minAcceptableAmountOut,
     // The request's decimals describe the RAW collateral; after an unwrap they would mislabel
     // the underlying, so they are only forwarded on the direct (no-unwrap) path.
     tokenInDecimals: steps.length === 0 ? request.tokenInDecimals : undefined

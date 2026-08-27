@@ -346,3 +346,76 @@ describe('composeMultiVenueQuoting', () => {
     expect(unwrapper.probed).toHaveLength(0)
   })
 })
+
+describe('economic min-out floor (minAcceptableAmountOut)', () => {
+  // Captures the slippage each venue was asked for, which is the aggregators' ONLY min-out lever.
+  const capturingHttp = (body: unknown) => {
+    const calls: { searchParams?: Record<string, string> }[] = []
+    const client: RateLimitedClient = {
+      getJson: async <T>(args: { searchParams?: Record<string, string> }) => {
+        calls.push(args)
+        return body as T
+      }
+    }
+    return { client, calls }
+  }
+
+  const quoteWith = async (request: QuoteRequest, body: unknown) => {
+    const { client, calls } = capturingHttp(body)
+    const { quoteFor } = composeMulti(['1inch'], [{ venue: '1inch', expectedOut: 1000n }], client)
+    await quoteFor(request)
+    return { calls }
+  }
+
+  it('leaves the operator slippage untouched when no floor is supplied', async () => {
+    const { calls } = await quoteWith(REQUEST, oneInchBody('1000'))
+    // composeMulti configures slippageBps: 50, sent as a percentage.
+    expect(calls[0]?.searchParams?.slippage).toBe('0.5')
+  })
+
+  it('derives the allowance from break-even, replacing the operator percentage', async () => {
+    // reference 1000, break-even 900 -> the route may give up 100/1000 = 1000bps = 10%.
+    const { calls } = await quoteWith(
+      { ...REQUEST, minAcceptableAmountOut: 900n },
+      oneInchBody('1000')
+    )
+    expect(calls[0]?.searchParams?.slippage).toBe('10')
+  })
+
+  it('asks for zero slippage when break-even is the whole reference', async () => {
+    const { calls } = await quoteWith(
+      { ...REQUEST, minAcceptableAmountOut: 1000n },
+      oneInchBody('1000')
+    )
+    expect(calls[0]?.searchParams?.slippage).toBe('0')
+  })
+
+  it('clamps a floor above the reference rather than asking for negative slippage', async () => {
+    const { calls } = await quoteWith(
+      { ...REQUEST, minAcceptableAmountOut: 1200n },
+      oneInchBody('1000')
+    )
+    expect(calls[0]?.searchParams?.slippage).toBe('0')
+  })
+
+  // The finding this change exists for: a FIXED allowance is wrong in both directions and crosses
+  // over as the protocol's incentive grows, while a break-even-derived one is right at both ends.
+  it('tracks the incentive across the ramp where a fixed percentage cannot', async () => {
+    const REFERENCE = 10_000n
+    const early = await quoteWith(
+      { ...REQUEST, referenceAmountOut: REFERENCE, minAcceptableAmountOut: 9985n },
+      oneInchBody('10000')
+    )
+    const late = await quoteWith(
+      { ...REQUEST, referenceAmountOut: REFERENCE, minAcceptableAmountOut: 9580n },
+      oneInchBody('10000')
+    )
+
+    // Early (15bps of incentive) the allowance is FAR tighter than the operator's 1%: a fixed 1%
+    // would sit below break-even and let a shortfall through to fail at the repay instead.
+    expect(early.calls[0]?.searchParams?.slippage).toBe('0.15')
+    // Late (420bps) it is FAR looser: a fixed 1% would sit above break-even and reject fills that
+    // would have settled profitably.
+    expect(late.calls[0]?.searchParams?.slippage).toBe('4.2')
+  })
+})

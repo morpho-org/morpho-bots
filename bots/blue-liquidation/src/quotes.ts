@@ -8,7 +8,10 @@ import { isAddressEqual } from 'viem'
 import type { LiquidationPlan } from './sizing/plan'
 import type { LensOut } from './state/lens.sol'
 
+import { WAD } from './constants'
 import { expectedLoanOut } from './execution/swap-step'
+import { lifFromLltv } from './sizing/lif'
+import { mulDivUp } from './sizing/math'
 
 /**
  * The Blue-shaped adapter over `@repo/swaps`' {@link composeMultiVenueQuoting}: keeps the
@@ -57,6 +60,14 @@ export function composeQuoting(deps: {
         loanToken: out.params.loanToken,
         amountIn: plan.seizedAssets,
         referenceAmountOut: expectedLoanOut(plan, out),
+        // Break-even: the loan assets Blue will pull for this seize. Derived here rather than carried
+        // on the plan because Blue's LIF is a pure function of the market's `lltv` — no maturity ramp
+        // and no mode choice — so there is nothing about it a plan could know that the market doesn't.
+        minAcceptableAmountOut: mulDivUp(
+          expectedLoanOut(plan, out),
+          WAD,
+          lifFromLltv(out.params.lltv)
+        ),
         // The tick's position label (`${id}:${borrower}`) — the correlation id join across quote logs.
         id: label
       })

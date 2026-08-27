@@ -28,6 +28,12 @@ export type QuoteParameters = TokenInDecimals & {
   executor: Address
   /** Oracle-priced expected output (no DEX slippage) — the no-route-quality reference. */
   referenceAmountOut: bigint
+  /**
+   * Break-even output: the loan-token amount the protocol will pull to settle the repay. When set, it
+   * REPLACES `slippageBps` as the min-out floor — see {@link QuoteRequest.minAcceptableAmountOut} for
+   * why an economic floor beats an operator-chosen percentage.
+   */
+  minAcceptableAmountOut?: bigint
 }
 
 /**
