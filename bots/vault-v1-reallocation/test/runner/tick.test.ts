@@ -58,7 +58,7 @@ const makeDeps = (overrides: Partial<TickDeps> = {}) => {
     strategy: vi.fn(() => undefined),
     encodeReallocate: vi.fn(() => DATA),
     simulate: vi.fn(async () => ({ status: 'ok' as const })),
-    submit: vi.fn(async () => true),
+    submit: vi.fn(async () => ({ sent: true }) as const),
     dryRun: false,
     inflightLabels: () => new Set<string>(),
     revertReason: error => (error instanceof Error ? error.message : String(error)),
@@ -121,7 +121,7 @@ describe('runTick', () => {
   it('does not count a submit that was not broadcast', async () => {
     const { deps, events } = makeDeps({
       strategy: vi.fn(() => someAllocations()),
-      submit: vi.fn(async () => false)
+      submit: vi.fn(async () => ({ sent: false, reason: 'refused' }) as const)
     })
     await runTick(deps)
     expect(deps.submit).toHaveBeenCalled()
@@ -129,7 +129,8 @@ describe('runTick', () => {
     expect(events).toContainEqual({
       level: 'debug',
       event: 'reallocation.not_broadcast',
-      fields: { vault: VAULT_A }
+      // The reason distinguishes a queue-wide refusal from this vault's own send being rejected.
+      fields: { vault: VAULT_A, reason: 'refused' }
     })
   })
 
