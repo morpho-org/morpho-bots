@@ -60,6 +60,7 @@ export type PlanSkipReason =
   | 'cap_not_positive'
   | 'nothing_to_seize'
   | 'seize_rounds_to_zero'
+  | 'writeoff_below_max_debt'
 
 /**
  * Sizing result: exactly one of `plan` / `reason` is set. A skip carries its reason so the caller can
@@ -91,6 +92,13 @@ type PlanOptions = {
 const skip = (reason: PlanSkipReason): PlanOutcome => ({ plan: null, reason })
 const sized = (plan: LiquidationPlan): PlanOutcome => ({ plan })
 
+/**
+ * Whether `plan` is a pure bad-debt write-off: the contract realizes the loss and nothing is traded.
+ *
+ * A `(0, 0)` plan is the encoding — seizing no collateral for no repay. Callers must branch on this
+ * before treating a plan as a swap-funded liquidation, since a write-off needs neither a quote nor
+ * loan-token funding. Pure predicate: no failures, no side effects.
+ */
 export const isBadDebtRealization = (plan: LiquidationPlan): boolean =>
   plan.seizedAssets === 0n && plan.repaidUnits === 0n
 
@@ -161,6 +169,13 @@ const normalModePlan = (input: PlanInput, marginBps: number): PlanOutcome => {
     postMaturityMode: false
   })
   const effectiveDebt = input.debt - input.badDebt
+  // The contract computes the RCF numerator `_position.debt - maxDebt` on the POST-writeoff debt and
+  // UNCONDITIONALLY, before the rcfThreshold exemption inside the same `require` can waive the cap
+  // (midnight-contracts.txt:1864). Normal mode is gated on the PRE-writeoff `originalDebt > maxDebt`
+  // (:1826), so a write-off that pushes effective debt under `maxDebt` reaches that subtraction and
+  // reverts with Panic 0x11 — however exempt the slot is. Its own comment ("debt >= maxDebt in this
+  // branch") does not hold once a write-off has been applied.
+  if (effectiveDebt < input.maxDebt) return skip('writeoff_below_max_debt')
   const maxRepaid = maxRepaidNormalMode({
     debt: input.debt,
     badDebt: input.badDebt,

@@ -1,9 +1,9 @@
-import type { Logger, SimulateResult } from '@repo/bot-kit'
+import type { Logger, SimulateResult, SubmitOutcome } from '@repo/bot-kit'
 import type { CooldownStore } from '@repo/bot-kit'
 import type { QuoteOutcome, SwapPlan } from '@repo/swaps'
 import type { Address, Hex } from 'viem'
 
-import { createBackoff, createCooldownStore } from '@repo/bot-kit'
+import { createBackoff, createCooldownStore, TxSendError } from '@repo/bot-kit'
 import { lensKey } from '@repo/utils'
 import { getAddress } from 'viem'
 import { describe, expect, it } from 'vitest'
@@ -123,8 +123,8 @@ function runWith(opts: {
   noSwap?: boolean
   seedBackoffAt?: bigint
   cooldown?: CooldownStore
-  /** `false` models the queue returning without broadcasting (send failure / queue refusal). */
-  submitSent?: boolean
+  /** Models the queue's outcome; the two no-broadcast reasons are NOT interchangeable. */
+  submitOutcome?: SubmitOutcome
   /** Models a send that claimed a nonce but produced no hash, which aborts the tick. */
   submitThrows?: Error
 }) {
@@ -160,7 +160,7 @@ function runWith(opts: {
     submit: async () => {
       submitCalls += 1
       if (opts.submitThrows) throw opts.submitThrows
-      return opts.submitSent ?? true
+      return opts.submitOutcome ?? { sent: true }
     },
     backoff,
     cooldown,
@@ -389,22 +389,40 @@ describe('runTick', () => {
     })
   })
   describe('submit outcome', () => {
-    it('does not clear backoff and does not count a submit that never broadcast', async () => {
-      // Seeded at block 1 (suppressed until 3) so it does not suppress this tick at 100. The queue
-      // returning false means nothing went out, so the failure history must survive: clearing it here
-      // is what let a failing position reset to attempt 1 and re-quote every other block.
+    it('keeps the failure history but records nothing when the QUEUE refused', async () => {
+      // Seeded at block 1 (suppressed until 3) so it does not suppress this tick at 100. A queue-wide
+      // refusal says nothing about this position, so its history must survive un-extended: clearing
+      // it is what let a failing position reset to attempt 1 and re-quote every other block.
       const { counters, backoff, submitCalls } = await runWith({
         seedBackoffAt: 1n,
-        submitSent: false
+        submitOutcome: { sent: false, reason: 'refused' }
       })
       expect(submitCalls()).toBe(1)
       expect(counters).toMatchObject({ ok: 1, submitted: 0, notSent: 1 })
       expect(backoff.shouldSkip(LABEL, 1n)).toBe(true)
+      // Not re-armed: the next block may try again, which is the point of not blaming the position.
+      expect(backoff.shouldSkip(LABEL, 101n)).toBe(false)
+      expectCounterIdentities(counters)
+    })
+
+    it("re-arms backoff when THIS position's send was rejected", async () => {
+      // The send itself failed, which is a fact about this position. Reaching submit at all means any
+      // earlier entry had expired, so leaving it untouched would suppress nothing and the next block
+      // would re-quote, re-simulate and re-send — the exact loop backoff exists to stop.
+      const { counters, backoff } = await runWith({
+        seedBackoffAt: 1n,
+        submitOutcome: { sent: false, reason: 'send_failed' }
+      })
+      expect(counters).toMatchObject({ ok: 1, submitted: 0, notSent: 1 })
+      expect(backoff.shouldSkip(LABEL, 101n)).toBe(true)
       expectCounterIdentities(counters)
     })
 
     it('clears backoff and counts submitted only when the queue broadcast', async () => {
-      const { counters, backoff } = await runWith({ seedBackoffAt: 1n, submitSent: true })
+      const { counters, backoff } = await runWith({
+        seedBackoffAt: 1n,
+        submitOutcome: { sent: true }
+      })
       expect(counters).toMatchObject({ ok: 1, submitted: 1, notSent: 0 })
       expect(backoff.shouldSkip(LABEL, 1n)).toBe(false)
     })
@@ -421,7 +439,10 @@ describe('runTick', () => {
           quoteFor: async () => ({ kind: 'swap', plan: SWAP_PLAN }),
           simulate: async () => ({ status: 'ok' }),
           submit: async () => {
-            throw new Error('nonce claimed, no hash')
+            // The real failure the queue documents for this path: a first send that claimed a nonce
+            // but produced no hash. Using the exported type keeps the fixture honest if the tick ever
+            // discriminates on it.
+            throw new TxSendError('nonce claimed, no hash', 7)
           },
           backoff: createBackoff({ baseBlocks: 2n, maxBlocks: 64n }),
           cooldown: createCooldownStore({ cooldownMs: 0 }),
@@ -454,18 +475,34 @@ describe('runTick', () => {
       expectCounterIdentities(counters)
     })
 
-    it('reports cap_not_positive when the write-off pushes effective debt under maxDebt', async () => {
+    it('reports writeoff_below_max_debt when the write-off pushes effective debt under maxDebt', async () => {
       // debt 1000 - badDebt 200 = 800 effective, under maxDebt 900, while debt > maxDebt keeps normal
       // mode open. maxRepaidNormalMode's numerator goes negative, and a negative cap used to propagate
       // into a negative seizedAssets rather than a skip.
       const { counters, events } = await runWith({
-        // rcfThreshold lives on `market`; a top-level override would leave the cap waived by the
-        // RCF exemption and produce a plan instead.
         out: lensOut({ badDebt: 200n, market: { ...lensOut().market, rcfThreshold: 1n } })
       })
       expect(counters).toMatchObject({ liquidatable: 1, planSkipped: 1, planned: 0 })
       const skipped = events.find(e => e.event === 'plan.skipped')
-      expect(skipped?.fields).toMatchObject({ reason: 'cap_not_positive' })
+      expect(skipped?.fields).toMatchObject({ reason: 'writeoff_below_max_debt' })
+      expectCounterIdentities(counters)
+    })
+
+    it('skips the same write-off case when the slot is RCF-EXEMPT', async () => {
+      // Same numbers, but a large rcfThreshold makes the slot exempt, so the repay cap becomes the
+      // still-positive effectiveDebt and the `cap_not_positive` guard never fires. The contract does
+      // not save us: it evaluates `_position.debt - maxDebt` on the post-writeoff debt BEFORE the
+      // exemption inside the same `require` (midnight-contracts.txt:1864), so the plan would revert
+      // with Panic 0x11 every time. Guarding on the cap alone emitted it.
+      const { counters, events } = await runWith({
+        out: lensOut({
+          badDebt: 200n,
+          market: { ...lensOut().market, rcfThreshold: 10n ** 30n }
+        })
+      })
+      expect(counters).toMatchObject({ liquidatable: 1, planSkipped: 1, planned: 0 })
+      const skipped = events.find(e => e.event === 'plan.skipped')
+      expect(skipped?.fields).toMatchObject({ reason: 'writeoff_below_max_debt' })
       expectCounterIdentities(counters)
     })
   })

@@ -1,4 +1,4 @@
-import type { Backoff, CooldownStore, Logger, SimulateResult } from '@repo/bot-kit'
+import type { Backoff, CooldownStore, Logger, SimulateResult, SubmitOutcome } from '@repo/bot-kit'
 import type { QuoteOutcome, SwapPlan } from '@repo/swaps'
 import type { Address } from 'viem'
 
@@ -61,8 +61,9 @@ export async function runTick(deps: {
   }) => Promise<SimulateResult>
   /**
    * Broadcasts a plan via the pending queue (builds the exec tx, derives fees, tracks the nonce).
-   * Resolves whether a transaction actually went out: ONLY `true` may clear the position's backoff or
-   * count as `submitted`. Throws when a send claimed a nonce but produced no hash — the tick aborts by
+   * Resolves whether a transaction actually went out: ONLY `sent: true` may clear the
+   * position's backoff or count as `submitted`. A `sent: false` outcome carries why, and the two
+   * reasons are not interchangeable — see {@link SubmitOutcome}. Throws when a send claimed a nonce but produced no hash — the tick aborts by
    * design, so the signer's cursor rollback is not raced.
    */
   submit: (args: {
@@ -72,7 +73,7 @@ export async function runTick(deps: {
     swapPlan: SwapPlan
     blockNumber: bigint
     label: string
-  }) => Promise<boolean>
+  }) => Promise<SubmitOutcome>
   /** Per-position exponential backoff suppressing repeated quote/simulate failures (rate-limit defense). */
   backoff: Backoff
   /**
@@ -206,7 +207,7 @@ export async function runTick(deps: {
     // ok-only gate: broadcast only a fully-simulated, swap-funded liquidation. Any revert — not
     // liquidatable, swap slippage, repay shortfall — isn't a fundable plan, so skip it.
     if (result.status === 'ok') {
-      const sent = await submit({
+      const outcome = await submit({
         market: out.params,
         borrower: pair.borrower,
         plan: liquidationPlan,
@@ -214,14 +215,18 @@ export async function runTick(deps: {
         blockNumber: chainHead,
         label
       })
-      if (sent) {
+      if (outcome.sent) {
         backoff.clear(label)
         counters.submitted += 1
       } else {
-        // No broadcast happened, so the position's failure history stands: clearing backoff here is
-        // what let a failing position reset to attempt 1 and re-quote every other block. Not
-        // recording backoff either — a queue refusal says nothing about this position.
+        // Nothing was broadcast, so the position's failure history stands: clearing backoff here is
+        // what let a failing position reset to attempt 1 and re-quote every other block.
         counters.notSent += 1
+        // A rejected send is a fact about THIS position, and backoff is the only thing stopping the next
+        // block from re-quoting, re-simulating and re-sending it — reaching this line at all means any
+        // earlier entry had already expired, so leaving it untouched suppresses nothing. A queue-wide
+        // refusal says nothing about the position, so it records nothing.
+        if (outcome.reason === 'send_failed') backoff.record(label, chainHead)
       }
     }
   }
