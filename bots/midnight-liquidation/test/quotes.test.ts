@@ -54,7 +54,9 @@ const PLAN: LiquidationPlan = {
   // lif 1.25 puts break-even at exactly 800, under the 0x stub's reported min-out of 995, so these
   // projection cases exercise the lens mapping rather than the economic floor.
   lif: (WAD * 5n) / 4n,
-  impliedRepaidUnits: 800n
+  impliedRepaidUnits: 800n,
+  oraclePrice: ORACLE_PRICE_SCALE,
+  swapFree: false
 }
 
 const OUT: LensOut = {
@@ -68,11 +70,9 @@ const OUT: LensOut = {
   maxDebt: 800n,
   badDebt: 0n,
   activatedBitmap: 1n,
-  bestCollateralIdx: 0,
-  bestCollateralAmt: 1000n,
-  bestCollateralPrice: ORACLE_PRICE_SCALE,
-  bestCollateralMaxLif: WAD,
-  bestCollateralLltv: (WAD * 86n) / 100n,
+  collaterals: [
+    { index: 0, amt: 1000n, price: ORACLE_PRICE_SCALE, maxLif: WAD, lltv: (WAD * 86n) / 100n }
+  ],
   market: MARKET
 }
 

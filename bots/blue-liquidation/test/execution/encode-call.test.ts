@@ -336,4 +336,25 @@ describe('encodeLiquidationExec', () => {
     // The redeem output IS the loan token — the standard sweeps already cover it, so no extra skim.
     expect(calls).toHaveLength(3)
   })
+
+  it('emits ONE sweep when the market lends and collateralizes the same token', () => {
+    // Not a Blue shape we list today, but `sweepCalls` is shared with midnight-liquidation, whose
+    // loan-as-collateral markets are exactly this. A second sweep would transfer zero, which some
+    // ERC-20s revert on.
+    const selfMarket = { ...MARKET, collateralToken: MARKET.loanToken }
+    const calls = execCalls(
+      encodeLiquidationExec({
+        executor: EXECUTOR,
+        morpho: MORPHO,
+        market: selfMarket,
+        seizedAssets: 3n * WAD,
+        borrower: BORROWER,
+        plan: { steps: [], expectedAmountOut: 3n * WAD, amountOutMinimum: 3n * WAD },
+        recipient: RECIPIENT
+      })
+    )
+    // liquidate + exactly one sweep, where a distinct-token market emits two.
+    expect(calls).toHaveLength(2)
+    expect(decodeSubCall(calls[1]!).target).toBe(MARKET.loanToken)
+  })
 })

@@ -2,7 +2,7 @@ import type { SwapPlan } from '@repo/swaps'
 import type { Address, Hex } from 'viem'
 
 import { MidnightAbi } from '@repo/contracts'
-import { approvePair, intermediateTokens, skimCall, stepCalls } from '@repo/swaps'
+import { approvePair, stepCalls, sweepCalls } from '@repo/swaps'
 import { ExecutorEncoder, executorAbi } from 'executooor-viem'
 import { encodeAbiParameters, encodeFunctionData, zeroAddress } from 'viem'
 
@@ -36,10 +36,11 @@ export type Market = {
  * approval ride INSIDE `liquidate`'s `data` as the Executor's own callback queue (a `(bytes[] queue,
  * bytes returnData)` blob the `fallback` decodes, runs, and returns `returnData` RAW). The plan's
  * steps chain the seized collateral to the loan token — a plain collateral is one venue swap;
- * exotic collateral is unwrap step(s) then usually a venue swap. Midnight checks that `bytes32`
- * return equals `CALLBACK_SUCCESS`, so the return blob is the raw magic value. Trailing sweeps
- * drain BOTH market tokens plus every intermediate to the EOA — the full-drain invariant of the
- * shared permissionless singleton. Pure — no RPC.
+ * exotic collateral is unwrap step(s) then usually a venue swap; a loan-as-collateral slot has NO
+ * steps, and the queue is then just the repay approval. Midnight checks that `bytes32` return equals
+ * `CALLBACK_SUCCESS`, so the return blob is the raw magic value. Trailing {@link sweepCalls} drain the
+ * market tokens plus every intermediate to the EOA — the full-drain invariant of the shared
+ * permissionless singleton. Pure — no RPC.
  */
 export function encodeLiquidationExec(params: {
   executor: Address
@@ -141,14 +142,15 @@ export function encodeLiquidationExec(params: {
     // `onLiquidate(caller, id, market, collateralIndex, seizedAssets, repaidUnits, borrower,
     // receiver, data, badDebt)` callback in the vendored Midnight interface.
     ExecutorEncoder.buildCall(midnight, 0n, liquidateData, { sender: midnight, dataIndex: 8n }),
-    // Trailing sweeps run AFTER liquidate returns (Midnight's end-of-call repay `transferFrom` happens
-    // within `liquidate`), draining BOTH market tokens first (stable ordering for consumers), then
-    // any intermediates the step chain introduced — the full-drain invariant.
-    skimCall(loanToken, params.recipient, executor),
-    skimCall(collateralToken, params.recipient, executor),
-    ...intermediateTokens(plan.steps, [loanToken, collateralToken]).map(token =>
-      skimCall(token, params.recipient, executor)
-    )
+    // Trailing sweeps run AFTER liquidate returns (Midnight's end-of-call repay `transferFrom`
+    // happens within `liquidate`) — see {@link sweepCalls} for the ordering and the same-token dedupe.
+    ...sweepCalls({
+      loanToken,
+      collateralToken,
+      steps: plan.steps,
+      recipient: params.recipient,
+      executor
+    })
   ]
 
   return encodeFunctionData({ abi: executorAbi, functionName: 'exec_606BaXt', args: [calls] })

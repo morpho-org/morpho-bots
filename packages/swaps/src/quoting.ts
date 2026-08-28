@@ -310,17 +310,35 @@ async function tryResolveUnwraps(
 }
 
 /**
- * The unwrap chain already ends in the loan token — nothing left to sell. The plan is the unwrap
- * steps alone, still oracle-sanity-checked: the threaded worst-case output stands in for a venue's
- * quoted output (conservative — it floors, never predicts).
+ * Which swap-free shape a resolution is, for the `venue` field of {@link swapFreePlan}'s log events.
+ * Reported so an operator can tell a Midnight loan-as-collateral liquidation (`'no-swap'`, no steps,
+ * no venue was ever needed) from a PT-USDC-style unwrap chain that happened to land on the loan token
+ * (`'unwrap-only'`, steps that each encode their own min-out). They fail for different reasons and
+ * `'unwrap-only'` is load-bearing in existing dashboard queries, so neither name may absorb the other.
  */
-function unwrapOnlyPlan(args: {
+const swapFreePath = (resolution: UnwrapResolution): 'no-swap' | 'unwrap-only' =>
+  resolution.steps.length === 0 ? 'no-swap' : 'unwrap-only'
+
+/**
+ * The sell path already ends in the loan token — nothing left to sell, so the plan needs no venue.
+ * Two shapes reach here, distinguished only by {@link swapFreePath}: an unwrap chain that landed on
+ * the loan token (PT-USDC collateral in a USDC market), and a collateral token that IS the loan token
+ * (Midnight's loan-as-collateral slots), whose plan has no steps at all.
+ *
+ * Still oracle-sanity-checked and floor-checked: `resolution.amountIn` is the chain's threaded
+ * worst-case output — an on-chain bound, not an estimate — and stands in for a venue's quoted output.
+ * With zero steps it is exactly `request.amountIn`, so both checks reduce to statements about the
+ * oracle: route quality passes iff the price is within `maxRouteImpactBps` of 1:1, and the floor
+ * passes iff the seize covers its own break-even repay (it does, by construction, for `lif >= WAD`).
+ */
+function swapFreePlan(args: {
   resolution: UnwrapResolution
   request: QuoteRequest
   maxRouteImpactBps: number
   logger: QuoteLogger
 }): QuoteOutcome {
   const { resolution, request, maxRouteImpactBps, logger } = args
+  const path = swapFreePath(resolution)
   if (
     !passesRouteQuality({
       expected: resolution.amountIn,
@@ -329,6 +347,7 @@ function unwrapOnlyPlan(args: {
     })
   ) {
     logger.warn('unwrap.bad_route', {
+      venue: path,
       id: request.id,
       collateral: request.collateralToken,
       expected: resolution.amountIn,
@@ -342,7 +361,7 @@ function unwrapOnlyPlan(args: {
   // unrelated: a chain can clear `maxRouteImpactBps` and still land under the repay.
   if (resolution.amountIn < request.minAcceptableAmountOut) {
     logger.info('quote.floor_unmet', {
-      venue: 'unwrap-only',
+      venue: path,
       id: request.id,
       collateral: request.collateralToken,
       expected: resolution.amountIn,
@@ -353,7 +372,7 @@ function unwrapOnlyPlan(args: {
     return { kind: 'failed', reason: 'floor_unmet' }
   }
   logger.info('quote.ok', {
-    venue: 'unwrap-only',
+    venue: path,
     id: request.id,
     collateral: request.collateralToken,
     expected: resolution.amountIn,
@@ -387,11 +406,16 @@ export type QuoteLogger = {
  * selector's best-first venue order for the POST-unwrap pair (falling back to the deterministic
  * enabled order for venues the probe couldn't rank), fetches ONE firm quote from the top venue,
  * sanity-checks it against the oracle reference, and — coverage-first — falls through to the next
- * venue on failure (bounded by the enabled set) before giving up. No enabled venues → `no_config`
- * (no API call, no probe, no unwrap), preserving the caller's no-swap posture. A firm quote is
- * requested only AFTER the venue is chosen, never fanned out across venues at once. Quotes are made
- * ONLY for liquidatable positions, so API + probe usage is bounded by the (small) liquidatable set,
- * never the full candidate universe.
+ * venue on failure (bounded by the enabled set) before giving up. A firm quote is requested only
+ * AFTER the venue is chosen, never fanned out across venues at once. Quotes are made ONLY for
+ * liquidatable positions, so API + probe usage is bounded by the (small) liquidatable set, never the
+ * full candidate universe.
+ *
+ * No enabled venues → `no_config` (no API call, no probe), preserving the caller's no-swap posture —
+ * but the {@link swapFreePlan} short-circuit is evaluated FIRST, so a sell path already ending in the
+ * loan token still resolves. The unwrap chain therefore runs even with no venues enabled, since that
+ * is what determines whether a venue is needed at all; unwrappers memoize their negatives, so a plain
+ * ERC-20 collateral costs one read per token for the process lifetime.
  */
 export function composeMultiVenueQuoting(deps: {
   httpClient: RateLimitedClient
@@ -472,15 +496,20 @@ export function composeMultiVenueQuoting(deps: {
   return {
     async quoteFor(request) {
       const { collateralToken, loanToken, referenceAmountOut, id } = request
-      if (venues.length === 0) return { kind: 'no_config' }
 
       const unwrapped = await tryResolveUnwraps(unwrappers, request, executor, logger)
       if ('outcome' in unwrapped) return unwrapped.outcome
       const { resolution } = unwrapped
 
-      if (resolution.steps.length > 0 && isAddressEqual(resolution.token, loanToken)) {
-        return unwrapOnlyPlan({ resolution, request, maxRouteImpactBps, logger })
+      // Nothing left to sell, so this resolves WITHOUT a venue — deliberately ahead of the
+      // no-venues gate below. A collateral token that is already the loan token needs no route at
+      // all, so a keyless / bad-debt-only deployment must still be able to liquidate it; gating on
+      // `venues` first would refuse the one case that provably does not need one.
+      if (isAddressEqual(resolution.token, loanToken)) {
+        return swapFreePlan({ resolution, request, maxRouteImpactBps, logger })
       }
+
+      if (venues.length === 0) return { kind: 'no_config' }
 
       const pair: VenuePair = { collateral: resolution.token, loan: loanToken }
       const order = await venueOrderFor(pair, resolution.amountIn, id)

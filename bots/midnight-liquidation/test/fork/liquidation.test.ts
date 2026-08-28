@@ -132,7 +132,7 @@ describe('fork: end-to-end liquidation against a real Base position', () => {
         // 0 means "no economic floor", which is what a raw exec-path test wants.
         minAcceptableAmountOut: 0n,
         executor: executooor,
-        referenceAmountOut: expectedLoanOut(liquidationPlan, out)
+        referenceAmountOut: expectedLoanOut(liquidationPlan)
       }
     )
     // Wrap the single venue swap as a one-step plan (mirrors quoting.ts' toStep projection).
@@ -211,5 +211,93 @@ describe('fork: end-to-end liquidation against a real Base position', () => {
     })
     expect(exUsdc).toBe(0n)
     expect(exCbbtc).toBe(0n)
+  }, 300_000)
+
+  it('liquidates a loan-as-collateral position with an EMPTY swap plan', async () => {
+    // The whole point of the loan-as-collateral path: the seized assets already ARE the loan token, so
+    // there is no venue, no route and no swap step — the callback queue is just the repay approval.
+    // Seeded inside this test rather than the shared beforeAll so it reuses the anvil instance and the
+    // Executor deploy without adding a second ~120s seed to the hook that every case waits on.
+    const client = createDeploylessClient(cfg)
+    const selfPosition = await seedLiquidatablePosition(test, cfg.rpcUrl, 'loan-as-collateral')
+    // Warp the FULL LIF ramp (not the 300s margin the WETH case uses): the incentive here is only
+    // ~60bps at full ramp, and the two ceil-divisions in the contract's repay derivation round it away
+    // entirely in the first seconds past maturity, leaving a zero-surplus liquidation.
+    await warpTo(test, selfPosition.maturity + 3600n)
+
+    const pairs = [{ id: selfPosition.id, borrower: selfPosition.borrower, caller: executooor }]
+    const lensOut = await readMidnightLiquidationLens(client, MIDNIGHT, pairs)
+    const out = lensOut.get(lensKey(selfPosition.id, selfPosition.borrower))
+    if (!out) throw new Error('lens returned no entry')
+    expect(isLiquidatable(out)).toBe(true)
+
+    // The lens returns the slot; the seam decides it needs no swap by comparing tokens.
+    const input = planInputFromLens(out)
+    expect(input.collaterals).toHaveLength(1)
+    expect(input.collaterals[0]?.swapFree).toBe(true)
+
+    // Sized with the SHIPPED headroom floor on: without the swap-free exemption this returns null.
+    const liquidationPlan = plan(input, { headroomFloorBps: 3 })
+    if (!liquidationPlan) throw new Error('plan returned null')
+    expect(liquidationPlan.swapFree).toBe(true)
+    expect(liquidationPlan.seizedAssets).toBeGreaterThan(0n)
+    // Surplus is real at full ramp — this is what pays for the gas.
+    expect(liquidationPlan.impliedRepaidUnits).toBeLessThan(liquidationPlan.seizedAssets)
+
+    const emptyPlan: SwapPlan = {
+      steps: [],
+      expectedAmountOut: liquidationPlan.seizedAssets,
+      amountOutMinimum: liquidationPlan.seizedAssets
+    }
+    const data = encodeLiquidationExec({
+      executor: executooor,
+      midnight: MIDNIGHT,
+      market: out.market,
+      collateralIndex: liquidationPlan.collateralIndex,
+      seizedAssets: liquidationPlan.seizedAssets,
+      repaidUnits: liquidationPlan.repaidUnits,
+      borrower: selfPosition.borrower,
+      postMaturityMode: liquidationPlan.postMaturityMode,
+      plan: emptyPlan,
+      recipient: LIQUIDATOR
+    })
+
+    const sim = await simulateLiquidationExec(client, { executooor, eoa: LIQUIDATOR, data })
+    expect(sim.status).toBe('ok')
+
+    const usdcBefore = await test.readContract({
+      address: USDC,
+      abi: erc20Abi,
+      functionName: 'balanceOf',
+      args: [LIQUIDATOR]
+    })
+    const signer = createSigner(cfg)
+    const fees = initialFees(await signer.getBaseFee(), cfg.maxFeeWei, cfg.priorityFeeWei)
+    const { txHash } = await signer.send({
+      to: executooor,
+      data,
+      maxFeePerGas: fees.maxFeePerGas,
+      maxPriorityFeePerGas: fees.maxPriorityFeePerGas
+    })
+    const receipt = await test.waitForTransactionReceipt({ hash: txHash })
+    expect(receipt.status).toBe('success')
+
+    // Profit landed, and the single sweep drained the Executor — with one token, one sweep must still
+    // leave nothing behind.
+    const usdcAfter = await test.readContract({
+      address: USDC,
+      abi: erc20Abi,
+      functionName: 'balanceOf',
+      args: [LIQUIDATOR]
+    })
+    expect(usdcAfter).toBeGreaterThan(usdcBefore)
+    expect(
+      await test.readContract({
+        address: USDC,
+        abi: erc20Abi,
+        functionName: 'balanceOf',
+        args: [executooor]
+      })
+    ).toBe(0n)
   }, 300_000)
 })

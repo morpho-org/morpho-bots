@@ -9,7 +9,7 @@ import { getAddress } from 'viem'
 import { describe, expect, it } from 'vitest'
 
 import type { BorrowerCandidate } from '../../src/discovery/borrowers'
-import type { LensInput, LensOut } from '../../src/state/lens.sol'
+import type { LensCollateral, LensInput, LensOut } from '../../src/state/lens.sol'
 
 import { runTick } from '../../src/runner/tick'
 
@@ -30,10 +30,15 @@ function spyLogger() {
 // its counter fails a test instead of silently dropping a position from the tally.
 const expectCounterIdentities = (c: Record<string, number>) => {
   expect(c.pairs).toBeGreaterThanOrEqual(c.liquidatable!)
+  // Per POSITION, up to and including sizing.
   expect(c.liquidatable).toBe(c.inflightSkipped! + c.planSkipped! + c.planned!)
-  expect(c.planned).toBe(
+  // Per CANDIDATE from there on: one position can yield several (slot, mode) alternatives, so this
+  // sum heads on `candidates`, not `planned` — and `candidates >= planned` always.
+  expect(c.candidates).toBeGreaterThanOrEqual(c.planned!)
+  expect(c.candidates).toBe(
     c.cooledDown! +
       c.backoffSkipped! +
+      c.siblingSkipped! +
       c.noSwapPath! +
       c.quoteFailed! +
       c.quoteUnprofitable! +
@@ -46,6 +51,8 @@ const expectCounterIdentities = (c: Record<string, number>) => {
 const BORROWER: Address = getAddress('0x1111111111111111111111111111111111111111')
 const CALLER: Address = getAddress('0x2222222222222222222222222222222222222222')
 const TOKEN: Address = getAddress('0x3333333333333333333333333333333333333333')
+// Sorts after TOKEN, so `collateralParams` stays ascending as the protocol requires.
+const COLLATERAL: Address = getAddress('0x7777777777777777777777777777777777777777')
 const ORACLE: Address = getAddress('0x4444444444444444444444444444444444444444')
 const ROUTER: Address = getAddress('0x5555555555555555555555555555555555555555')
 const ZERO = '0x0000000000000000000000000000000000000000' as const
@@ -54,6 +61,8 @@ const LABEL = lensKey(MARKET, BORROWER)
 // 3.63% incentive → a 349bps headroom ceiling; the ramp reaches 3bps about 30s past maturity.
 const WAD_ONE = 10n ** 18n
 const MAX_LIF = 1036269430051813471n
+// lltv 98% / cursor 0.30 — the loan-as-collateral slot's maxLif (60 bps of headroom at full ramp).
+const LOAN_MAX_LIF = 1006036217303822937n
 
 const SWAP_PLAN: SwapPlan = {
   steps: [
@@ -72,6 +81,19 @@ const SWAP_PLAN: SwapPlan = {
 }
 
 // A liquidatable reading: valid, gate open, has debt, unlocked, unhealthy, pre-maturity.
+// One activated collateral slot. The default addresses `collateralParams[1]` (COLLATERAL), so it needs
+// a swap; `index: 0` addresses the market's loan token and is therefore swap-free.
+function slot(overrides: Partial<LensCollateral> = {}): LensCollateral {
+  return {
+    index: 1,
+    amt: 5000n,
+    price: 10n ** 36n,
+    maxLif: 1100000000000000000n,
+    lltv: 860000000000000000n,
+    ...overrides
+  }
+}
+
 function lensOut(overrides: Partial<LensOut> = {}): LensOut {
   return {
     valid: true,
@@ -84,18 +106,22 @@ function lensOut(overrides: Partial<LensOut> = {}): LensOut {
     maxDebt: 900n,
     badDebt: 0n,
     activatedBitmap: 1n,
-    bestCollateralIdx: 0,
-    bestCollateralAmt: 5000n,
-    bestCollateralPrice: 10n ** 36n,
-    bestCollateralMaxLif: 1100000000000000000n,
-    bestCollateralLltv: 860000000000000000n,
+    collaterals: [slot()],
     market: {
       chainId: 8453n,
       midnight: ZERO,
       loanToken: TOKEN,
+      // Two slots, mirroring a live loan-as-collateral market: [0] is the loan token itself at 98%
+      // lltv, [1] is a real collateral at 86%. Ascending by address, as the protocol requires.
       collateralParams: [
         {
           token: TOKEN,
+          lltv: 980000000000000000n,
+          liquidationCursor: 300000000000000000n,
+          oracle: ORACLE
+        },
+        {
+          token: COLLATERAL,
           lltv: 860000000000000000n,
           liquidationCursor: 250000000000000000n,
           oracle: ORACLE
@@ -154,6 +180,13 @@ function runWith(opts: {
   outsByBorrower?: Map<Address, LensOut>
   /** Defaults to an identity valuation, so surplusUsd tracks surplus and ordering is deterministic. */
   usdValueOf?: (loanToken: Address, loanUnits: bigint) => bigint | null
+  /**
+   * Per-call quote outcomes, consumed in order — for candidate fall-through, where the point is that
+   * the SECOND call behaves differently from the first. The last entry repeats once exhausted.
+   */
+  quoteOutcomes?: QuoteOutcome[]
+  /** Per-call simulate results, same sequencing as `quoteOutcomes`. */
+  simulateResults?: SimulateResult[]
 }) {
   const { logger, events } = spyLogger()
   const order: Address[] = []
@@ -184,11 +217,15 @@ function runWith(opts: {
     quoteFor: async (_plan, _out, label) => {
       quoteCalls += 1
       order.push(getAddress(`0x${label.slice(-40)}`))
-      return opts.quoteOutcome ?? defaultOutcome
+      const sequenced =
+        opts.quoteOutcomes?.[Math.min(quoteCalls - 1, opts.quoteOutcomes.length - 1)]
+      return sequenced ?? opts.quoteOutcome ?? defaultOutcome
     },
     simulate: async () => {
       simulateCalls += 1
-      return opts.simulateResult ?? { status: 'ok' }
+      const sequenced =
+        opts.simulateResults?.[Math.min(simulateCalls - 1, opts.simulateResults.length - 1)]
+      return sequenced ?? opts.simulateResult ?? { status: 'ok' }
     },
     submit: async () => {
       submitCalls += 1
@@ -224,8 +261,10 @@ describe('runTick', () => {
       inflightSkipped: 0,
       planSkipped: 0,
       planned: 1,
+      candidates: 1,
       cooledDown: 0,
       backoffSkipped: 0,
+      siblingSkipped: 0,
       noSwapPath: 0,
       quoteFailed: 0,
       quoteUnprofitable: 0,
@@ -504,7 +543,7 @@ describe('runTick', () => {
       const cooldown = createCooldownStore({ cooldownMs: 60_000 })
       const { counters, events, backoff, quoteCalls } = await runWith({
         cooldown,
-        out: lensOut({ bestCollateralAmt: 0n })
+        out: lensOut({ collaterals: [slot({ amt: 0n })] })
       })
       expect(counters).toMatchObject({ liquidatable: 1, planSkipped: 1, planned: 0 })
       expect(quoteCalls()).toBe(0)
@@ -524,7 +563,11 @@ describe('runTick', () => {
       const { counters, events, backoff, quoteCalls, simulateCalls } = await runWith({
         cooldown,
         headroomFloorBps: 3,
-        out: lensOut({ healthy: true, blockTimestamp: 2020n, bestCollateralMaxLif: MAX_LIF })
+        out: lensOut({
+          healthy: true,
+          blockTimestamp: 2020n,
+          collaterals: [slot({ maxLif: MAX_LIF })]
+        })
       })
       expect(counters).toMatchObject({ liquidatable: 1, planSkipped: 1, planned: 0 })
       expect(quoteCalls()).toBe(0)
@@ -555,7 +598,11 @@ describe('runTick', () => {
       // gates are open and normal mode wins with the full maxLif. It must be worked, not skipped.
       const { counters, quoteCalls } = await runWith({
         headroomFloorBps: 100,
-        out: lensOut({ healthy: false, blockTimestamp: 2020n, bestCollateralMaxLif: MAX_LIF })
+        out: lensOut({
+          healthy: false,
+          blockTimestamp: 2020n,
+          collaterals: [slot({ maxLif: MAX_LIF })]
+        })
       })
       expect(counters).toMatchObject({ liquidatable: 1, planSkipped: 0, planned: 1 })
       expect(quoteCalls()).toBe(1)
@@ -775,6 +822,122 @@ describe('runTick', () => {
       expect(built.map(e => e.fields?.surplus)).toEqual([200n, 50n])
       // Rendered at the USD scale rather than as a raw 1e8-scaled bigint.
       expect(built[0]?.fields?.surplusUsd).toBe('0.000002')
+    })
+  })
+
+  describe('multi-collateral candidate fall-through', () => {
+    // A two-slot position: `collateralParams[1]` (COLLATERAL, 86% lltv) needs a swap and outranks
+    // `collateralParams[0]` (the loan token itself, 98% lltv) on surplus, so it is tried first.
+    const twoSlots = () =>
+      lensOut({
+        activatedBitmap: 0b11n,
+        collaterals: [slot({ index: 1 }), slot({ index: 0, maxLif: LOAN_MAX_LIF })]
+      })
+
+    it('counts one planned POSITION but two CANDIDATES', async () => {
+      // The two `tick.end` identities count different things; this is the case that separates them.
+      const { counters } = await runWith({ out: twoSlots() })
+      expect(counters).toMatchObject({ liquidatable: 1, planned: 1, candidates: 2 })
+      expectCounterIdentities(counters)
+    })
+
+    it('falls through to the swap-free slot IN THE SAME TICK when the first slot fails to quote', async () => {
+      // The regression this whole restructuring exists for. `backoff.record(label, chainHead)` sets
+      // `until = chainHead + baseBlocks` and `shouldSkip(label, chainHead)` tests `chainHead < until`,
+      // so recording the first candidate's failure inline would suppress its own sibling and the
+      // position would go unliquidated for a block — with the certain slot sitting right there.
+      const { counters, submitCalls, quoteCalls } = await runWith({
+        out: twoSlots(),
+        quoteOutcomes: [
+          { kind: 'failed', reason: 'no_route' },
+          { kind: 'swap', plan: SWAP_PLAN }
+        ]
+      })
+      expect(quoteCalls()).toBe(2)
+      expect(submitCalls()).toBe(1)
+      expect(counters).toMatchObject({ candidates: 2, quoteFailed: 1, ok: 1, submitted: 1 })
+      expectCounterIdentities(counters)
+    })
+
+    it('records backoff and cooldown ONCE for the position, after every candidate has had its turn', async () => {
+      const cooldown = createCooldownStore({ cooldownMs: 60_000 })
+      const { counters, backoff, quoteCalls } = await runWith({
+        cooldown,
+        out: twoSlots(),
+        quoteOutcome: { kind: 'failed', reason: 'no_route' }
+      })
+      // Both candidates were tried despite the first one failing.
+      expect(quoteCalls()).toBe(2)
+      expect(counters).toMatchObject({ candidates: 2, quoteFailed: 2 })
+      // One position, so one backoff entry at attempt 1 — not two attempts' worth of exponent.
+      expect(backoff.shouldSkip(LABEL, 101n)).toBe(true)
+      expect(backoff.shouldSkip(LABEL, 102n)).toBe(false)
+      expect(cooldown.shouldSkip(LABEL)).toBe(true)
+      expectCounterIdentities(counters)
+    })
+
+    it('skips the remaining candidates once one has broadcast', async () => {
+      const { counters, submitCalls } = await runWith({ out: twoSlots() })
+      // One liquidation per position per tick: the sibling is an alternative, not extra work.
+      expect(submitCalls()).toBe(1)
+      expect(counters).toMatchObject({ candidates: 2, submitted: 1, siblingSkipped: 1 })
+      expectCounterIdentities(counters)
+    })
+
+    it('clears backoff on a successful sibling rather than leaving the earlier failure recorded', async () => {
+      const cooldown = createCooldownStore({ cooldownMs: 60_000 })
+      const { backoff } = await runWith({
+        cooldown,
+        out: twoSlots(),
+        quoteOutcomes: [
+          { kind: 'failed', reason: 'no_route' },
+          { kind: 'swap', plan: SWAP_PLAN }
+        ]
+      })
+      // The position was liquidated, so the failed sibling must not suppress the next block.
+      expect(backoff.shouldSkip(LABEL, 101n)).toBe(false)
+      expect(cooldown.shouldSkip(LABEL)).toBe(false)
+    })
+
+    it('records NO backoff when every candidate is an economic refusal', async () => {
+      // `floor_unmet` and an unprofitable quote say nothing about the next attempt — both sides of the
+      // comparison move on a ten-second scale — so neither suppresses the position.
+      const cooldown = createCooldownStore({ cooldownMs: 60_000 })
+      const { counters, backoff } = await runWith({
+        cooldown,
+        out: twoSlots(),
+        quoteOutcome: { kind: 'failed', reason: 'floor_unmet' }
+      })
+      expect(counters).toMatchObject({ candidates: 2, quoteUnprofitable: 2 })
+      expect(backoff.shouldSkip(LABEL, 101n)).toBe(false)
+      expect(cooldown.shouldSkip(LABEL)).toBe(false)
+      expectCounterIdentities(counters)
+    })
+
+    it('marks cooldown but NOT backoff when every candidate lacks a swap path', async () => {
+      // Preserves the documented `no_config` contract: a coverage gap, not a failure.
+      const cooldown = createCooldownStore({ cooldownMs: 60_000 })
+      const { counters, backoff } = await runWith({
+        cooldown,
+        out: twoSlots(),
+        noSwap: true
+      })
+      expect(counters).toMatchObject({ candidates: 2, noSwapPath: 2 })
+      expect(backoff.shouldSkip(LABEL, 101n)).toBe(false)
+      expect(cooldown.shouldSkip(LABEL)).toBe(true)
+      expectCounterIdentities(counters)
+    })
+
+    it('identifies which candidate each simulate line belongs to', async () => {
+      // Two attempts on one position share a (marketId, borrower), so without collateralIndex the log
+      // join cannot separate them.
+      const { events } = await runWith({
+        out: twoSlots(),
+        simulateResults: [{ status: 'revert', reason: 'stale quote' }, { status: 'ok' }]
+      })
+      const sims = events.filter(e => e.event.startsWith('simulate.'))
+      expect(sims).toHaveLength(2)
+      expect(sims.map(e => e.fields?.collateralIndex)).toEqual([1, 0])
     })
   })
 })

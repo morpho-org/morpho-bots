@@ -23,8 +23,13 @@ This package is operational code, but it is still intentionally narrow:
   the position itself is then firm-quoted once against the chosen venue, falling through to the
   runner-up venue on failure (coverage-first). Uniswap-direct is not a candidate here — aggregators
   route through Uniswap pools anyway, and a direct Uniswap route can't be ranked on real output.
-- For positions with multiple active collaterals, the current planner evaluates the highest-value
-  collateral slot only.
+- For positions with multiple active collaterals, the planner sizes **every** activated slot and ranks
+  the resulting candidates by expected surplus; the tick works down that ranking and submits at most
+  one liquidation per position, so a transient venue failure on one slot falls through to the next.
+- **Loan-as-collateral** markets list the loan token as one of their own collaterals (priced by an
+  identity oracle). Seizing that slot needs no swap at all: no venue is called, so such a position is
+  liquidatable even with no venue key set, and it is exempt from `HEADROOM_FLOOR_BPS` — that floor
+  bounds a route cost this path does not pay.
 
 ## Prerequisites
 
@@ -381,8 +386,11 @@ candidate, it:
 - reads debt, collateral bitmap, liquidation lock status, and liquidator gate status;
 - computes `maxDebt`, `badDebt`, and health with the same oracle and rounding directions used by
   Midnight's `liquidate`;
-- selects the highest-value activated collateral slot;
+- returns every activated collateral slot (amount, oracle price, `maxLif`, `lltv`), unranked;
 - returns the full market and flat sizing inputs to TypeScript.
+
+Slot _choice_ is deliberately off-chain: which slot is worth liquidating depends on whether it needs a
+swap, which the chain cannot know.
 
 Per-candidate lens failures are isolated: one reverting oracle or malformed market leaves that row
 invalid without failing the whole batch.
@@ -399,7 +407,7 @@ valid && gateAllows && hasDebt && !locked && (block.timestamp > maturity || !hea
 
 - Pre-maturity unhealthy positions use normal mode with `maxLif` and the Recovery Close Factor cap.
   `maxLif` is derived from the collateral's `liquidationCursor` and `lltv` (`ConstantsLib.maxLif`);
-  the lens computes it on-chain and returns it as `bestCollateralMaxLif`.
+  the lens computes it on-chain per slot and returns it on each `collaterals[]` entry.
 - Post-maturity healthy positions use post-maturity mode, where LIF ramps from `1e18` to `maxLif` over
   60 minutes and the RCF cap is disabled.
 - Post-maturity **unhealthy** positions open both on-chain gates, so the bot builds both candidate

@@ -32,6 +32,14 @@ export const POOL_FEE = 500
 export const WETH_USDC_ORACLE = '0xFEa2D58cEfCb9fcb597723c6bAE66fFE4193aFE4' as Address
 export const LLTV = 860000000000000000n // 0.86 WAD (enabled on-chain)
 export const LIQUIDATION_CURSOR = 250000000000000000n // 0.25 WAD (enabled by the seeder via configurator)
+
+// Loan-as-collateral params, matching the live Base markets: the loan token (USDC) is its own
+// collateral, priced by the protocol team's official identity oracle (price = 1e36, i.e. 1 USDC =
+// 1 USDC). The 98% lltv is deliberate — it exists so the ~60bps incentive covers a liquidator's gas.
+// Both values may be unenabled on this deployment; the seeder enables them via the configurator.
+export const IDENTITY_ORACLE = '0x4429112b3C00b40Cf295db81cfcdE39d7d5ADC1d' as Address
+export const LOAN_COLLATERAL_LLTV = 980000000000000000n // 0.98 WAD
+export const LOAN_COLLATERAL_CURSOR = 300000000000000000n // 0.30 WAD
 export const CONFIGURATOR = '0xcBa28b38103307Ec8dA98377ffF9816C164f9AFa' as Address
 export const ECRECOVER_RATIFIER = '0xd6e70365C8E8DDa9a4ca662C07bbE663b017755E' as Address
 

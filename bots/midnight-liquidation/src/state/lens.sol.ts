@@ -13,7 +13,8 @@ import type { Market } from '../execution/encode-call'
 // structs natively; no hand-written ABI fragment or manual abi.encode/decode is needed. Reads the
 // full Market on-chain via Midnight.toMarket(id) — the id is a cryptographic commitment to the
 // struct, so no off-chain market input or `id == toId(market)` re-check is needed — then composes
-// liquidatability + the sizing inputs (maxDebt/badDebt/best-collateral) the way liquidate() does and
+// liquidatability + the sizing inputs (maxDebt/badDebt, plus every activated collateral slot) the way
+// liquidate() does and
 // returns the Market so the caller can encode the liquidate call. Compiled to a deployless factory by
 // the soltag transform — the esbuild plugin in scripts/build.ts for the shipped bundle, and
 // soltag/vite for tests; `sol``` throws if neither is active.
@@ -53,12 +54,21 @@ contract MidnightLiquidationLens {
   // canLiquidate is checked -- not the EOA.
   struct Input { bytes32 id; address borrower; address caller; }
 
+  // One activated collateral slot, with everything sizing needs for it. index is the MARKET-level
+  // index into market.collateralParams (what liquidate() takes), NOT a position in this array.
+  struct CollateralSlot {
+    uint8 index; uint128 amt;
+    uint256 price; uint256 maxLif; uint256 lltv;
+  }
+
   struct LensOut {
     bool valid; bool hasDebt; bool healthy; bool locked; bool gateAllows;
     uint64 blockTimestamp;
     uint128 debt; uint128 maxDebt; uint128 badDebt; uint128 activatedBitmap;
-    uint8 bestCollateralIdx; uint128 bestCollateralAmt;
-    uint256 bestCollateralPrice; uint256 bestCollateralMaxLif; uint256 bestCollateralLltv;
+    // Every activated slot, in DESCENDING market index (the msb walk order) -- not ranked. Slot
+    // choice is the off-chain planner's job: it ranks by expected surplus, which the chain cannot
+    // know because it depends on whether a slot needs a swap at all.
+    CollateralSlot[] collaterals;
     Market market;
   }
 
@@ -76,6 +86,11 @@ contract MidnightLiquidationLens {
   function _zeroFloorSub(uint256 x, uint256 y) internal pure returns (uint256) { return x > y ? x - y : 0; }
   function _msb(uint128 bitmap) internal pure returns (uint256 res) { while (bitmap >> (res + 1) != 0) { res++; } }
   function _clearBit(uint128 bitmap, uint256 bit) internal pure returns (uint128) { return uint128(bitmap & ~(uint128(1) << bit)); }
+  // Set-bit count, so _collectSlots can size its array without carrying a second loop's locals
+  // alongside its own (this contract is already at the stack-depth limit -- see vitest.config.ts).
+  function _countActivated(uint128 bitmap) internal pure returns (uint256 res) {
+    while (bitmap != 0) { res += bitmap & 1; bitmap >>= 1; }
+  }
 
   function lens(Input[] calldata input) external view returns (LensOut[] memory output) {
     output = new LensOut[](input.length);
@@ -115,13 +130,13 @@ contract MidnightLiquidationLens {
 
     o.activatedBitmap = MIDNIGHT.collateralBitmap(e.id, e.borrower);
     _accumulate(o, market, e.id, e.borrower, debt);
-    _selectBest(o, market, e.id, e.borrower);
+    _collectSlots(o, market, e.id, e.borrower);
   }
 
-  // Two passes (not one combined loop): a single loop carrying maxDebt/badDebt/argmax exceeds the
-  // EVM stack ("stack too deep"). Each slot is re-read in _selectBest — acceptable for a read-only
-  // lens. _accumulate mirrors the liquidate() loop exactly (maxDebt down-down; badDebt ceil-ceil,
-  // seeded with debt and floored at 0 per slot).
+  // Two passes (not one combined loop): a single loop carrying maxDebt/badDebt AND building the slot
+  // array exceeds the EVM stack ("stack too deep"). Each slot is re-read in _collectSlots — acceptable
+  // for a read-only lens. _accumulate mirrors the liquidate() loop exactly (maxDebt down-down; badDebt
+  // ceil-ceil, seeded with debt and floored at 0 per slot).
   function _accumulate(LensOut memory o, Market memory market, bytes32 id, address borrower, uint256 debt) private view {
     uint256 maxDebt;
     uint256 badDebt = debt;
@@ -140,26 +155,23 @@ contract MidnightLiquidationLens {
     o.healthy = maxDebt >= debt; // matches isHealthy's final return
   }
 
-  // Picks the activated slot with the greatest USD value (collateral*price/SCALE).
-  function _selectBest(LensOut memory o, Market memory market, bytes32 id, address borrower) private view {
-    uint256 bestValue;
-    bool haveBest;
+  // Emits every activated slot, in msb (descending index) order. No ranking and no argmax: which
+  // slot is worth liquidating depends on whether it needs a swap, which is off-chain knowledge.
+  function _collectSlots(LensOut memory o, Market memory market, bytes32 id, address borrower) private view {
+    o.collaterals = new CollateralSlot[](_countActivated(o.activatedBitmap));
     uint128 work = o.activatedBitmap;
+    uint256 n;
     while (work != 0) {
       uint256 idx = _msb(work);
       CollateralParams memory cp = market.collateralParams[idx];
-      uint256 amt = uint256(MIDNIGHT.collateral(id, borrower, idx));
-      uint256 price = IOracle(cp.oracle).price();
-      uint256 value = _mulDivDown(amt, price, ORACLE_PRICE_SCALE);
-      if (!haveBest || value > bestValue) {
-        haveBest = true;
-        bestValue = value;
-        o.bestCollateralIdx = uint8(idx);
-        o.bestCollateralAmt = uint128(amt);
-        o.bestCollateralPrice = price;
-        o.bestCollateralMaxLif = _maxLif(cp.lltv, cp.liquidationCursor);
-        o.bestCollateralLltv = cp.lltv;
-      }
+      o.collaterals[n] = CollateralSlot({
+        index: uint8(idx),
+        amt: MIDNIGHT.collateral(id, borrower, idx),
+        price: IOracle(cp.oracle).price(),
+        maxLif: _maxLif(cp.lltv, cp.liquidationCursor),
+        lltv: cp.lltv
+      });
+      n++;
       work = _clearBit(work, idx);
     }
   }
@@ -170,6 +182,19 @@ contract MidnightLiquidationLens {
  * `id`; `caller` is the Executor (the liquidate `msg.sender`), whose `canLiquidate` is checked —
  * not the EOA. */
 export type LensInput = { id: Hex; borrower: Address; caller: Address }
+
+/**
+ * One activated collateral slot as the lens read it, all at the same block. `index` is the
+ * MARKET-level index into `market.collateralParams` — what `liquidate` takes — not this slot's
+ * position in {@link LensOut.collaterals}.
+ */
+export type LensCollateral = {
+  index: number
+  amt: bigint
+  price: bigint
+  maxLif: bigint
+  lltv: bigint
+}
 
 /** Decoded `LensOut` (uint8 → number, uint64/128/256 → bigint, per viem). */
 export type LensOut = {
@@ -183,11 +208,11 @@ export type LensOut = {
   maxDebt: bigint
   badDebt: bigint
   activatedBitmap: bigint
-  bestCollateralIdx: number
-  bestCollateralAmt: bigint
-  bestCollateralPrice: bigint
-  bestCollateralMaxLif: bigint
-  bestCollateralLltv: bigint
+  /**
+   * Every activated slot, in descending market index — **not** ranked, and empty for a position whose
+   * collateral has all been seized. Ranking is `planCandidates`' job.
+   */
+  collaterals: readonly LensCollateral[]
   /** Full Market read on-chain via `toMarket(id)`; pass straight into `liquidate`. */
   market: Market
 }

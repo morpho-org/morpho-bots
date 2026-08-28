@@ -123,10 +123,16 @@ export type SwapStep = {
 
 /**
  * The full sell path for one liquidation: ordered steps chaining `tokenIn` → `tokenOut` until the
- * loan token (`steps.at(-1).tokenOut` is the loan token; never empty). Plain collateral is one
- * venue-swap step; exotic collateral is unwrap step(s) then usually a venue-swap step — but none
- * when the unwrap chain already ends in the loan token (PT-USDC collateral / USDC loan is the
- * norm there, not an edge case).
+ * loan token, so `steps.at(-1).tokenOut` is the loan token whenever there is a last step. Plain
+ * collateral is one venue-swap step; exotic collateral is unwrap step(s) then usually a venue-swap
+ * step — but none when the unwrap chain already ends in the loan token (PT-USDC collateral / USDC
+ * loan is the norm there, not an edge case).
+ *
+ * **`steps` may be empty**, and an empty plan is a real plan, not a missing one: the collateral token
+ * already IS the loan token, so the seized assets need no conversion before the repay (Midnight's
+ * loan-as-collateral slots). Encoders must treat a zero-step plan as "convert nothing" — the repay
+ * approval and the sweeps still apply — and must not confuse it with `null`, which means no route was
+ * found. `expectedAmountOut` and `amountOutMinimum` are then both the seized amount itself.
  */
 export type SwapPlan = {
   steps: SwapStep[]

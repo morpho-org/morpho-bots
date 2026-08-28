@@ -364,11 +364,75 @@ describe('composeMultiVenueQuoting', () => {
     expect(refreshed).toHaveLength(0)
   })
 
-  it('skips unwrap resolution entirely in bad-debt-only mode (no venues)', async () => {
+  it('still resolves unwraps with no venues, then reports no_config for a chain needing one', async () => {
+    // The no-venues gate now sits AFTER the swap-free short-circuit, so the unwrap chain runs first —
+    // it is what decides whether a venue is needed at all. A chain ending somewhere other than the
+    // loan token still needs one, so the outcome is unchanged; only the probing is.
     const unwrapper = fakeUnwrapper({ from: COLLATERAL, to: UNDERLYING, out: 970n })
     const { quoteFor } = composeMulti([], [], multiHttp({}), { unwrappers: [unwrapper] })
     expect(await quoteFor(REQUEST)).toEqual({ kind: 'no_config' })
-    expect(unwrapper.probed).toHaveLength(0)
+    expect(unwrapper.probed.length).toBeGreaterThan(0)
+  })
+
+  describe('collateral token IS the loan token (loan-as-collateral)', () => {
+    // referenceAmountOut === amountIn === 1000 in REQUEST, which is what an identity oracle at
+    // price 1e36 produces, so these cases are the live loan-as-collateral shape.
+    const SELF: QuoteRequest = { ...REQUEST, collateralToken: LOAN }
+
+    it('returns a zero-step plan without probing or quoting any venue', async () => {
+      const { quoteFor, refreshed, selected } = composeMulti(
+        ['0x', '1inch'],
+        [{ venue: '0x', expectedOut: 1000n }],
+        throwingHttp // any venue call at all would surface as a rate_limited failure
+      )
+      const outcome = await quoteFor(SELF)
+      expect(outcome).toEqual({
+        kind: 'swap',
+        plan: { steps: [], expectedAmountOut: 1000n, amountOutMinimum: 1000n }
+      })
+      expect(refreshed).toHaveLength(0)
+      expect(selected).toHaveLength(0)
+    })
+
+    it('resolves even with NO venues enabled — no route is needed, so none is required', async () => {
+      // The point of moving the gate: a keyless / bad-debt-only deployment must still clear these.
+      const { quoteFor } = composeMulti([], [], throwingHttp)
+      const outcome = await quoteFor(SELF)
+      expect(outcome.kind).toBe('swap')
+      if (outcome.kind === 'swap') expect(outcome.plan.steps).toHaveLength(0)
+    })
+
+    it('does not consult the unwrappers — the sell path is already over', async () => {
+      const unwrapper = fakeUnwrapper({ from: LOAN, to: UNDERLYING, out: 1000n })
+      const { quoteFor } = composeMulti(['0x'], [], throwingHttp, { unwrappers: [unwrapper] })
+      expect((await quoteFor(SELF)).kind).toBe('swap')
+      expect(unwrapper.probed).toHaveLength(0)
+    })
+
+    it('fails closed on an oracle that is not 1:1 (route quality)', async () => {
+      // The only way a zero-step plan can be a bad route: the identity oracle disagrees with itself.
+      // floor = 950, so a reference of 1100 puts the seize 13.6% under its own oracle value.
+      const { quoteFor } = composeMulti(['0x'], [], throwingHttp)
+      expect(await quoteFor({ ...SELF, referenceAmountOut: 1100n })).toEqual({
+        kind: 'failed',
+        reason: 'bad_route'
+      })
+    })
+
+    it('fails closed when the seize cannot cover its own break-even repay', async () => {
+      const { quoteFor } = composeMulti(['0x'], [], throwingHttp)
+      expect(await quoteFor({ ...SELF, minAcceptableAmountOut: 1001n })).toEqual({
+        kind: 'failed',
+        reason: 'floor_unmet'
+      })
+    })
+
+    it('passes at exact break-even, the near-maturity rounding case', async () => {
+      // Post-maturity the two ceil divisions can make impliedRepaidUnits === seizedAssets exactly.
+      // The floor is `>=`, so break-even passes and the liquidation is attempted for zero surplus.
+      const { quoteFor } = composeMulti(['0x'], [], throwingHttp)
+      expect((await quoteFor({ ...SELF, minAcceptableAmountOut: 1000n })).kind).toBe('swap')
+    })
   })
 })
 

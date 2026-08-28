@@ -56,7 +56,7 @@ export function composeQuoting(deps: {
         collateralToken: collateral.token,
         loanToken: out.market.loanToken,
         amountIn: plan.seizedAssets,
-        referenceAmountOut: expectedLoanOut(plan, out),
+        referenceAmountOut: expectedLoanOut(plan),
         // Break-even, straight off the plan: the repay `liquidate` will pull for this seize at the LIF
         // the plan was sized at. Read rather than recomputed — the matured-and-unhealthy branch picks a
         // mode by surplus, so the LIF is not recoverable from `postMaturityMode` or from chain time.

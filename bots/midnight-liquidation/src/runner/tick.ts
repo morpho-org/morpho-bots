@@ -11,7 +11,7 @@ import type { LiquidationPlan, PlanSkipReason } from '../sizing/plan'
 import type { LensInput, LensOut } from '../state/lens.sol'
 
 import { USD_PRICE_SCALE_DECIMALS } from '../discovery/token-prices'
-import { isBadDebtRealization, planSurplus, planWithReason } from '../sizing/plan'
+import { isBadDebtRealization, planCandidates, planSurplus } from '../sizing/plan'
 import { isLiquidatable, planInputFromLens } from './eligibility'
 import { assessProfitability } from './profitability'
 import { rankByUsdSurplus } from './ranking'
@@ -23,14 +23,20 @@ import { rankByUsdSurplus } from './ranking'
  *
  * ```text
  * pairs        >= liquidatable
- * liquidatable === inflightSkipped + planSkipped + planned
- * planned      === cooledDown + backoffSkipped + noSwapPath + quoteFailed + quoteUnprofitable + ok + reverted
+ * liquidatable === inflightSkipped + planSkipped + planned          (per POSITION)
+ * candidates   === cooledDown + backoffSkipped + siblingSkipped
+ *                  + noSwapPath + quoteFailed + quoteUnprofitable + ok + reverted   (per CANDIDATE)
  * ok           === submitted + notSent
  * ```
  *
+ * **The two middle identities count different things**, because one position can yield several
+ * candidates — one per activated collateral slot and mode. Everything up to sizing is per position;
+ * everything phase B works is per candidate, since that is what a quote and a simulation are spent on.
+ * `candidates >= planned`, with equality only when every position had exactly one activated slot.
+ *
  * A new loop **exit** must join one of these sums; a new **attribute** of a position that is still
  * worked must not (it would double-count). Any future pre-quote skip therefore belongs in the
- * `planned` sum, and any future plan-stage skip rides `planSkipped`. `unpriced` is an attribute: an
+ * `candidates` sum, and any future plan-stage skip rides `planSkipped`. `unpriced` is an attribute: an
  * unpriced candidate is still worked, just ordered last, so it deliberately joins no sum.
  *
  * On `complete: false` the last identity is short by one: an aborting `submit` throws after `ok` was
@@ -46,11 +52,25 @@ type TickCounters = {
    * that SETTLED within `settledCooldownBlocks`, so this can be non-zero while the queue is empty.
    */
   inflightSkipped: number
-  /** Skipped because sizing produced no plan — see the `plan.skipped` event for the reason. */
+  /**
+   * Skipped because sizing produced no plan for ANY activated collateral slot — see the
+   * `plan.skipped` events for the per-slot reasons.
+   */
   planSkipped: number
   planned: number
+  /**
+   * `(slot, mode)` candidates phase A produced across all planned positions — what phase B actually
+   * iterates. Exceeds `planned` on multi-collateral positions; the head of the per-candidate identity.
+   */
+  candidates: number
   cooledDown: number
   backoffSkipped: number
+  /**
+   * Candidates dropped because an earlier, higher-ranked candidate for the SAME position already
+   * broadcast this tick. One `liquidate` per position per tick — its siblings are alternatives, not
+   * additional work.
+   */
+  siblingSkipped: number
   noSwapPath: number
   quoteFailed: number
   /**
@@ -103,7 +123,15 @@ const LEVEL_BY_REASON: Record<PlanSkipReason, 'debug' | 'info' | 'warn'> = {
   insufficient_headroom: 'debug'
 }
 
-/** One candidate that produced a plan in phase A, carrying its score so phase B can be ordered. */
+/**
+ * One `(position, collateral slot, mode)` candidate that produced a plan in phase A, carrying its
+ * score so phase B can be ordered.
+ *
+ * A position with several activated collaterals contributes SEVERAL entries sharing one `label`, and
+ * they are alternatives: phase B works down the ranking and submits at most one per position. That is
+ * why `label`-keyed state (in-flight, backoff, cooldown) is applied per position rather than per
+ * entry — see the phase B preamble in {@link runTick}.
+ */
 type SizedCandidate = {
   pair: LensInput
   label: string
@@ -117,8 +145,11 @@ type SizedCandidate = {
 
 /**
  * Phase A of a tick: turn the fresh lens batch into sized, scored candidates. Filters to positions the
- * chain says are liquidatable and not already in flight, sizes each one, and scores it by oracle
- * surplus converted to USD.
+ * chain says are liquidatable and not already in flight, sizes each of a position's activated
+ * collateral slots, and scores every resulting plan by oracle surplus converted to USD.
+ *
+ * Emits one candidate PER PLAN, not per position, so a multi-collateral position enters phase B as
+ * several ranked alternatives.
  *
  * **Deliberately synchronous, and the type signature is the enforcement.** `await` here would add
  * latency to exactly the maturity burst the ordering exists to win, and — less obviously — it would
@@ -166,34 +197,43 @@ const sizeCandidates = (deps: {
     }
 
     const input = planInputFromLens(out)
-    const outcome = planWithReason(input, { seizeCapMarginBps, headroomFloorBps })
-    if (outcome.plan === null) {
-      counters.planSkipped += 1
-      // A threshold decision carries the numbers behind it, including the LIF and mode actually
-      // chosen: `maxLif` and chain time do NOT identify them, because a matured-and-unhealthy position
-      // may be sized in either mode. Without these an operator cannot tell a mis-set floor from an
-      // early ramp, nor which mode the sizer picked.
-      logger[LEVEL_BY_REASON[outcome.reason]]('plan.skipped', {
+    const { plans, skips } = planCandidates(input, { seizeCapMarginBps, headroomFloorBps })
+
+    // Per-SLOT reasons: with several activated collaterals one slot can skip while another sizes, so
+    // these are reported even when the position was planned. A threshold decision carries the numbers
+    // behind it, including the LIF and mode actually chosen: `maxLif` and chain time do NOT identify
+    // them, because a matured-and-unhealthy position may be sized in either mode. Without these an
+    // operator cannot tell a mis-set floor from an early ramp, nor which mode the sizer picked.
+    for (const { reason, headroom } of skips) {
+      logger[LEVEL_BY_REASON[reason]]('plan.skipped', {
         marketId: pair.id,
         borrower: pair.borrower,
-        reason: outcome.reason,
-        ...(outcome.headroom
+        reason,
+        ...(headroom
           ? {
-              headroomBps: outcome.headroom.bps,
+              headroomBps: headroom.bps,
               headroomFloorBps,
-              lif: outcome.headroom.lif,
-              postMaturityMode: outcome.headroom.postMaturityMode,
+              lif: headroom.lif,
+              postMaturityMode: headroom.postMaturityMode,
               secondsSinceMaturity: out.blockTimestamp - out.market.maturity
             }
           : {})
       })
+    }
+
+    // `planSkipped` and `planned` stay PER POSITION so the `tick.end` identities still balance
+    // against `liquidatable`: a position is skipped only when no slot at all could be sized.
+    if (plans.length === 0) {
+      counters.planSkipped += 1
       continue
     }
     counters.planned += 1
-    const surplus = planSurplus(input, outcome.plan)
-    const surplusUsd = usdValueOf(out.market.loanToken, surplus)
-    if (surplusUsd === null) counters.unpriced += 1
-    sized.push({ pair, label, out, plan: outcome.plan, surplus, surplusUsd })
+    for (const plan of plans) {
+      const surplus = planSurplus(plan)
+      const surplusUsd = usdValueOf(out.market.loanToken, surplus)
+      if (surplusUsd === null) counters.unpriced += 1
+      sized.push({ pair, label, out, plan, surplus, surplusUsd })
+    }
   }
   return sized
 }
@@ -318,8 +358,10 @@ export async function runTick(deps: {
     inflightSkipped: 0,
     planSkipped: 0,
     planned: 0,
+    candidates: 0,
     cooledDown: 0,
     backoffSkipped: 0,
+    siblingSkipped: 0,
     noSwapPath: 0,
     quoteFailed: 0,
     quoteUnprofitable: 0,
@@ -343,9 +385,22 @@ export async function runTick(deps: {
     logger
   })
 
+  counters.candidates = sized.length
+
   // 4. Phase B — the expensive serial stages (one quote and one simulation each), worked in descending
-  // expected-USD-profit order so the most valuable position gets the contested early seconds rather
+  // expected-USD-profit order so the most valuable candidate gets the contested early seconds rather
   // than whichever borrower sorts first by address.
+  //
+  // A position's candidates are ALTERNATIVES, so failing one falls through to the next in rank order.
+  // That is why the two suppression stores are written after the loop rather than inside it:
+  // `backoff.record(label, chainHead)` sets `until = chainHead + baseBlocks` while `shouldSkip(label,
+  // chainHead)` tests `chainHead < until`, so recording mid-loop would suppress this position's own
+  // remaining candidates in the very same tick — silently reducing fall-through to a single attempt.
+  // Deferring also keeps the ranking global: candidates stay interleaved across positions rather than
+  // being grouped to make the bookkeeping work.
+  const submittedLabels = new Set<string>()
+  const pendingBackoff = new Set<string>()
+  const pendingCooldown = new Set<string>()
   let complete = false
   try {
     let rank = 0
@@ -353,6 +408,12 @@ export async function runTick(deps: {
       sized
     )) {
       rank += 1
+      // One liquidation per position per tick: a higher-ranked sibling already went out, and these
+      // alternatives would each be a second `liquidate` against the same debt.
+      if (submittedLabels.has(label)) {
+        counters.siblingSkipped += 1
+        continue
+      }
       // Emitted here, per candidate, rather than batched in phase A: the timestamp sequence of these
       // lines IS the record of what the bot worked and in what order, which is how the 31 Jul maturity
       // was reconstructed at all.
@@ -391,7 +452,7 @@ export async function runTick(deps: {
         const quote = await quoteFor(liquidationPlan, out, label)
         if (quote.kind === 'no_config') {
           counters.noSwapPath += 1
-          cooldown.mark(label)
+          pendingCooldown.add(label)
           logger.info('config.no_swap_path', {
             marketId: pair.id,
             borrower: pair.borrower,
@@ -410,8 +471,8 @@ export async function runTick(deps: {
             continue
           }
           counters.quoteFailed += 1
-          backoff.record(label, chainHead)
-          cooldown.mark(label)
+          pendingBackoff.add(label)
+          pendingCooldown.add(label)
           continue
         }
 
@@ -434,6 +495,8 @@ export async function runTick(deps: {
           logger.info('quote.unprofitable', {
             marketId: pair.id,
             borrower: pair.borrower,
+            collateralIndex: liquidationPlan.collateralIndex,
+            postMaturityMode: liquidationPlan.postMaturityMode,
             requiredRepay: economics.requiredRepay,
             requiredThreshold: economics.requiredThreshold,
             achievableOut: economics.achievableOut,
@@ -452,7 +515,15 @@ export async function runTick(deps: {
         plan: liquidationPlan,
         swapPlan
       })
-      const fields = { marketId: pair.id, borrower: pair.borrower }
+      // `collateralIndex` and `postMaturityMode` identify WHICH candidate this was: several entries
+      // per position share a (marketId, borrower), so without them two attempts on one position are
+      // indistinguishable in the log join.
+      const fields = {
+        marketId: pair.id,
+        borrower: pair.borrower,
+        collateralIndex: liquidationPlan.collateralIndex,
+        postMaturityMode: liquidationPlan.postMaturityMode
+      }
       switch (result.status) {
         case 'ok':
           counters.ok += 1
@@ -462,8 +533,8 @@ export async function runTick(deps: {
           counters.reverted += 1
           // Back off: a sim revert (stale quote, transient unliquidatability) shouldn't re-quote +
           // re-simulate this position every block.
-          backoff.record(label, chainHead)
-          cooldown.mark(label)
+          pendingBackoff.add(label)
+          pendingCooldown.add(label)
           logger.warn('simulate.revert', { ...fields, reason: result.reason })
           break
         default:
@@ -482,7 +553,12 @@ export async function runTick(deps: {
           label
         })
         if (outcome.sent) {
+          submittedLabels.add(label)
           backoff.clear(label)
+          // A broadcast settles the position for this tick, so a lower-ranked sibling's earlier
+          // failure must not still suppress it: this candidate succeeded where that one didn't.
+          pendingBackoff.delete(label)
+          pendingCooldown.delete(label)
           counters.submitted += 1
         } else {
           // Nothing was broadcast, so the position's failure history stands: clearing backoff here is
@@ -492,12 +568,16 @@ export async function runTick(deps: {
           // block from re-quoting, re-simulating and re-sending it — reaching this line at all means any
           // earlier entry had already expired, so leaving it untouched suppresses nothing. A queue-wide
           // refusal says nothing about the position, so it records nothing.
-          if (outcome.reason === 'send_failed') backoff.record(label, chainHead)
+          if (outcome.reason === 'send_failed') pendingBackoff.add(label)
         }
       }
     }
     complete = true
   } finally {
+    // Suppression applied once per position, after every candidate has had its turn (see the phase B
+    // preamble). In the `finally` so an aborting `submit` still records what the tick learned.
+    for (const label of pendingCooldown) cooldown.mark(label)
+    for (const label of pendingBackoff) backoff.record(label, chainHead)
     logger.info('tick.end', { ...counters, complete })
   }
   return counters

@@ -67,11 +67,24 @@ describe('MidnightLiquidationLens', () => {
       maxDebt: 900n,
       badDebt: 5n,
       activatedBitmap: 0b101n,
-      bestCollateralIdx: 2,
-      bestCollateralAmt: 12345n,
-      bestCollateralPrice: 10n ** 36n,
-      bestCollateralMaxLif: 1036269430051813471n,
-      bestCollateralLltv: 860000000000000000n,
+      // Two slots, so the round-trip exercises a nested dynamic struct ARRAY inside the returned
+      // LensOut[] — the shape the multi-collateral planner depends on decoding correctly.
+      collaterals: [
+        {
+          index: 2,
+          amt: 12345n,
+          price: 10n ** 36n,
+          maxLif: 1036269430051813471n,
+          lltv: 860000000000000000n
+        },
+        {
+          index: 0,
+          amt: 6789n,
+          price: 10n ** 36n,
+          maxLif: 1006036217303822937n,
+          lltv: 980000000000000000n
+        }
+      ],
       market: MARKET
     }
     const encoded = encodeFunctionResult({ abi, functionName: 'lens', result: [sample] })

@@ -104,3 +104,31 @@ export function intermediateTokens(
   }
   return intermediates
 }
+
+/**
+ * The trailing sweeps that uphold the Executor's full-drain invariant: both market tokens first
+ * (stable ordering for consumers), then every intermediate the step chain introduced.
+ *
+ * The market tokens are deduped, because they can be the SAME token — a market whose collateral is
+ * its own loan token (Midnight's loan-as-collateral slots). Sweeping such a token twice is not merely
+ * wasted gas: the second `transfer` moves zero, which some ERC-20s revert on, so the dedupe is a
+ * correctness guard as much as an optimization. The deduped list is also what gates
+ * {@link intermediateTokens}, so a market token can never be swept a second time as an "intermediate".
+ *
+ * Callers place this AFTER the protocol call that pulls the repay, since it drains whatever is left.
+ */
+export const sweepCalls = (args: {
+  loanToken: Address
+  collateralToken: Address
+  steps: readonly SwapStep[]
+  recipient: Address
+  executor: Address
+}): Hex[] => {
+  const { loanToken, collateralToken, steps, recipient, executor } = args
+  const marketTokens = isAddressEqual(loanToken, collateralToken)
+    ? [loanToken]
+    : [loanToken, collateralToken]
+  return [...marketTokens, ...intermediateTokens(steps, marketTokens)].map(token =>
+    skimCall(token, recipient, executor)
+  )
+}

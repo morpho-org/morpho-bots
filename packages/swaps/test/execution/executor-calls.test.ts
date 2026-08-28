@@ -9,7 +9,8 @@ import {
   approvePair,
   intermediateTokens,
   skimCall,
-  stepCalls
+  stepCalls,
+  sweepCalls
 } from '../../src/execution/executor-calls'
 
 const EXECUTOR = getAddress('0x1234567890123456789012345678901234567890')
@@ -184,5 +185,59 @@ describe('intermediateTokens', () => {
 
   it('returns [] when every output is excluded', () => {
     expect(intermediateTokens([step({ tokenOut: TOKEN_OUT })], [TOKEN_OUT])).toEqual([])
+  })
+})
+
+describe('sweepCalls', () => {
+  const sweptTokens = (calls: Hex[]) => calls.map(call => decodeSubCall(call).target)
+
+  it('sweeps the loan token, then the collateral token, then the intermediates', () => {
+    const mid = getAddress('0x1111111111111111111111111111111111111111')
+    const calls = sweepCalls({
+      loanToken: TOKEN_OUT,
+      collateralToken: TOKEN_IN,
+      steps: [step({ tokenOut: mid }), step({ tokenOut: TOKEN_OUT })],
+      recipient: RECIPIENT,
+      executor: EXECUTOR
+    })
+    expect(sweptTokens(calls)).toEqual([TOKEN_OUT, TOKEN_IN, mid])
+  })
+
+  it('emits ONE sweep when the collateral token IS the loan token', () => {
+    // Midnight's loan-as-collateral slots. A second sweep would transfer zero, which some ERC-20s
+    // revert on — so this is a correctness guard, not just a gas saving.
+    const calls = sweepCalls({
+      loanToken: TOKEN_OUT,
+      collateralToken: TOKEN_OUT,
+      steps: [],
+      recipient: RECIPIENT,
+      executor: EXECUTOR
+    })
+    expect(sweptTokens(calls)).toEqual([TOKEN_OUT])
+  })
+
+  it('still excludes a coincident market token from the intermediates', () => {
+    // The deduped market list is what gates `intermediateTokens`, so a step landing on the shared
+    // token cannot smuggle it back in as an "intermediate" and re-create the duplicate sweep.
+    const calls = sweepCalls({
+      loanToken: TOKEN_OUT,
+      collateralToken: TOKEN_OUT,
+      steps: [step({ tokenOut: TOKEN_OUT })],
+      recipient: RECIPIENT,
+      executor: EXECUTOR
+    })
+    expect(sweptTokens(calls)).toEqual([TOKEN_OUT])
+  })
+
+  it('sweeps to the recipient with the amount spliced from the live balance', () => {
+    const [call] = sweepCalls({
+      loanToken: TOKEN_OUT,
+      collateralToken: TOKEN_OUT,
+      steps: [],
+      recipient: RECIPIENT,
+      executor: EXECUTOR
+    })
+    // Same shape skimCall produces — sweepCalls composes it rather than re-encoding a transfer.
+    expect(call).toBe(skimCall(TOKEN_OUT, RECIPIENT, EXECUTOR))
   })
 })
