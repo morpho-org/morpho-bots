@@ -37,6 +37,7 @@ import {
   BORROWER_KEY,
   CONFIGURATOR,
   ECRECOVER_RATIFIER,
+  deployIdentityOracle,
   fundEth,
   IDENTITY_ORACLE,
   LIQUIDATION_CURSOR,
@@ -115,6 +116,9 @@ export async function seedLiquidatablePosition(
   shape: SeedShape = 'weth-collateral'
 ): Promise<SeededPosition> {
   const params = SHAPES[shape]
+  // The live identity oracle postdates FORK_BLOCK, so the loan-as-collateral shape needs its
+  // fork-local stand-in in place before anything reads a price. See `deployIdentityOracle`.
+  if (shape === 'loan-as-collateral') await deployIdentityOracle(test)
   const maker = privateKeyToAccount(MAKER_KEY)
   const borrower = privateKeyToAccount(BORROWER_KEY)
   const walletA = createWalletClient({ account: maker, chain: base, transport: http(rpcUrl) })

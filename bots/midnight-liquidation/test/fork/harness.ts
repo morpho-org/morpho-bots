@@ -34,12 +34,33 @@ export const LLTV = 860000000000000000n // 0.86 WAD (enabled on-chain)
 export const LIQUIDATION_CURSOR = 250000000000000000n // 0.25 WAD (enabled by the seeder via configurator)
 
 // Loan-as-collateral params, matching the live Base markets: the loan token (USDC) is its own
-// collateral, priced by the protocol team's official identity oracle (price = 1e36, i.e. 1 USDC =
-// 1 USDC). The 98% lltv is deliberate — it exists so the ~60bps incentive covers a liquidator's gas.
-// Both values may be unenabled on this deployment; the seeder enables them via the configurator.
-export const IDENTITY_ORACLE = '0x4429112b3C00b40Cf295db81cfcdE39d7d5ADC1d' as Address
+// collateral, priced by an identity oracle (price = 1e36, i.e. 1 USDC = 1 USDC). The 98% lltv is
+// deliberate — it exists so the ~60bps incentive covers a liquidator's gas. Both values may be
+// unenabled on this deployment; the seeder enables them via the configurator.
 export const LOAN_COLLATERAL_LLTV = 980000000000000000n // 0.98 WAD
 export const LOAN_COLLATERAL_CURSOR = 300000000000000000n // 0.30 WAD
+
+// The protocol team's official identity oracle on Base. Referenced for provenance only: it was
+// deployed for the Aug-2026 loan-as-collateral markets, which is AFTER FORK_BLOCK, so calling it on
+// this fork reverts with "returned no data". `deployIdentityOracle` stands in for it.
+export const LIVE_IDENTITY_ORACLE = '0x4429112b3C00b40Cf295db81cfcdE39d7d5ADC1d' as Address
+
+// Where the seeder puts its stand-in. Arbitrary and fork-local — nothing is deployed here on Base.
+export const IDENTITY_ORACLE = '0x00000000000000000000000000000000000d0c01' as Address
+
+// Runtime that returns 1e36 for any calldata: PUSH32 1e36, MSTORE at 0, RETURN 32 bytes from 0. The
+// oracle interface the lens and the seeder use is the single `price() returns (uint256)` view, and
+// the identity oracle's whole behavior is that constant — so a stub is faithful rather than a
+// simplification, and it keeps FORK_BLOCK pinned (bumping it would move the WETH oracle price and
+// pool state the other fork case is calibrated against).
+const IDENTITY_ORACLE_RUNTIME =
+  '0x7f0000000000000000000000000000000000c097ce7bc90715b34b9f100000000060005260206000f3' as const
+
+/** Places a constant-price(1e36) oracle at {@link IDENTITY_ORACLE} on the fork. */
+export async function deployIdentityOracle(test: TestClient): Promise<Address> {
+  await test.setCode({ address: IDENTITY_ORACLE, bytecode: IDENTITY_ORACLE_RUNTIME })
+  return IDENTITY_ORACLE
+}
 export const CONFIGURATOR = '0xcBa28b38103307Ec8dA98377ffF9816C164f9AFa' as Address
 export const ECRECOVER_RATIFIER = '0xd6e70365C8E8DDa9a4ca662C07bbE663b017755E' as Address
 
