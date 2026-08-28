@@ -158,7 +158,7 @@ type SkippedHeadroom = { bps: bigint; lif: bigint; postMaturityMode: boolean }
  * say which slot produced it. `0` when the position has no activated slot at all — the same
  * stand-in index a write-off uses, and equally inert.
  */
-export type PlanSkip = {
+type PlanSkip = {
   reason: PlanSkipReason
   collateralIndex: number
   headroom?: SkippedHeadroom
