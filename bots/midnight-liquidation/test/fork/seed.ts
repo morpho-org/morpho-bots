@@ -93,17 +93,23 @@ const SHAPES = {
     token: WETH,
     oracle: WETH_USDC_ORACLE,
     lltv: LLTV,
-    cursor: LIQUIDATION_CURSOR
+    cursor: LIQUIDATION_CURSOR,
+    group: 0
   },
   'loan-as-collateral': {
     token: USDC,
     oracle: IDENTITY_ORACLE,
     lltv: LOAN_COLLATERAL_LLTV,
-    cursor: LOAN_COLLATERAL_CURSOR
+    cursor: LOAN_COLLATERAL_CURSOR,
+    // A DISTINCT offer group per shape. `consumed[maker][group]` accumulates across takes and is
+    // capped at the offer's own `maxUnits` (midnight-contracts.txt:1570), so seeding a second
+    // position from the same maker into group 0 reverts `ConsumedUnits()` — both offers size
+    // `maxUnits` to their own `units`, and the first one has already spent the budget.
+    group: 1
   }
 } as const satisfies Record<
   SeedShape,
-  { token: Address; oracle: Address; lltv: bigint; cursor: bigint }
+  { token: Address; oracle: Address; lltv: bigint; cursor: bigint; group: number }
 >
 
 /**
@@ -212,7 +218,7 @@ export async function seedLiquidatablePosition(
     start: now - 300n,
     expiry: now + 7n * 24n * 3600n,
     tick,
-    group: numberToHex(0, { size: 32 }),
+    group: numberToHex(params.group, { size: 32 }),
     callback: zeroAddress,
     callbackData: '0x',
     receiverIfMakerIsSeller: zeroAddress,
