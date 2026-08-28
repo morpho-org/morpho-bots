@@ -3,7 +3,7 @@ import { getAddress, isAddressEqual, isHex } from 'viem'
 import type { RateLimitedClient } from '../http-client'
 import type { PriceParameters, PriceQuote, QuoteParameters, Swap } from '../types'
 
-import { BPS, ONEINCH_BASE_URL, ONEINCH_ROUTER } from '../constants'
+import { ONEINCH_BASE_URL, ONEINCH_ROUTER } from '../constants'
 import { QuoteError } from '../types'
 
 /** The 1inch arm of the per-collateral swap config. */
@@ -18,9 +18,10 @@ type OneInchSwap = {
 /**
  * Quotes 1inch via the one-step Classic Swap `/swap` endpoint, which returns ready-to-use `tx`
  * calldata. Approval is a plain ERC20 `approve` to the static AggregationRouterV6 (no Permit2). Output
- * is sent to `receiver` (the Executor). `slippage` is a percentage (bps / 100). `amount` is committed
- * off-chain, so the {@link Swap} carries `amountIn: { source: 'fixed' }`; the on-chain min-out is the
- * router's own bound (we record an oracle-derived floor for observability).
+ * is sent to `receiver` (the Executor). The floor is requested as an absolute `minReturn` rather than a
+ * `slippage` percentage, so the returned {@link Swap} reports the router's own bound
+ * (`minOutSource: 'venue'`) instead of reconstructing one. `amount` is committed off-chain, so the
+ * {@link Swap} carries `amountIn: { source: 'fixed' }`.
  */
 export async function quoteOneInch(
   client: RateLimitedClient,
@@ -41,7 +42,10 @@ export async function quoteOneInch(
       from: params.executor,
       origin: params.executor,
       receiver: params.executor,
-      slippage: (params.slippageBps / 100).toString(),
+      // `minReturn` is an ABSOLUTE base-unit minimum, unlike `slippage` which is a percentage the API
+      // applies to its own quote. Asking for the absolute floor is what lets the returned bound be
+      // reported faithfully rather than reconstructed — see {@link Swap.minOutSource}.
+      minReturn: params.minAcceptableAmountOut.toString(),
       disableEstimate: 'true'
     }
   })
@@ -77,7 +81,11 @@ export async function quoteOneInch(
     callData: json.tx.data,
     amountIn: { source: 'fixed', value: params.amountIn },
     expectedAmountOut,
-    amountOutMinimum: (expectedAmountOut * (BPS - BigInt(params.slippageBps))) / BPS
+    // The absolute `minReturn` we asked for, which the router enforces — the same trust boundary as
+    // 0x's `minBuyAmount` or LiFi's `toAmountMin`, and unlike the old `slippage` path this is not a
+    // reconstruction of a percentage the API applied to its own quote.
+    amountOutMinimum: params.minAcceptableAmountOut,
+    minOutSource: 'venue'
   }
 }
 

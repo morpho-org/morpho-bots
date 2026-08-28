@@ -48,7 +48,7 @@ const makeDeps = (overrides: Partial<TickDeps> = {}) => {
     strategy: vi.fn(() => undefined),
     encodeReallocation: vi.fn(() => DATA),
     simulate: vi.fn(async () => ({ status: 'ok' as const })),
-    submit: vi.fn(async () => true),
+    submit: vi.fn(async () => ({ sent: true }) as const),
     dryRun: false,
     inflightLabels: () => new Set<string>(),
     revertReason: error => (error instanceof Error ? error.message : String(error)),
@@ -73,7 +73,7 @@ describe('runTick', () => {
   it('does not count a submit the queue refused to broadcast', async () => {
     const { deps, events } = makeDeps({
       strategy: vi.fn(() => someReallocation()),
-      submit: vi.fn(async () => false)
+      submit: vi.fn(async () => ({ sent: false, reason: 'refused' }) as const)
     })
     await runTick(deps)
     expect(events.some(e => e.event === 'reallocation.not_broadcast')).toBe(true)

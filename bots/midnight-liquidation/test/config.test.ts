@@ -52,7 +52,6 @@ describe('loadConfig', () => {
 
     // Venue enablement is inferred from the present API key; global routing knobs take their defaults.
     expect(config.venues.enabled).toEqual(['0x'])
-    expect(config.venues.slippageBps).toBe(100)
     expect(config.venues.excludeCollaterals).toEqual([])
     expect(config.venues.zeroxBaseUrl).toBeUndefined()
 
@@ -239,11 +238,10 @@ describe('loadConfig', () => {
     )
   })
 
-  it('parses SLIPPAGE_BPS and rejects an out-of-range value', () => {
-    expect(loadConfig(baseEnv({ SLIPPAGE_BPS: '250' }), deps).venues.slippageBps).toBe(250)
-    expect(() => loadConfig(baseEnv({ SLIPPAGE_BPS: '20000' }), deps)).toThrow(
-      /SLIPPAGE_BPS must be <= 10000/
-    )
+  it('ignores a stale SLIPPAGE_BPS rather than failing loud on it', () => {
+    // The knob was removed when the min-out floor became break-even-derived. A deployment that still
+    // sets it must keep starting — an unknown env var is not a misconfiguration.
+    expect(() => loadConfig(baseEnv({ SLIPPAGE_BPS: '250' }), deps)).not.toThrow()
   })
 
   it('parses EXCLUDE_COLLATERALS into checksummed addresses and rejects a malformed entry', () => {

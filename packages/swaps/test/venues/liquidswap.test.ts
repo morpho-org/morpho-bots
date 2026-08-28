@@ -21,6 +21,7 @@ const params: QuoteParameters = {
   slippageBps: 150,
   executor: EXECUTOR,
   referenceAmountOut: 3_000_000_000n,
+  minAcceptableAmountOut: 0n,
   tokenInDecimals: 18
 }
 

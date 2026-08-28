@@ -50,7 +50,11 @@ const PLAN: LiquidationPlan = {
   collateralIndex: 0,
   seizedAssets: 1000n,
   repaidUnits: 900n,
-  postMaturityMode: false
+  postMaturityMode: false,
+  // lif 1.25 puts break-even at exactly 800, under the 0x stub's reported min-out of 995, so these
+  // projection cases exercise the lens mapping rather than the economic floor.
+  lif: (WAD * 5n) / 4n,
+  impliedRepaidUnits: 800n
 }
 
 const OUT: LensOut = {
@@ -101,15 +105,15 @@ function compose(
     venues?: ('0x' | '1inch')[]
     excludeCollaterals?: `0x${string}`[]
     logger?: Logger
+    httpClient?: RateLimitedClient
   } = {}
 ) {
   return composeQuoting({
-    httpClient: httpStub,
+    httpClient: overrides.httpClient ?? httpStub,
     selector,
     chainId: 8453,
     executor: EXECUTOR,
     venues: overrides.venues ?? ['0x'],
-    slippageBps: 100,
     baseUrls: {},
     maxRouteImpactBps: 500,
     unwrappers: [],
@@ -178,5 +182,23 @@ describe('composeQuoting (Midnight lens-projection adapter)', () => {
     await quoteFor(PLAN, OUT, LABEL)
     const selectOk = events.find(e => e.event === 'select.ok')
     expect(selectOk?.fields?.id).toBe(LABEL)
+  })
+
+  it('projects the plan break-even into the venue slippage it asks for', () => {
+    // seizedAssets 1000 at price 1e36 -> reference 1000; break-even 800 -> 2000bps of allowance. Pins
+    // that the adapter threads `impliedRepaidUnits` rather than leaving the floor unset.
+    const calls: (Record<string, string> | undefined)[] = []
+    const capturing: RateLimitedClient = {
+      getJson: async <T>(args: { searchParams?: Record<string, string> }) => {
+        calls.push(args.searchParams)
+        return OK_ZEROX_BODY as T
+      }
+    }
+    const { selector } = fakeSelector([{ venue: '0x', expectedOut: 1000n }])
+    return compose(selector, { httpClient: capturing })
+      .quoteFor(PLAN, OUT, LABEL)
+      .then(() => {
+        expect(calls[0]?.slippageBps).toBe('2000')
+      })
   })
 })

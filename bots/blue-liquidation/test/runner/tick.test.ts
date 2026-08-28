@@ -1,4 +1,4 @@
-import type { Logger, SimulateResult } from '@repo/bot-kit'
+import type { Logger, SimulateResult, SubmitOutcome } from '@repo/bot-kit'
 import type { CooldownStore } from '@repo/bot-kit'
 import type { QuoteOutcome, SwapPlan } from '@repo/swaps'
 import type { Address } from 'viem'
@@ -101,6 +101,8 @@ function runWith(opts: {
   noSwap?: boolean
   seedBackoffAt?: bigint
   cooldown?: CooldownStore
+  /** Models the queue's outcome; the two no-broadcast reasons are NOT interchangeable. */
+  submitOutcome?: SubmitOutcome
 }) {
   const { logger, events } = spyLogger()
   let simulateCalls = 0
@@ -131,6 +133,7 @@ function runWith(opts: {
     },
     submit: async () => {
       submitCalls += 1
+      return opts.submitOutcome ?? { sent: true }
     },
     backoff,
     cooldown,
@@ -163,7 +166,8 @@ describe('runTick', () => {
       cooledDown: 0,
       ok: 1,
       reverted: 0,
-      submitted: 1
+      submitted: 1,
+      notSent: 0
     })
     expect(simulateCalls()).toBe(1)
     expect(submitCalls()).toBe(1)
@@ -322,6 +326,42 @@ describe('runTick', () => {
       })
       expect(counters.cooledDown).toBe(0)
       expect(cooldown.shouldSkip(LABEL)).toBe(false)
+    })
+  })
+  describe('submit outcome', () => {
+    it('keeps the failure history but records nothing when the QUEUE refused', async () => {
+      // Seeded at block 1 (suppressed until 3) so it does not suppress this tick at 100. A queue-wide
+      // refusal says nothing about this position, so its history survives un-extended.
+      const { counters, backoff, submitCalls } = await runWith({
+        seedBackoffAt: 1n,
+        submitOutcome: { sent: false, reason: 'refused' }
+      })
+      expect(submitCalls()).toBe(1)
+      expect(counters).toMatchObject({ ok: 1, submitted: 0, notSent: 1 })
+      expect(backoff.shouldSkip(LABEL, 1n)).toBe(true)
+      // Not re-armed: the next block may try again, which is the point of not blaming the position.
+      expect(backoff.shouldSkip(LABEL, 101n)).toBe(false)
+    })
+
+    it("re-arms backoff when THIS position's send was rejected", async () => {
+      // The send itself failed, which is a fact about this position. Reaching submit at all means any
+      // earlier entry had expired, so leaving it untouched would suppress nothing and the next block
+      // would re-quote, re-simulate and re-send.
+      const { counters, backoff } = await runWith({
+        seedBackoffAt: 1n,
+        submitOutcome: { sent: false, reason: 'send_failed' }
+      })
+      expect(counters).toMatchObject({ ok: 1, submitted: 0, notSent: 1 })
+      expect(backoff.shouldSkip(LABEL, 101n)).toBe(true)
+    })
+
+    it('clears backoff and counts submitted only when the queue broadcast', async () => {
+      const { counters, backoff } = await runWith({
+        seedBackoffAt: 1n,
+        submitOutcome: { sent: true }
+      })
+      expect(counters).toMatchObject({ ok: 1, submitted: 1, notSent: 0 })
+      expect(backoff.shouldSkip(LABEL, 1n)).toBe(false)
     })
   })
 })

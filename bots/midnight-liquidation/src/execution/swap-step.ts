@@ -16,6 +16,6 @@ import { mulDivDown } from '../sizing/math'
  * token's native units. This is the venue-agnostic reference output: a Uniswap min-out is derived
  * from it, and an aggregator's quoted output is sanity-checked against it.
  */
-export function expectedLoanOut(plan: LiquidationPlan, out: LensOut): bigint {
+export function expectedLoanOut(plan: Pick<LiquidationPlan, 'seizedAssets'>, out: LensOut): bigint {
   return mulDivDown(plan.seizedAssets, out.bestCollateralPrice, ORACLE_PRICE_SCALE)
 }

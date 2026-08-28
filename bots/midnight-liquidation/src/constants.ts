@@ -45,6 +45,14 @@ export const SETTLED_COOLDOWN_BLOCKS = 20n
 export const LISTED_MARKETS_MAX_AGE_MS = 10 * 60_000
 
 /**
+ * How often the token USD-price snapshot is refetched. Build-time rather than an env var, like
+ * {@link LISTED_MARKETS_MAX_AGE_MS}: the snapshot only orders work, so an operator has no reason to
+ * tune it. Matched to the endpoint's own `max-age=30, stale-while-revalidate=60` cache, and refreshed
+ * on its own timer so a slow tokens fetch cannot delay the fail-closed whitelist refresh.
+ */
+export const TOKEN_PRICES_REFRESH_MS = 60_000
+
+/**
  * Basis-point denominator (100% = 10_000 bps) for the sizing layer's `seizeCapMarginBps` math.
  * `@repo/swaps` carries its own copy for slippage/route-quality math — kept separate so protocol
  * sizing never depends on the swap-quoting package.

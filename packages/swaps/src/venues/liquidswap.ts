@@ -90,7 +90,8 @@ export async function quoteLiquidSwap(
     callData: json.execution.calldata,
     amountIn: { source: 'fixed', value: params.amountIn },
     expectedAmountOut,
-    amountOutMinimum: BigInt(minAmountOut)
+    amountOutMinimum: BigInt(minAmountOut),
+    minOutSource: 'venue'
   }
 }
 

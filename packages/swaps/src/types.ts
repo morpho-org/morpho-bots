@@ -24,10 +24,25 @@ export type QuoteParameters = TokenInDecimals & {
   tokenIn: Address // seized collateral
   tokenOut: Address // loan token
   amountIn: bigint // the seized collateral the Executor will hold — exactly `plan.seizedAssets` (seize-exact)
+  /**
+   * Max output discount the venue may accept, in bps. **Derived**, not operator-set: the quoting layer
+   * computes it from the liquidation's break-even output (`QuoteRequest.minAcceptableAmountOut`) so the
+   * resulting floor is economic. Most venues accept only a percentage; the ones that take an absolute
+   * minimum read {@link QuoteParameters.minAcceptableAmountOut} instead.
+   */
   slippageBps: number
   executor: Address
   /** Oracle-priced expected output (no DEX slippage) — the no-route-quality reference. */
   referenceAmountOut: bigint
+  /**
+   * The break-even output the quote must clear, in `tokenOut` units.
+   *
+   * Carried alongside {@link QuoteParameters.slippageBps} because venues express a floor differently:
+   * most accept only a percentage, which the quoting layer derives from this, while 1inch takes an
+   * ABSOLUTE `minReturn` and so needs the value itself. A venue that can pass this straight through can
+   * report the bound faithfully instead of reconstructing it — see {@link Swap.minOutSource}.
+   */
+  minAcceptableAmountOut: bigint
 }
 
 /**
@@ -52,6 +67,16 @@ export type Swap = {
   expectedAmountOut: bigint
   /** The min-out floor encoded in `callData` — logging/observability. */
   amountOutMinimum: bigint
+  /**
+   * Whether {@link Swap.amountOutMinimum} is the floor the venue actually encoded in `callData`
+   * (`'venue'`) or our own reconstruction of what it probably encoded (`'derived'`).
+   *
+   * Load-bearing, not bookkeeping: an economic floor can only be *checked* against a `'venue'` value.
+   * Comparing a `'derived'` one against the floor compares our arithmetic with itself and always
+   * agrees, whatever the venue actually baked — so a caller enforcing a floor must reject `'derived'`
+   * rather than trust it.
+   */
+  minOutSource: 'venue' | 'derived'
 }
 
 /**
@@ -111,16 +136,30 @@ export type SwapPlan = {
   amountOutMinimum: bigint
 }
 
-/** Why an executable quote could not be produced (for logging + backoff). */
-export type QuoteFailureReason = 'timeout' | 'rate_limited' | 'no_route' | 'api_error' | 'bad_route'
+/**
+ * Why an executable quote could not be produced. Two classes, and callers must not conflate them:
+ * `timeout`/`rate_limited`/`api_error`/`no_route`/`bad_route` are failures, and suppressing a position
+ * that keeps producing them bounds API + RPC usage. `floor_unmet` is an economic verdict — the venue
+ * quoted fine, its guaranteed output just did not clear the liquidation's break-even repay — and both
+ * sides of that comparison move on a ten-second scale, so it says almost nothing about the next
+ * attempt and must not drive backoff.
+ */
+export type QuoteFailureReason =
+  | 'timeout'
+  | 'rate_limited'
+  | 'no_route'
+  | 'api_error'
+  | 'bad_route'
+  | 'floor_unmet'
 
 /**
  * The result of resolving a swap for one liquidatable position:
  * - `swap` — an executable {@link SwapPlan} to encode + simulate;
  * - `no_config` — the operator has not configured this collateral (a coverage gap, not a failure; no
  *   API call was made) → skip with `config.no_swap_path`;
- * - `failed` — a transient quote/route failure (API down, no route, or the route fails the oracle
- *   sanity check) → skip and back the position off.
+ * - `failed` — no executable quote: a transient quote/route failure (API down, no route, or the route
+ *   fails the oracle sanity check) → skip and back the position off, or an economic `floor_unmet`
+ *   verdict → skip WITHOUT backing off (see {@link QuoteFailureReason}).
  */
 export type QuoteOutcome =
   | { kind: 'swap'; plan: SwapPlan }

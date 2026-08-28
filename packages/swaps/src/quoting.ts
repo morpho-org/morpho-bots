@@ -90,6 +90,27 @@ export function passesRouteQuality(args: {
 }
 
 /**
+ * The slippage percentage (bps) that puts a venue's min-out at `floor`, given that the venue applies
+ * the percentage to `denominator`.
+ *
+ * Which denominator is correct depends on the venue: Uniswap applies the percentage to the oracle
+ * reference we hand it, while the aggregators apply it to their own quoted output. Passing the wrong
+ * one silently lands the floor below break-even — see the second pass in `firmQuoteVenue`.
+ */
+/**
+ * Whether a quote's ENCODED min-out is known to sit at or above `floor`. A `'derived'` min-out never
+ * qualifies, however large it looks: it is our reconstruction, so checking it against the floor checks
+ * our arithmetic against itself (see {@link Swap.minOutSource}).
+ */
+export const clearsFloor = (swap: Swap, floor: bigint): boolean =>
+  swap.minOutSource === 'venue' && swap.amountOutMinimum >= floor
+
+const slippageForFloor = (floor: bigint, denominator: bigint): number =>
+  denominator <= 0n || floor >= denominator
+    ? 0
+    : Number(((denominator - floor) * BPS) / denominator)
+
+/**
  * One liquidatable position's swap request, already projected out of the protocol's lens shape by
  * the calling bot (which knows how its markets address collateral).
  */
@@ -102,6 +123,19 @@ export type QuoteRequest = {
   amountIn: bigint
   /** Oracle-priced expected output (no DEX slippage) — the route-quality reference. */
   referenceAmountOut: bigint
+  /**
+   * Break-even output: the loan-token amount the protocol will pull to settle the repay. When set, the
+   * min-out floor is derived from it instead of from the operator's `slippageBps`.
+   *
+   * A liquidation's entire margin is the protocol's liquidation incentive, so break-even — not a
+   * percentage — is the economically correct floor. A fixed allowance is wrong in both directions and
+   * crosses over as the incentive changes: below break-even it lets a shortfall through to fail at the
+   * repay instead (surfacing as a misleading allowance error), and above break-even it makes the
+   * router reject fills that would have settled profitably. Deriving the allowance from break-even is
+   * right at every point, and cannot be tuned wrong.
+   *
+   */
+  minAcceptableAmountOut: bigint
   /** `collateralToken` decimals — required only for decimal-denominated venues (LiquidSwap). */
   tokenInDecimals?: number
   /** The position's correlation id — threaded into log events only, never parsed. */
@@ -131,6 +165,7 @@ type FirmQuoteOutcome =
   | { kind: 'swap'; swap: Swap; plan: SwapPlan }
   | { kind: 'quote_failed'; reason: QuoteFailureReason; detail: string }
   | { kind: 'bad_route'; swap: Swap }
+  | { kind: 'floor_unmet'; swap: Swap; floor: bigint }
 
 // One firm venue quote shared by both composers: build the venue params, dispatch under `tryCatch`,
 // then oracle-sanity the quoted output and fold a success into the plan's final step. `venueEntry` is
@@ -141,18 +176,24 @@ async function firmQuoteVenue(args: {
   chainId: number
   executor: Address
   venueEntry: () => SwapConfigEntry
-  slippageBps: number
   tokenIn: Address
   amountIn: bigint
   steps: SwapStep[]
   request: QuoteRequest
   maxRouteImpactBps: number
 }): Promise<FirmQuoteOutcome> {
-  const { httpClient, chainId, executor, venueEntry, slippageBps } = args
+  const { httpClient, chainId, executor, venueEntry } = args
   const { tokenIn, amountIn, steps, request, maxRouteImpactBps } = args
-  const { loanToken, referenceAmountOut } = request
+  const { loanToken, referenceAmountOut, minAcceptableAmountOut } = request
 
-  const params: QuoteParameters = {
+  // The clamp exists only because a percentage cannot express a floor above its own denominator: at
+  // `lif == WAD` the double-ceil in break-even can land a unit over the floored oracle reference. It is
+  // an ARITHMETIC bound on what we can ask a venue for — never a relaxation of what we accept, which is
+  // always the requested `minAcceptableAmountOut` (see the postcondition below).
+  const askableFloor =
+    minAcceptableAmountOut > referenceAmountOut ? referenceAmountOut : minAcceptableAmountOut
+
+  const paramsFor = (denominator: bigint): QuoteParameters => ({
     chainId,
     tokenIn,
     tokenOut: loanToken,
@@ -160,20 +201,49 @@ async function firmQuoteVenue(args: {
     // before the callback. After unwraps it is the chain's worst-case output — a fixed-amount
     // venue can only leave skimmable surplus, never revert on shortfall.
     amountIn,
-    slippageBps,
+    slippageBps: slippageForFloor(askableFloor, denominator),
+    minAcceptableAmountOut,
     executor,
     referenceAmountOut,
     // The request's decimals describe the RAW collateral; after an unwrap they would mislabel
     // the underlying, so they are only forwarded on the direct (no-unwrap) path.
     tokenInDecimals: steps.length === 0 ? request.tokenInDecimals : undefined
+  })
+
+  const quote = async (params: QuoteParameters) =>
+    tryCatch((async () => quoteByVenue(httpClient, venueEntry(), params))())
+
+  const first = await quote(paramsFor(referenceAmountOut))
+  if (first.error || !first.data) {
+    const reason = first.error instanceof QuoteError ? first.error.reason : 'api_error'
+    return { kind: 'quote_failed', reason, detail: ensureError(first.error).message }
   }
 
-  const { data: swap, error } = await tryCatch(
-    (async () => quoteByVenue(httpClient, venueEntry(), params))()
-  )
-  if (error || !swap) {
-    const reason = error instanceof QuoteError ? error.reason : 'api_error'
-    return { kind: 'quote_failed', reason, detail: ensureError(error).message }
+  // The aggregators apply the slippage percentage to THEIR OWN quote, which sits under the oracle
+  // reference by the execution cost, so a percentage derived against the reference lands their min-out
+  // at `quote · floor / reference` — strictly BELOW break-even. Re-deriving against the venue's own
+  // quoted output puts it back. Uniswap applies the percentage to the reference itself and is already
+  // at or above the floor, so it never takes this branch.
+  let swap = first.data
+  // A `derived` minimum can never clear the floor however it is asked for, so a retry there is a second
+  // API call that is guaranteed not to help.
+  if (
+    swap.minOutSource === 'venue' &&
+    !clearsFloor(swap, minAcceptableAmountOut) &&
+    swap.expectedAmountOut > 0n
+  ) {
+    const second = await quote(paramsFor(swap.expectedAmountOut))
+    if (second.data) swap = second.data
+  }
+
+  // POSTCONDITION, and the actual guarantee — the retry above is only an attempt to satisfy it. The
+  // second quote's own output can come back lower than the first's, which puts its min-out back under
+  // the floor; the retry can fail outright; and a venue that only lets us RECONSTRUCT its min-out
+  // cannot be checked at all. In every one of those cases the encoded bound does not protect the
+  // repay, so the venue is refused and the caller falls through to the next one. Keeping a
+  // known-underfloor quote here is what the earlier revision got wrong.
+  if (!clearsFloor(swap, minAcceptableAmountOut)) {
+    return { kind: 'floor_unmet', swap, floor: minAcceptableAmountOut }
   }
 
   // The reference stays the FULL-PATH oracle value (collateral → loan): the unwrap chain threads its
@@ -266,6 +336,22 @@ function unwrapOnlyPlan(args: {
     })
     return { kind: 'failed', reason: 'bad_route' }
   }
+  // The same economic floor the venue path enforces. `resolution.amountIn` is the chain's threaded
+  // WORST-CASE output, and every hop encodes its own min-out, so it is an on-chain bound rather than an
+  // estimate — but route quality alone does not check it against break-even, and the two thresholds are
+  // unrelated: a chain can clear `maxRouteImpactBps` and still land under the repay.
+  if (resolution.amountIn < request.minAcceptableAmountOut) {
+    logger.info('quote.floor_unmet', {
+      venue: 'unwrap-only',
+      id: request.id,
+      collateral: request.collateralToken,
+      expected: resolution.amountIn,
+      amountOutMinimum: resolution.amountIn,
+      minOutSource: 'venue',
+      floor: request.minAcceptableAmountOut
+    })
+    return { kind: 'failed', reason: 'floor_unmet' }
+  }
   logger.info('quote.ok', {
     venue: 'unwrap-only',
     id: request.id,
@@ -313,8 +399,6 @@ export function composeMultiVenueQuoting(deps: {
   executor: Address
   /** Enabled venues, in deterministic default order (used when a pair has no cached probe yet). */
   venues: readonly Venue[]
-  /** Global slippage (bps) applied to every venue — no per-collateral routing anymore. */
-  slippageBps: number
   /** Optional per-venue API host overrides. */
   baseUrls: Partial<Record<Venue, string>>
   maxRouteImpactBps: number
@@ -334,7 +418,6 @@ export function composeMultiVenueQuoting(deps: {
     chainId,
     executor,
     venues,
-    slippageBps,
     baseUrls,
     maxRouteImpactBps,
     unwrappers,
@@ -348,13 +431,13 @@ export function composeMultiVenueQuoting(deps: {
   function entryFor(venue: Venue): SwapConfigEntry {
     switch (venue) {
       case '0x':
-        return { venue: '0x', baseUrl: baseUrls['0x'], slippageBps }
+        return { venue: '0x', baseUrl: baseUrls['0x'] }
       case '1inch':
-        return { venue: '1inch', baseUrl: baseUrls['1inch'], slippageBps }
+        return { venue: '1inch', baseUrl: baseUrls['1inch'] }
       case 'lifi':
-        return { venue: 'lifi', baseUrl: baseUrls.lifi, slippageBps }
+        return { venue: 'lifi', baseUrl: baseUrls.lifi }
       case 'liquidswap':
-        return { venue: 'liquidswap', baseUrl: baseUrls.liquidswap, slippageBps }
+        return { venue: 'liquidswap', baseUrl: baseUrls.liquidswap }
       case 'uniswap-v3':
         throw new QuoteError('api_error', 'uniswap-v3 is not a multi-venue candidate')
       default:
@@ -404,6 +487,8 @@ export function composeMultiVenueQuoting(deps: {
 
       // Try the ranked venues in order; a quote or route-quality failure falls through to the next
       // (coverage-first). Only the CHOSEN venue is firm-quoted per step — never all venues at once.
+      // `lastReason` is last-venue-wins, so a transport failure after a floor miss reports the failure
+      // and the caller still backs off — the conservative direction of the two.
       let lastReason: QuoteFailureReason = 'no_route'
       for (const venue of order) {
         const outcome = await firmQuoteVenue({
@@ -411,7 +496,6 @@ export function composeMultiVenueQuoting(deps: {
           chainId,
           executor,
           venueEntry: () => entryFor(venue),
-          slippageBps,
           tokenIn: resolution.token,
           amountIn: resolution.amountIn,
           steps: resolution.steps,
@@ -426,6 +510,22 @@ export function composeMultiVenueQuoting(deps: {
             collateral: collateralToken,
             reason: lastReason,
             detail: outcome.detail
+          })
+          continue
+        }
+        if (outcome.kind === 'floor_unmet') {
+          lastReason = 'floor_unmet'
+          // `info`, not `warn`: the floor IS the break-even repay, so during the post-maturity ramp
+          // every venue misses it for every candidate on every block until the incentive catches up.
+          // That is the ordinary early-ramp shape, not an anomaly to page on.
+          logger.info('quote.floor_unmet', {
+            venue,
+            id,
+            collateral: collateralToken,
+            expected: outcome.swap.expectedAmountOut,
+            amountOutMinimum: outcome.swap.amountOutMinimum,
+            minOutSource: outcome.swap.minOutSource,
+            floor: outcome.floor
           })
           continue
         }

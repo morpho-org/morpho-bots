@@ -34,13 +34,18 @@ import type { Market } from './execution/encode-call'
 import type { LiquidationPlan } from './sizing/plan'
 
 import { loadConfig } from './config'
-import { LISTED_MARKETS_MAX_AGE_MS, SETTLED_COOLDOWN_BLOCKS } from './constants'
+import {
+  LISTED_MARKETS_MAX_AGE_MS,
+  SETTLED_COOLDOWN_BLOCKS,
+  TOKEN_PRICES_REFRESH_MS
+} from './constants'
 import {
   createApiCandidateSource,
   discoverBorrowers,
   MAX_DISCOVERY_PAGES
 } from './discovery/borrowers'
 import { createListedMarketFilter, createUnionListedMarketFilter } from './discovery/markets'
+import { createTokenPriceSource } from './discovery/token-prices'
 import { encodeLiquidationExec } from './execution/encode-call'
 import { composeQuoting } from './quotes'
 import { runTick } from './runner/tick'
@@ -163,6 +168,17 @@ async function main() {
   })
   await tryCatch(listedMarkets.refresh())
 
+  // Loan-token USD prices, used ONLY to order the tick's candidates by expected profit. Fails open:
+  // an unpriced token sorts last, so a fetch failure degrades ordering to discovery order rather than
+  // suppressing work. Shares the candidates endpoint's base URL, so pointing the bot at a staging host
+  // moves both. The first fetch runs in the refresh loop below rather than being awaited here — see
+  // there for why.
+  const tokenPrices = createTokenPriceSource({
+    apiUrl: config.discovery.apiUrl,
+    chainId: config.chainId,
+    logger
+  })
+
   // Pre-swap converters for exotic collateral (ERC4626 shares, Pendle PTs → underlying).
   // Auto-detecting with per-process memoization. erc4626 first: a memoized eth_call beats consulting
   // the markets list. Pendle is only constructed on chains it is deployed to — elsewhere a
@@ -185,7 +201,6 @@ async function main() {
     chainId: config.chainId,
     executor: config.executooorAddress,
     venues,
-    slippageBps: config.venues.slippageBps,
     baseUrls,
     maxRouteImpactBps: config.quoting.maxRouteImpactBps,
     unwrappers,
@@ -326,6 +341,8 @@ async function main() {
       chainHead,
       caller: config.executooorAddress,
       seizeCapMarginBps: config.quoting.seizeCapMarginBps,
+      minSurplusBps: config.quoting.minSurplusBps,
+      headroomFloorBps: config.quoting.headroomFloorBps,
       readLens: pairs => readMidnightLiquidationLens(client, config.midnight, pairs),
       quoteFor,
       simulate: ({ market, borrower, plan, swapPlan }) =>
@@ -336,7 +353,7 @@ async function main() {
         }),
       submit: async ({ market, borrower, plan, swapPlan, blockNumber, label }) => {
         const fees = initialFees(await signer.getBaseFee(), config.maxFeeWei, config.priorityFeeWei)
-        await queue.submit({
+        return queue.submit({
           request: {
             to: config.executooorAddress,
             data: encodeExec(market, borrower, plan, swapPlan)
@@ -350,6 +367,7 @@ async function main() {
       backoff,
       cooldown,
       inflightLabels: () => queue.inflightLabels(),
+      usdValueOf: tokenPrices.usdValueOf,
       logger
     })
 
@@ -391,6 +409,23 @@ async function main() {
   }
   void refreshMarketsLoop()
 
+  // Prices refresh on their own timer rather than inside `refreshMarketsLoop`, and the FIRST fetch runs
+  // here rather than at construction. `fetchWithRetry` is a 5s deadline times three retries plus
+  // backoff, so a hanging tokens fetch could stall ~22s — which must delay neither the fail-closed,
+  // safety-critical whitelist refresh nor, since the runner is already started, the first tick of a
+  // redeploy landing mid-maturity. Until it lands every candidate is simply unpriced and worked in
+  // discovery order, which is the source's own fail-open contract. `refresh` is contractually
+  // non-throwing (it reports `prices.refresh_failed` itself), so the tryCatch is belt-and-braces and an
+  // error here is a bug rather than an API blip.
+  const refreshTokenPricesLoop = async () => {
+    if (stopped) return
+    const { error } = await tryCatch(tokenPrices.refresh())
+    if (error) logger.error('prices.refresh_error', { detail: error.message })
+    await delay(TOKEN_PRICES_REFRESH_MS)
+    void refreshTokenPricesLoop()
+  }
+  void refreshTokenPricesLoop()
+
   // Graceful shutdown: stop the loops and log the pending set (hashes + nonces) plus the venue /
   // whitelist state for observability. Sends are fire-and-forget and chain truth wins on restart, so
   // there is nothing to persist or await-drain — a redeploy re-derives from chain.
@@ -401,7 +436,8 @@ async function main() {
       signal,
       pending: queue.snapshot(),
       venues: venueSelector.snapshot(),
-      listedMarkets: listedMarkets.snapshot()
+      listedMarkets: listedMarkets.snapshot(),
+      tokenPrices: tokenPrices.snapshot()
     })
     void runner.stop().finally(() => process.exit(0))
   }

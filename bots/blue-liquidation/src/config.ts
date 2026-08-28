@@ -85,7 +85,6 @@ const DEFAULT_POSITION_LIQUIDATION_COOLDOWN_MS = 0
 // queue ahead of a time-sensitive firm quote; log-scaled ladder sizes are whole collateral tokens
 // (converted per-collateral to base units). `PROBE_STALE_MS` caps probe cadence per pair; a pair is
 // re-probed only when a liquidatable position touches it after the cache goes stale.
-const DEFAULT_SLIPPAGE_BPS = 100
 const DEFAULT_PROBE_STALE_MS = 600_000
 const DEFAULT_PROBE_HTTP_RPS = 1
 const DEFAULT_PROBE_LADDER = ['0.01', '0.1', '1', '10', '100']
@@ -122,13 +121,13 @@ export type DiscoveryConfig = {
 }
 
 /**
- * Enabled swap venues + global routing knobs. Venues are enabled by the PRESENCE of their API key in
- * env (secrets themselves are read at the point of use in index.ts, never stored here). `slippageBps`
- * is global now that routing is not per-collateral; `baseUrl` overrides are optional per-venue hosts.
+ * Enabled swap venues + their optional host overrides. Venues are enabled by the PRESENCE of their API
+ * key in env (secrets themselves are read at the point of use in index.ts, never stored here). There is
+ * no slippage knob: the quoting layer derives each venue's allowance from the liquidation's break-even
+ * output, so the min-out floor is economic rather than operator-chosen.
  */
 export type VenueConfig = {
   enabled: Venue[]
-  slippageBps: number
   zeroxBaseUrl: string | undefined
   oneinchBaseUrl: string | undefined
   lifiBaseUrl: string | undefined
@@ -365,7 +364,6 @@ export function loadConfig(
   }
   const venues: VenueConfig = {
     enabled: enabledVenues,
-    slippageBps: intEnv(env, 'SLIPPAGE_BPS', DEFAULT_SLIPPAGE_BPS, { min: 0, max: 10_000 }),
     zeroxBaseUrl,
     oneinchBaseUrl,
     lifiBaseUrl,

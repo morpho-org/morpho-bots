@@ -554,7 +554,8 @@ describe('nonce-hole latch', () => {
     const sendsAfterDrop = ctx.sends.length
     // A NEW first-send is refused while the hole is latched (nonce 8 still pending → queue not empty,
     // so the empty-queue sync can't clear it).
-    expect(await ctx.submit('c', 6n)).toBe(false) // refused → not a real broadcast
+    // Queue-wide, not this label's fault: `refused` is what tells a caller not to back the position off.
+    expect(await ctx.submit('c', 6n)).toEqual({ sent: false, reason: 'refused' })
     expect(ctx.sends.length).toBe(sendsAfterDrop) // no new broadcast
     expect(ctx.queue.size).toBe(1)
     expect(ctx.events.some(e => e.event === 'queue.nonce_hole' && e.fields?.label === 'c')).toBe(
@@ -624,36 +625,39 @@ describe('nonce-hole latch', () => {
 
 // A tick counting "submitted" must count only real broadcasts; every silent refusal resolves false.
 describe('submit outcome', () => {
-  it('resolves true when the send is accepted and tracked', async () => {
+  it('resolves sent when the send is accepted and tracked', async () => {
     const { queue } = setup()
-    expect(await submitOne(queue)).toBe(true)
+    expect(await submitOne(queue)).toEqual({ sent: true })
     expect(queue.size).toBe(1)
   })
 
-  it('resolves false when the first send fails without a nonce', async () => {
+  it('reports send_failed when the first send fails without a nonce', async () => {
     const send: SendTx = async () => {
       throw new Error('rpc down')
     }
     const { queue } = setup({ send })
-    expect(await submitOne(queue)).toBe(false)
+    // The node rejected THIS position's transaction — a fact about the position, so a caller must be
+    // able to re-arm its backoff. Collapsing this with a queue refusal is what let a failing send
+    // re-quote and re-send every block.
+    expect(await submitOne(queue)).toEqual({ sent: false, reason: 'send_failed' })
   })
 
-  it('resolves false when the empty-queue nonce re-sync throws', async () => {
+  it('reports refused when the empty-queue nonce re-sync throws', async () => {
     const { queue } = setup({
       syncNonce: async () => {
         throw new Error('rpc down')
       }
     })
-    expect(await submitOne(queue)).toBe(false)
+    expect(await submitOne(queue)).toEqual({ sent: false, reason: 'refused' })
   })
 
-  it('resolves false while the send-aborted latch is set', async () => {
+  it('reports refused while the send-aborted latch is set', async () => {
     const send: SendTx = async () => {
       throw new TxSendError(new Error('broadcast lost'), 7)
     }
     const { queue } = setup({ send })
     await expect(submitOne(queue)).rejects.toThrow() // the latching send itself rethrows
-    expect(await submitOne(queue)).toBe(false)
+    expect(await submitOne(queue)).toEqual({ sent: false, reason: 'refused' })
   })
 })
 
@@ -700,9 +704,9 @@ describe('submit serialization', () => {
     expect(entered).toHaveLength(1)
 
     release.shift()?.()
-    expect(await first).toBe(true)
+    expect(await first).toEqual({ sent: true })
     release.shift()?.()
-    expect(await second).toBe(true)
+    expect(await second).toEqual({ sent: true })
 
     const nonces = queue.snapshot().map(entry => entry.nonce)
     expect(nonces).toEqual([100, 101])
@@ -743,7 +747,7 @@ describe('submit serialization', () => {
 
     // Drain the two gated sends as they arrive.
     const drain = setInterval(() => release.shift()?.(), 1)
-    expect(await both).toEqual([true, true])
+    expect(await both).toEqual([{ sent: true }, { sent: true }])
     clearInterval(drain)
 
     // Exactly one sync ran (the first submit, on the empty queue); the second saw size 1 and skipped.
@@ -778,8 +782,8 @@ describe('submit serialization', () => {
 
     await expect(first).rejects.toBeInstanceOf(TxSendError)
     // The lock was released, so the follower ran — and hit the send-aborted latch the leader set,
-    // which is the queue's own refusal (false), not a hang or a shared rejection.
-    expect(await second).toBe(false)
+    // which is the queue's own refusal, not a hang or a shared rejection.
+    expect(await second).toEqual({ sent: false, reason: 'refused' })
     expect(queue.size).toBe(0)
   })
 })

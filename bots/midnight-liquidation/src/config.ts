@@ -53,7 +53,19 @@ const DEFAULT_MAX_ROUTE_IMPACT_BPS = 500 // reject an aggregator route >5% below
 // entry (the underlying's entry isn't known until after resolution). Keep well under
 // MAX_ROUTE_IMPACT_BPS — it also haircuts the amount the downstream venue sells.
 const DEFAULT_PENDLE_SLIPPAGE_BPS = 50
+// Lower bound on swap execution cost. Skips a plan whose incentive headroom `(lif - 1)/lif` cannot
+// cover even the cheapest route, before it costs a quote, a simulation and a gas estimate. Kept LOW
+// deliberately: the floor is a pure time gate (3 bps suppresses until ~t+25s post-maturity on a
+// 438bps-maxLif tier), and blinding the earliest seconds of a maturity is far more costly than a
+// wasted quote. The 31 Jul archive implies (8.52, 15.83] for that maturity's basis regime; that is one
+// observation and deliberately NOT the default.
+const DEFAULT_HEADROOM_FLOOR_BPS = 3
 const DEFAULT_SEIZE_CAP_MARGIN_BPS = 30 // shave the repay cap when sizing a cap-binding seize — one-block oracle-drift headroom; calibratable
+// Pure break-even by default: at 0 the profitability gate compares two contract-derived quantities and
+// carries no tuned value, so it can only reject plans that would have reverted on-chain. Raising it
+// trades captured liquidations for margin against gas and sim→exec drift, and wants a measured basis
+// distribution rather than a guess — one maturity implies only a wide, unhelpful interval.
+const DEFAULT_MIN_SURPLUS_BPS = 0
 const DEFAULT_BACKOFF_BASE_BLOCKS = 2n
 const DEFAULT_BACKOFF_MAX_BLOCKS = 64n
 // Opt-in per-position cooldown (ms) after a liquidation attempt fails to produce a submittable tx
@@ -71,7 +83,6 @@ const DEFAULT_POSITION_LIQUIDATION_COOLDOWN_MS = 0
 // will touch, so it must be opted into explicitly per deployment rather than shipped in the default.
 const DEFAULT_MARKETS_API_URLS = ['https://api.morpho.org/v0/midnight/markets']
 const DEFAULT_MARKETS_REFRESH_MS = 60_000
-const DEFAULT_SLIPPAGE_BPS = 100
 const DEFAULT_PROBE_STALE_MS = 600_000
 const DEFAULT_PROBE_HTTP_RPS = 1
 const DEFAULT_PROBE_LADDER = ['0.01', '0.1', '1', '10', '100']
@@ -93,6 +104,10 @@ export type QuotingConfig = {
   pendleSlippageBps: number
   /** Headroom (bps) shaved off the on-chain repay cap when sizing a cap-binding seize-exact plan. */
   seizeCapMarginBps: number
+  /** Surplus over the plan's contract-derived repay a quoted route must clear to be simulated. */
+  minSurplusBps: number
+  /** Lower bound (bps) on swap execution cost; skips plans whose incentive headroom cannot cover it. */
+  headroomFloorBps: number
   backoffBaseBlocks: bigint
   backoffMaxBlocks: bigint
 }
@@ -114,13 +129,13 @@ export type DiscoveryConfig = {
 }
 
 /**
- * Enabled swap venues + global routing knobs. Venues are enabled by the PRESENCE of their API key in
- * env (secrets themselves are read at the point of use in index.ts, never stored here). `slippageBps`
- * is global now that routing is not per-collateral; `baseUrl` overrides are optional per-venue hosts.
+ * Enabled swap venues + their optional host overrides. Venues are enabled by the PRESENCE of their API
+ * key in env (secrets themselves are read at the point of use in index.ts, never stored here). There is
+ * no slippage knob: the quoting layer derives each venue's allowance from the liquidation's break-even
+ * output, so the min-out floor is economic rather than operator-chosen.
  */
 export type VenueConfig = {
   enabled: Venue[]
-  slippageBps: number
   zeroxBaseUrl: string | undefined
   oneinchBaseUrl: string | undefined
   lifiBaseUrl: string | undefined
@@ -418,7 +433,6 @@ export function loadConfig(
   }
   const venues: VenueConfig = {
     enabled: enabledVenues,
-    slippageBps: intEnv(env, 'SLIPPAGE_BPS', DEFAULT_SLIPPAGE_BPS, { min: 0, max: 10_000 }),
     zeroxBaseUrl,
     oneinchBaseUrl,
     lifiBaseUrl,
@@ -452,6 +466,14 @@ export function loadConfig(
       max: 10_000
     }),
     seizeCapMarginBps: intEnv(env, 'SEIZE_CAP_MARGIN_BPS', DEFAULT_SEIZE_CAP_MARGIN_BPS, {
+      min: 0,
+      max: 10_000
+    }),
+    minSurplusBps: intEnv(env, 'MIN_SURPLUS_BPS', DEFAULT_MIN_SURPLUS_BPS, {
+      min: 0,
+      max: 10_000
+    }),
+    headroomFloorBps: intEnv(env, 'HEADROOM_FLOOR_BPS', DEFAULT_HEADROOM_FLOOR_BPS, {
       min: 0,
       max: 10_000
     }),

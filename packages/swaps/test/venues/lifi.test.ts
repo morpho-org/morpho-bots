@@ -21,7 +21,8 @@ const params: QuoteParameters = {
   amountIn: 100n,
   slippageBps: 50,
   executor: EXECUTOR,
-  referenceAmountOut: 2000n
+  referenceAmountOut: 2000n,
+  minAcceptableAmountOut: 0n
 }
 
 // A fake client that returns a fixed JSON body and records the request args.

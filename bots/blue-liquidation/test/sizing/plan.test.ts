@@ -10,7 +10,8 @@ import {
   toSharesUp,
   wDivUp,
   wMulDown,
-  mulDivUp
+  mulDivUp,
+  toAssetsUp
 } from '../../src/sizing/math'
 import { plan } from '../../src/sizing/plan'
 
@@ -139,5 +140,54 @@ describe('plan — repaidShares ≤ borrowShares (no on-chain underflow)', () =>
             }
     // Guard against a vacuous sweep (every combo skipped would pass trivially).
     expect(checked).toBeGreaterThan(100)
+  })
+})
+
+describe('impliedRepaidAssets', () => {
+  // Checked against `contractRepaidShares` above — an independent reimplementation of Blue's round-up
+  // chain, written for the underflow sweep before this field existed, so this is not circular.
+  it('matches what liquidate pulls, across share prices and sizes', () => {
+    const cases: Partial<PlanInput>[] = [
+      {},
+      { accruedTotalBorrowAssets: 1_000_000n * WAD, totalBorrowShares: 999_999n * WAD },
+      { accruedTotalBorrowAssets: 7_777_777n, totalBorrowShares: 3_333_331n },
+      { collateralPrice: (ORACLE_PRICE_SCALE * 3n) / 7n },
+      { collateralPrice: ORACLE_PRICE_SCALE * 41n, collateral: 5n * WAD },
+      { borrowShares: 1n, collateral: 1n }
+    ]
+    let checked = 0
+    for (const overrides of cases) {
+      const input = baseInput(overrides)
+      const built = plan(input)
+      if (!built) continue
+      checked += 1
+      const expected = toAssetsUp(
+        contractRepaidShares(input, built.seizedAssets),
+        input.accruedTotalBorrowAssets,
+        input.totalBorrowShares
+      )
+      expect(built.impliedRepaidAssets).toBe(expected)
+    }
+    expect(checked).toBeGreaterThan(3)
+  })
+
+  it('is not the assets-only estimate, which understates the repay', () => {
+    // The bug this field replaced: flooring the quoted value and skipping the shares round-trip. Both
+    // errors round the wrong way, so the estimate came in UNDER what Blue actually pulls — a min-out
+    // floor derived from it does not protect the repay.
+    const input = baseInput({
+      collateralPrice: (ORACLE_PRICE_SCALE * 3n) / 7n,
+      accruedTotalBorrowAssets: 7_777_777n,
+      totalBorrowShares: 3_333_331n
+    })
+    const built = plan(input)
+    expect(built).not.toBeNull()
+    if (!built) return
+    const assetsOnly = mulDivUp(
+      mulDivDown(built.seizedAssets, input.collateralPrice, ORACLE_PRICE_SCALE),
+      WAD,
+      lifFromLltv(input.lltv)
+    )
+    expect(built.impliedRepaidAssets).toBeGreaterThan(assetsOnly)
   })
 })
