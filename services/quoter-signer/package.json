@@ -9,8 +9,10 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@aws-sdk/client-kms": "catalog:",
     "@morpho-org/midnight-sdk": "catalog:",
     "@morpho-org/morpho-ts": "catalog:",
+    "@noble/curves": "catalog:",
     "viem": "catalog:"
   },
   "devDependencies": {

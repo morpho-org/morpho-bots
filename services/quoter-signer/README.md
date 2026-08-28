@@ -6,15 +6,21 @@ Lambda container image that will become the **only** `kms:Sign` principal on the
 validating structured intents (quote, ratify, revoke, setup remediation) against its own
 independent reads before signing anything.
 
-**Current status: fail-closed skeleton with the v1 wire contract and the deterministic
-deployment-policy checks.** The handler holds no KMS access and implements no signing surface, but
-it now enforces the typed request/response contract below at the invocation boundary and validates
-every well-formed intent against the deployment policy document (see
-[Deployment policy](#deployment-policy-quoter_signer_policy)). Payloads outside the contract are
-denied with a `MalformedIntentError`; when the policy document is missing or invalid the build
-refuses to serve with a `PolicyNotConfiguredError`; out-of-policy intents are denied with an
-`IntentPolicyViolationError` naming the violated check; and intents that pass every deterministic
-check are still denied with a `SigningNotImplementedError`:
+**Current status: fail-closed build with the v1 wire contract, the deterministic
+deployment-policy checks, and the KMS maker-key custody attestation plus digest-signing layer.**
+The handler implements no encode-and-sign surface and never calls `kms:Sign`, but it now enforces
+the typed request/response contract below at the invocation boundary, validates every well-formed
+intent against the deployment policy document (see
+[Deployment policy](#deployment-policy-quoter_signer_policy)), and — for intents that pass every
+deterministic check — attests the configured KMS maker key (see
+[KMS maker key](#kms-maker-key-quoter_signer_kms_key_id-quoter_signer_kms_region)). Payloads
+outside the contract are denied with a `MalformedIntentError`; when the policy document is missing
+or invalid the build refuses to serve with a `PolicyNotConfiguredError`; out-of-policy intents are
+denied with an `IntentPolicyViolationError` naming the violated check; missing or invalid KMS
+addressing refuses to serve with a `KmsNotConfiguredError`; a failed KMS call is denied with a
+retryable `KmsUnavailableError`; custody drift (wrong key shape, malformed public key, or a
+derived address that is not the policy maker) is denied with a `KmsAttestationFailedError`; and
+intents that pass every implemented stage are still denied with a `SigningNotImplementedError`:
 
 ```json
 {
@@ -30,10 +36,12 @@ check are still denied with a `SigningNotImplementedError`:
 ```
 
 Each invocation also emits the TIB's `middleware.intent_received` / `middleware.intent_denied`
-JSON log lines to CloudWatch Logs, carrying only the allowlist-classified intent kind
-(`quote`, `ratify`, `revoke`, `setup-remediation`, or `unknown`), the denial class name, the
-violated policy check id on a policy denial, and the AWS request id — never caller-supplied data.
-The image is safe to deploy anywhere: it can sign nothing.
+JSON log lines to CloudWatch Logs — plus `middleware.kms_error` when the attestation stage fails —
+carrying only the allowlist-classified intent kind (`quote`, `ratify`, `revoke`,
+`setup-remediation`, or `unknown`), the denial class name, the violated policy check id on a
+policy denial, the failed KMS operation or attestation reason on a KMS denial, and the AWS request
+id — never caller-supplied data. The image is safe to deploy anywhere: `kms:Sign` is never called,
+so it can sign nothing.
 
 ## Wire contract (v1)
 
@@ -90,7 +98,9 @@ A complete well-formed revoke intent:
 ```
 
 This build answers it with the `SigningNotImplementedError` denial above (once the deployment
-policy below is configured; without it, the answer is the `PolicyNotConfiguredError` denial).
+policy below is configured and the KMS maker key is configured and attested; without those, the
+answer is the `PolicyNotConfiguredError`, `KmsNotConfiguredError`, `KmsUnavailableError`, or
+`KmsAttestationFailedError` denial).
 
 ## Deployment policy (`QUOTER_SIGNER_POLICY`)
 
@@ -183,6 +193,59 @@ ceiling)` is a prerequisite of the same increment that enables quote/ratify sign
   Setter ratify re-presents the same offers later, so size this for block-timestamp lag plus
   build→invoke and ratify-retry latency.
 
+## KMS maker key (`QUOTER_SIGNER_KMS_KEY_ID`, `QUOTER_SIGNER_KMS_REGION`)
+
+Like the policy document, KMS addressing lives in the middleware's deployment, never in the
+request: callers cannot select which key signs. Two environment variables pin the maker key —
+`QUOTER_SIGNER_KMS_KEY_ID` (a key id, key ARN, alias name `alias/...`, or alias ARN) and
+`QUOTER_SIGNER_KMS_REGION` (pinned explicitly rather than inherited from the Lambda's own region,
+so a cross-region key is a reviewed, fail-loud choice). Both are strictly parsed by
+[`src/kms-config.utils.ts`](./src/kms-config.utils.ts); a missing or malformed value refuses to
+serve with `KmsNotConfiguredError`.
+
+For an intent that passes every deterministic policy check, the handler then performs the
+**maker-key custody attestation** ([`src/kms-signer.utils.ts`](./src/kms-signer.utils.ts)): call
+`kms:GetPublicKey` on the configured key, require the exact
+`ECC_SECG_P256K1`/`SIGN_VERIFY`/`ECDSA_SHA_256` shape and the resolved key ARN, strictly parse
+the canonical uncompressed-secp256k1 `SubjectPublicKeyInfo` (DER is canonical, so the parse is an
+exact 23-byte-prefix comparison plus on-curve validation of the point — no ASN.1 library in the
+root-of-trust image), derive the maker address, and fail closed unless it equals the
+policy-pinned `maker`. The attested signer is cached per execution environment with a
+**five-minute freshness bound** (`KMS_ATTESTATION_FRESHNESS_MS`), so a warm container re-proves
+custody at the next window and catches key or deployment drift — and the signing primitive
+enforces the same bound itself, refusing to sign against an attestation that has aged past the
+window (`KmsAttestationStaleError`, retryable after re-attestation), so freshness never depends
+on the caller's cache discipline; a failed attestation is evicted
+so a transient KMS fault never poisons the container. When both the policy document and the KMS
+variables are configured, a best-effort attestation also starts at **cold start**, before the
+first invocation. A failed `GetPublicKey` call denies with the retryable `KmsUnavailableError`;
+every custody violation denies with `KmsAttestationFailedError` naming an allowlisted reason
+(`key-spec`, `key-arn`, `missing-public-key`, `public-key-encoding`, `maker-mismatch`).
+
+**Scope, stated precisely**: this is a per-container attestation gating the signing path, not yet
+the TIB's full startup/readiness attestation — the setup/health surface, the per-surface
+attestation registry with its manifest-pinned freshness window and scheduled refresh, and the
+alias/image/readiness validation are later increments. An unattested container still answers
+wire-contract and policy denials (that is fail-closed serving, not signing), and the guarantee
+this build does make is strict: the digest-signing primitive is reachable only behind a fresh
+attestation and refuses on its own to sign against a stale one, and since no encode-and-sign
+surface exists, nothing can be signed before, without, or against a stale attestation.
+
+The same module carries the digest-signing primitive the TIB's encode stages will call
+(sign-what-you-encode, §2): `kms:Sign` with `MessageType: 'DIGEST'` and
+`SigningAlgorithm: 'ECDSA_SHA_256'` — issued against the resolved key ARN captured at attestation
+(never the configured alias, which could be repointed to an unattested key afterwards) on a
+single-attempt client (no SDK retries: every CloudTrail `Sign` event must reconcile with exactly
+one middleware signing record; a `Sign` call that fails outright maps to the **non-retryable**
+`KmsSignOutcomeUnknownError`, because the outcome is ambiguous — a signature may exist
+server-side — and blind invocation-level retry could mint a second signature for one artifact) — followed by a strict canonical DER parse, low-s
+normalization, a recovery check across both parities against the attested maker address, and
+capture of the KMS request id — the CloudTrail reconciliation join key each per-artifact signing
+record must log, so a `Sign` response without one (or with a blank one) is rejected rather than
+becoming an unreconcilable signature. **No intent reaches it yet**: until the encode stages land, every attested
+intent is still denied with `SigningNotImplementedError`, and the execution role needs
+`kms:GetPublicKey` on the maker key but must not hold `kms:Sign`.
+
 ## Bot integration
 
 `bots/quoter-bot` selects this middleware as its fourth maker signing method: setting
@@ -243,8 +306,10 @@ Expect a fail-closed `MalformedIntentError` denial (the payload names a kind but
 wire contract), and the two `middleware.*` JSON log lines in the container's output. Sending the
 complete revoke intent from the wire-contract section yields the `PolicyNotConfiguredError`
 denial — no policy document is configured — and re-running the container with
-`-e QUOTER_SIGNER_POLICY='<policy JSON>'` turns that into the policy checks plus the final
-`SigningNotImplementedError` denial.
+`-e QUOTER_SIGNER_POLICY='<policy JSON>'` turns that into the policy checks plus the
+`KmsNotConfiguredError` denial: the KMS maker key is not configured, and without AWS credentials
+in the local container the attestation stage cannot succeed anyway — a fully attested
+`SigningNotImplementedError` denial needs the Lambda deployment below.
 
 ## Publish to Docker Hub (maintainers)
 
@@ -277,15 +342,19 @@ aws ecr get-login-password --region "$REGION" | docker login --username AWS --pa
 docker push "$ACCOUNT.dkr.ecr.$REGION.amazonaws.com/quoter-signer:<commit-sha>"
 ```
 
-Create the function. The skeleton needs no KMS or other resource permissions — an execution role
-with the `AWSLambdaBasicExecutionRole` managed policy (CloudWatch Logs only) is enough. The
-deployment policy document rides in the function's environment; without it every well-formed
-intent is denied with `PolicyNotConfiguredError`. The policy is itself JSON, so pass the
-environment as a file (`--environment` shorthand cannot safely carry the nested commas and
-quotes) — with the document from the Deployment policy section saved as `policy.json`:
+Create the function. Without KMS configuration an execution role with the
+`AWSLambdaBasicExecutionRole` managed policy (CloudWatch Logs only) is enough and every
+well-formed in-policy intent is denied with `KmsNotConfiguredError`; to exercise the custody
+attestation, additionally grant the execution role `kms:GetPublicKey` — and nothing else, in
+particular not `kms:Sign` — on the maker key and set the two KMS variables. The deployment policy
+document rides in the function's environment; without it every well-formed intent is denied with
+`PolicyNotConfiguredError`. The policy is itself JSON, so pass the environment as a file
+(`--environment` shorthand cannot safely carry the nested commas and quotes) — with the document
+from the Deployment policy section saved as `policy.json`:
 
 ```sh
-jq -n --arg policy "$(cat policy.json)" '{Variables: {QUOTER_SIGNER_POLICY: $policy}}' > environment.json
+jq -n --arg policy "$(cat policy.json)" \
+  '{Variables: {QUOTER_SIGNER_POLICY: $policy, QUOTER_SIGNER_KMS_KEY_ID: "alias/<maker-key-alias>", QUOTER_SIGNER_KMS_REGION: "<region>"}}' > environment.json
 aws lambda create-function \
   --function-name quoter-signer \
   --package-type Image \
@@ -319,6 +388,7 @@ Everything else in the TIB, in later increments: the mode-aware five-function de
 instantiated from this one image, the invoke-only IAM chain that removes `kms:Sign` from the bot,
 the independent-read policy properties (crossed books, PnL, snapshot-derived fees and
 `continuousFeeCap`, canonical group and root re-derivation), the reservation ledger with its
-aggregate signed-exposure, signed-gas, and nonce-lease accounting, sign-what-you-encode with the
-actual KMS call, and the bot-side intent ports that speak the wire contract above. Until then,
-deploying this image grants nothing and signs nothing.
+aggregate signed-exposure, signed-gas, and nonce-lease accounting, the canonical encode stages
+that feed the now-present attested KMS digest signer (sign-what-you-encode — the first stages to
+hold `kms:Sign`), and the bot-side intent ports that speak the wire contract above. Until then,
+deploying this image grants nothing beyond `kms:GetPublicKey` and signs nothing.

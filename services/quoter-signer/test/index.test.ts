@@ -1,8 +1,40 @@
+import { secp256k1 } from '@noble/curves/secp256k1'
+import { bytesToHex, hexToBytes } from 'viem'
+import { privateKeyToAccount } from 'viem/accounts'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { handler } from '../src/index'
+import type { KmsPublicKeyMaterial, KmsTransport } from '../src/kms-signer.utils'
 
-const maker = '0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A'
+import { createHandler, handler } from '../src/index'
+import { KMS_ATTESTATION_FRESHNESS_MS } from '../src/kms-signer.utils'
+
+const privateKey = `0x${'11'.repeat(32)}` as const
+const maker = privateKeyToAccount(privateKey).address
+
+const SPKI_PREFIX = '3056301006072a8648ce3d020106052b8104000a034200'
+const spkiFor = (secret: `0x${string}`): Uint8Array =>
+  hexToBytes(
+    `0x${SPKI_PREFIX}${bytesToHex(secp256k1.getPublicKey(hexToBytes(secret), false)).slice(2)}`
+  )
+const spki = spkiFor(privateKey)
+
+const publicKeyMaterial = (
+  overrides: Partial<KmsPublicKeyMaterial> = {}
+): KmsPublicKeyMaterial => ({
+  publicKey: spki,
+  keyArn: 'arn:aws:kms:eu-west-1:123456789012:key/1234abcd-12ab-34cd-56ef-1234567890ab',
+  keySpec: 'ECC_SECG_P256K1',
+  keyUsage: 'SIGN_VERIFY',
+  signingAlgorithms: ['ECDSA_SHA_256'],
+  ...overrides
+})
+
+const fakeKms = (
+  getPublicKey: KmsTransport['getPublicKey'] = async () => publicKeyMaterial()
+): KmsTransport & { readonly getPublicKey: KmsTransport['getPublicKey'] } => ({
+  getPublicKey,
+  signDigest: async () => ({})
+})
 
 const revokeIntent = {
   contractVersion: 1,
@@ -51,15 +83,35 @@ const stubPolicy = (overrides: Record<string, unknown> = {}) => {
   vi.stubEnv('QUOTER_SIGNER_POLICY', JSON.stringify(policyDocument(overrides)))
 }
 
+const stubKms = () => {
+  vi.stubEnv('QUOTER_SIGNER_KMS_KEY_ID', 'alias/quoter-signer-maker')
+  vi.stubEnv('QUOTER_SIGNER_KMS_REGION', 'eu-west-1')
+}
+
+const notImplementedEnvelope = {
+  contractVersion: 1,
+  service: 'quoter-signer',
+  approved: false,
+  denial: {
+    name: 'SigningNotImplementedError',
+    message:
+      'no signing surface is implemented in this quoter-signer build; every intent is denied',
+    retryable: false
+  }
+}
+
 describe('handler', () => {
   afterEach(() => {
     vi.restoreAllMocks()
     vi.unstubAllEnvs()
   })
 
-  it('denies a well-formed in-policy intent with the typed not-implemented envelope', async () => {
+  it('denies an in-policy intent with kms-not-configured when kms addressing is unset', async () => {
     vi.spyOn(console, 'log').mockImplementation(() => {})
     stubPolicy()
+    // Force the unset state so ambient KMS variables in the shell cannot reach the real AWS SDK.
+    vi.stubEnv('QUOTER_SIGNER_KMS_KEY_ID', undefined)
+    vi.stubEnv('QUOTER_SIGNER_KMS_REGION', undefined)
 
     const response = await handler(revokeIntent)
 
@@ -68,12 +120,209 @@ describe('handler', () => {
       service: 'quoter-signer',
       approved: false,
       denial: {
-        name: 'SigningNotImplementedError',
-        message:
-          'no signing surface is implemented in this quoter-signer build; every intent is denied',
+        name: 'KmsNotConfiguredError',
+        message: 'invalid quoter-signer kms configuration: QUOTER_SIGNER_KMS_KEY_ID missing',
         retryable: false
       }
     })
+  })
+
+  it('denies an attested in-policy intent with the typed not-implemented envelope', async () => {
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    stubPolicy()
+    stubKms()
+    const getPublicKey = vi.fn(async () => publicKeyMaterial())
+
+    const response = await createHandler({ kms: fakeKms(getPublicKey) })(revokeIntent)
+
+    expect(response).toStrictEqual(notImplementedEnvelope)
+    expect(getPublicKey).toHaveBeenCalledExactlyOnceWith({
+      keyId: 'alias/quoter-signer-maker',
+      region: 'eu-west-1'
+    })
+  })
+
+  it('attests the maker key once per execution environment, not per invocation', async () => {
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    stubPolicy()
+    stubKms()
+    const getPublicKey = vi.fn(async () => publicKeyMaterial())
+    const handle = createHandler({ kms: fakeKms(getPublicKey) })
+
+    const first = await handle(revokeIntent)
+    const second = await handle(revokeIntent)
+
+    expect(first).toStrictEqual(notImplementedEnvelope)
+    expect(second).toStrictEqual(notImplementedEnvelope)
+    expect(getPublicKey).toHaveBeenCalledTimes(1)
+  })
+
+  it('denies custody drift with attestation-failed and emits the kms_error line', async () => {
+    const lines: string[] = []
+    vi.spyOn(console, 'log').mockImplementation((line: string) => {
+      lines.push(line)
+    })
+    stubPolicy()
+    stubKms()
+    // The configured key answers with another maker's public key: custody drift, fail closed.
+    const handle = createHandler({
+      kms: fakeKms(async () => publicKeyMaterial({ publicKey: spkiFor(`0x${'22'.repeat(32)}`) }))
+    })
+
+    const response = await handle(revokeIntent, { awsRequestId: 'req-3' })
+
+    expect(response).toStrictEqual({
+      contractVersion: 1,
+      service: 'quoter-signer',
+      approved: false,
+      denial: {
+        name: 'KmsAttestationFailedError',
+        message: 'quoter-signer kms maker-key attestation failed: maker-mismatch',
+        retryable: false
+      }
+    })
+    expect(lines.map(line => JSON.parse(line))).toStrictEqual([
+      { event: 'middleware.intent_received', intentKind: 'revoke', awsRequestId: 'req-3' },
+      {
+        event: 'middleware.kms_error',
+        intentKind: 'revoke',
+        awsRequestId: 'req-3',
+        reason: 'maker-mismatch'
+      },
+      {
+        event: 'middleware.intent_denied',
+        intentKind: 'revoke',
+        awsRequestId: 'req-3',
+        denial: 'KmsAttestationFailedError'
+      }
+    ])
+  })
+
+  it('retries attestation after a kms outage instead of poisoning the container', async () => {
+    const lines: string[] = []
+    vi.spyOn(console, 'log').mockImplementation((line: string) => {
+      lines.push(line)
+    })
+    stubPolicy()
+    stubKms()
+    const getPublicKey = vi
+      .fn<KmsTransport['getPublicKey']>()
+      .mockRejectedValueOnce(new Error('socket hang up'))
+      .mockResolvedValue(publicKeyMaterial())
+    const handle = createHandler({ kms: fakeKms(getPublicKey), attestAtStartup: false })
+
+    const outage = await handle(revokeIntent, { awsRequestId: 'req-4' })
+    const recovered = await handle(revokeIntent, { awsRequestId: 'req-5' })
+
+    expect(outage).toStrictEqual({
+      contractVersion: 1,
+      service: 'quoter-signer',
+      approved: false,
+      denial: {
+        name: 'KmsUnavailableError',
+        message: 'quoter-signer kms get-public-key call failed',
+        retryable: true
+      }
+    })
+    expect(recovered).toStrictEqual(notImplementedEnvelope)
+    expect(getPublicKey).toHaveBeenCalledTimes(2)
+    expect(lines.map(line => JSON.parse(line))).toContainEqual({
+      event: 'middleware.kms_error',
+      intentKind: 'revoke',
+      awsRequestId: 'req-4',
+      operation: 'get-public-key'
+    })
+  })
+
+  it('attests at cold start, before the first invocation, when fully configured', async () => {
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    stubPolicy()
+    stubKms()
+    const getPublicKey = vi.fn(async () => publicKeyMaterial())
+
+    const handle = createHandler({ kms: fakeKms(getPublicKey) })
+
+    // The warm-up runs at construction with no invocation having arrived yet.
+    expect(getPublicKey).toHaveBeenCalledExactlyOnceWith({
+      keyId: 'alias/quoter-signer-maker',
+      region: 'eu-west-1'
+    })
+    const response = await handle(revokeIntent)
+    expect(response).toStrictEqual(notImplementedEnvelope)
+    expect(getPublicKey).toHaveBeenCalledTimes(1)
+  })
+
+  it('serves wire-contract denials while the cold-start attestation is still pending', async () => {
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    stubPolicy()
+    stubKms()
+    // An attestation that never settles must not block non-signing serving: fail-closed answers
+    // to malformed payloads do not wait on custody.
+    const handle = createHandler({
+      kms: fakeKms(() => new Promise<never>(() => {}))
+    })
+
+    const response = await handle({ kind: 'quote' })
+
+    expect(response.approved).toBe(false)
+    expect(!response.approved && response.denial.name).toBe('MalformedIntentError')
+  })
+
+  it('re-proves a stale attestation and fails closed on key drift past the window', async () => {
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    stubPolicy()
+    stubKms()
+    const startMs = 1_756_200_000_000
+    const now = vi.spyOn(Date, 'now').mockReturnValue(startMs)
+    // Fresh key first; after the freshness window the same alias resolves to another maker's key.
+    const getPublicKey = vi
+      .fn<KmsTransport['getPublicKey']>()
+      .mockResolvedValueOnce(publicKeyMaterial())
+      .mockResolvedValue(publicKeyMaterial({ publicKey: spkiFor(`0x${'22'.repeat(32)}`) }))
+    const handle = createHandler({ kms: fakeKms(getPublicKey), attestAtStartup: false })
+
+    const fresh = await handle(revokeIntent)
+    const reused = await handle(revokeIntent)
+    now.mockReturnValue(startMs + KMS_ATTESTATION_FRESHNESS_MS)
+    const drifted = await handle(revokeIntent)
+
+    expect(fresh).toStrictEqual(notImplementedEnvelope)
+    expect(reused).toStrictEqual(notImplementedEnvelope)
+    expect(!drifted.approved && drifted.denial.name).toBe('KmsAttestationFailedError')
+    expect(getPublicKey).toHaveBeenCalledTimes(2)
+  })
+
+  it('re-attests after custody drift so a fixed deployment recovers without a restart', async () => {
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    stubPolicy()
+    stubKms()
+    // First read shows another maker's key (terminal drift); the operator then fixes the key
+    // deployment, so the next invocation on the same warm container must re-attest and pass.
+    const getPublicKey = vi
+      .fn<KmsTransport['getPublicKey']>()
+      .mockResolvedValueOnce(publicKeyMaterial({ publicKey: spkiFor(`0x${'22'.repeat(32)}`) }))
+      .mockResolvedValue(publicKeyMaterial())
+    const handle = createHandler({ kms: fakeKms(getPublicKey), attestAtStartup: false })
+
+    const drifted = await handle(revokeIntent)
+    const recovered = await handle(revokeIntent)
+
+    expect(!drifted.approved && drifted.denial.name).toBe('KmsAttestationFailedError')
+    expect(recovered).toStrictEqual(notImplementedEnvelope)
+    expect(getPublicKey).toHaveBeenCalledTimes(2)
+  })
+
+  it('never calls kms for malformed or out-of-policy intents', async () => {
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    stubPolicy({ surface: 'quote' })
+    stubKms()
+    const getPublicKey = vi.fn(async () => publicKeyMaterial())
+    const handle = createHandler({ kms: fakeKms(getPublicKey), attestAtStartup: false })
+
+    await handle({ kind: 'quote' })
+    await handle(revokeIntent)
+
+    expect(getPublicKey).not.toHaveBeenCalled()
   })
 
   it('denies a contract-violating payload with the typed malformed-intent envelope', async () => {
