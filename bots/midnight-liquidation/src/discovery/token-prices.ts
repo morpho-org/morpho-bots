@@ -7,6 +7,8 @@ import { getAddress, isAddress, parseUnits } from 'viem'
 
 import type { paths } from '../generated/markets-api'
 
+import { LIQUIDATION_CANDIDATES_PATH } from './borrowers'
+
 /** The `fetch` shape `openapi-fetch` calls — a single `Request`. The global `fetch` satisfies it. */
 type FetchLike = (request: Request) => Promise<Response>
 
@@ -25,6 +27,16 @@ export const USD_PRICE_SCALE_DECIMALS = 8
  * a staging host moves both endpoints together.
  */
 const PATH = '/markets/midnight/tokens'
+
+/**
+ * The path prefix a gateway may mount the API under, recovered from the configured CANDIDATES url —
+ * stripping this path would never match it. `pathname` rather than the raw string so a configured
+ * query string cannot defeat the suffix test. Empty when the URL is not the candidates endpoint.
+ */
+const gatewayPrefix = (url: URL): string =>
+  url.pathname.endsWith(LIQUIDATION_CANDIDATES_PATH)
+    ? url.pathname.slice(0, -LIQUIDATION_CANDIDATES_PATH.length)
+    : ''
 
 /** A token's price, normalized once at the API boundary so no float arithmetic survives it. */
 type PricedToken = { priceE8: bigint; decimals: number }
@@ -91,10 +103,11 @@ export const createTokenPriceSource = (deps: {
   const sleep = deps.sleep ?? delay
   const now = deps.now ?? (() => Date.now())
   const url = new URL(deps.apiUrl)
-  const baseUrl = deps.apiUrl.endsWith(PATH) ? deps.apiUrl.slice(0, -PATH.length) : url.origin
+  const prefix = gatewayPrefix(url)
+  const baseUrl = `${url.origin}${prefix}`
   const client = createClient<paths>({ baseUrl, fetch: deps.fetchImpl ?? fetch })
   // Host + path only; the query string is excluded so nothing can ride along into a log line.
-  const source = `${url.host}${PATH}`
+  const source = `${url.host}${prefix}${PATH}`
 
   // Last-known-good: replaced only by a fully-successful refresh. Keyed by checksummed address so a
   // lookup cannot miss on casing.

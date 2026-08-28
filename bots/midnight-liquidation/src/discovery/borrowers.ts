@@ -36,11 +36,15 @@ const PAGE_LIMIT = 100
 export const MAX_DISCOVERY_PAGES = 100
 
 /**
- * The candidates operation path — a literal key of the generated {@link paths}, so `client.GET(PATH)`
+ * The candidates operation path — a literal key of the generated {@link paths}, so `client.GET(LIQUIDATION_CANDIDATES_PATH)`
  * is type-checked against the spec. The runtime base URL is derived by stripping this suffix from the
  * configured endpoint URL (see {@link createApiCandidateSource}).
+ *
+ * Exported because `LIQUIDATION_CANDIDATES_API_URL` is the base for the sibling tokens endpoint too:
+ * that suffix, not the tokens one, is what the configured URL ends with, so stripping it is the only
+ * way to recover a gateway prefix (see `createTokenPriceSource`).
  */
-const PATH = '/markets/midnight/liquidation-candidates'
+export const LIQUIDATION_CANDIDATES_PATH = '/markets/midnight/liquidation-candidates'
 
 // Validates and normalizes one raw response row into a candidate, or `null` if malformed. Only
 // `market_id` + `borrower` feed the pipeline — the lens re-derives everything else (debt, health,
@@ -113,7 +117,7 @@ type FetchLike = (request: Request) => Promise<Response>
  * pending queue is still driven that block. `fetchImpl`/`sleep` are injectable for tests.
  *
  * `deps.url` is the fully-qualified endpoint URL from config; the client base URL is it minus the
- * fixed {@link PATH} suffix (falling back to the origin). An operator override of
+ * fixed {@link LIQUIDATION_CANDIDATES_PATH} suffix (falling back to the origin). An operator override of
  * `LIQUIDATION_CANDIDATES_API_URL` therefore changes host/prefix, but the request path is fixed by
  * the typed client.
  */
@@ -126,15 +130,15 @@ export function createApiCandidateSource(deps: {
   sleep?: (ms: number) => Promise<void>
 }): FetchCandidatePage {
   const sleep = deps.sleep ?? delay
-  const baseUrl = deps.url.endsWith(PATH)
-    ? deps.url.slice(0, -PATH.length)
+  const baseUrl = deps.url.endsWith(LIQUIDATION_CANDIDATES_PATH)
+    ? deps.url.slice(0, -LIQUIDATION_CANDIDATES_PATH.length)
     : new URL(deps.url).origin
   const client = createClient<paths>({ baseUrl, fetch: deps.fetchImpl ?? fetch })
 
   return async cursor => {
     const body = await fetchWithRetry(
       () =>
-        client.GET(PATH, {
+        client.GET(LIQUIDATION_CANDIDATES_PATH, {
           params: {
             query: {
               chain_ids: [deps.chainId],

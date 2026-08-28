@@ -54,10 +54,14 @@ type TickCounters = {
   noSwapPath: number
   quoteFailed: number
   /**
-   * Quoted successfully, but the route could not cover the repay `liquidate` would pull. An economic
-   * skip, not a failure: deliberately no backoff and no cooldown, because both sides of the comparison
-   * move on a ten-second scale — the LIF ramp lifts break-even while route cost is itself volatile —
-   * so this outcome says almost nothing about the next attempt.
+   * Quoted successfully, but the route could not cover the repay `liquidate` would pull. Two producers,
+   * counted together because they are the same verdict at different strictness: the quoting layer
+   * refusing every venue whose GUARANTEED output misses break-even (`floor_unmet`), and
+   * {@link assessProfitability} refusing an EXPECTED output under the configured threshold.
+   *
+   * An economic skip, not a failure: deliberately no backoff and no cooldown, because both sides of the
+   * comparison move on a ten-second scale — the LIF ramp lifts break-even while route cost is itself
+   * volatile — so this outcome says almost nothing about the next attempt.
    */
   quoteUnprofitable: number
   ok: number
@@ -231,7 +235,8 @@ export async function runTick(deps: {
   /**
    * Fetches ONE executable swap for a liquidatable position from its configured venue (Uniswap is
    * local; aggregators make a single API call). `no_config` → skip with `config.no_swap_path` (no
-   * backoff); `failed` → skip and back the position off.
+   * backoff); `failed` → skip, backing the position off unless the reason is the economic
+   * `floor_unmet`.
    */
   quoteFor: (plan: LiquidationPlan, out: LensOut, label: string) => Promise<QuoteOutcome>
   simulate: (args: {
@@ -395,6 +400,15 @@ export async function runTick(deps: {
           continue
         }
         if (quote.kind === 'failed') {
+          // An economic refusal is not a failure signal: every venue's guaranteed output missed the
+          // break-even repay, which is the normal state of the early LIF ramp and clears on its own as
+          // the incentive grows. Backing off here would sample the ramp exponentially and skip the
+          // contested block where the position first becomes fundable — see `quoteUnprofitable`. The
+          // quoting layer already logged `quote.floor_unmet` per venue with the numbers.
+          if (quote.reason === 'floor_unmet') {
+            counters.quoteUnprofitable += 1
+            continue
+          }
           counters.quoteFailed += 1
           backoff.record(label, chainHead)
           cooldown.mark(label)

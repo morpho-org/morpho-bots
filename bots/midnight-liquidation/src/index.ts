@@ -171,13 +171,13 @@ async function main() {
   // Loan-token USD prices, used ONLY to order the tick's candidates by expected profit. Fails open:
   // an unpriced token sorts last, so a fetch failure degrades ordering to discovery order rather than
   // suppressing work. Shares the candidates endpoint's base URL, so pointing the bot at a staging host
-  // moves both. The boot fetch is non-fatal — the timer below retries.
+  // moves both. The first fetch runs in the refresh loop below rather than being awaited here — see
+  // there for why.
   const tokenPrices = createTokenPriceSource({
     apiUrl: config.discovery.apiUrl,
     chainId: config.chainId,
     logger
   })
-  await tryCatch(tokenPrices.refresh())
 
   // Pre-swap converters for exotic collateral (ERC4626 shares, Pendle PTs → underlying).
   // Auto-detecting with per-process memoization. erc4626 first: a memoized eth_call beats consulting
@@ -409,16 +409,19 @@ async function main() {
   }
   void refreshMarketsLoop()
 
-  // Prices refresh on their own timer rather than inside `refreshMarketsLoop`. `fetchWithRetry` is a
-  // 5s deadline times three retries plus backoff, so a hanging tokens fetch could stall ~22s — and the
-  // whitelist refresh it would stall is fail-closed and safety-critical, while this one only orders
-  // work. `refresh` is contractually non-throwing (it reports `prices.refresh_failed` itself), so the
-  // tryCatch is belt-and-braces and an error here is a bug rather than an API blip.
+  // Prices refresh on their own timer rather than inside `refreshMarketsLoop`, and the FIRST fetch runs
+  // here rather than at construction. `fetchWithRetry` is a 5s deadline times three retries plus
+  // backoff, so a hanging tokens fetch could stall ~22s — which must delay neither the fail-closed,
+  // safety-critical whitelist refresh nor, since the runner is already started, the first tick of a
+  // redeploy landing mid-maturity. Until it lands every candidate is simply unpriced and worked in
+  // discovery order, which is the source's own fail-open contract. `refresh` is contractually
+  // non-throwing (it reports `prices.refresh_failed` itself), so the tryCatch is belt-and-braces and an
+  // error here is a bug rather than an API blip.
   const refreshTokenPricesLoop = async () => {
-    await delay(TOKEN_PRICES_REFRESH_MS)
     if (stopped) return
     const { error } = await tryCatch(tokenPrices.refresh())
     if (error) logger.error('prices.refresh_error', { detail: error.message })
+    await delay(TOKEN_PRICES_REFRESH_MS)
     void refreshTokenPricesLoop()
   }
   void refreshTokenPricesLoop()

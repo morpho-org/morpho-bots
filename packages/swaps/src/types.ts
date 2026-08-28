@@ -136,16 +136,30 @@ export type SwapPlan = {
   amountOutMinimum: bigint
 }
 
-/** Why an executable quote could not be produced (for logging + backoff). */
-export type QuoteFailureReason = 'timeout' | 'rate_limited' | 'no_route' | 'api_error' | 'bad_route'
+/**
+ * Why an executable quote could not be produced. Two classes, and callers must not conflate them:
+ * `timeout`/`rate_limited`/`api_error`/`no_route`/`bad_route` are failures, and suppressing a position
+ * that keeps producing them bounds API + RPC usage. `floor_unmet` is an economic verdict — the venue
+ * quoted fine, its guaranteed output just did not clear the liquidation's break-even repay — and both
+ * sides of that comparison move on a ten-second scale, so it says almost nothing about the next
+ * attempt and must not drive backoff.
+ */
+export type QuoteFailureReason =
+  | 'timeout'
+  | 'rate_limited'
+  | 'no_route'
+  | 'api_error'
+  | 'bad_route'
+  | 'floor_unmet'
 
 /**
  * The result of resolving a swap for one liquidatable position:
  * - `swap` — an executable {@link SwapPlan} to encode + simulate;
  * - `no_config` — the operator has not configured this collateral (a coverage gap, not a failure; no
  *   API call was made) → skip with `config.no_swap_path`;
- * - `failed` — a transient quote/route failure (API down, no route, or the route fails the oracle
- *   sanity check) → skip and back the position off.
+ * - `failed` — no executable quote: a transient quote/route failure (API down, no route, or the route
+ *   fails the oracle sanity check) → skip and back the position off, or an economic `floor_unmet`
+ *   verdict → skip WITHOUT backing off (see {@link QuoteFailureReason}).
  */
 export type QuoteOutcome =
   | { kind: 'swap'; plan: SwapPlan }

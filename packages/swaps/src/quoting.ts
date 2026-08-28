@@ -341,7 +341,7 @@ function unwrapOnlyPlan(args: {
   // estimate — but route quality alone does not check it against break-even, and the two thresholds are
   // unrelated: a chain can clear `maxRouteImpactBps` and still land under the repay.
   if (resolution.amountIn < request.minAcceptableAmountOut) {
-    logger.warn('quote.floor_unmet', {
+    logger.info('quote.floor_unmet', {
       venue: 'unwrap-only',
       id: request.id,
       collateral: request.collateralToken,
@@ -350,7 +350,7 @@ function unwrapOnlyPlan(args: {
       minOutSource: 'venue',
       floor: request.minAcceptableAmountOut
     })
-    return { kind: 'failed', reason: 'bad_route' }
+    return { kind: 'failed', reason: 'floor_unmet' }
   }
   logger.info('quote.ok', {
     venue: 'unwrap-only',
@@ -487,6 +487,8 @@ export function composeMultiVenueQuoting(deps: {
 
       // Try the ranked venues in order; a quote or route-quality failure falls through to the next
       // (coverage-first). Only the CHOSEN venue is firm-quoted per step — never all venues at once.
+      // `lastReason` is last-venue-wins, so a transport failure after a floor miss reports the failure
+      // and the caller still backs off — the conservative direction of the two.
       let lastReason: QuoteFailureReason = 'no_route'
       for (const venue of order) {
         const outcome = await firmQuoteVenue({
@@ -512,8 +514,11 @@ export function composeMultiVenueQuoting(deps: {
           continue
         }
         if (outcome.kind === 'floor_unmet') {
-          lastReason = 'bad_route'
-          logger.warn('quote.floor_unmet', {
+          lastReason = 'floor_unmet'
+          // `info`, not `warn`: the floor IS the break-even repay, so during the post-maturity ramp
+          // every venue misses it for every candidate on every block until the incentive catches up.
+          // That is the ordinary early-ramp shape, not an anomaly to page on.
+          logger.info('quote.floor_unmet', {
             venue,
             id,
             collateral: collateralToken,

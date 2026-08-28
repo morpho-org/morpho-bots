@@ -260,7 +260,7 @@ describe('composeMultiVenueQuoting', () => {
     // fund the repay.
     expect(await quoteFor({ ...REQUEST, minAcceptableAmountOut: 990n })).toEqual({
       kind: 'failed',
-      reason: 'bad_route'
+      reason: 'floor_unmet'
     })
   })
 
@@ -499,7 +499,7 @@ describe('aggregator min-out actually clears break-even', () => {
 
     expect(sent).toHaveLength(2)
     // 9600 · 9877/10000 = 9481, which is 99 units under break-even.
-    expect(outcome).toEqual({ kind: 'failed', reason: 'bad_route' })
+    expect(outcome).toEqual({ kind: 'failed', reason: 'floor_unmet' })
   })
 
   it('refuses the venue when the re-quote fails outright', async () => {
@@ -515,7 +515,7 @@ describe('aggregator min-out actually clears break-even', () => {
 
     expect(call).toBe(2)
     // The earlier revision kept the first, known-underfloor quote here, which preserved the bug.
-    expect(outcome).toEqual({ kind: 'failed', reason: 'bad_route' })
+    expect(outcome).toEqual({ kind: 'failed', reason: 'floor_unmet' })
   })
 
   it('spends the second call only when the first floor is short', async () => {
