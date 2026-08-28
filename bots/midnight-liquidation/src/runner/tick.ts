@@ -32,7 +32,8 @@ import { rankByUsdSurplus } from './ranking'
  * **The two middle identities count different things**, because one position can yield several
  * candidates — one per activated collateral slot and mode. Everything up to sizing is per position;
  * everything phase B works is per candidate, since that is what a quote and a simulation are spent on.
- * `candidates >= planned`, with equality only when every position had exactly one activated slot.
+ * `candidates >= planned`, with equality only when every position had exactly one activated slot in
+ * exactly one open mode (a matured-and-unhealthy slot is sized in both).
  *
  * A new loop **exit** must join one of these sums; a new **attribute** of a position that is still
  * worked must not (it would double-count). Any future pre-quote skip therefore belongs in the
@@ -53,14 +54,15 @@ type TickCounters = {
    */
   inflightSkipped: number
   /**
-   * Skipped because sizing produced no plan for ANY activated collateral slot — see the
-   * `plan.skipped` events for the per-slot reasons.
+   * Skipped because sizing produced no plan for ANY `(slot, mode)` candidate — see the `plan.skipped`
+   * events, each carrying the `collateralIndex` it belongs to, for the per-candidate reasons.
    */
   planSkipped: number
   planned: number
   /**
    * `(slot, mode)` candidates phase A produced across all planned positions — what phase B actually
-   * iterates. Exceeds `planned` on multi-collateral positions; the head of the per-candidate identity.
+   * iterates. Exceeds `planned` on a multi-collateral position, and on a matured-and-unhealthy one
+   * (sized in both open modes). The head of the per-candidate identity.
    */
   candidates: number
   cooledDown: number
@@ -118,8 +120,10 @@ const LEVEL_BY_REASON: Record<PlanSkipReason, 'debug' | 'info' | 'warn'> = {
   // position matures into post-maturity mode, where the RCF cap does not apply.
   writeoff_below_max_debt: 'info',
   // A rate, not a per-position quantity: headroom is `(lif - 1)/lif`, so every candidate sharing a
-  // (maturity, maxLif, chosen mode) group evaluates identically. At `info` that is one line per
-  // position per block — the shape that gave the 31 Jul post-mortem hundreds of identical warnings.
+  // (maturity, maxLif, mode) group evaluates identically. At `info` that is one line per position per
+  // block — the shape that gave the 31 Jul post-mortem hundreds of identical warnings. Doubly so now
+  // that a matured-and-unhealthy slot emits a post-maturity candidate that is EXPECTED to be gated
+  // early in its ramp while the normal-mode one proceeds.
   insufficient_headroom: 'debug'
 }
 
@@ -199,15 +203,17 @@ const sizeCandidates = (deps: {
     const input = planInputFromLens(out)
     const { plans, skips } = planCandidates(input, { seizeCapMarginBps, headroomFloorBps })
 
-    // Per-SLOT reasons: with several activated collaterals one slot can skip while another sizes, so
-    // these are reported even when the position was planned. A threshold decision carries the numbers
-    // behind it, including the LIF and mode actually chosen: `maxLif` and chain time do NOT identify
-    // them, because a matured-and-unhealthy position may be sized in either mode. Without these an
-    // operator cannot tell a mis-set floor from an early ramp, nor which mode the sizer picked.
-    for (const { reason, headroom } of skips) {
+    // Per-CANDIDATE reasons: with several activated collaterals — or one matured-and-unhealthy slot
+    // in both open modes — some candidates can skip while others size, so these are reported even when
+    // the position was planned. `collateralIndex` is what makes them attributable; without it a
+    // position emitting several reasons cannot be read. A threshold decision also carries the numbers
+    // behind it, including the LIF and mode actually rejected: `maxLif` and chain time do NOT identify
+    // them, because a matured-and-unhealthy slot is sized in BOTH modes and they are gated separately.
+    for (const { reason, collateralIndex, headroom } of skips) {
       logger[LEVEL_BY_REASON[reason]]('plan.skipped', {
         marketId: pair.id,
         borrower: pair.borrower,
+        collateralIndex,
         reason,
         ...(headroom
           ? {
@@ -456,7 +462,8 @@ export async function runTick(deps: {
           logger.info('config.no_swap_path', {
             marketId: pair.id,
             borrower: pair.borrower,
-            collateralIndex: liquidationPlan.collateralIndex
+            collateralIndex: liquidationPlan.collateralIndex,
+            postMaturityMode: liquidationPlan.postMaturityMode
           })
           continue
         }

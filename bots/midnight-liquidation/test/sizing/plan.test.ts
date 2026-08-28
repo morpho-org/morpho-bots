@@ -544,6 +544,53 @@ describe('planCandidates', () => {
     expect(plans.some(candidate => candidate.swapFree)).toBe(true)
   })
 
+  it('returns BOTH open modes for a matured-and-unhealthy slot', () => {
+    // The contract opens both gates and the caller picks, so both are real alternatives. Keeping the
+    // loser matters because normal mode's gate (`debt > maxDebt`) can close between read and exec
+    // while post-maturity's cannot — the tick must be able to fall through to it in the same tick.
+    const { plans } = planCandidates(
+      inputWithSlot({ amt: 2000n * WAD }, { blockTimestamp: 2060n, maturity: 2000n })
+    )
+    expect(new Set(plans.map(candidate => candidate.postMaturityMode))).toEqual(
+      new Set([false, true])
+    )
+    // Same slot, so this is a mode alternative rather than a second slot.
+    expect(new Set(plans.map(candidate => candidate.collateralIndex))).toEqual(new Set([3]))
+  })
+
+  it('returns one mode pre-maturity and one when matured-and-healthy', () => {
+    expect(planCandidates(baseInput()).plans).toHaveLength(1)
+    expect(
+      planCandidates(
+        inputWithSlot(
+          { amt: 500n * WAD },
+          { blockTimestamp: 3000n, maturity: 2000n, healthy: true }
+        )
+      ).plans
+    ).toHaveLength(1)
+  })
+
+  it('gates the two modes independently — the ramping one is skipped, normal mode survives', () => {
+    // The reason returning both modes is safe. 20s into the ramp post-maturity has ~2bps of headroom
+    // and is rightly rejected on its own merits; normal mode pays the full maxLif from the first
+    // block, so it must NOT be dragged down with it.
+    const { plans, skips } = planCandidates(
+      inputWithSlot({ amt: 2000n * WAD }, { blockTimestamp: 2020n, maturity: 2000n }),
+      { headroomFloorBps: 100 }
+    )
+    expect(plans).toHaveLength(1)
+    expect(plans[0]).toMatchObject({ postMaturityMode: false, lif: MAX_LIF })
+    expect(skips.map(entry => entry.reason)).toEqual(['insufficient_headroom'])
+    expect(skips[0]?.headroom?.postMaturityMode).toBe(true)
+  })
+
+  it('attributes every skip to the slot it came from', () => {
+    const { skips } = planCandidates(
+      baseInput({ collaterals: [loanSlot({ amt: 0n }), slot({ index: 7, amt: 0n })] })
+    )
+    expect(skips.map(entry => entry.collateralIndex)).toEqual([0, 7])
+  })
+
   it('prefers post-maturity on an exact surplus tie, without relying on sort stability', () => {
     // Matured + unhealthy at full ramp with an exempt slot: both modes tie, and post-maturity wins
     // because its gate cannot close between read and exec.

@@ -4,15 +4,22 @@ import { min, mulDivDown, mulDivUp } from './math'
 import { isRcfExempt, maxRepaidNormalMode } from './rcf'
 
 /**
- * Ceiling on the candidates {@link planCandidates} returns per position, after ranking. A position may
- * activate up to `MAX_COLLATERALS_PER_BORROWER` (16) slots, each sizeable in up to two modes, and the
- * tick spends one quote plus one simulation per candidate it tries — so an unbounded list would let a
+ * Ceiling on the candidates {@link planCandidates} returns per position, after ranking. The tick
+ * spends one quote plus one simulation per candidate it tries, so an unbounded list would let a
  * single pathological position exhaust the venue rate budget for every other position in the tick.
- * Two slots × two modes is the live shape, so this leaves headroom without being a real limit.
  *
- * Truncation is surplus-ordered and therefore drops the least valuable candidates — with one
+ * **This is a real limit, not just a backstop, and the bot does NOT currently support the protocol's
+ * full collateral range.** Midnight allows `MAX_COLLATERALS_PER_BORROWER` (16) activated slots per
+ * borrower (midnight-contracts.txt:863), each sizeable in up to two modes — so a maximally diversified
+ * position has 32 candidates and this keeps 4. Today's listed markets carry at most two collaterals,
+ * which at two open modes is exactly 4, so nothing is dropped in practice; **a third listed collateral
+ * would start silently truncating.** Raise this (and re-check the rate budget) before such a market
+ * ships, or accept that only the top-ranked few are ever attempted.
+ *
+ * What survives truncation is surplus-ordered, so it drops the least valuable candidates — with one
  * exception, see {@link planCandidates}: a swap-free candidate is never truncated away, because its
- * value is certainty of execution rather than surplus.
+ * value is certainty of execution rather than surplus. That is what keeps the guarantee meaningful
+ * even when the cap binds.
  */
 export const MAX_PLAN_CANDIDATES_PER_POSITION = 4
 
@@ -32,8 +39,9 @@ export type CollateralSlot = {
   maxLif: bigint
   lltv: bigint
   /**
-   * This slot's token IS the market's loan token, so seizing it needs no swap: no venue call, no
-   * route risk, and no execution cost for the incentive to cover.
+   * This slot's token IS the market's loan token, so seizing it needs no swap: no venue call and no
+   * route risk, so no ROUTE cost for the incentive to cover. Gas is untouched by this and remains
+   * material — bounding it needs an absolute floor (BOTS-81), not {@link PlanOptions.headroomFloorBps}.
    */
   swapFree: boolean
 }
@@ -70,8 +78,8 @@ export type LiquidationPlan = {
   postMaturityMode: boolean
   /**
    * LIF this plan was sized at — {@link lifAt} for `postMaturityMode` at `input.blockTimestamp`.
-   * Surfaced rather than recomputed because it is NOT derivable from `postMaturityMode` alone: the
-   * matured-and-unhealthy branch picks a mode by surplus, so only the chosen plan knows its own LIF.
+   * Surfaced rather than recomputed because a matured-and-unhealthy slot yields a plan in BOTH modes
+   * at the same instant, so chain time alone does not identify which LIF any one of them used.
    */
   lif: bigint
   /**
@@ -110,8 +118,9 @@ export type LiquidationPlan = {
  *   the post-maturity LIF ramps, which is why a skip must not record backoff (see {@link PlanOutcome}).
  *   Never reported for a swap-free plan, which pays no route cost — see {@link gateOnHeadroom}.
  *
- * With more than one activated collateral these are **per slot**: one slot can skip while another
- * sizes, so a reason describes a candidate, not the position.
+ * These are **per candidate**, not per position: one slot can skip while another sizes, and a
+ * matured-and-unhealthy slot can have one of its two modes gated while the other proceeds. A reason
+ * therefore describes a `(slot, mode)` candidate — see {@link PlanSkip.collateralIndex}.
  */
 export type PlanSkipReason =
   | 'no_debt'
@@ -137,11 +146,23 @@ type PlanOutcome =
 
 /**
  * The numbers behind an `insufficient_headroom` skip. Carried on the outcome because the gate holds the
- * chosen plan when it rejects it, and a caller cannot reconstruct these afterwards: a
- * matured-and-unhealthy position may be sized in EITHER mode, so neither `maxLif` nor chain time
- * identifies the LIF that was actually applied.
+ * rejected plan, and a caller cannot reconstruct these afterwards: a matured-and-unhealthy slot is
+ * sized in BOTH modes and each is gated separately, so neither `maxLif` nor chain time identifies
+ * which LIF this particular rejection applied.
  */
 type SkippedHeadroom = { bps: bigint; lif: bigint; postMaturityMode: boolean }
+
+/**
+ * One candidate {@link planCandidates} could not size, with the slot it belongs to. `collateralIndex`
+ * is what makes a reported skip attributable: a position can emit several, and a reason alone does not
+ * say which slot produced it. `0` when the position has no activated slot at all — the same
+ * stand-in index a write-off uses, and equally inert.
+ */
+export type PlanSkip = {
+  reason: PlanSkipReason
+  collateralIndex: number
+  headroom?: SkippedHeadroom
+}
 
 /**
  * Operator sizing knobs that are NOT lens-derived (so they live here, not on `PlanInput`). Sourced
@@ -441,8 +462,8 @@ export const planWithReason = (input: PlanInput, options: PlanOptions = {}): Pla
   const { plans, skips } = planCandidates(input, options)
   const best = plans[0]
   if (best) return sized(best)
-  // Report the first slot's reason. With one activated slot — every market the bot saw before
-  // multi-collateral, and still the common case — that is the only reason there is.
+  // Report the first candidate's reason. With one activated slot in one open mode — every market the
+  // bot saw before multi-collateral, and still the common case — that is the only reason there is.
   const first = skips[0]
   return first ? skip(first.reason, first.headroom) : skip('nothing_to_seize')
 }
@@ -465,18 +486,23 @@ export const planWithReason = (input: PlanInput, options: PlanOptions = {}): Pla
  * {@link MAX_PLAN_CANDIDATES_PER_POSITION} **never drops the best swap-free candidate**: it would
  * otherwise discard the only entry guaranteed to be fundable.
  *
+ * A matured-and-unhealthy slot contributes **two** entries, one per open on-chain gate — see
+ * {@link openModePlans} for why the loser is kept rather than discarded.
+ *
  * A single-element list is returned for a full write-off (`badDebt >= debt`), which seizes nothing and
  * therefore has no slot to choose. Side-effect free.
  */
 export const planCandidates = (
   input: PlanInput,
   options: PlanOptions = {}
-): {
-  plans: LiquidationPlan[]
-  skips: { reason: PlanSkipReason; headroom?: SkippedHeadroom }[]
-} => {
+): { plans: LiquidationPlan[]; skips: PlanSkip[] } => {
   const { seizeCapMarginBps = 0, headroomFloorBps = 0 } = options
-  const none = (reason: PlanSkipReason) => ({ plans: [], skips: [{ reason }] })
+  // The position-level guards below reject before any slot is examined, so they carry the inert
+  // stand-in index rather than a real one.
+  const none = (reason: PlanSkipReason) => ({
+    plans: [],
+    skips: [{ reason, collateralIndex: 0 }]
+  })
 
   if (!input.hasDebt) return none('no_debt')
   if (input.locked) return none('locked')
@@ -510,44 +536,59 @@ export const planCandidates = (
   }
 
   const plans: LiquidationPlan[] = []
-  const skips: { reason: PlanSkipReason; headroom?: SkippedHeadroom }[] = []
+  const skips: PlanSkip[] = []
   for (const slot of input.collaterals) {
     // Every plan below here seizes collateral, so an empty slot cannot produce one: a whole-slot
     // seize of nothing is the `(0, 0)` shape reserved for bad-debt realization.
     if (slot.amt === 0n) {
-      skips.push({ reason: 'nothing_to_seize' })
+      skips.push({ reason: 'nothing_to_seize', collateralIndex: slot.index })
       continue
     }
-    const outcome = gateOnHeadroom(selectMode(input, slot, seizeCapMarginBps), headroomFloorBps)
-    if (outcome.plan === null) skips.push({ reason: outcome.reason, headroom: outcome.headroom })
-    else plans.push(outcome.plan)
+    for (const mode of openModePlans(input, slot, seizeCapMarginBps)) {
+      const outcome = gateOnHeadroom(mode, headroomFloorBps)
+      if (outcome.plan === null) {
+        skips.push({
+          reason: outcome.reason,
+          collateralIndex: slot.index,
+          headroom: outcome.headroom
+        })
+      } else plans.push(outcome.plan)
+    }
   }
-  if (plans.length === 0 && skips.length === 0) skips.push({ reason: 'nothing_to_seize' })
+  if (plans.length === 0 && skips.length === 0) {
+    skips.push({ reason: 'nothing_to_seize', collateralIndex: 0 })
+  }
 
   return { plans: capCandidates(plans.toSorted(bySurplusThenPostMaturity)), skips }
 }
 
-// The mode policy of `liquidate(...)` — see {@link planWithReason}'s JSDoc. Split out so the headroom
-// gate is provably DOWNSTREAM of mode selection: normal mode pays the full `maxLif` with no ramp, so a
-// gate reading a ramping post-maturity LIF would reject matured-and-unhealthy positions that normal
-// mode funds immediately.
-const selectMode = (
+/**
+ * Every mode whose on-chain gate is open for this slot — the mode policy of `liquidate(...)`, see
+ * {@link planWithReason}'s JSDoc. One outcome pre-maturity or post-maturity-and-healthy; **two** when
+ * the position is matured AND unhealthy, because the contract opens both gates and the caller picks.
+ *
+ * Both are returned rather than the higher-surplus one, because they are not interchangeable at exec
+ * time: normal mode's gate (`debt > maxDebt`) can close between read and broadcast if the price
+ * recovers, and post-maturity's (`now > maturity`) cannot. Keeping both lets the tick fall through to
+ * the surviving mode in the same tick instead of forfeiting the position — the same reason it keeps
+ * several slots. Ranking still prefers the higher-surplus one; this only stops the other being
+ * discarded before it can be a fallback.
+ *
+ * Each is gated on headroom INDEPENDENTLY by the caller, which is what makes returning both safe: a
+ * post-maturity plan still early in its LIF ramp is rejected on its own merits without taking the
+ * normal-mode plan — funded at the full `maxLif` from the first block — down with it.
+ */
+const openModePlans = (
   input: PlanInput,
   slot: CollateralSlot,
   seizeCapMarginBps: number
-): PlanOutcome => {
+): PlanOutcome[] => {
   const matured = input.blockTimestamp > input.maturity
-  if (!matured) return normalModePlan(input, slot, seizeCapMarginBps)
+  if (!matured) return [normalModePlan(input, slot, seizeCapMarginBps)]
 
   const post = postMaturityPlan(input, slot, seizeCapMarginBps)
-  if (input.healthy) return post
-
-  // Matured AND unhealthy: both gates are open, so pick the higher-surplus mode; a tie resolves
-  // toward post-maturity and a one-sided skip takes the plan that exists (see the JSDoc mode policy).
-  const normal = normalModePlan(input, slot, seizeCapMarginBps)
-  if (post.plan === null) return normal.plan === null ? post : normal
-  if (normal.plan === null) return post
-  return planSurplus(normal.plan) > planSurplus(post.plan) ? normal : post
+  if (input.healthy) return [post]
+  return [normalModePlan(input, slot, seizeCapMarginBps), post]
 }
 
 /**

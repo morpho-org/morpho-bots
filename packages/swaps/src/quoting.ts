@@ -331,12 +331,12 @@ const swapFreePath = (resolution: UnwrapResolution): 'no-swap' | 'unwrap-only' =
  * oracle: route quality passes iff the price is within `maxRouteImpactBps` of 1:1, and the floor
  * passes iff the seize covers its own break-even repay (it does, by construction, for `lif >= WAD`).
  */
-function swapFreePlan(args: {
+const swapFreePlan = (args: {
   resolution: UnwrapResolution
   request: QuoteRequest
   maxRouteImpactBps: number
   logger: QuoteLogger
-}): QuoteOutcome {
+}): QuoteOutcome => {
   const { resolution, request, maxRouteImpactBps, logger } = args
   const path = swapFreePath(resolution)
   if (

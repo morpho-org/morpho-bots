@@ -68,8 +68,17 @@ per position. `TIB-2026-05-28` records this contract explicitly.
 
 **1. The lens returns slots; the planner chooses.** `LensOut.collaterals` is now a
 `CollateralSlot[]` (market index, amount, price, `maxLif`, `lltv`) in bitmap order, unranked.
-`planCandidates` sizes each slot under the existing mode policy and returns candidates ranked by
-`planSurplus`, with an explicit comparator (surplus descending, then post-maturity first on a tie).
+`planCandidates` sizes each slot and returns candidates ranked by `planSurplus`, with an explicit
+comparator (surplus descending, then post-maturity first on a tie).
+
+A matured-and-unhealthy slot yields **two** candidates, one per open on-chain gate, rather than the
+higher-surplus one. They are not interchangeable at exec time: normal mode's gate (`debt > maxDebt`)
+can close between the lens read and the broadcast if the price recovers, while post-maturity's
+(`now > maturity`) cannot — so keeping the loser is what lets the tick fall through to the surviving
+mode in the same tick instead of forfeiting the position. Each is headroom-gated independently, which
+is what makes that safe: a post-maturity plan still early in its LIF ramp is rejected on its own
+merits without taking down the normal-mode plan, which is funded at the full `maxLif` from the first
+block.
 
 Slot choice moved off-chain because **the chain cannot make it**: which slot is worth liquidating
 depends on whether it needs a swap, and the lens has no notion of venues. Value-max was also never
@@ -115,8 +124,18 @@ second `transfer` of zero, which some ERC-20s revert on. One home in
 
 ## Assumptions & Constraints
 
-- The identity oracle stays 1:1. If it does not, the route-quality check fails the plan closed rather
-  than seizing at a wrong price — the zero-step path is still oracle-checked.
+- **The identity oracle does not have to stay 1:1 for the swap-free path to be safe, and the guard is
+  the break-even floor, not route quality.** Route quality (`passesRouteQuality`) is a one-sided lower
+  bound with a tolerance, so it does not constrain an *under*priced oracle at all — but it does not
+  need to: for a zero-step plan the Executor receives `seizedAssets` loan tokens and pays
+  `impliedRepaidUnits`, which shrinks as the price falls, so underpricing pays the liquidator _more_.
+  Overpricing is caught exactly: `minAcceptableAmountOut` is set to `impliedRepaidUnits` and
+  `resolution.amountIn` is `seizedAssets`, so the floor check reduces to precisely
+  `seizedAssets >= impliedRepaidUnits` — the break-even test itself, with the crossover at
+  `price == lif`. The bot therefore cannot lose loan tokens on this path at any oracle price; the
+  residual exposure is gas on a near-zero-surplus liquidation, which is BOTS-81's problem.
+  (A price of exactly 0 makes `badDebt >= debt`, so such a position routes to the write-off branch and
+  never reaches a seize — the same as for any other collateral.)
 - `market.collateralParams` is never empty, so index 0 always exists. This is what lets a write-off
   against a position with no remaining collateral name a slot at all; the index is inert there because
   `liquidate` skips its whole sizing block for a `(0, 0)` call (`midnight-contracts.txt:1847`).
@@ -141,7 +160,10 @@ second `transfer` of zero, which some ERC-20s revert on. One home in
 - `simulate.ok` / `simulate.revert` / `config.no_swap_path` / `quote.unprofitable` gained
   `collateralIndex` and `postMaturityMode`: several candidates per position share a
   `(marketId, borrower)`, so without them the log join cannot separate two attempts.
-- `plan.skipped` is now per slot, and carries `collateralIndex`.
+- `plan.skipped` is now per `(slot, mode)` candidate and carries `collateralIndex`, so a position
+  emitting several reasons stays readable. Expect a routine `insufficient_headroom` line (at `debug`)
+  for the post-maturity candidate of a matured-and-unhealthy slot early in its ramp, while the
+  normal-mode candidate proceeds — that is the gate working per candidate, not a fault.
 
 ## Security
 
@@ -153,8 +175,14 @@ dedupe strictly reduces the number of transfers, never the set of tokens drained
 
 - BOTS-81's absolute floor should treat swap-free plans like any other: their surplus is real but
   small, and a dust position's 60 bps will not cover gas.
-- If a position ever activates enough slots to hit `MAX_PLAN_CANDIDATES_PER_POSITION` in practice, the
-  cap becomes a real policy rather than a backstop and deserves revisiting.
+- **The bot does not yet support the protocol's full collateral range, and this is a known gap rather
+  than a backstop.** Midnight allows 16 activated collaterals per borrower
+  (`midnight-contracts.txt:863`); at two open modes that is 32 candidates, and
+  `MAX_PLAN_CANDIDATES_PER_POSITION` keeps 4. Today's listed markets carry at most two collaterals,
+  which is exactly 4, so the cap does not bind — **a third listed collateral would start silently
+  truncating.** Raise the cap and re-check the venue rate budget before such a market ships. The
+  swap-free retention rule means the certain-execution candidate always survives, so truncation costs
+  upside rather than coverage.
 
 ## Open Questions
 

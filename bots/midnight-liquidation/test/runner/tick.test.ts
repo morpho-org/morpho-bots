@@ -928,6 +928,31 @@ describe('runTick', () => {
       expectCounterIdentities(counters)
     })
 
+    it('falls through to the other MODE when the first mode simulates reverted', async () => {
+      // Matured AND unhealthy on one slot, so the contract opens both gates. Normal mode ranks first
+      // (full maxLif vs a ramping post-maturity LIF) but its gate `debt > maxDebt` can close between
+      // the lens read and the broadcast — if the price recovered, it reverts. Post-maturity's gate
+      // cannot close, so it must still be available to submit in the SAME tick.
+      const bothModes = lensOut({ blockTimestamp: 2060n, healthy: false })
+      const { counters, submitCalls, events } = await runWith({
+        out: bothModes,
+        simulateResults: [{ status: 'revert', reason: 'NotLiquidatable' }, { status: 'ok' }]
+      })
+      expect(counters).toMatchObject({ planned: 1, candidates: 2, reverted: 1, submitted: 1 })
+      expect(submitCalls()).toBe(1)
+      const sims = events.filter(e => e.event.startsWith('simulate.'))
+      expect(sims.map(e => e.fields?.postMaturityMode)).toEqual([false, true])
+      expectCounterIdentities(counters)
+    })
+
+    it('attributes every plan.skipped line to its slot', async () => {
+      const { events } = await runWith({
+        out: lensOut({ collaterals: [slot({ index: 1, amt: 0n }), slot({ index: 0, amt: 0n })] })
+      })
+      const skipped = events.filter(e => e.event === 'plan.skipped')
+      expect(skipped.map(e => e.fields?.collateralIndex)).toEqual([1, 0])
+    })
+
     it('identifies which candidate each simulate line belongs to', async () => {
       // Two attempts on one position share a (marketId, borrower), so without collateralIndex the log
       // join cannot separate them.

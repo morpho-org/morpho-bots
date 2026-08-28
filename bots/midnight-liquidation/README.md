@@ -23,9 +23,19 @@ This package is operational code, but it is still intentionally narrow:
   the position itself is then firm-quoted once against the chosen venue, falling through to the
   runner-up venue on failure (coverage-first). Uniswap-direct is not a candidate here — aggregators
   route through Uniswap pools anyway, and a direct Uniswap route can't be ranked on real output.
-- For positions with multiple active collaterals, the planner sizes **every** activated slot and ranks
-  the resulting candidates by expected surplus; the tick works down that ranking and submits at most
-  one liquidation per position, so a transient venue failure on one slot falls through to the next.
+- For positions with multiple active collaterals, the planner sizes **every** activated slot — in both
+  liquidation modes when the position is matured and unhealthy, since the contract opens both gates —
+  and ranks the resulting candidates by expected surplus. The tick works down that ranking and submits
+  at most one liquidation per position, so a transient venue failure or a closed gate on one candidate
+  falls through to the next in the same tick.
+- ⚠️ **The bot does not yet support the protocol's full collateral range.** Midnight allows 16
+  activated collaterals per borrower, which at two open modes is 32 candidates; the planner keeps only
+  the top `MAX_PLAN_CANDIDATES_PER_POSITION` (4) after ranking, so it bounds the quotes and
+  simulations one position can spend. Today's listed markets carry at most two collaterals — exactly
+  4 candidates — so nothing is dropped in practice, but **a third listed collateral would start
+  silently truncating.** Raise the cap (and re-check the venue rate budget) before such a market
+  ships. The best swap-free candidate is never truncated away, so the certain-execution path survives
+  the cap regardless.
 - **Loan-as-collateral** markets list the loan token as one of their own collaterals (priced by an
   identity oracle). Seizing that slot needs no swap at all: no venue is called, so such a position is
   liquidatable even with no venue key set, and it is exempt from `HEADROOM_FLOOR_BPS` — that floor
@@ -42,9 +52,11 @@ This package is operational code, but it is still intentionally narrow:
 - Network access to the markets liquidation-candidates API and the Midnight markets API (both public
   by default; override with `LIQUIDATION_CANDIDATES_API_URL` / `MARKETS_API_URL`, the latter accepting
   a comma-separated list of endpoints whose whitelists are unioned).
-- At least one enabled venue to actually swap-liquidate: `ENABLE_LIFI=true` (or a `LIFI_API_KEY`),
-  `ZEROX_API_KEY`, and/or `ONEINCH_API_KEY`. With none enabled the bot can only discover positions
-  and realize bad debt, and refuses to start unless `ALLOW_BAD_DEBT_ONLY=true` is set.
+- At least one enabled venue to swap-liquidate a collateral that is not the loan token:
+  `ENABLE_LIFI=true` (or a `LIFI_API_KEY`), `ZEROX_API_KEY`, and/or `ONEINCH_API_KEY`. With none
+  enabled the bot refuses to start unless `ALLOW_BAD_DEBT_ONLY=true` is set — and even then it is not
+  limited to bad debt: it still discovers positions, realizes bad debt, **and liquidates
+  loan-as-collateral slots**, which need no venue at all.
 
 Never commit `.env` files, private keys, or RPC credentials.
 
@@ -466,7 +478,9 @@ positions fail (the rate-limit defense). A successful submit clears the backoff.
 
 If no venue is enabled (bad-debt-only mode) or the collateral is on `EXCLUDE_COLLATERALS`, the tick
 logs `config.no_swap_path` and skips the candidate (no API call, no backoff). Pure bad-debt
-realization skips quoting entirely.
+realization skips quoting entirely. A **loan-as-collateral** candidate is the exception to the
+no-venue case: its sell path is already over, so it resolves to a zero-step plan before the
+enabled-venue check is reached and is liquidated normally.
 
 ### Simulation
 
