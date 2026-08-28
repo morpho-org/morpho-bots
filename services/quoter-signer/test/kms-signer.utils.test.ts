@@ -265,18 +265,25 @@ describe('createKmsMakerSigner', () => {
     expect(signDigest).not.toHaveBeenCalled()
   })
 
-  it('wraps a failed Sign call into a retryable unavailability', async () => {
+  it('maps a failed Sign call to a non-retryable unknown outcome', async () => {
+    // The call may have signed server-side with the response lost: advertising retry here could
+    // mint a second signature and CloudTrail Sign event for one artifact.
+    const cause = new Error('connection reset mid-response')
     const signer = await createKmsMakerSigner(
       config,
       maker,
       fakeTransport({
         signDigest: async () => {
-          throw new Error('throttled')
+          throw cause
         }
       })
     )
 
-    await expectUnavailable(signer.signDigest(digest), 'sign')
+    await expect(signer.signDigest(digest)).rejects.toMatchObject({
+      name: 'KmsSignOutcomeUnknownError',
+      retryable: false,
+      cause
+    })
   })
 
   it('rejects a Sign response without signature bytes', async () => {

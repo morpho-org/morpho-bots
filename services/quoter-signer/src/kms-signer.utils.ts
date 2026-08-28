@@ -17,6 +17,7 @@ import type { KmsSignerConfig } from './kms-config.utils'
 
 import { KmsAttestationFailedError } from './kms-attestation-failed.error'
 import { KmsAttestationStaleError } from './kms-attestation-stale.error'
+import { KmsSignOutcomeUnknownError } from './kms-sign-outcome-unknown.error'
 import { KmsSigningFailedError } from './kms-signing-failed.error'
 import { KmsUnavailableError } from './kms-unavailable.error'
 
@@ -67,8 +68,9 @@ export type KmsSignatureMaterial = {
 /**
  * Transport boundary for the two KMS operations the middleware performs. The default is
  * {@link awsKmsTransport}; tests inject fakes here so the strict validation on top is covered
- * without AWS. Transport failures are thrown raw and wrapped into typed retryable
- * `KmsUnavailableError`s by the caller.
+ * without AWS. Transport failures are thrown raw and typed by the caller: the read-only
+ * attestation call wraps into the retryable `KmsUnavailableError`, while a failed `Sign` call
+ * wraps into the non-retryable `KmsSignOutcomeUnknownError` (its outcome is ambiguous).
  */
 export type KmsTransport = {
   /** Reads the maker key's public material for the custody attestation. */
@@ -108,8 +110,8 @@ export type KmsMakerSigner = {
    * @throws `KmsAttestationStaleError` when the signer's attestation aged past
    * {@link KMS_ATTESTATION_FRESHNESS_MS} — no KMS call is made and the caller must resolve a
    * fresh signer; `KmsSigningFailedError` when the digest is not 32 bytes or the response cannot
-   * be verified; `KmsUnavailableError` when the KMS call itself fails (a signature may or may not
-   * have been produced server-side).
+   * be verified; `KmsSignOutcomeUnknownError` when the `Sign` call itself fails — the outcome is
+   * ambiguous (a signature may exist server-side), so it is never advertised as retryable.
    */
   signDigest(digest: Hex): Promise<KmsSignedDigest>
 }
@@ -300,7 +302,9 @@ export const createKmsMakerSigner = async (
     try {
       signed = await transport.signDigest(signingTarget, hexToBytes(digest))
     } catch (error) {
-      throw new KmsUnavailableError('sign', { cause: error })
+      // Ambiguous by construction: the request may have signed server-side with the response
+      // lost, so this is never advertised as retryable (see KmsSignOutcomeUnknownError).
+      throw new KmsSignOutcomeUnknownError({ cause: error })
     }
     if (signed.signature === undefined) throw new KmsSigningFailedError('missing-signature')
     const kmsRequestId = signed.kmsRequestId
