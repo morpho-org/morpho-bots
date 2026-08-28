@@ -6,7 +6,7 @@
 | **Date**          | 2026-07-27                                                                                                               |
 | **Author**        | @devatom                                                                                                                 |
 | **Scope**         | App: midnight-quoter                                                                                                     |
-| **Superseded by** | TIB-2026-08-14-quoter-cross-book-clearance _(partially)_, TIB-2026-08-27-quoter-loan-as-collateral-markets _(partially)_ |
+| **Superseded by** | TIB-2026-08-14-quoter-cross-book-clearance _(partially)_, TIB-2026-08-25-quoter-bootstrap-maturity-premium _(partially)_, TIB-2026-08-27-quoter-loan-as-collateral-markets _(partially)_ |
 
 ---
 
@@ -17,7 +17,15 @@
 > repricing, bound clamping, and same-tick rung merging — see
 > [TIB-2026-08-14-quoter-cross-book-clearance](./TIB-2026-08-14-quoter-cross-book-clearance.md).
 > Every other decision in this TIB remains in force.
->
+
+> **Partially superseded (2026-08-25).** The §5 posture that the bootstrap offer is "the only
+> discounted offer" quoting at or below reference is no longer current: an optional per-entry
+> maturity premium adds strictly positive duration compensation on top of the still-non-positive
+> static `premiumBps`, so far-maturity bootstrap offers can rest above reference and fill slowly —
+> see
+> [TIB-2026-08-25-quoter-bootstrap-maturity-premium](./TIB-2026-08-25-quoter-bootstrap-maturity-premium.md).
+> Every other decision in this TIB remains in force.
+
 > **Partially superseded (2026-08-27).** For markets that opt into a `debt` configuration block,
 > [TIB-2026-08-27-quoter-loan-as-collateral-markets](./TIB-2026-08-27-quoter-loan-as-collateral-markets.md)
 > replaces three postures — for those markets only. The §7 invariant that the credit-reducing side

@@ -2,6 +2,7 @@ import type { Hex } from 'viem'
 
 import type {
   BootstrapConfig,
+  BootstrapDecisionDiagnostics,
   BootstrapOffer,
   BootstrapPosition,
   BootstrapRate,
@@ -82,6 +83,8 @@ export type BootstrapVerboseDetails = {
   effectiveState?: BootstrapVerbosePosition
   /** Reference-rate observation used for rate derivation, when required. */
   referenceRate?: BootstrapRate
+  /** Resolved time-to-maturity premium included in `targetRateBps`, when configured. */
+  maturityPremiumBps?: bigint
   /** Premium-adjusted target rate used to build or compare the bootstrap offer. */
   targetRateBps?: bigint
   /** Deterministic decision derived from the effective state and reference rate. */
@@ -92,4 +95,8 @@ export type BootstrapVerboseDetails = {
   submittedTransactions?: readonly BootstrapSubmittedTransaction[]
   /** Fresh provider state read after the check or mutation completed. */
   stateAfterCheck: BootstrapVerboseState
+  /** Rate-clamp and size-cap observations from derivation, when a rate-derived decision was made. */
+  diagnostics?: BootstrapDecisionDiagnostics
+  /** Wall-clock duration of this market's check, including the post-check verbose re-read. */
+  durationMs?: number
 }

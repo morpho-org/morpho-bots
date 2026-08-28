@@ -1,6 +1,6 @@
 import type { Address, Hex } from 'viem'
 
-import { getAddress, isAddress, isHex, size } from 'viem'
+import { getAddress, hexToBigInt, isAddress, isHex, size } from 'viem'
 
 import { MalformedIntentError } from './malformed-intent.error'
 
@@ -72,7 +72,12 @@ export type IntentOffer = {
   readonly expiry: UnsignedDecimal
   /** Midnight price tick (uint256; the protocol offer struct carries no signed fields). */
   readonly tick: UnsignedDecimal
-  /** Explicit consumption-group id (bytes32); must fall in the maker-owned group namespace. */
+  /**
+   * Explicit consumption-group id (bytes32). Midnight groups are content-addressed (derived from
+   * offer contents) and consumption is keyed per maker on chain; policy enforces that one group
+   * binds one market, side, and cap inside an intent, and canonical group re-derivation happens at
+   * encoding time.
+   */
   readonly group: Hex
   /** Maker callback contract; policy pins the expected value. */
   readonly callback: Address
@@ -216,7 +221,12 @@ export const classifyIntentKind = (event: unknown): ClassifiedIntentKind => {
 
 const UNSIGNED_DECIMAL_PATTERN = /^(0|[1-9]\d{0,77})$/
 const IDEMPOTENCY_KEY_PATTERN = /^[A-Za-z0-9._-]{1,128}$/
-const REMEDIATION_VARIANT_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/
+
+/**
+ * Shape of a setup-remediation deployment-manifest variant id, shared by the wire contract and
+ * the policy document so callers and deployments name variants identically.
+ */
+export const REMEDIATION_VARIANT_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/
 const MAX_UINT256 = 2n ** 256n - 1n
 const MAX_UINT128 = 2n ** 128n - 1n
 
@@ -361,7 +371,8 @@ const offersValue = (value: unknown, field: string): readonly IntentOffer[] => {
   if (buys > MAX_INTENT_OFFERS_PER_SIDE || offers.length - buys > MAX_INTENT_OFFERS_PER_SIDE) {
     throw new MalformedIntentError(field, 'too-many-offers')
   }
-  if (new Set(offers.map(offer => offer.marketId.toLowerCase())).size > MAX_INTENT_MARKETS) {
+  // Viem-first bytes32 identity: count distinct markets by the validated hex's numeric value.
+  if (new Set(offers.map(offer => hexToBigInt(offer.marketId))).size > MAX_INTENT_MARKETS) {
     throw new MalformedIntentError(field, 'too-many-markets')
   }
   return offers

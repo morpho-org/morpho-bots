@@ -300,6 +300,54 @@ describe('PositionBootstrapService', () => {
     expect(reconcile).not.toHaveBeenCalled()
   })
 
+  test('publishes the maturity-premium-adjusted rate and reports it in verbose diagnostics', async () => {
+    const halfYearSeconds = 15_768_000n
+    const { service, rates, reconcile } = setup({
+      configs: [{ ...config(), maturityPremium: { shape: 'linear', premiumPerYearBps: 200n } }]
+    })
+    rates.readRate = vi.fn(async () => ({
+      mode: 'static' as const,
+      rateBps: 500n,
+      observationId: 'static:500',
+      secondsToMaturity: halfYearSeconds
+    }))
+
+    const results = await service.runOnce({ verbose: true })
+
+    expect(results[0]).toMatchObject({
+      marketId,
+      status: 'applied',
+      action: 'publish',
+      verbose: {
+        referenceRate: { rateBps: 500n, secondsToMaturity: halfYearSeconds },
+        maturityPremiumBps: 100n,
+        targetRateBps: 550n,
+        decision: { kind: 'publish', offer: { rateBps: 550n } }
+      }
+    })
+    expect(reconcile).toHaveBeenCalledWith(
+      expect.objectContaining({ desiredOffer: expect.objectContaining({ rateBps: 550n }) })
+    )
+  })
+
+  test('halts the strategy when a configured maturity premium lacks its observation', async () => {
+    const { service, hardHalt, reconcile } = setup({
+      configs: [{ ...config(), maturityPremium: { shape: 'linear', premiumPerYearBps: 200n } }]
+    })
+
+    expect(await service.runOnce()).toEqual([
+      {
+        marketId,
+        status: 'halted',
+        stage: 'decision',
+        strategyInvalidated: true,
+        errorName: 'BootstrapConfigurationError'
+      }
+    ])
+    expect(hardHalt).toHaveBeenCalledWith({ reason: 'bootstrap-decision-failed' })
+    expect(reconcile).not.toHaveBeenCalled()
+  })
+
   test('publishes the capped desired offer from fresh position and reference reads', async () => {
     const { service, readPosition, readRate, reconcile } = setup()
 
@@ -420,6 +468,14 @@ describe('PositionBootstrapService', () => {
             rateBps: 450n,
             referenceObservationId: 'static:500'
           },
+          diagnostics: {
+            requestedRateBps: 450n,
+            clampedRateBps: 450n,
+            requestedAssets: 500n,
+            cappedAssets: 500n,
+            cap: 'offer-size'
+          },
+          durationMs: expect.any(Number),
           submittedTransactions: [{ operation: 'publish', txHash: publicationHash }],
           stateAfterCheck: {
             status: 'observed',

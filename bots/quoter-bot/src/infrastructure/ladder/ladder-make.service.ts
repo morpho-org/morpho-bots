@@ -2,6 +2,7 @@ import type { Hex } from 'viem'
 
 import type { LadderMakeService } from '../../application/ladder/ladder-quoter.service'
 import type {
+  LadderGroupConsumption,
   LadderMakeResult,
   LadderSubmittedTransaction,
   LadderTransactionSubmittedObserver
@@ -23,6 +24,10 @@ type LadderOwnedGroup = { groupId: Hex; maxAssets: bigint }
 export interface LadderOfferTransport {
   /** Reconstructs active quote semantics. @param marketId - Selected market. @returns Active quote set or no quote. */
   readActive(marketId: Hex): Promise<LadderQuoteSet | undefined>
+  /** Reads the active quote and its groups' consumption from one snapshot. @param marketId - Selected market. @returns Active quote and indexed owned group consumption. */
+  readActiveState(
+    marketId: Hex
+  ): Promise<{ quote?: LadderQuoteSet; consumption: readonly LadderGroupConsumption[] }>
   /** Lists every durably owned group and its exact consumption cap. @returns Groups used for exhaustive cleanup. */
   listOwnedGroups(): Promise<readonly LadderOwnedGroup[]>
   /** Reads authoritative on-chain consumption. @param groupId - Strategy-owned group. @returns Current consumed assets. */
@@ -86,6 +91,18 @@ export class MidnightLadderMakeService implements LadderMakeService {
   /** Reads active quote state. @param marketId - Selected market. @returns Reconstructed quote or no active quote. */
   readActive(marketId: Hex) {
     return this.transport.readActive(marketId)
+  }
+
+  /**
+   * Reads the active quote and its groups' consumption from one snapshot.
+   * @param marketId - Selected market.
+   * @returns Active quote when roots remain live, plus indexed owned group consumption.
+   * @throws When active roots or indexed group state cannot be read.
+   * @remarks Observation-only for the consumption half: it takes no mutation queue slot and never
+   * changes publication state. One read backs both values so monitoring adds no round trip.
+   */
+  readActiveState(marketId: Hex) {
+    return this.transport.readActiveState(marketId)
   }
 
   /**

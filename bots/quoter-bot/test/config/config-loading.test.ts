@@ -225,6 +225,168 @@ describe('ConfigService YAML and environment loading', () => {
     expect(error.message).toBe('bootstrap[0].targetRate.hardcodedRateBps is required')
   })
 
+  test('loads a nested YAML bootstrap maturity premium with quoted and bare integers', async () => {
+    const directory = await temporaryDirectory()
+    const path = join(directory, 'operator.yaml')
+    await writeFile(
+      path,
+      yaml().replace(
+        '    premiumBps: -50',
+        '    premiumBps: -50\n    maturityPremium:\n      shape: linear\n      premiumPerYearBps: "120"\n      maximumPremiumBps: 300'
+      )
+    )
+
+    const config = await ConfigService.load({}, { configPath: path })
+
+    expect(config.bootstrap[0]?.maturityPremium).toEqual({
+      shape: 'linear',
+      premiumPerYearBps: 120n,
+      maximumPremiumBps: 300n
+    })
+  })
+
+  test('loads a YAML bootstrap maturity premium without the optional cap', async () => {
+    const directory = await temporaryDirectory()
+    const path = join(directory, 'operator.yaml')
+    await writeFile(
+      path,
+      yaml().replace(
+        '    premiumBps: -50',
+        '    premiumBps: -50\n    maturityPremium:\n      shape: linear\n      premiumPerYearBps: "120"'
+      )
+    )
+
+    const config = await ConfigService.load({}, { configPath: path })
+
+    expect(config.bootstrap[0]?.maturityPremium).toEqual({
+      shape: 'linear',
+      premiumPerYearBps: 120n
+    })
+    expect(config.bootstrap[0]?.premiumBps).toBe(-50n)
+  })
+
+  test.each([
+    [
+      'unsupported nested key',
+      'shape: linear\n      premiumPerYearBps: "120"\n      slopeBps: "1"',
+      'bootstrap[0].maturityPremium contains an unsupported key'
+    ],
+    [
+      'unsupported shape',
+      'shape: quadratic\n      premiumPerYearBps: "120"',
+      'bootstrap[0].maturityPremium.shape must be linear'
+    ],
+    [
+      'missing slope',
+      'shape: linear',
+      'bootstrap[0].maturityPremium.premiumPerYearBps is required'
+    ],
+    [
+      'non-positive slope',
+      'shape: linear\n      premiumPerYearBps: "0"',
+      'bootstrap[0].maturityPremium.premiumPerYearBps must be positive'
+    ],
+    [
+      'negative slope syntax',
+      'shape: linear\n      premiumPerYearBps: "-120"',
+      'bootstrap[0].maturityPremium.premiumPerYearBps must be an integer'
+    ],
+    [
+      'non-positive cap',
+      'shape: linear\n      premiumPerYearBps: "120"\n      maximumPremiumBps: "0"',
+      'bootstrap[0].maturityPremium.maximumPremiumBps must be positive'
+    ]
+  ])('rejects an invalid YAML maturity premium: %s', async (_name, block, message) => {
+    const directory = await temporaryDirectory()
+    const path = join(directory, 'operator.yaml')
+    await writeFile(
+      path,
+      yaml().replace(
+        '    premiumBps: -50',
+        `    premiumBps: -50\n    maturityPremium:\n      ${block}`
+      )
+    )
+
+    await expect(ConfigService.load({}, { configPath: path })).rejects.toThrow(message)
+  })
+
+  const hardcodedBootstrapYaml = (premiumLines: string) =>
+    yaml().replace(
+      '    premiumBps: -50',
+      `    targetRate:\n      strategy: hardcoded\n      hardcodedRateBps: "400"\n${premiumLines}`
+    )
+
+  test('rejects a static hardcoded requested rate outside the bounds', async () => {
+    const directory = await temporaryDirectory()
+    const path = join(directory, 'operator.yaml')
+    await writeFile(path, hardcodedBootstrapYaml('    premiumBps: -300'))
+
+    await expect(ConfigService.load({}, { configPath: path })).rejects.toThrow(
+      'bootstrap[0].requestedRateBps must be at least minimumRateBps'
+    )
+  })
+
+  test.each([
+    [
+      'an uncapped maturity premium reaching the minimum at long maturities',
+      '    premiumBps: -300\n    maturityPremium:\n      shape: linear\n      premiumPerYearBps: "200"'
+    ],
+    [
+      'a capped maturity premium whose highest requested rate meets the minimum',
+      '    premiumBps: -300\n    maturityPremium:\n      shape: linear\n      premiumPerYearBps: "200"\n      maximumPremiumBps: "200"'
+    ]
+  ])('accepts a hardcoded rate below the minimum with %s', async (_name, premiumLines) => {
+    const directory = await temporaryDirectory()
+    const path = join(directory, 'operator.yaml')
+    await writeFile(path, hardcodedBootstrapYaml(premiumLines))
+
+    const config = await ConfigService.load({}, { configPath: path })
+
+    expect(config.bootstrap[0]?.premiumBps).toBe(-300n)
+  })
+
+  test.each([
+    [
+      'a capped maturity premium that can never reach the minimum',
+      '400',
+      '    premiumBps: -300\n    maturityPremium:\n      shape: linear\n      premiumPerYearBps: "200"\n      maximumPremiumBps: "50"',
+      'bootstrap[0].requestedRateBps must be at least minimumRateBps'
+    ],
+    [
+      'a base requested rate already above the maximum',
+      '900',
+      '    premiumBps: 0\n    maturityPremium:\n      shape: linear\n      premiumPerYearBps: "200"',
+      'bootstrap[0].requestedRateBps must be at most maximumRateBps'
+    ],
+    [
+      'an uncapped slope too shallow to reach the minimum within the protocol horizon',
+      '400',
+      '    premiumBps: -350\n    maturityPremium:\n      shape: linear\n      premiumPerYearBps: "1"',
+      'bootstrap[0].requestedRateBps must be at least minimumRateBps'
+    ],
+    [
+      'a slope whose integer premium steps jump over the whole rate band',
+      '400',
+      '    premiumBps: -300\n    maturityPremium:\n      shape: linear\n      premiumPerYearBps: "31536000000"',
+      'bootstrap[0].requestedRateBps must be attainable between minimumRateBps and maximumRateBps'
+    ]
+  ])(
+    'rejects a hardcoded rate pinned outside the bounds at every maturity: %s',
+    async (_name, hardcodedRateBps, premiumLines, message) => {
+      const directory = await temporaryDirectory()
+      const path = join(directory, 'operator.yaml')
+      await writeFile(
+        path,
+        hardcodedBootstrapYaml(premiumLines).replace(
+          'hardcodedRateBps: "400"',
+          `hardcodedRateBps: "${hardcodedRateBps}"`
+        )
+      )
+
+      await expect(ConfigService.load({}, { configPath: path })).rejects.toThrow(message)
+    }
+  )
+
   test('loads env-only configuration when no default file exists', async () => {
     const directory = await temporaryDirectory()
     const config = await ConfigService.load(environment, { cwd: directory })
@@ -286,6 +448,57 @@ describe('ConfigService YAML and environment loading', () => {
       premiumBps: -25n,
       autoRefill: true
     })
+  })
+
+  test('loads a bootstrap maturity premium from a BOOTSTRAP_MARKETS replacement', async () => {
+    const directory = await temporaryDirectory()
+    const path = join(directory, 'operator.yaml')
+    await writeFile(path, yaml())
+    const replacement = [
+      {
+        marketId,
+        creditTarget: '10',
+        acceptanceAssets: '1',
+        offerSize: '2',
+        premiumBps: '-25',
+        maturityPremium: {
+          shape: 'linear',
+          premiumPerYearBps: '120',
+          maximumPremiumBps: '300'
+        },
+        maximumMarketExposure: '20',
+        maximumTotalExposure: '30',
+        minimumRateBps: '300',
+        maximumRateBps: '700',
+        autoRefill: false
+      }
+    ]
+
+    const config = await ConfigService.load(
+      { BOOTSTRAP_MARKETS: JSON.stringify(replacement) },
+      { configPath: path, cwd: directory }
+    )
+
+    expect(config.bootstrap[0]?.maturityPremium).toEqual({
+      shape: 'linear',
+      premiumPerYearBps: 120n,
+      maximumPremiumBps: 300n
+    })
+  })
+
+  test('rejects a JSON number token inside a BOOTSTRAP_MARKETS maturity premium', async () => {
+    const directory = await temporaryDirectory()
+    const path = join(directory, 'operator.yaml')
+    await writeFile(path, yaml())
+    const replacement =
+      `[{"marketId":"${marketId}","creditTarget":"10","acceptanceAssets":"1","offerSize":"2",` +
+      '"premiumBps":"-25","maturityPremium":{"shape":"linear","premiumPerYearBps":120},' +
+      '"maximumMarketExposure":"20","maximumTotalExposure":"30","minimumRateBps":"300",' +
+      '"maximumRateBps":"700","autoRefill":false}]'
+
+    await expect(
+      ConfigService.load({ BOOTSTRAP_MARKETS: replacement }, { configPath: path, cwd: directory })
+    ).rejects.toThrow('bootstrap[0].maturityPremium.premiumPerYearBps must be an integer')
   })
 
   test.each([

@@ -182,7 +182,8 @@ This is a **pnpm workspaces monorepo** housing off-chain Morpho curator bots:
   signing policy middleware
   ([TIB-2026-08-12](./docs/decisions/TIB-2026-08-12-quoter-bot-kms-signing-middleware.md)): an AWS
   Lambda container image published to Docker Hub (`morphoorg/quoter-signer`), currently a
-  fail-closed skeleton — every intent is denied until the TIB's policy surfaces land. Because
+  fail-closed skeleton enforcing the v1 wire contract and the deterministic deployment-policy
+  checks — every intent is still denied until the TIB's signing surfaces land. Because
   services are workspace members, every bot `Dockerfile` copies `services/` alongside `packages/`
   and `bots/` so `pnpm install --frozen-lockfile` sees the full importer set.
 

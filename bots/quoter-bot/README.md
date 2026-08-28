@@ -163,7 +163,8 @@ The corresponding final cycle outcome uses `status: "logged"` rather than `"appl
 
 `bootstrap --monitor` requires at least one explicit `bootstrap` / `BOOTSTRAP_MARKETS` entry. Each
 market independently selects `targetRate.strategy: variable_rate_avg` (the existing Morpho Blue
-variable-rate average) or `hardcoded` with `hardcodedRateBps`; `premiumBps` is then added to derive
+variable-rate average) or `hardcoded` with `hardcodedRateBps`; `premiumBps` — plus the optional
+`maturityPremium` term derived from the market's live time to maturity — is then added to derive
 the published offer rate. It serially runs a cycle every minute
 and streams each result. `SIGINT` or `SIGTERM` lets an in-flight cycle finish, then invalidates every
 explicitly owned bootstrap group through the same mutation queue and waits for bounded transaction
@@ -177,7 +178,8 @@ and retains the reservation for safe cleanup.
 
 Add `--verbose` to either one-shot or monitored bootstrap mode to include the complete market
 configuration, fresh credit, debt, cash balance, per-market and total exposure, active offer,
-reference rate, premium-adjusted target rate, deterministic decision, desired bootstrap offer, and
+reference rate (with its seconds to maturity when a maturity premium is configured), the resolved
+maturity premium, premium-adjusted target rate, deterministic decision, desired bootstrap offer, and
 a fresh position read after every check. Live mode immediately emits a
 `bootstrap.transaction-submitted` record when the wallet returns each ratification, publication, or cancellation
 hash. Completed results also list confirmed transaction hashes in submission order, and verbose
@@ -207,10 +209,11 @@ invalidates every active owned ladder group through the same serialized mutation
 or halted cycle stops monitoring, still attempts cleanup, prints the terminal halted report, and
 exits with code `1`. Read-only monitoring emits the cleanup request without signing or submitting.
 
-`ladder --verbose` includes the validated market config, current capacities and active quote,
-reference and premium-adjusted target rates, exact desired ladder, decision, confirmed transaction
-hashes, and a fresh state read after every check. Live transaction hashes are also emitted
-immediately as `ladder.transaction-submitted` records.
+`ladder --verbose` includes the validated market config, current capacities and active quote, the
+reference rate (with its seconds to maturity when a maturity premium is configured), the resolved
+maturity premium, the premium-adjusted target rate, exact desired ladder, decision, confirmed
+transaction hashes, and a fresh state read after every check. Live transaction hashes are also
+emitted immediately as `ladder.transaction-submitted` records.
 
 `start` requires at least one configured bootstrap market and one configured ladder market. It runs
 the readiness gate before constructing either writer, then launches setup monitoring, position
@@ -505,33 +508,128 @@ catalog, so setup readiness does not depend on a Router API endpoint. `ROUTER_AP
 
 ### Better Stack observability
 
-Set both `BETTERSTACK_SOURCE_TOKEN` and `BETTERSTACK_INGESTING_HOST` to mirror every sanitized CLI
-event and result to Better Stack. Shipping is best-effort and never replaces or suppresses the
-existing stdout/stderr JSON Lines contract. With full shipping configuration, `start`, `bootstrap`,
-and `ladder` automatically enable the existing safe `--verbose` event stream (without adding a
-duplicate flag), so active positions, bootstrap offers, ladder quotes/offers, decisions, and
-submitted/confirmed transactions are available to the log source. Unset shipping variables are
-inert; partial configuration fails loud locally and does not enable verbose diagnostics.
+Set both `BETTERSTACK_SOURCE_TOKEN` and `BETTERSTACK_INGESTING_HOST` to ship sanitized named
+monitoring records to Better Stack. Records written through the CLI event writer pass an explicit
+allowlist: only the event names in `MONITORING_EVENT_NAMES` plus `ladder.transaction-submitted`,
+`bootstrap.transaction-submitted`, and `offer-invalidation.transaction-submitted` cross that
+boundary. Everything else the CLI writes stays local — the `quoter-bot.cycle` cycle envelope and
+`readonly.make` are named but nested and unversioned, so they are stdout-only, and the terminal
+monitor report is never shipped (it lands on stdout on success and on stderr on the failure path,
+attached to `quoter-bot.error`). Their content is available as the flat `cycle.completed`,
+`guardrail.*`, and `bot.failed` records. Separately, `@repo/observability` and `@repo/bot-kit` emit
+`bot.started`, `bot.stopped`, `bot.unexpected-error`, and `heartbeat.failed` straight through the
+shipping logger, bypassing the allowlist, so those four are in the log source too. Shipping is
+best-effort and never replaces or suppresses the existing stdout/stderr JSON Lines contract. With
+full shipping configuration, `start`, `bootstrap`, and `ladder` automatically enable the existing
+safe `--verbose` event stream (without adding a duplicate flag), so active positions, bootstrap
+offers, ladder quotes/offers, decisions, and submitted/confirmed transactions are available to the
+log source. With the shipping variables unset no log record leaves the process; partial
+configuration fails loud locally and does not enable verbose diagnostics.
 
 Every record carries `bot: "quoter-bot"`, `chainId: 8453`, and available Railway deployment
-context. Existing event names remain the top-level `event`, and the sanitized report fields remain
-searchable structured fields. Nested `status: "failed"`, `status: "halted"`, and `errorName` values
-are emitted at error level. Unexpected failures include only a sanitized `errorName`; private keys,
-RPC/API credentials, signed or raw transaction payloads, provider payloads, and untrusted raw error
-messages are never added to observability records.
+context. `schemaVersion` is bound into the logger context of every record (currently `1`), so a
+consumer can pin the contract; it is bumped only on a breaking field rename or removal. Nested
+`status: "failed"`, `status: "halted"`, and `errorName` values are emitted at error level.
+Unexpected failures include only a sanitized `errorName`; private keys, RPC/API credentials, signed
+or raw transaction payloads, provider payloads, and untrusted raw error messages are never added to
+observability records.
 
 Useful Better Stack source queries/filters include:
 
-- lifecycle and restarts: `bot:quoter-bot AND event:(bot.started OR bot.stopped)`;
-- actions and monitor cycles: `bot:quoter-bot AND event:*` plus `workflow`, `action`, or `status`;
-- active state: filter/search `activePosition`, `activeOffers`, `offers`, `quotes`, or the verbose
-  bootstrap/ladder event names;
+- lifecycle and restarts: `bot:quoter-bot AND event:(bot.started OR bot.stopped OR bot.failed)`;
+- configured scope: `bot:quoter-bot AND event:(bot.configured OR market.configured)`;
+- monitor cycles: `bot:quoter-bot AND event:cycle.completed` plus `workflow`, `action`, or `status`;
 - failures: `bot:quoter-bot AND level:error`, optionally grouped by `event` and `errorName`.
 
-`BETTERSTACK_HEARTBEAT_URL` is independent and optional. It starts with the process, stops during
-normal teardown, and cannot interrupt strategy execution. Create the log source, heartbeat, saved
-queries, and any dashboard/alerting in Better Stack externally; this repository does not provision
-or claim a deployed dashboard URL.
+`BETTERSTACK_HEARTBEAT_URL` is optional and configured independently of the shipping opt-in: when it
+is set the heartbeat pings on a wall-clock interval whether or not shipping is configured, so
+"shipping unset" means no log records are sent, not that the process makes no network calls. It
+starts with the process, stops during normal teardown, and cannot interrupt strategy execution.
+Create the log source, heartbeat, saved queries, and any dashboard/alerting in Better Stack
+externally; this repository does not provision or claim a deployed dashboard URL.
+
+Every shipped record carries a named top-level `event` and a flat scalar payload, so Better Stack
+metric expressions can group on it; the `bot.action` fallback is unreachable for this bot.
+
+**Units.** Every `*Assets` field is an unsigned raw smallest-unit amount of the configured
+`loanAsset`. Every `*Bps` field is an integer basis-point value. Both serialize as decimal strings
+because the bot-kit logger flattens `bigint` before shipping. The bot never reads token decimals, so
+no field is human-scaled — resolve decimals downstream from the `loanAsset` address in
+`bot.configured`.
+
+| Event                          | Fires when                                                                                                | Fields                                                                                                                                                                                                                                                                 |
+| ------------------------------ | --------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `bot.configured`               | Once per process start                                                                                    | `bootstrapIntervalSeconds`, `loanAsset`, `referenceMode`, `readOnly`                                                                                                                                                                                                   |
+| `market.configured`            | Once per configured market, at startup                                                                    | `marketId`, `ladder`, `bootstrap`, `ladderIntervalSeconds?`                                                                                                                                                                                                            |
+| `bot.failed`                   | A terminal failure stops the process                                                                      | `workflow?`, `reason`, `errorName?`                                                                                                                                                                                                                                    |
+| `cycle.completed`              | Every market of every setup/bootstrap/ladder cycle                                                        | `workflow`, `marketId?`, `status`, `stage?`, `action?`, `reason?`, `durationMs?`, `errorName?`                                                                                                                                                                         |
+| `guardrail.rate-clamped`       | A cycle clamped rates to a bound (per side, count > 0)                                                    | `workflow`, `marketId`, `side?`, `clampedRungs`, `bound`, `minimumRateBps`, `maximumRateBps`                                                                                                                                                                           |
+| `guardrail.cross-book-cleared` | Cross-book clearance repriced rungs (per side, count > 0)                                                 | `workflow`, `marketId`, `side`, `clearedRungs`                                                                                                                                                                                                                         |
+| `guardrail.exposure-capped`    | A bootstrap offer was reduced below its request                                                           | `workflow`, `marketId`, `requestedAssets`, `cappedAssets`, `cap`                                                                                                                                                                                                       |
+| `guardrail.rungs-truncated`    | Funded rungs are fewer than configured (per side)                                                         | `marketId`, `side`, `configuredRungs`, `fundedRungs`                                                                                                                                                                                                                   |
+| `guardrail.spread-rejected`    | The internal `adapterOperation` is `negative-spread` (not shipped)                                        | `marketId`                                                                                                                                                                                                                                                             |
+| `guardrail.halted`             | A cycle halted (offers pulled)                                                                            | `workflow`, `marketId?`, `stage`, `reason`, `strategyInvalidated`                                                                                                                                                                                                      |
+| `reference.observed`           | A verbose cycle read the reference rate                                                                   | `workflow`, `marketId`, `referenceRateBps`, `targetRateBps?`                                                                                                                                                                                                           |
+| `position.observed`            | A verbose ladder cycle observed post-check market state                                                   | `marketId`, `cashBalanceAssets?`, `creditAssets?`, `otherMarketCreditAssets?`, `reservedAssets?`, `marketReservedAssets?`, `maturityTimestamp?`, `lowerRateCapacityAssets?`, `higherRateCapacityAssets?`, `targetMarketCapacityAssets?`, `maximumTotalCapacityAssets?` |
+| `bootstrap.progress`           | A verbose bootstrap cycle observed position state                                                         | `marketId`, `creditAssets`, `creditTargetAssets`                                                                                                                                                                                                                       |
+| `book.observed`                | A verbose ladder cycle observed post-check market state (both sides always)                               | `marketId`, `side`, `state`, `rungs`, `totalAssets`, `bestRateBps?`, `worstRateBps?`, `centerRateBps?`                                                                                                                                                                 |
+| `offer.consumed`               | A group's monotonic `consumed` grew since the previous cycle                                              | `marketId`, `side`, `consumedDeltaAssets`, `groupRateBps`, `remainingAssets`, `groupId` _(trace only)_                                                                                                                                                                 |
+| `transaction.settled`          | A submitted transaction confirmed; `marketId` is absent for strategy-wide halt/invalidation cancellations | `workflow`, `marketId?`, `operation`, `txHash` _(trace only)_                                                                                                                                                                                                          |
+| `setup.check-failed`           | One named setup check failed                                                                              | `check`                                                                                                                                                                                                                                                                |
+
+`txHash` and `groupId` are unbounded trace-only correlation fields: use them to join records, never
+as grouping dimensions. The safe dimensions are `workflow`, `marketId`, `side`, `status`, `stage`,
+`action`, `reason`, `check`, `bound`, `cap`, `operation`, `state`, and `referenceMode`.
+Guardrail records are aggregated per side per cycle and emitted only when the count is non-zero,
+because a side can hold up to 512 rungs and regenerate every second. Error text never ships — only
+allowlisted `errorName` classifications.
+
+Alert recipes:
+
+| Question             | Signal                                                                                                                                                                                                       |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Crash / halt         | `bot.failed` (grouped by `workflow`) OR `bot.unexpected-error`, which is the only record an unclassified entrypoint failure emits; plus a missed heartbeat for a hard death                                  |
+| Halt / guardrail     | `guardrail.halted`; `guardrail.*` counts over a window                                                                                                                                                       |
+| Stale reference      | Absence of `reference.observed` for a `marketId` beyond two of its `ladderIntervalSeconds`. Scope to `market.configured` with `ladder: true`; a bootstrap-only market can go silent legitimately (see below) |
+| Inventory / exposure | `position.observed` gauges plus `guardrail.exposure-capped` grouped by `cap`                                                                                                                                 |
+| Fills                | `offer.consumed`, summing `consumedDeltaAssets` by `marketId` and `side`                                                                                                                                     |
+| PnL / losses         | Derived downstream from `offer.consumed`, `position.observed`, and `maturityTimestamp`                                                                                                                       |
+| Not quoting          | `book.observed` with `state: "empty"` — emitted for both sides even with no active quote                                                                                                                     |
+
+Absence alerts are scoped per market by `market.configured`, which names the market and its own
+`ladderIntervalSeconds`; a single process-wide interval would make slower markets look overdue.
+`bot.configured` scopes the process-wide `bootstrapIntervalSeconds`.
+
+**Known limits.**
+
+- Everything beyond `cycle.completed`, `guardrail.halted`, and `setup.check-failed` requires
+  `--verbose`. Full shipping configuration auto-enables it; running `start`, `bootstrap`, or `ladder`
+  manually without `--verbose` yields far fewer records.
+- Fills are diffed from monotonic per-group `consumed`. A group first seen establishes a baseline and
+  emits nothing, so a restart loses one cycle of fill telemetry.
+- `offer.consumed.groupRateBps` is the configured rate of the group's rung nearest the center, not
+  the rate that executed. Under `groupMode: per-book` every rung on a side shares one protocol group,
+  so it is only the best of several shared rates; and because publication aligns a rate to the
+  market's tick spacing, it can differ slightly from the published rate on either mode.
+- `position.observed.maturityTimestamp` is projected from maker groups already read this cycle rather
+  than a dedicated market read, so it is absent when the maker holds no indexed group in that market.
+- `book.observed.state` is `quoting` or `empty` only: `readActive` reconstructs indexed and
+  not-yet-indexed groups into one quote set, so a pending-index state is not observable at this seam.
+- Bootstrap does not always read a reference. `decidePositionBootstrapTransition` decides before any
+  rate derivation once the credit target is reached, or once the initial target completed with
+  `autoRefill` off, and `reference.observed` is emitted only when a verbose cycle holds a reference
+  rate — so for a bootstrap-only market its absence often means "not needed" rather than "stale".
+  A ladder market reads a reference every cycle.
+- Monitoring cannot halt quoting. Records are derived and written inside the monitored cycle's own
+  callback, but `writeCycle` swallows any failure raised while projecting or writing them: telemetry
+  can be lost silently, and a broken projection can never stop a cycle.
+- Shutdown cleanup cancellations ship pre-receipt `ladder.transaction-submitted` /
+  `bootstrap.transaction-submitted` records but no `transaction.settled` counterpart: confirmed
+  hashes exist only on the terminal monitor report, which is not shipped. A failed cleanup remains
+  alertable as `bot.failed` with `reason: "cleanup-failed"`.
+- `cycle.completed.durationMs` covers one market's check including the post-check verbose re-read.
+  Under the combined `start` lifecycle the ladder and bootstrap writers share one mutation queue, so
+  it can include queue wait.
 
 ### YAML schema
 
@@ -592,8 +690,8 @@ reference hard-fails when its latest checkpoint is more than five minutes behind
 ### Position-bootstrap fields
 
 Each `bootstrap` entry must use a unique `marketId` present in `markets.allowlist`.
-`targetRate` defaults to `{ strategy: "variable_rate_avg" }` when omitted for backward compatibility;
-every other field in each entry is required.
+`targetRate` defaults to `{ strategy: "variable_rate_avg" }` when omitted for backward compatibility
+and `maturityPremium` may be omitted entirely; every other field in each entry is required.
 
 | Field                   | Unit / behavior                                                 | Validation                                                                                            |
 | ----------------------- | --------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
@@ -603,6 +701,7 @@ every other field in each entry is required.
 | `acceptanceAssets`      | Raw acceptable shortfall                                        | Non-negative and no greater than `creditTarget`                                                       |
 | `offerSize`             | Raw desired offer size before capacity caps                     | Positive unsigned integer                                                                             |
 | `premiumBps`            | Integer BPS added to the reference rate                         | Zero or negative                                                                                      |
+| `maturityPremium`       | Optional premium function of the market's time to maturity      | Object with `shape: 'linear'`, positive `premiumPerYearBps`, optional positive `maximumPremiumBps`    |
 | `maximumMarketExposure` | Raw per-market exposure cap                                     | Positive and no greater than `maximumTotalExposure`                                                   |
 | `maximumTotalExposure`  | Raw strategy-wide exposure cap                                  | Positive                                                                                              |
 | `minimumRateBps`        | Inclusive final-rate minimum                                    | Non-negative and no greater than `maximumRateBps`                                                     |
@@ -613,7 +712,22 @@ For a market below its accepted target, desired assets are the minimum of `offer
 credit target, cash balance, remaining per-market exposure, and remaining total exposure. Replacement
 capacity excludes that market's representative live group while retaining every other active group's
 exposure. Zero or negative capacity leaves no offer. The final requested rate is `reference rate +
-premiumBps`; an out-of-bounds result is rejected rather than clamped.
+premiumBps + maturity premium`; a result outside the inclusive hard range saturates at the nearest
+bound instead of failing, so a reference-rate excursion can never halt the strategy.
+
+`maturityPremium` makes each entry's premium a function of that market's remaining time to
+maturity, so one bot can quote every configured maturity from one term structure: further maturity
+= higher premium. The initial `linear` shape resolves
+`floor(premiumPerYearBps × secondsToMaturity / 31,536,000)` from the fresh on-chain maturity and
+latest Base block timestamp at every cycle, optionally capped by the inclusive `maximumPremiumBps`;
+a market at or past maturity contributes zero. The resolved term is added on top of the signed
+static `premiumBps` (urgency discount and duration compensation stay independently configured), so
+long maturities can quote above the reference while `premiumBps` still anchors the short end. The
+premium decays as maturity approaches; integer flooring keeps the requested rate stable for days at
+a time, and a one-BPS step only republishes when it actually moves the canonical Midnight tick.
+Additional function shapes may be added later; `shape` selects the active one. Both target-rate
+strategies compose with it — a `hardcoded` reference with a maturity premium still decays along the
+curve. Omit the object entirely to keep today's static-premium behavior.
 
 Live reconciliation retains an owned offer when its assets, canonical Midnight tick, and continuous
 fee cap still match, even if a raw reference-rate change produced the same tick. A market fee-policy
@@ -623,8 +737,10 @@ content-addressed group ID.
 
 `BOOTSTRAP_MARKETS` uses an exact JSON array with the same fields; YAML syntax, duplicate object keys,
 and prototype keys are rejected. Every integer-valued property—including asset amounts, exposure caps,
-rates, and `premiumBps`—must be a quoted decimal-integer string. JSON number tokens are rejected even
-when integral; `marketId` remains a string and `autoRefill` remains a JSON boolean. Supplying it replaces
+rates, `premiumBps`, and the nested `maturityPremium` integers—must be a quoted decimal-integer
+string. JSON number tokens are rejected even
+when integral; `marketId` remains a string, `autoRefill` remains a JSON boolean, and
+`maturityPremium.shape` remains the JSON string `"linear"`. Supplying it replaces
 every YAML bootstrap entry, which avoids ambiguous partial-array merge behavior. See
 [`.env.example`](./.env.example) for exact syntax.
 
@@ -673,13 +789,15 @@ mutation and graceful-cleanup operation instead.
 Each `ladder` entry has a unique allowlisted `marketId`. Rates are integer BPS and asset/exposure
 amounts are exact raw loan-asset units. `quotePremiumBps` and `sizeSkewBps` are signed; all other
 integer fields are nonnegative or positive as shown below. `targetRate` defaults to
-`{ strategy: "variable_rate_avg" }`; every other field in each entry is required.
+`{ strategy: "variable_rate_avg" }` and `maturityPremium` may be omitted entirely; every other
+field in each entry is required.
 
 | Field                        | Unit / behavior                                                                                                                                                      | Validation                                                                                                |
 | ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
 | `marketId`                   | 0x-prefixed 32-byte Midnight market ID quoted by this entry.                                                                                                         | Required, unique across the array, and present in `MARKET_IDS`.                                           |
 | `targetRate`                 | Target-rate method used as reference `R`.                                                                                                                            | `variable_rate_avg`, or `hardcoded` with positive `hardcodedRateBps`; defaults to `variable_rate_avg`.    |
 | `quotePremiumBps`            | Signed BPS added to the fresh reference rate before the ladder spread is applied. Positive moves both sides higher; negative moves both lower.                       | Signed decimal integer; the resulting funded rungs must remain inside the configured rate range.          |
+| `maturityPremium`            | Optional premium function of the market's time to maturity added to the effective center on top of `quotePremiumBps`.                                                | Object with `shape: 'linear'`, positive `premiumPerYearBps`, optional positive `maximumPremiumBps`.       |
 | `spreadBps`                  | Full distance in BPS between the nearest lower and higher rates. Each nearest rung is half this value from the center.                                               | Positive and even, so each half-spread is an exact integer BPS value.                                     |
 | `stepBps`                    | Additional BPS between successive rungs on the same side, moving farther from the center.                                                                            | Positive.                                                                                                 |
 | `rungCount`                  | Maximum number of rungs constructed on each side before capacity and minimum-size filtering.                                                                         | Positive safe integer no greater than `512`.                                                              |
@@ -692,23 +810,40 @@ integer fields are nonnegative or positive as shown below. `targetRate` defaults
 | `groupMode`                  | Consumption-cap grouping: `shared-rung` creates one independent group per rung; `per-book` creates one shared group for all funded rungs on each side.               | Exactly `shared-rung` or `per-book`.                                                                      |
 | `loopIntervalSeconds`        | Requested delay between completed monitor cycles for this market set; the monitor uses the shortest configured value.                                                | Positive integer no greater than `2147483`, keeping the millisecond delay within the runtime timer limit. |
 | `movementToleranceBps`       | Inclusive center-rate deadband. An existing center is retained until the effective center moves by strictly more than this value; capacity resizing still applies.   | Nonnegative.                                                                                              |
-| `minimumRateBps`             | Inclusive hard minimum for every funded final rung after premium, spread, and step offsets. Rates are rejected rather than clamped.                                  | Nonnegative and strictly less than `maximumRateBps`.                                                      |
-| `maximumRateBps`             | Inclusive hard maximum for every funded final rung after premium, spread, and step offsets. Rates are rejected rather than clamped.                                  | Positive and strictly greater than `minimumRateBps`; the complete static ladder shape must fit.           |
+| `minimumRateBps`             | Inclusive hard minimum for every funded final rung after premium, spread, and step offsets. A rung below it saturates at this bound.                                 | Nonnegative and strictly less than `maximumRateBps`.                                                      |
+| `maximumRateBps`             | Inclusive hard maximum for every funded final rung after premium, spread, and step offsets. A rung above it saturates at this bound.                                 | Positive and strictly greater than `minimumRateBps`; the complete static ladder shape must fit.           |
 
 The rung limit bounds local allocation to 1,024 offers for a two-sided ladder, a height-10 tree
 below the Midnight SDK's height-20 protocol limit.
 
-For reference `R`, effective center `C = R + quotePremiumBps`. With zero-based rung `k`:
+For reference `R`, effective center `C = R + quotePremiumBps + maturity premium` (the maturity term
+is zero without a `maturityPremium`). With zero-based rung `k`:
 
 ```text
 lower rate = C - spreadBps / 2 - k * stepBps
 higher rate = C + spreadBps / 2 + k * stepBps
 ```
 
-The complete static shape must fit between `minimumRateBps` and `maximumRateBps`. Every runtime rung
-must also remain inside that inclusive hard range; values are rejected, never clamped. A retained
-center is recentered only when absolute effective-center movement is strictly greater than
-`movementToleranceBps`; capacity changes still resize quotes inside that tolerance.
+The complete static shape must fit between `minimumRateBps` and `maximumRateBps`. A runtime rung
+walking outside that inclusive hard range saturates at the nearest bound instead of failing, so a
+reference-rate excursion can never halt the strategy. A retained center is recentered only when
+absolute effective-center movement is strictly greater than `movementToleranceBps`; capacity
+changes still resize quotes inside that tolerance.
+
+`maturityPremium` makes the effective center a function of that market's remaining time to
+maturity, so one bot can quote every configured maturity from one term structure: further maturity
+= higher center. The initial `linear` shape resolves
+`floor(premiumPerYearBps × secondsToMaturity / 31,536,000)` from the fresh on-chain maturity and
+latest Base block timestamp at every cycle, optionally capped by the inclusive `maximumPremiumBps`;
+a market at or past maturity contributes zero. The resolved term is added on top of the signed
+static `quotePremiumBps`, and the premium decays as maturity approaches; `movementToleranceBps`
+absorbs that slow decay exactly like reference movement, so a retained center rests until the
+decayed effective center escapes the inclusive deadband. Additional function shapes may be added
+later; `shape` selects the active one. Both target-rate strategies compose with it — a `hardcoded`
+reference with a maturity premium still decays along the curve, and its load-time shape check only
+rejects a shape that no attainable premium can place fully inside the hard bounds (a transiently clamped
+rung is documented runtime behavior). Omit the object entirely to keep today's static-center
+behavior.
 
 “Lower” and “higher” describe rates, not protocol `buy`/`sell` flags. Because Midnight price is
 inverse to rate, lower-rate rungs are encoded as borrow-side `sell` offers and higher-rate rungs as
@@ -733,7 +868,8 @@ one-shot `ladder` invocation and every non-overlapping `ladder --monitor` cycle:
 
 1. Reads fresh market credit, wallet balance, allowance, market and strategy exposure, active owned
    groups, group consumption, and the configured target rate (including Blue history only for
-   `variable_rate_avg`).
+   `variable_rate_avg`, and the market's fresh time to maturity only when a maturity premium is
+   configured).
 2. Reconstructs the remaining active quote. A partially consumed group contributes only its
    remaining assets, and a fully consumed indexed group contributes no rung. A persisted group that
    has not appeared in the eventually consistent API remains pending-active so the bot cannot
@@ -743,12 +879,12 @@ one-shot `ladder` invocation and every non-overlapping `ladder --monitor` cycle:
    recalculated from fresh inventory.
 4. Compares the complete active and desired quotes, then selects one decision:
 
-| Decision   | Condition                                                                                                                                      | Mutation                                                                                                         |
-| ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| `publish`  | No active ladder remains and at least one side can fund an offer.                                                                              | Publishes one fresh complete tree. The cycle reports `action: "publish", reason: "publish"`.                     |
-| `rest`     | Active and desired quotes are exactly equal, or neither an active nor a fundable desired quote exists.                                         | Submits no transaction.                                                                                          |
-| `resize`   | An active ladder exists, its center remains inside tolerance, but fresh sizes, funded rung count, side availability, or grouping have changed. | Replaces the complete market ladder and reports `action: "replace", reason: "resize"`.                           |
-| `recenter` | The absolute movement from the active center to `reference + quotePremiumBps` is strictly greater than `movementToleranceBps`.                 | Recalculates rates and sizes, replaces the complete ladder, and reports `action: "replace", reason: "recenter"`. |
+| Decision   | Condition                                                                                                                                                                | Mutation                                                                                                         |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------- |
+| `publish`  | No active ladder remains and at least one side can fund an offer.                                                                                                        | Publishes one fresh complete tree. The cycle reports `action: "publish", reason: "publish"`.                     |
+| `rest`     | Active and desired quotes are exactly equal, or neither an active nor a fundable desired quote exists.                                                                   | Submits no transaction.                                                                                          |
+| `resize`   | An active ladder exists, its center remains inside tolerance, but fresh sizes, funded rung count, side availability, or grouping have changed.                           | Replaces the complete market ladder and reports `action: "replace", reason: "resize"`.                           |
+| `recenter` | The absolute movement from the active center to the fresh effective center (reference plus quote and maturity premiums) is strictly greater than `movementToleranceBps`. | Recalculates rates and sizes, replaces the complete ladder, and reports `action: "replace", reason: "recenter"`. |
 
 `movementToleranceBps` controls only rate movement. It never suppresses a capacity-driven `resize`.
 For example, a retained center can stay at 4.22% while a fill changes five higher-side rungs from
@@ -846,11 +982,12 @@ invalidation. A failed or halted monitored cycle stops the loop and still attemp
 group cleanup. `SIGINT` and `SIGTERM` let the in-flight cycle finish and then cancel every remaining
 active owned ladder group before the monitor reports `status: "stopped"`.
 
-`LADDER_MARKETS` is exact JSON with the same fields. Every integer-valued property must be a quoted
-decimal string; JSON number tokens, floats, exponents, malformed values, unknown fields, duplicate
-markets, and markets outside `MARKET_IDS` are rejected. The variable replaces the YAML list before
-semantic validation, so a valid environment list can replace semantically invalid YAML while YAML
-parser hazards still fail closed.
+`LADDER_MARKETS` is exact JSON with the same fields. Every integer-valued property — including the
+nested `maturityPremium` integers — must be a quoted decimal string; JSON number tokens, floats,
+exponents, malformed values, unknown fields, duplicate markets, and markets outside `MARKET_IDS`
+are rejected, and `maturityPremium.shape` remains the JSON string `"linear"`. The variable replaces
+the YAML list before semantic validation, so a valid environment list can replace semantically
+invalid YAML while YAML parser hazards still fail closed.
 
 ### Secrets and failure behavior
 

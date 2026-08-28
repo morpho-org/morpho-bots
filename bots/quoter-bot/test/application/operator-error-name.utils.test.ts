@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'vitest'
 
 import {
+  operatorAdapterOperation,
   operatorErrorDetails,
   operatorErrorName
 } from '../../src/application/operator-error-name.utils'
@@ -117,5 +118,32 @@ describe('operatorErrorName', () => {
     hostile.name = 'toString'
 
     expect(operatorErrorName(hostile)).toBe('UnknownError')
+  })
+})
+
+describe('operatorAdapterOperation', () => {
+  test('returns an allowlisted adapter operation so a guardrail can key on the exact reason', () => {
+    expect(operatorAdapterOperation(new BootstrapAdapterError('negative-spread'))).toBe(
+      'negative-spread'
+    )
+    expect(operatorErrorDetails(new BootstrapAdapterError('negative-spread'))).toEqual({
+      errorName: 'BootstrapAdapterError',
+      adapterOperation: 'negative-spread'
+    })
+  })
+
+  test('withholds an unrecognized operation so provider text can never become a dimension', () => {
+    expect(
+      operatorAdapterOperation(new BootstrapAdapterError('https://rpc.example/key?secret=1'))
+    ).toBeUndefined()
+    expect(operatorErrorDetails(new BootstrapAdapterError('not-a-known-operation'))).toEqual({
+      errorName: 'BootstrapAdapterError'
+    })
+  })
+
+  test('ignores non-adapter failures and non-object values', () => {
+    expect(operatorAdapterOperation(new TypeError('boom'))).toBeUndefined()
+    expect(operatorAdapterOperation('negative-spread')).toBeUndefined()
+    expect(operatorAdapterOperation(null)).toBeUndefined()
   })
 })

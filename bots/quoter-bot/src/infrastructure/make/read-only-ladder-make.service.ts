@@ -13,7 +13,7 @@ export class ReadOnlyLadderMakeService implements LadderMakeService {
    * request is validated and emitted as one independently parseable JSON record.
    */
   constructor(
-    private readonly activeQuotes: Pick<LadderMakeService, 'readActive'>,
+    private readonly activeQuotes: Pick<LadderMakeService, 'readActive' | 'readActiveState'>,
     private readonly write: (line: string) => void | Promise<void> = console.log,
     private readonly validate: (
       parameters: Parameters<LadderMakeService['reconcile']>[0]
@@ -29,6 +29,22 @@ export class ReadOnlyLadderMakeService implements LadderMakeService {
    */
   readActive(marketId: Parameters<LadderMakeService['readActive']>[0]) {
     return this.activeQuotes.readActive(marketId)
+  }
+
+  /**
+   * Delegates the combined active-quote and consumption read to the injected read-only source.
+   * @param marketId - Canonical market whose active roots and owned groups should be reported.
+   * @returns The active quote when one remains live, plus indexed owned group consumption.
+   * @throws When the injected reader cannot load owned or indexed group state.
+   * @remarks Read-only observation; it never mutates offers.
+   */
+  async readActiveState(marketId: Parameters<LadderMakeService['readActive']>[0]) {
+    return (
+      (await this.activeQuotes.readActiveState?.(marketId)) ?? {
+        quote: await this.activeQuotes.readActive(marketId),
+        consumption: []
+      }
+    )
   }
 
   /**
