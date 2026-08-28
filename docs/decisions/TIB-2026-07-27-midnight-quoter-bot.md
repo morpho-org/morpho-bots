@@ -1,11 +1,11 @@
 # TIB-2026-07-27: Midnight ladder quoter-bot bot — v0
 
-| Field             | Value                                                                                                                    |
-| ----------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| **Status**        | Proposed                                                                                                                 |
-| **Date**          | 2026-07-27                                                                                                               |
-| **Author**        | @devatom                                                                                                                 |
-| **Scope**         | App: midnight-quoter                                                                                                     |
+| Field             | Value                                                                                                                                                                                    |
+| ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Status**        | Proposed                                                                                                                                                                                 |
+| **Date**          | 2026-07-27                                                                                                                                                                               |
+| **Author**        | @devatom                                                                                                                                                                                 |
+| **Scope**         | App: midnight-quoter                                                                                                                                                                     |
 | **Superseded by** | TIB-2026-08-14-quoter-cross-book-clearance _(partially)_, TIB-2026-08-25-quoter-bootstrap-maturity-premium _(partially)_, TIB-2026-08-27-quoter-loan-as-collateral-markets _(partially)_ |
 
 ---

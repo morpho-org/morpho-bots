@@ -52,7 +52,8 @@ the version deployed on Base.
   collateral requirement covering current debt plus every live sell's worst case — rather than by
   continuous monitoring.
 - Keep the feature opt-in per market: without the new config block, behavior is byte-for-byte
-  today's reduce-only, credit-capped ladder.
+  today's reduce-only, credit-capped ladder — with one fail-closed exception: the block cannot be
+  removed while the position still carries debt (§2).
 - Qualify markets fail-closed before quoting: loan-asset self-collateral, allowlisted constant
   oracle, disclosed settlement-penalty bound, gate checks.
 
@@ -147,23 +148,33 @@ debt:
   collateralBufferBps: '50' # safety margin over the exact requirement, >= 10
 ```
 
-An absent block preserves today's behavior byte-for-byte. A `debt` block on a market that fails
-qualification (§6) fails startup. `LADDER_MARKETS` takes the same JSON fields as quoted decimal
-strings. The cap is per-market only — no strategy-wide total (see Non-Goals).
+An absent block preserves today's behavior byte-for-byte **only while the position carries no
+debt**: removing the block while the market's on-chain position still has `debt > 0` fails
+readiness (§6), because reverting to reduce-only sells and a `not-required` health check would
+leave an unmanaged collateralized position behind the legacy posture. The remediation is explicit —
+re-enable the block, or unwind first (repay, or let the buy side deleverage) and then disable. A
+`debt` block on a market that fails qualification (§6) fails startup. `LADDER_MARKETS` takes the
+same JSON fields as quoted decimal strings. The cap is per-market only — no strategy-wide total
+(see Non-Goals).
 
 ### 3. Capacity integration
 
 `calculateProductionLadderCapacities` gains a debt component:
 
 ```text
-lowerRateCapacityAssets = min(credit, creditSaleCapacity) + debtHeadroomAssets
-
-debtHeadroomUnits = max(0, min(maximumDebtAssets, collateralSupportedUnits)
-                           − debt − liveSellWorstCaseUnits)
+debtHeadroomUnits       = max(0, min(maximumDebtAssets, collateralSupportedUnits)
+                                 − debt − liveSellWorstCaseUnits)
+sellSideUnits           = min(credit, creditSaleCapacityUnits) + debtHeadroomUnits
+lowerRateCapacityAssets = floor(sellSideUnits × worstCaseTickPrice / WAD)
 ```
 
-with the headroom converted units → assets conservatively at the innermost — highest-rate,
-lowest-price — prospective sell tick, rounding down.
+Both components are **units** and convert to seller assets together, at the innermost —
+highest-rate, lowest-price — prospective sell tick, rounding down. Counting raw credit units as
+assets — today's harmless approximation, since a reduce-only sell can never mint debt — becomes
+unsafe once sells are non-reduce-only: 100 credit units counted as 100 assets at price 0.9 admit
+roughly 111 units of fills, 100 consuming the credit and about 11 minting debt past a zero
+headroom, without failing the §1 collateral assertion (which deliberately ignores credit) —
+silently exceeding `maximumDebtAssets`.
 [`generateLadder`](../../bots/quoter-bot/src/domain/ladder/ladder.ts) is capacity-agnostic (it
 takes `LadderMarketState` scalar capacities) and needs **no change**; only capacity derivation
 changes. After generation, an exact per-rung coverage assertion validates the final tree before
@@ -195,6 +206,17 @@ group consumption for sell-cap bounds. `LadderMarketState` gains optional debt/c
 absent for non-debt markets. `@morpho-org/midnight-sdk` 1.3.0 already exposes the full read
 surface (see Dependencies).
 
+Every coverage input — debt, collateral, and each owned sell group's `consumed` — must come from
+**one pinned block**, through on-chain reads (the adapter's `consumed(user, group)` read already
+takes a block number); the eventually consistent offer-groups API is never a coverage input. The
+production adapter today mixes a block-pinned position read with unpinned API group views: a sell
+filling between the two undercounts `debt + remaining sell capacity` — the later view has already
+removed the filled capacity while the earlier position predates the resulting debt — and the
+recovered apparent headroom can push published worst case past `maximumDebtAssets`. Residual skew
+is bounded, not dangerous: worst case exceeding coverage makes tail fills revert on-chain (L1679)
+rather than realize loss, so incoherent snapshots break the policy cap and offer takeability, never
+solvency — but the pinned-block rule removes the breach entirely.
+
 ### 6. Setup qualification — per debt-enabled market, fail-closed, read-only
 
 - The loan asset is in `collateralParams`; resolve and record its index.
@@ -214,7 +236,9 @@ surface (see Dependencies).
   one can delay post-maturity settlement.
 - `checkPositionHealth` becomes a real check for debt-enabled markets — the coverage invariant over
   the current position plus live sells, catching a maker returning after downtime. It stays
-  `not-required` otherwise.
+  `not-required` otherwise. The same check fails readiness when a configured ladder market carries
+  on-chain debt without a `debt` block (§2), so debt mode cannot be silently disabled around an
+  outstanding position.
 
 ### 7. Runtime posture on coverage breach
 
@@ -258,16 +282,23 @@ position is liquidatable once `block.timestamp > maturity` (L1824–1828) — th
 settlement mechanism — with the LIF ramping linearly from 1 at maturity to `maxLif` over
 `TIME_TO_MAX_LIF` = 60 minutes (L1850–1852, L861). At LLTV = 1, `maxLif = 1` and there is **no
 liquidation incentive**: liquidators repay at exactly the oracle price plus roundings (contract
-header, L1190–1193), so settling a USDC-collateral/USDC-debt position at price 1 is penalty-free
-and the position needs no bot action. For `lltv < 1` the worst-case penalty is
-`(maxLif − 1) × debt`, bounded and computable at configuration time — market creation enforces
-`maxLif ≤ 2` and `lltv × maxLif ≤ 0.999` unless `lltv = 1` (L1974–1976). A covered position
-realizes zero bad debt: bad debt is computed against the `maxLif` worst case (L1817–1820).
+header, L1190–1193), so settling a USDC-collateral/USDC-debt position at price 1 is penalty-free.
+For `lltv < 1` the worst-case penalty is `(maxLif − 1) × debt`, bounded and computable at
+configuration time — market creation enforces `maxLif ≤ 2` and `lltv × maxLif ≤ 0.999` unless
+`lltv = 1` (L1974–1976). A covered position realizes zero bad debt: bad debt is computed against
+the `maxLif` worst case (L1817–1820).
 
-The operator runbook documents the voluntary alternative: `repay` (no health check, no maturity
-restriction, maker or authorized, L1705–1724) then `withdrawCollateral`, optionally atomic through
-Midnight's fee-free `flashLoan` (L1940–1955). Self-take is not an unwind path (`SelfTake`
-forbidden, L1549). Rollover into a next maturity remains an explicit operator decision.
+Penalty-free is not self-settling. Maturity only makes `liquidate` callable, and at LLTV = 1 a
+third party would repay the debt for exactly-equal collateral while absorbing gas — zero-incentive
+liquidations cannot be assumed, so an unattended position can sit with debt and collateral locked
+indefinitely. The split posture is therefore: **solvency** needs no action — debt is static,
+collateral is static, debt pays no fee, and nothing degrades while waiting — but **reclaiming the
+collateral is an explicit operator action**, and the runbook is the expected settlement path, not a
+fallback: `repay` (no health check, no maturity restriction, maker or authorized, L1705–1724) then
+`withdrawCollateral`, optionally atomic through Midnight's fee-free `flashLoan` (L1940–1955). The
+maturity alert is accordingly actionable, not informational (see Observability). Self-take is not
+an unwind path (`SelfTake` forbidden, L1549). Rollover into a next maturity remains an explicit
+operator decision.
 
 ### 10. What this obsoletes and touches
 
@@ -287,8 +318,16 @@ forbidden, L1549). Rollover into a next maturity remains an explicit operator de
   (L1584–1585), and takes revert when the market fee exceeds the offer's `continuousFeeCap`
   (L1545); debt pays no fee, which is part of why debt is static face value.
 - **KMS middleware** ([TIB-2026-08-12](./TIB-2026-08-12-quoter-bot-kms-signing-middleware.md)):
-  needs intents for trees containing non-reduce-only sells and, in Phase 3, `supplyCollateral`;
-  middleware mode stays fail-closed for these writes until those land.
+  an intent that merely permits non-reduce-only sells is not enough — a compromised bot could
+  collect several individually covered tree signatures before publishing any, then expose the
+  signed capacity at once. The middleware today aggregates live plus signed-but-unpublished buy
+  exposure from its own pinned snapshot and pins the credit-reducing side to `reduceOnly: true` by
+  policy; the debt extension must mirror that model, not bypass it: the `reduceOnly` pin becomes
+  per-market conditional, and every debt-capable sell draws from an aggregate reservation —
+  proposed trees, live sells, and every still-outstanding signed-but-unpublished sell — checked
+  against independently read debt, collateral, group consumption, and `maximumDebtAssets`, never
+  per-intent amounts alone. Phase 3 adds a `supplyCollateral` intent. Middleware mode stays
+  fail-closed for these writes until those land.
 
 ### Implementation Phases
 
@@ -383,9 +422,11 @@ while the on-chain fill-time check (L1679) already prevents harm from uncovered 
 Per-cycle and verbose fields for debt-enabled markets: collateral, debt, required collateral,
 headroom, coverage ratio, and the debt-funded share of the sell side. New events: a collateral
 remediation request (manual phase), coverage breach with sell freeze, and — in Phase 3 —
-collateral transaction submissions. Alerting guidance: alert on the coverage-breach event; an
-approaching-maturity-with-outstanding-debt signal is informational at LLTV = 1, where settlement
-is penalty-free and needs no action. BetterStack queries follow the existing README examples.
+collateral transaction submissions. Alerting guidance: alert on the coverage-breach event, and
+alert on maturity-with-outstanding-debt as an **actionable** operator signal — settlement at
+LLTV = 1 is penalty-free but not self-executing (§9), so the alert prompts the repay-and-withdraw
+runbook; only its urgency is soft, since solvency does not degrade while it waits. BetterStack
+queries follow the existing README examples.
 
 ## Security
 
@@ -400,7 +441,9 @@ is penalty-free and needs no action. BetterStack queries follow the existing REA
   (L1751–1776); bot policy must gate any future withdrawal below the live-book requirement, and
   the phases in this TIB never withdraw.
 - **Transaction policy** — every new transaction type carries an exact policy assertion (§8);
-  middleware intents stay fail-closed until scheduled (TIB-2026-08-12).
+  middleware intents stay fail-closed until scheduled, and the middleware's debt policy is
+  aggregate-reservation based (§10), so stockpiled individually-covered signatures cannot bypass
+  the configured debt-loss bound (TIB-2026-08-12).
 - **Maker as borrower** — Morpho's own `midnight-liquidation` bot would list the maker as a
   candidate if it were ever unhealthy. Pre-maturity it cannot be while covered; post-maturity
   seizure at LLTV = 1 is the intended, penalty-free settlement.
@@ -417,9 +460,9 @@ is penalty-free and needs no action. BetterStack queries follow the existing REA
 - **Domain:** coverage math — requirement rounds up and headroom down, units ↔ assets conversion
   at the tick price, the per-book worst case at the group's highest-rate tick, merged same-tick
   rungs, the buffer floor.
-- **Application:** a mode flip forces `replace`; capacity shrink; breach produces sell freeze
-  while buys continue; config validation (absent block, invalid block, block on an unqualified
-  market).
+- **Application:** a mode flip forces `replace`; removing the `debt` block with outstanding
+  on-chain debt fails readiness (§2); capacity shrink; breach produces sell freeze while buys
+  continue; config validation (absent block, invalid block, block on an unqualified market).
 - **Fork (Anvil, the existing e2e harness):** `touchMarket` is permissionless (L1958–1996), so the
   fork creates a loan-as-collateral market — USDC loan, USDC collateral at `lltv = 1e18` with a
   deployed constant oracle — and covers `supplyCollateral`, a non-reduce-only sell take creating
@@ -447,7 +490,8 @@ is penalty-free and needs no action. BetterStack queries follow the existing REA
    `liquidationCursor`, and the constant-oracle implementation address to pin.
 3. Whether operators want a strategy-wide total-debt cap in addition to per-market caps.
 4. The quoter-signer (TIB-2026-08-12) intent schedule for non-reduce-only trees and
-   `supplyCollateral`.
+   `supplyCollateral`, including the aggregate debt-reservation policy those intents must carry
+   (§10).
 
 ## References
 
