@@ -166,22 +166,20 @@ async function main() {
     logger
   })
 
-  const readTokenDecimals = (token: Address) =>
-    readContract(client, { address: token, abi: erc20Abi, functionName: 'decimals' })
-
   // Venue selector: caches each venue's rate curve per pair from log-scaled indicative probes, and
   // interpolates it per candidate. Decimals are read once per collateral (memoized in the selector);
   // the collateral set is bounded by the listed markets, so these are a handful of one-off reads over
   // the process lifetime. The ladder is USD-denominated, so a rung means the same notional on an
-  // 8-decimal $80k collateral as on an 18-decimal $1 one — `usdPriceOf` reports the price of one whole
-  // token by asking the price source what one whole token is worth.
+  // 8-decimal $80k collateral as on an 18-decimal $1 one — `usdPriceOf` comes straight off the price
+  // snapshot, so denominating the ladder costs no chain read and cannot leave a pair cold on an RPC
+  // blip (it degrades to the whole-token ladder).
   const venueSelector = createVenueSelector({
     venues,
     chainId: config.chainId,
     ladderSizes: config.probe.ladderSizes,
-    getDecimals: readTokenDecimals,
-    usdPriceOf: async token =>
-      tokenPrices.usdValueOf(token, 10n ** BigInt(await readTokenDecimals(token))),
+    getDecimals: token =>
+      readContract(client, { address: token, abi: erc20Abi, functionName: 'decimals' }),
+    usdPriceOf: async token => tokenPrices.usdPriceOf(token),
     indicativeQuote: (venue, params) => priceByVenue(probeClient, { venue, baseUrls, params }),
     staleMs: config.probe.staleMs,
     logger

@@ -70,8 +70,11 @@ There is no per-collateral routing file. Venues are **enabled by key presence** 
 liquidatable position a background probe cache ranks the enabled venues best-first for the
 `(collateral, loan)` pair (log-scaled indicative quotes on an isolated rate budget, interpolated at
 the seize size — see `PROBE_LADDER`/`PROBE_STALE_MS`/`PROBE_HTTP_RPS`; ladder sizes are whole
-collateral tokens here, since this bot wires no USD price source). The firm quote goes to the top venue and falls
-through to the next on failure, so a transient venue outage costs coverage, never correctness.
+collateral tokens here, since this bot wires no USD price source). The firm quote goes to the top
+venue and falls through to the next on failure, so a transient venue outage costs coverage, never
+correctness. The curve also predicts that venue's own output to set the quote's min-out denominator,
+but only while it is fresher than the package's prediction-age ceiling — well under this bot's
+ten-minute `PROBE_STALE_MS`, so an older curve simply pays the two-pass derivation's extra call.
 Collateral that wraps an ERC-4626 vault or a Pendle PT is auto-unwrapped before the venue swap.
 `EXCLUDE_COLLATERALS` is the operator's deny-list for collaterals the bot must never seize/hold.
 

@@ -240,7 +240,8 @@ function runWith(opts: {
           estimatedOut: referenceAmountOut - cost,
           costBps: bps,
           costBpsRaw: bps,
-          clamped: opts.clampedRoutes ?? false
+          clamped: opts.clampedRoutes ?? false,
+          ageMs: 0
         }
       ]
     }
@@ -1288,6 +1289,68 @@ describe('runTick', () => {
       // pairs that actually have a sized candidate — an in-flight position has none.
       const { warmed } = await runWith({ inflight: new Set([LABEL]) })
       expect(warmed).toEqual([])
+    })
+
+    it('resolves and warms nothing for a bad-debt write-off', async () => {
+      // A write-off trades nothing and phase B never quotes it, so resolving its unwrap chain and
+      // sweeping its pair would be venue and chain work spent on a route no one will ever sell through.
+      const { counters, warmed, quoteCalls } = await runWith({
+        out: lensOut({
+          healthy: true,
+          blockTimestamp: 3000n,
+          debt: 1000n,
+          badDebt: 1000n,
+          market: { ...lensOut().market, maturity: 2000n }
+        })
+      })
+      expect(quoteCalls()).toBe(0)
+      expect(warmed).toEqual([])
+      // Costed as zero, not unknown: `unknown` fails the whole POSITION open to gross ordering.
+      expect(counters).toMatchObject({ submitted: 1, preselectSkipped: 0 })
+      expectCounterIdentities(counters)
+    })
+
+    it('resolves no route past the gross probe bound', async () => {
+      // Each distinct pair costs a full indicative sweep, so the candidates whose route is resolved at
+      // all are bounded on the gross ordering — the one cap that must be applied before any cost is
+      // known. Nine candidates, eight probed, and the swap-free one is still reserved a place.
+      const nibbles = ['8', '9', 'a', 'b', 'c', 'd', 'e', 'f']
+      const base = lensOut()
+      const out = lensOut({
+        collaterals: [
+          ...[100, 90, 80, 70, 60, 50, 40, 30].map((surplus, i) =>
+            slot({ index: i + 1, maxLif: WAD_ONE + BigInt(surplus) * 10n ** 15n })
+          ),
+          slot({ index: 0, maxLif: LOAN_MAX_LIF })
+        ],
+        market: {
+          ...base.market,
+          collateralParams: [
+            base.market.collateralParams[0]!,
+            ...nibbles.map(nibble => ({
+              token: collateralAt(nibble),
+              lltv: 860000000000000000n,
+              liquidationCursor: 250000000000000000n,
+              oracle: ORACLE
+            }))
+          ]
+        }
+      })
+      const { counters, warmed, events } = await runWith({
+        out,
+        quoteOutcome: { kind: 'failed', reason: 'no_route' }
+      })
+
+      // Seven swap pairs: the eighth slot in the bound is the reserved swap-free candidate, which needs
+      // no pair at all, and the ninth-ranked swap slot is dropped before resolution.
+      expect(warmed).toHaveLength(7)
+      const skips = events
+        .filter(e => e.event === 'preselect.skipped')
+        .map(e => [e.fields?.collateralIndex, e.fields?.reason])
+      expect(skips.filter(([, reason]) => reason === 'probe_cap')).toEqual([[8, 'probe_cap']])
+      // The final net cap then keeps four of the eight probed ones, as it always did.
+      expect(counters).toMatchObject({ candidates: 9, preselectSkipped: 5, quoteFailed: 4 })
+      expectCounterIdentities(counters)
     })
   })
 

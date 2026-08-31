@@ -23,6 +23,22 @@ import { isRcfExempt, maxRepaidNormalMode } from './rcf'
 export const MAX_PLAN_CANDIDATES_PER_POSITION = 4
 
 /**
+ * Ceiling on the candidates per position whose route is resolved and probed, applied to the GROSS
+ * ordering before any cost is known.
+ *
+ * A separate, looser bound than {@link MAX_PLAN_CANDIDATES_PER_POSITION} because it bounds a different
+ * cost: probe traffic, not quotes. Resolving a route costs a chain read and registers a pair, and each
+ * distinct pair then costs a full indicative sweep (one call per ladder rung per venue) — so an
+ * unbounded list would let one 16-slot position issue hundreds of indicative calls on a ~1 rps client.
+ *
+ * Twice the plan cap, because the point of costing above the cap is that route cost may REORDER
+ * candidates: the priced set has to be a strict superset of what the cap keeps, or the reorder has
+ * nothing to work with. Candidates past this bound are dropped rather than left uncosted, since an
+ * uncosted candidate fails its whole position open to gross ordering (see `scoreNetOfRouteCost`).
+ */
+export const MAX_PROBED_CANDIDATES_PER_POSITION = 2 * MAX_PLAN_CANDIDATES_PER_POSITION
+
+/**
  * One activated collateral slot, as sizing sees it. `index` is the MARKET-level index into
  * `market.collateralParams` — what `liquidate` takes — not a position in {@link PlanInput.collaterals}.
  *

@@ -41,6 +41,16 @@ export type RateLimitedClient = {
     url: string
     searchParams?: Record<string, string>
   }) => Promise<T>
+  /**
+   * Requests actually put on the wire since the client was built, monotonic across every venue.
+   *
+   * Counts TRANSPORT attempts, so one `getJson` that retried a 429 counts more than once — which is
+   * the whole point: a budget expressed in `getJson` calls under-reports a rate-limited window by up
+   * to `maxRetries + 1`. Read it as a delta around the work being measured.
+   *
+   * Optional so a test fake need not implement it; a caller must degrade rather than assume it.
+   */
+  requests?: () => number
 }
 
 /** Minimal `fetch` shape the client calls — the global `fetch` satisfies it; test fakes need not. */
@@ -67,6 +77,7 @@ export function createRateLimitedClient(deps: {
   const now = deps.now ?? (() => Date.now())
   const sleep = deps.sleep ?? delay
   const buckets = new Map<HttpVenue, { take: () => Promise<void> }>()
+  let requests = 0
   const bucketFor = (venue: HttpVenue) => {
     let bucket = buckets.get(venue)
     if (!bucket) {
@@ -77,6 +88,8 @@ export function createRateLimitedClient(deps: {
   }
 
   return {
+    requests: () => requests,
+
     async getJson<T>(args: {
       venue: HttpVenue
       url: string
@@ -90,6 +103,7 @@ export function createRateLimitedClient(deps: {
 
       for (let attempt = 0; ; attempt++) {
         await bucketFor(args.venue).take()
+        requests += 1
         const { data: response, error: networkError } = await tryCatch(
           fetchImpl(url.toString(), { headers, signal: AbortSignal.timeout(deps.timeoutMs) })
         )

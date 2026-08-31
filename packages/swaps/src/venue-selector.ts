@@ -13,6 +13,15 @@ import { InvalidProbeLadderError } from './invalid-probe-ladder.error'
 export type VenuePair = { collateral: Address; loan: Address }
 
 /**
+ * The canonical dedup key for a {@link VenuePair} — checksummed, so two spellings of one pair collapse.
+ * Exported so a caller deduplicating pairs before driving {@link VenueSelector.refresh} keys them
+ * exactly as the cache does; a caller keying them itself can drift from the cache it is filling.
+ * Chain-agnostic: the cache prefixes its own `chainId`, which a single-chain caller does not have to.
+ */
+export const venuePairKey = (pair: VenuePair): string =>
+  `${getAddress(pair.collateral)}:${getAddress(pair.loan)}`
+
+/**
  * Fixed-point decimals of the `usdPriceOf` feed and of the USD probe ladder — `1e8`, matching the
  * scale the Markets-API token prices are normalized to at their boundary.
  */
@@ -47,6 +56,14 @@ export type VenueCostEstimate = {
   costBpsRaw: number | null
   /** `amountIn` fell outside the probed ladder, or a bracketing rung was missing for this venue. */
   clamped: boolean
+  /**
+   * Age of the cached curve this was read off, in ms.
+   *
+   * Bound it before consuming {@link VenueCostEstimate.estimatedOut} as an absolute level — that is
+   * the only term staleness decays (see {@link createVenueSelector} for the asymmetry). Venue
+   * ORDERING needs no bound at any age.
+   */
+  ageMs: number
 }
 
 /** One venue's indicative execution at one ladder rung — pure market data, no oracle. */
@@ -64,7 +81,16 @@ type PairCache = {
 
 /** A process-lifetime probe cache + best-first venue lookup, keyed by chain + collateral + loan. */
 export type VenueSelector = {
-  /** Probe every enabled venue for `pair` at each ladder point, unless the cache is still fresh. */
+  /**
+   * Probe every enabled venue for `pair` at each ladder point, unless the cache is still fresh.
+   *
+   * Venues run concurrently and their rungs serially, so the sweep costs about one rung's rate-limit
+   * wait times the rung count (~8 s for 8 rungs at 1 rps) rather than that times the venue count.
+   * Resolves as soon as a sweep for the same pair is ALREADY in flight — it never joins one — so a
+   * caller cannot be made to wait behind another's sweep, and two callers cannot double-probe a pair.
+   * The corollary is that resolution does not mean the cache is now warm; `select` fails open until it
+   * is.
+   */
   refresh: (pair: VenuePair) => Promise<void>
   /**
    * Best-first venues for `pair` at `amountIn`, interpolated across the probed ladder; `[]` when the
@@ -83,6 +109,11 @@ export type VenueSelector = {
 // ratio's significant digits even on a high-decimal-in / low-decimal-out pair.
 const RATE_SCALE = 10n ** 18n
 
+// Precision a CONFIGURED ladder size is validated at, so "is this a positive decimal?" is answered
+// independently of the collateral's decimals — otherwise a valid rung would be operator misconfig on
+// a low-decimal token and fine on the next one.
+const LADDER_SIZE_PRECISION = 18
+
 const rateOf = (rung: RungQuote): bigint => (rung.expectedOut * RATE_SCALE) / rung.amountIn
 
 const ascending = (a: bigint, b: bigint): number => (a < b ? -1 : a > b ? 1 : 0)
@@ -97,13 +128,16 @@ const bracketOf = (ladder: bigint[], amountIn: bigint): [number, number] | null 
   return null
 }
 
-// Where `amountIn` sits between two rungs in LOG space, as a `RATE_SCALE` weight in [0, 1]. The only
-// float in the interpolation path: the rates it blends stay exact bigints, and a `Number` ratio of
-// two same-pair sizes stays well inside double precision even when the amounts exceed 2**53.
-const logWeight = (lo: bigint, hi: bigint, amountIn: bigint): bigint => {
+// Where `amountIn` sits between two rungs in LOG space, as a `RATE_SCALE` weight in [0, 1], or `null`
+// when the bracket is degenerate (a zero/equal rung, a non-finite ratio). `null` rather than a weight
+// of zero: zero is a legitimate answer meaning "at the low rung", and reporting it for an unusable
+// bracket would present a clamp as a confident interpolation. The only float in the interpolation
+// path: the rates it blends stay exact bigints, and a `Number` ratio of two same-pair sizes stays well
+// inside double precision even when the amounts exceed 2**53.
+const logWeight = (lo: bigint, hi: bigint, amountIn: bigint): bigint | null => {
   const span = Math.log(Number(hi) / Number(lo))
   const offset = Math.log(Number(amountIn) / Number(lo))
-  if (!Number.isFinite(span) || span <= 0 || !Number.isFinite(offset)) return 0n
+  if (!Number.isFinite(span) || span <= 0 || !Number.isFinite(offset)) return null
   return BigInt(Math.round(Math.min(1, Math.max(0, offset / span)) * Number(RATE_SCALE)))
 }
 
@@ -133,9 +167,9 @@ const rateAt = (
   const bracket = bracketOf(ladder, amountIn)
   const lo = bracket ? rungs[bracket[0]] : undefined
   const hi = bracket ? rungs[bracket[1]] : undefined
-  if (lo && hi) {
+  const weight = lo && hi ? logWeight(lo.amountIn, hi.amountIn, amountIn) : null
+  if (lo && hi && weight !== null) {
     const loRate = rateOf(lo)
-    const weight = logWeight(lo.amountIn, hi.amountIn, amountIn)
     return { rate: loRate + ((rateOf(hi) - loRate) * weight) / RATE_SCALE, clamped: false }
   }
   const nearest = nearestProbed(rungs, amountIn)
@@ -159,7 +193,7 @@ const rateAt = (
  * Staleness is asymmetric, so tune `staleMs` against the absolute term alone. Every venue at a rung
  * is probed inside one refresh, so their rates drift together and the venue ORDERING holds at any
  * cache age; it is the cross-candidate cost LEVEL that decays as the pair's price leaves the cached
- * rate behind.
+ * rate behind. {@link VenueCostEstimate.ageMs} is what a consumer of the level bounds itself by.
  */
 export function createVenueSelector(deps: {
   venues: readonly Venue[]
@@ -183,9 +217,9 @@ export function createVenueSelector(deps: {
   const now = deps.now ?? (() => Date.now())
   const cache = new Map<string, PairCache>()
   const decimalsCache = new Map<string, number>()
+  const inflight = new Set<string>()
 
-  const keyFor = (pair: VenuePair) =>
-    `${deps.chainId}:${getAddress(pair.collateral)}:${getAddress(pair.loan)}`
+  const keyFor = (pair: VenuePair) => `${deps.chainId}:${venuePairKey(pair)}`
 
   const decimalsFor = async (token: Address): Promise<number> => {
     const key = getAddress(token)
@@ -197,70 +231,109 @@ export function createVenueSelector(deps: {
   }
 
   // Ladder in the collateral's base units, sorted and deduped so the bracket search stays monotonic
-  // even when the operator lists the sizes out of order or two USD rungs collapse onto one base-unit
-  // amount. Fail loud on a malformed/non-positive CONFIGURED size — operator misconfig — but merely
-  // drop a rung whose USD value converts to less than one base unit.
+  // even when the operator lists the sizes out of order or two rungs collapse onto one base-unit
+  // amount. A CONFIGURED size that is malformed or non-positive fails loud — operator misconfig,
+  // judged at a fixed precision so the verdict does not depend on which collateral it is being
+  // converted for. A rung whose value merely converts to less than one base unit is dropped, in both
+  // the USD and the whole-token reading: that is a property of the collateral, not of the config.
+  //
+  // A throwing `usdPriceOf` degrades to the whole-token ladder rather than leaving the pair cold —
+  // the fallback its own doc promises.
   const ladderFor = async (collateral: Address, decimals: number): Promise<bigint[]> => {
-    const price = (await deps.usdPriceOf?.(collateral)) ?? null
-    const usdPrice = price !== null && price > 0n ? price : null
+    const { data: price } = await tryCatch(
+      (async () => (await deps.usdPriceOf?.(collateral)) ?? null)()
+    )
+    const usdPrice = price !== undefined && price !== null && price > 0n ? price : null
     const sizes = deps.ladderSizes.map(size => {
+      if ((safeParseUnits(size, LADDER_SIZE_PRECISION) ?? 0n) <= 0n) {
+        throw new InvalidProbeLadderError(size)
+      }
       const parsed = safeParseUnits(size, usdPrice === null ? decimals : USD_LADDER_PRICE_DECIMALS)
-      if (parsed === null || parsed <= 0n) throw new InvalidProbeLadderError(size)
-      return usdPrice === null ? parsed : (parsed * 10n ** BigInt(decimals)) / usdPrice
+      return usdPrice === null
+        ? (parsed ?? 0n)
+        : ((parsed ?? 0n) * 10n ** BigInt(decimals)) / usdPrice
     })
     return [...new Set(sizes.filter(size => size > 0n))].toSorted(ascending)
+  }
+
+  // One venue's whole ladder. Rungs stay SERIAL so a venue's own token bucket paces them; the caller
+  // runs venues concurrently, which their separate buckets already isolate.
+  const probeVenue = async (
+    venue: Venue,
+    pair: VenuePair,
+    ladder: bigint[],
+    collateralDecimals: number
+  ): Promise<(RungQuote | null)[]> => {
+    const rungs: (RungQuote | null)[] = []
+    for (const amountIn of ladder) {
+      const { data, error } = await tryCatch(
+        deps.indicativeQuote(venue, {
+          chainId: deps.chainId,
+          tokenIn: pair.collateral,
+          tokenOut: pair.loan,
+          amountIn,
+          tokenInDecimals: collateralDecimals
+        })
+      )
+      if (error) {
+        deps.logger.warn('probe.venue_error', {
+          venue,
+          collateral: pair.collateral,
+          loan: pair.loan,
+          amountIn: amountIn.toString(),
+          detail: ensureError(error).message
+        })
+        rungs.push(null)
+        continue
+      }
+      rungs.push(
+        data && data.expectedAmountOut > 0n
+          ? { amountIn, expectedOut: data.expectedAmountOut }
+          : null
+      )
+    }
+    return rungs
   }
 
   const refresh = async (pair: VenuePair): Promise<void> => {
     const key = keyFor(pair)
     const existing = cache.get(key)
     if (existing && now() - existing.updatedAt < deps.staleMs) return
+    // A refresh for this pair is already running: RETURN rather than join it. `updatedAt` is written
+    // only once the sweep completes, so without this a second caller would start a duplicate sweep;
+    // and joining would put a full ladder sweep back on the critical path of whoever asked second.
+    // The caller then reads whatever the cache holds and fails open (see {@link VenueSelector.select}).
+    if (inflight.has(key)) return
+    inflight.add(key)
+    try {
+      // Collateral decimals: for the ladder, and passed to the probe so decimal-denominated venues
+      // (LiquidSwap) can convert base units → a human-readable amountIn.
+      const collateralDecimals = await decimalsFor(pair.collateral)
+      const ladder = await ladderFor(pair.collateral, collateralDecimals)
+      // Venues run CONCURRENTLY: they hold separate token buckets, so serializing them multiplied the
+      // sweep's wall-clock by the venue count for no rate-limit benefit — and that sweep is what a
+      // liquidatable pair waits behind.
+      const probed = await Promise.all(
+        deps.venues.map(venue => probeVenue(venue, pair, ladder, collateralDecimals))
+      )
+      // Inserted in configured order, not completion order, so `select`'s tie-break stays deterministic.
+      const curves = new Map<Venue, (RungQuote | null)[]>()
+      deps.venues.forEach((venue, index) => {
+        const rungs = probed[index]
+        if (rungs?.some(rung => rung !== null)) curves.set(venue, rungs)
+      })
 
-    // Collateral decimals: for the ladder, and passed to the probe so decimal-denominated venues
-    // (LiquidSwap) can convert base units → a human-readable amountIn.
-    const collateralDecimals = await decimalsFor(pair.collateral)
-    const ladder = await ladderFor(pair.collateral, collateralDecimals)
-    const curves = new Map<Venue, (RungQuote | null)[]>()
-    for (const venue of deps.venues) {
-      const rungs: (RungQuote | null)[] = []
-      for (const amountIn of ladder) {
-        const { data, error } = await tryCatch(
-          deps.indicativeQuote(venue, {
-            chainId: deps.chainId,
-            tokenIn: pair.collateral,
-            tokenOut: pair.loan,
-            amountIn,
-            tokenInDecimals: collateralDecimals
-          })
-        )
-        if (error) {
-          deps.logger.warn('probe.venue_error', {
-            venue,
-            collateral: pair.collateral,
-            loan: pair.loan,
-            amountIn: amountIn.toString(),
-            detail: ensureError(error).message
-          })
-          rungs.push(null)
-          continue
-        }
-        rungs.push(
-          data && data.expectedAmountOut > 0n
-            ? { amountIn, expectedOut: data.expectedAmountOut }
-            : null
-        )
-      }
-      if (rungs.some(rung => rung !== null)) curves.set(venue, rungs)
+      cache.set(key, { updatedAt: now(), ladder, curves })
+      deps.logger.info('probe.refreshed', {
+        collateral: pair.collateral,
+        loan: pair.loan,
+        points: ladder.length,
+        venues: deps.venues.length,
+        curved: curves.size
+      })
+    } finally {
+      inflight.delete(key)
     }
-
-    cache.set(key, { updatedAt: now(), ladder, curves })
-    deps.logger.info('probe.refreshed', {
-      collateral: pair.collateral,
-      loan: pair.loan,
-      points: ladder.length,
-      venues: deps.venues.length,
-      curved: curves.size
-    })
   }
 
   // Ranked on the interpolated RATE rather than on `estimatedOut`, so the ordering survives a size
@@ -272,6 +345,7 @@ export function createVenueSelector(deps: {
   ): VenueCostEstimate[] => {
     const entry = cache.get(keyFor(pair))
     if (!entry) return []
+    const ageMs = now() - entry.updatedAt
     const ranked: { rate: bigint; estimate: VenueCostEstimate }[] = []
     for (const [venue, rungs] of entry.curves) {
       const interpolated = rateAt(entry.ladder, rungs, amountIn)
@@ -285,7 +359,8 @@ export function createVenueSelector(deps: {
           estimatedOut,
           costBps: raw === null ? null : Math.max(raw, 0),
           costBpsRaw: raw,
-          clamped: interpolated.clamped
+          clamped: interpolated.clamped,
+          ageMs
         }
       })
     }

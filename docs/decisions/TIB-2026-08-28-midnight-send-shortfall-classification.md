@@ -161,7 +161,7 @@ fill at quote when they landed** (finding 3). They are a variance source, not a 
 
 **1. An execution-revert send rejection no longer arms per-position backoff; a transport-class
 rejection still does.** The discriminator is the execution-revert **class** —
-`isExecutionRevert` (`packages/bot-kit/src/tx-error.ts`), which walks the viem error chain for
+`isExecutionRevert` (`packages/bot-kit/src/revert.utils.ts`), which walks the viem error chain for
 `ExecutionRevertedError` and falls back to the canonical `execution reverted` short message. It is
 deliberately **not** a list of decoded reason strings, for the reason in finding 2: the string names
 the pool, so a list is open-ended by construction and silently mis-classifies the first pool it has
@@ -201,6 +201,22 @@ position** and escalates when a position exceeds a threshold, which is the signa
 is structural (a broken route) rather than a ramp that has not yet cleared. The escalation is an
 operator signal — it does not re-arm suppression, because doing so would reintroduce exactly the
 exponential ramp-sampling this decision removes.
+
+Two implementation properties are load-bearing and are recorded here rather than left to the diff.
+
+**The exemption is a latch, not a removal.** Suppression is keyed by POSITION and applied once in the
+tick's `finally`, after every candidate has had its turn; an execution revert does not enter
+`submittedLabels`, so the position's next-ranked alternative still runs and can arm the entry _after_
+the reverted send. Deleting from the pending set would therefore have held only when the reverted send
+happened to be that position's last event of the tick. A latch consulted at application time is
+order-independent, which is the property actually wanted. `pendingCooldown` is deliberately left armed:
+it is a flat, default-off window an operator opts into to throttle a class of position, so lifting it is
+an operator's call, not an inference from one sibling's outcome.
+
+**The escalation fires once on the crossing, not per tick.** A stuck position is swept every tick, so a
+per-tick warn would be unbounded in volume (doubled when two of its siblings revert) for exactly the
+condition an operator has already been told about. The streak reports `below` / `crossed` / `ongoing`
+and only `crossed` is logged.
 
 **5. `excludedSources` on 0x is deferred, explicitly.** Excluding the long-tail pools would cut
 finding 2's revert variance directly. It is not taken now because finding 3 measures those same
@@ -264,6 +280,18 @@ protocol switch buried in it.
 - **`isExecutionRevert` correctly separates on-chain reverts from transport failures across our
   transports.** It already backs the queue's drop-versus-bump decision, so this reuses a
   classification the queue trusts rather than adding a second one.
+- **Accepted risk: the streak is report-only.** There is no throttle, no circuit breaker, and no
+  suppression anywhere on the escalate path — a position that reverts structurally keeps being quoted
+  and simulated at full tick cadence for as long as it stays liquidatable, and the only thing that
+  changes at the threshold is that a human is told. This is a deliberate decision by the repository
+  owner, taken with decision 4: any throttle on this path samples a monotonically improving incentive
+  geometrically and skips the block where the position first becomes fundable, which is the loss this
+  whole TIB is about. What mitigates it is that the cost is bounded and the signal is loud — one warn
+  per streak carrying `count`, `durationMs`, `selector` and `selectorConstant`, which is enough to tell
+  a broken route from an early ramp without a second measurement — and that quote volume per position
+  per tick is bounded independently by
+  [TIB-2026-08-31](./TIB-2026-08-31-venue-cost-curve-selection.md)'s pre-screen, which is why that
+  sequencing dependency is hard. **Do not add a throttle here.**
 
 ## Dependencies
 
@@ -278,9 +306,18 @@ protocol switch buried in it.
 - `tx.submit_failed` gains the **4-byte revert selector** when the payload carries one, and the
   execution-revert **class** as a field, so the exemption is auditable from the log rather than
   inferred from an absence of `backoff.skip`. The decoded `reason` string stays as-is.
-- A **consecutive-execution-revert streak per `(position, selector)`**, carrying both its count and
-  its duration, with an escalation event when the streak has run **unbroken for more than 15
-  minutes**. This is the backstop for running without a throttle.
+- A **consecutive-execution-revert streak per position**, carrying its count, its duration, the
+  selector, and a `selectorConstant` flag, with an escalation event when the streak has run **unbroken
+  for more than 15 minutes**. This is the backstop for running without a throttle.
+
+  **Keyed per position, not per `(position, selector)`** as this TIB first specified. Keying on the
+  selector too would restart the clock every time the route landed in a different pool, so a position
+  stuck for an hour across four pools would never reach the threshold — the failure mode the backstop
+  exists to catch. Keying on the position alone and reporting `selectorConstant` keeps the clock
+  monotonic while preserving the distinction the compound key was after: a constant selector is much
+  stronger evidence of a structural fault (a closed gate, malformed calldata, an estimator discrepancy)
+  than a mixed streak, which reads as ordinary min-out shortfalls against whichever pool the route hit.
+  The flag is strictly more informative than a reset would have been.
 
   The threshold is deliberately expressed in **time, not attempts**. Post-maturity LIF ramps on
   wall-clock, so a position becomes fundable at a moment, not after N tries: attempts-to-clear is
@@ -295,9 +332,16 @@ protocol switch buried in it.
 - Dashboards joining sends to outcomes must key on `label`; `tx.*` events do not carry `id` **at the
   time of this decision**. BOTS-90 normalizes that to a single `id` field across `plan.*`, `quote.*`,
   `select.*`, `simulate.*` and `tx.*` in both liquidators — expect this line to be superseded.
-- `tick.end` counter identities are unchanged. Expect `backoffSkipped` to fall sharply on the next
-  maturity and `notSent` to rise correspondingly — that is the decision working, not a regression,
-  and the two should be read together.
+- `tick.end` counter identities **do change**, in two places, and a dashboard summing them must be
+  updated with the release rather than after it:
+  - `notSent === sendRefused + sendReverted + sendRejected` is new. `sendReverted` is the exempt class
+    this decision creates, so it is not merely a relabelling of an existing bucket.
+  - the per-candidate identity gains `preselectSkipped`
+    ([TIB-2026-08-31](./TIB-2026-08-31-venue-cost-curve-selection.md)), which lands in the same release
+    train.
+
+  Expect `backoffSkipped` to fall sharply on the next maturity and `notSent` to rise correspondingly —
+  that is the decision working, not a regression, and the two should be read together.
 
 ## Security
 

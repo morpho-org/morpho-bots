@@ -92,12 +92,14 @@ export function composeQuoting(deps: {
 
     async quoteFor(plan, out, label) {
       const collateral = out.market.collateralParams[plan.collateralIndex]
-      if (!collateral) return { kind: 'no_config' }
+      // `firmCalls: 0` explicitly: an absent count reads as UNKNOWN, and these paths provably spent
+      // nothing (see {@link QuoteOutcome.firmCalls}).
+      if (!collateral) return { kind: 'no_config', firmCalls: 0 }
       // The operator opt-out applies to the RAW collateral — midnight has no per-collateral config
       // file, so this is its escape hatch from the auto-unwrap path too.
       if (excluded(collateral.token)) {
         logger.info('quote.excluded_collateral', { collateral: collateral.token })
-        return { kind: 'no_config' }
+        return { kind: 'no_config', firmCalls: 0 }
       }
 
       return quoteRequest({

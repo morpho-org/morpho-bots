@@ -101,10 +101,11 @@ function oneInchBody(dstAmount: string) {
 
 const LIFI_SPENDER = getAddress('0xbBbBBBBbbBBBbbbBbbBbbbbBBbBbbbbBbBbbBBbB')
 
-// A LiFi-shaped firm-quote body with the given toAmount.
-function lifiBody(toAmount: string) {
+// A LiFi-shaped firm-quote body with the given toAmount, and an explicit minimum when the case cares
+// (LiFi reports its own `toAmountMin`, so a stub returning the full amount overshoots any lower floor).
+function lifiBody(toAmount: string, toAmountMin = toAmount) {
   return {
-    estimate: { approvalAddress: LIFI_SPENDER, toAmount, toAmountMin: toAmount },
+    estimate: { approvalAddress: LIFI_SPENDER, toAmount, toAmountMin },
     transactionRequest: { to: ROUTER, data: '0xfee', value: '0x0' }
   }
 }
@@ -126,7 +127,7 @@ function liquidSwapBody(amountOut: string) {
  * is precisely why deriving the percentage against the oracle reference put the floor too low, so a
  * stub returning a fixed minimum could not have caught it.
  */
-function aggregator(quotes: string[]) {
+const aggregator = (quotes: string[]) => {
   const sent: (Record<string, string> | undefined)[] = []
   const client: RateLimitedClient = {
     getJson: async <T>(args: { searchParams?: Record<string, string> }) => {
@@ -156,7 +157,7 @@ function composeMulti(
   venues: Venue[],
   order: { venue: Venue; expectedOut: bigint }[],
   httpClient: RateLimitedClient,
-  options: { unwrappers?: readonly Unwrapper[]; clamped?: boolean } = {}
+  options: { unwrappers?: readonly Unwrapper[]; clamped?: boolean; ageMs?: number } = {}
 ) {
   const refreshed: { collateral: Address; loan: Address }[] = []
   const selected: {
@@ -191,7 +192,8 @@ function composeMulti(
           estimatedOut: expectedOut,
           costBps: raw === null ? null : Math.max(raw, 0),
           costBpsRaw: raw,
-          clamped: options.clamped ?? false
+          clamped: options.clamped ?? false,
+          ageMs: options.ageMs ?? 0
         }
       })
     },
@@ -608,7 +610,7 @@ describe('aggregator min-out actually clears break-even', () => {
     expect(outcome).toEqual({ kind: 'failed', reason: 'floor_unmet', firmCalls: 2 })
   })
 
-  it('refuses the venue when the re-quote fails outright', async () => {
+  it('reports a re-quote that never answered as the transport failure it is', async () => {
     let call = 0
     const client: RateLimitedClient = {
       getJson: async <T>() => {
@@ -620,8 +622,10 @@ describe('aggregator min-out actually clears break-even', () => {
     const outcome = await quoteVia(client, 9700n)
 
     expect(call).toBe(2)
-    // The earlier revision kept the first, known-underfloor quote here, which preserved the bug.
-    expect(outcome).toEqual({ kind: 'failed', reason: 'floor_unmet', firmCalls: 2 })
+    // NOT `floor_unmet`: the venue never said its own quote misses the floor — we could not ask it in
+    // terms of its own output. An earlier revision kept the first, known-underfloor quote here; the one
+    // after it refused it as an economic verdict, which a trusted curve is entitled to stop walking on.
+    expect(outcome).toEqual({ kind: 'failed', reason: 'rate_limited', firmCalls: 2 })
   })
 
   it('spends the second call only when the first floor is short', async () => {
@@ -660,10 +664,11 @@ describe('aggregator min-out actually clears break-even', () => {
   })
 })
 
-// A trustworthy curve predicts the venue's own quoted output, which is the denominator the second
-// pass above exists to discover. The prediction is biased DOWN by design, and these cases pin both
-// directions of that asymmetry: too low still clears the floor on one call, too high is refused by
-// `clearsFloor` and pays the second pass back.
+// A trustworthy curve predicts the venue's own quoted output, which is the denominator the second pass
+// above exists to discover. The prediction is biased DOWN by design, and these cases pin BOTH bounds on
+// how far the encoded floor may then sit from break-even: too high a prediction is refused by
+// `clearsFloor`, too low an one is refused past `MAX_FLOOR_OVERSHOOT_BPS`, and each costs the second
+// pass back.
 describe('curve-predicted min-out denominator', () => {
   const REFERENCE = 10_000n
   const FLOOR = 9_580n
@@ -693,17 +698,33 @@ describe('curve-predicted min-out denominator', () => {
     expect(outcome.firmCalls).toBe(1)
   })
 
-  it('is safe on an UNDER-estimate: the floor lands above break-even, still one call', async () => {
-    // Curve 9650 → prediction 9640, venue quotes 9700. A denominator under the real quote asks for
-    // LESS slippage than break-even needs, so the encoded minimum overshoots the floor — never under.
-    const { outcome, sent } = await quoteWithCurve(9_650n, ['9700'])
+  it('leaves a small overshoot alone: one call, floor a few bps above break-even', async () => {
+    // Curve 9690 → prediction 9680, venue quotes 9700: 103bps lands the minimum at 9600, exactly 20 bps
+    // over break-even — at the bound, so the overshoot is accepted rather than re-derived.
+    const { outcome, sent } = await quoteWithCurve(9_690n, ['9700'])
 
     expect(sent).toHaveLength(1)
+    expect(sent[0]?.slippageBps).toBe('103')
     expect(outcome.kind).toBe('swap')
     if (outcome.kind !== 'swap') return
-    expect(outcome.plan.amountOutMinimum).toBe(9_639n)
-    expect(outcome.plan.amountOutMinimum).toBeGreaterThan(FLOOR)
+    expect(outcome.plan.amountOutMinimum).toBe(9_600n)
     expect(outcome.firmCalls).toBe(1)
+  })
+
+  it('spends the second pass on an UNDER-estimate too, when the overshoot exceeds the bound', async () => {
+    // Curve 9650 → prediction 9640, venue quotes 9700. A denominator under the real quote asks for LESS
+    // slippage than break-even needs, so the first pass encodes 9639 — 61.6 bps ABOVE break-even, three
+    // times the whole post-maturity incentive. Every fill in that band would revert at send although
+    // the repay covered it, so the bound spends the second pass and lands the floor back on break-even.
+    const { outcome, sent } = await quoteWithCurve(9_650n, ['9700', '9700'])
+
+    expect(sent).toHaveLength(2)
+    expect(sent[0]?.slippageBps).toBe('62')
+    expect(sent[1]?.slippageBps).toBe('123')
+    expect(outcome.kind).toBe('swap')
+    if (outcome.kind !== 'swap') return
+    expect(outcome.plan.amountOutMinimum).toBe(FLOOR)
+    expect(outcome.firmCalls).toBe(2)
   })
 
   it('falls back to the second pass on an OVER-estimate, and still clears the floor', async () => {
@@ -718,6 +739,53 @@ describe('curve-predicted min-out denominator', () => {
     if (outcome.kind !== 'swap') return
     expect(outcome.plan.amountOutMinimum).toBeGreaterThanOrEqual(FLOOR)
     expect(outcome.firmCalls).toBe(2)
+  })
+
+  it('keeps the overshooting first quote when the re-quote drifts down under the floor', async () => {
+    // The overshoot second pass is an IMPROVEMENT the venue may decline: the first quote was already
+    // usable, so a re-quote that came back lower must not turn an expensive fill into no fill.
+    const { outcome, sent } = await quoteWithCurve(9_650n, ['9700', '9500'])
+
+    expect(sent).toHaveLength(2)
+    expect(outcome.kind).toBe('swap')
+    if (outcome.kind !== 'swap') return
+    expect(outcome.plan.amountOutMinimum).toBe(9_639n)
+    expect(outcome.firmCalls).toBe(2)
+  })
+
+  it('keeps the overshooting first quote when the re-quote fails outright', async () => {
+    let call = 0
+    const client: RateLimitedClient = {
+      getJson: async <T>() => {
+        call += 1
+        if (call === 2) throw new QuoteError('rate_limited', 'second pass throttled')
+        return zeroxBody('9700', '9639') as T
+      }
+    }
+    const outcome = await composeMulti(
+      ['0x'],
+      [{ venue: '0x', expectedOut: 9_650n }],
+      client
+    ).quoteFor({ ...REQUEST, referenceAmountOut: REFERENCE, minAcceptableAmountOut: FLOOR })
+
+    expect(call).toBe(2)
+    expect(outcome.kind).toBe('swap')
+    if (outcome.kind !== 'swap') return
+    expect(outcome.plan.amountOutMinimum).toBe(9_639n)
+  })
+
+  it('ignores an estimate older than the prediction age bound', async () => {
+    // Ordering survives any cache age, but a min-out denominator consumes the absolute level. A bot
+    // whose probe TTL is minutes (blue's is ten) must not thereby encode a minutes-old denominator.
+    const { client, sent } = aggregator(['9700', '9700'])
+    const outcome = await composeMulti(['0x'], [{ venue: '0x', expectedOut: 9_700n }], client, {
+      ageMs: 60_001
+    }).quoteFor({ ...REQUEST, referenceAmountOut: REFERENCE, minAcceptableAmountOut: FLOOR })
+
+    // 420bps against the reference, exactly as before the curve existed.
+    expect(sent).toHaveLength(2)
+    expect(sent[0]?.slippageBps).toBe('420')
+    expect(outcome.kind).toBe('swap')
   })
 
   it('ignores a clamped estimate, restoring the pre-curve two-pass derivation', async () => {
@@ -759,13 +827,48 @@ describe('venue fall-through cap', () => {
         { venue: '0x', expectedOut: 1000n },
         { venue: 'lifi', expectedOut: 990n }
       ],
-      multiHttp({ lifi: lifiBody('990') })
+      // The runner-up's own minimum lands on break-even, as a real venue's does for the slippage it
+      // was asked for, so its quote costs exactly one call.
+      multiHttp({ lifi: lifiBody('990', '900') })
     )
     const outcome = await quoteFor(REQUEST)
     expect(outcome.kind).toBe('swap')
     expect(finalSpender(outcome)).toBe(LIFI_SPENDER)
     // Both requests were issued: the winner's throw plus the runner-up's success.
     expect(outcome.firmCalls).toBe(2)
+  })
+
+  it('still falls through when the min-out RE-QUOTE fails on a trusted curve', async () => {
+    // The winner's own quote never said it misses the floor: the request that would have asked it in
+    // its own terms failed. Classifying that as `floor_unmet` let a transient 429 on the SECOND pass
+    // stop the walk and lose a liquidation the runner-up could have filled — the one thing the curve
+    // was never allowed to cost.
+    let zeroxCalls = 0
+    const client: RateLimitedClient = {
+      getJson: async <T>(args: { venue: HttpVenue }) => {
+        if (args.venue === 'lifi') return lifiBody('9700', '9580') as T
+        zeroxCalls += 1
+        if (zeroxCalls === 1) return zeroxBody('9700', '9396') as T
+        throw new QuoteError('rate_limited', 're-quote throttled')
+      }
+    }
+    const { quoteFor } = composeMulti(
+      ['0x', 'lifi'],
+      [
+        { venue: '0x', expectedOut: 9_900n },
+        { venue: 'lifi', expectedOut: 9_700n }
+      ],
+      client
+    )
+    const outcome = await quoteFor({
+      ...REQUEST,
+      referenceAmountOut: 10_000n,
+      minAcceptableAmountOut: 9_580n
+    })
+
+    expect(zeroxCalls).toBe(2)
+    expect(outcome.kind).toBe('swap')
+    expect(finalSpender(outcome)).toBe(LIFI_SPENDER)
   })
 
   it('counts every call of a multi-venue walk that ends in failure', async () => {
@@ -799,6 +902,7 @@ describe('venue fall-through cap', () => {
     expect(events.find(entry => entry.event === 'select.ok')?.fields).toMatchObject({
       venue: '0x',
       curveCostBps: 300,
+      curveAgeMs: 0,
       firmQuoteCostBps: 400,
       firmCalls: 1
     })

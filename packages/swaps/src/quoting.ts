@@ -170,37 +170,84 @@ type FirmQuoteOutcome =
 
 /**
  * How far below its interpolated estimate the curve's prediction of a venue's own output is taken,
- * in bps — see {@link predictedVenueOut} for why the bias must point down.
+ * in bps. Absorbs the probe-versus-firm-quote gap (a probe has no taker and asks for no slippage)
+ * plus the price drift a cached rate carries.
  *
- * Absorbs the probe-versus-firm-quote gap (a probe has no taker and asks for no slippage) plus the
- * price drift a cached rate carries.
+ * **This governs the SIZE of the margin.** Its direction is
+ * {@link predictedVenueOut}'s subject and is not in question here. The two ways the size can be wrong
+ * are not symmetric, and that asymmetry is what sets the value:
  *
- * The two failure directions are NOT symmetric, and that is what sets the value. Undersized only
- * costs the second pass back — the floor still lands exactly on break-even. Oversized tightens the
- * encoded floor ABOVE break-even, so a fill the repay would have covered reverts at send instead;
- * on the 2026-08-28 maturity a min-out shortfall already rejected 153 of 167 simulated sends, and
- * the whole post-maturity incentive is only ~20 bps, so there is very little room to spend here.
- * Provisional at this value and deliberately biased toward the cheap failure: `curveCostBps` beside
- * `firmQuoteCostBps` on `select.ok` measures the real gap, and that is what should set it.
+ * - **A margin too SMALL** leaves the prediction at or above the venue's real quote, so the encoded
+ *   floor lands BELOW break-even, {@link clearsFloor} refuses it and the second pass runs. Cost: one
+ *   extra HTTP call, and the floor still ends up exactly on break-even.
+ * - **A margin too LARGE** pushes the prediction well under the real quote, so the encoded floor
+ *   lands ABOVE break-even and a fill the repay would have covered reverts at send instead. On the
+ *   2026-08-28 maturity a min-out shortfall already rejected 153 of 167 simulated sends, and the whole
+ *   post-maturity incentive is only ~20 bps.
+ *
+ * So the value is deliberately biased toward the cheap failure, and
+ * {@link MAX_FLOOR_OVERSHOOT_BPS} bounds the expensive one independently — the margin's size only
+ * decides how often the second pass is spent, never how far above break-even a floor may be encoded.
+ * Provisional at this value: `curveCostBps` beside `firmQuoteCostBps` on `select.ok` measures the real
+ * probe-versus-firm gap, and that is what should set it.
  */
 const CURVE_PREDICTION_MARGIN_BPS = 10n
 
 /**
- * A curve estimate turned into a first-pass min-out denominator, or `undefined` when the curve has
- * nothing trustworthy to say (an unranked venue, or an estimate clamped off the probed ladder).
+ * How far above break-even a first-pass encoded min-out may sit before the second pass is spent to
+ * put it back, in bps of {@link QuoteRequest.minAcceptableAmountOut}.
  *
- * Biased DOWN, and only the direction is load-bearing: an aggregator encodes `quote · floor /
- * denominator`, so a denominator UNDER the venue's real quote lands the encoded floor at or above
- * break-even — safe, and it clears {@link clearsFloor} on the first call — while one over it lands
- * below, where the postcondition refuses the quote and the second pass re-derives against the real
- * output. Capped at the oracle reference for the reason a scored cost is floored at zero: a venue
- * quoting above the oracle is a stale oracle, not a better route.
+ * The bound exists because the overshoot an accurate curve produces and the overshoot a PESSIMISTIC
+ * one produces are different quantities. An aggregator encodes `quote · floor / denominator`, so the
+ * overshoot factor is `realQuote / prediction` — bounded by {@link CURVE_PREDICTION_MARGIN_BPS} only
+ * when the curve is right, and otherwise unbounded in how pessimistic the curve is. A curve just 0.5%
+ * low already encodes a floor ~62 bps above break-even, three times the entire post-maturity
+ * incentive: every fill in that band reverts at send even though the repay would have covered it,
+ * which is the failure this whole path exists to reduce. {@link clearsFloor} cannot catch it — it is a
+ * one-sided check.
+ *
+ * Set at twice `CURVE_PREDICTION_MARGIN_BPS`: an accurate curve's overshoot IS the margin, so this
+ * leaves it room for rounding and mild pessimism while capping the give-away at the same order as the
+ * margin deliberately spent, rather than at a multiple of the whole prize. Exceeding it costs one
+ * extra HTTP call and lands the floor on break-even — the same trade the too-small direction makes.
+ */
+const MAX_FLOOR_OVERSHOOT_BPS = 2n * CURVE_PREDICTION_MARGIN_BPS
+
+/**
+ * How stale a curve may be and still be trusted to predict a venue's absolute output.
+ *
+ * Venue ORDERING is drift-immune at any cache age, but a min-out denominator consumes the absolute
+ * LEVEL, which decays as the pair's price leaves the cached rate behind (see `createVenueSelector`).
+ * A prediction older than this falls back to the oracle reference and the ordinary second pass, which
+ * costs one HTTP call — so this can be set against the cost level's own half-life without regard to
+ * the probe cadence. It is deliberately NOT a bot-tunable: a bot whose `PROBE_STALE_MS` is long
+ * because it only consumes ordering (blue's is 10 minutes) must not thereby inherit a 10-minute-old
+ * denominator.
+ */
+const MAX_PREDICTION_AGE_MS = 60_000
+
+/**
+ * A curve estimate turned into a first-pass min-out denominator, or `undefined` when the curve has
+ * nothing trustworthy to say (an unranked venue, an estimate clamped off the probed ladder, or one
+ * older than {@link MAX_PREDICTION_AGE_MS}).
+ *
+ * **This block's subject is the DIRECTION of the bias relative to the venue's real quote**, which is
+ * what makes the prediction safe to encode against; how far down it is taken is
+ * {@link CURVE_PREDICTION_MARGIN_BPS}'s subject. An aggregator encodes `quote · floor / denominator`,
+ * so a denominator UNDER the venue's real quote lands the encoded floor at or above break-even —
+ * safe, and it clears {@link clearsFloor} on the first call — while a denominator OVER the real quote
+ * lands the floor below break-even, where the postcondition refuses the quote and the second pass
+ * re-derives against the real output. Being under is therefore the direction to be wrong in; how far
+ * under is bounded on the other side by {@link MAX_FLOOR_OVERSHOOT_BPS}. Capped at the oracle
+ * reference for the reason a scored cost is floored at zero: a venue quoting above the oracle is a
+ * stale oracle, not a better route.
  */
 const predictedVenueOut = (
   estimate: VenueCostEstimate | undefined,
   referenceAmountOut: bigint
 ): bigint | undefined => {
   if (!estimate || estimate.clamped || estimate.estimatedOut <= 0n) return undefined
+  if (estimate.ageMs > MAX_PREDICTION_AGE_MS) return undefined
   const capped =
     estimate.estimatedOut < referenceAmountOut ? estimate.estimatedOut : referenceAmountOut
   return (capped * (BPS - CURVE_PREDICTION_MARGIN_BPS)) / BPS
@@ -210,15 +257,48 @@ const predictedVenueOut = (
 // {@link QuoteOutcome.firmCalls}. It counts requests that reach a venue rather than quote attempts,
 // so an adapter failing before its first request (a missing `tokenInDecimals`, an unreachable venue
 // arm) truthfully costs nothing.
+//
+// Read as a delta on the client's own {@link RateLimitedClient.requests} counter when it has one, so a
+// transport retry inside a single `getJson` is counted as the extra request it really was. A client
+// without one (a test fake) degrades to one per `getJson`, which under-reports a retried request. The
+// delta is exact only while nothing else is quoting on the same client — both liquidators work
+// candidates serially, and the unwrap chain has already run by the time this is taken.
 const countingClient = (client: RateLimitedClient) => {
+  const requests = client.requests
+  const start = requests?.() ?? 0
   let calls = 0
   const counted: RateLimitedClient = {
+    ...client,
     getJson: <T>(args: Parameters<RateLimitedClient['getJson']>[0]) => {
       calls += 1
       return client.getJson<T>(args)
     }
   }
-  return { counted, calls: () => calls }
+  return { counted, calls: () => (requests ? requests() - start : calls) }
+}
+
+// How far a venue-encoded min-out sits ABOVE the break-even floor, in bps of that floor; `0n` when it
+// is at or below it, or when there is no floor to measure against.
+const floorOvershootBps = (amountOutMinimum: bigint, floor: bigint): bigint =>
+  floor <= 0n || amountOutMinimum <= floor ? 0n : ((amountOutMinimum - floor) * BPS) / floor
+
+/**
+ * Whether to spend a second firm quote, re-derived against the venue's own quoted output.
+ *
+ * Both directions of a missed denominator are worth one call, and they are not the same failure. Too
+ * high and the encoded floor sits UNDER break-even, where {@link clearsFloor} refuses the quote
+ * outright — the venue is unusable without the second pass. Too low and the floor sits above
+ * break-even: usable, but every fill in the overshoot band reverts at send although the repay would
+ * have covered it, so past {@link MAX_FLOOR_OVERSHOOT_BPS} the call buys back real fills rather than
+ * merely a usable quote.
+ *
+ * A `derived` minimum is exempt in both directions: it is our own reconstruction, so it can neither be
+ * checked against the floor nor improved by re-asking (see {@link Swap.minOutSource}).
+ */
+const needsSecondPass = (swap: Swap, floor: bigint): boolean => {
+  if (swap.minOutSource !== 'venue' || swap.expectedAmountOut <= 0n) return false
+  if (!clearsFloor(swap, floor)) return true
+  return floorOvershootBps(swap.amountOutMinimum, floor) > MAX_FLOOR_OVERSHOOT_BPS
 }
 
 // One firm venue quote shared by both composers: build the venue params, dispatch under `tryCatch`,
@@ -280,29 +360,36 @@ async function firmQuoteVenue(args: {
   }
 
   // The aggregators apply the slippage percentage to THEIR OWN quote, so the first pass can only ever
-  // PREDICT that denominator: it lands their min-out at `quote · floor / prediction`, which sits below
-  // break-even whenever the prediction was too high — always, for the oracle reference, since a real
-  // route costs something. Re-deriving against the venue's own quoted output puts it back exactly.
-  // Uniswap applies the percentage to the reference itself and is already at or above the floor, so it
-  // never takes this branch.
+  // PREDICT that denominator: it lands their min-out at `quote · floor / prediction`, which misses
+  // break-even by however far the prediction missed the real quote — in EITHER direction. Re-deriving
+  // against the venue's own quoted output puts it back exactly, which is why the same second pass
+  // answers both (see {@link needsSecondPass}). Uniswap applies the percentage to the reference itself
+  // and is already at or above the floor, so it never takes this branch.
   let swap = first.data
-  // A `derived` minimum can never clear the floor however it is asked for, so a retry there is a second
-  // API call that is guaranteed not to help.
-  if (
-    swap.minOutSource === 'venue' &&
-    !clearsFloor(swap, minAcceptableAmountOut) &&
-    swap.expectedAmountOut > 0n
-  ) {
+  if (needsSecondPass(swap, minAcceptableAmountOut)) {
+    // An overshooting first quote is already USABLE, so the second pass is an improvement it may
+    // decline: a re-quote that drifted down, or never answered, leaves the expensive floor standing
+    // rather than losing a fundable liquidation. When the first quote was under the floor there is
+    // nothing to fall back to, and a re-quote that never answered is a TRANSPORT failure — reporting
+    // it as `floor_unmet` would hand the caller an economic verdict it is entitled to stop its venue
+    // walk on.
+    const usable = clearsFloor(swap, minAcceptableAmountOut)
     const second = await quote(paramsFor(swap.expectedAmountOut))
-    if (second.data) swap = second.data
+    if (second.data && (!usable || clearsFloor(second.data, minAcceptableAmountOut))) {
+      swap = second.data
+    } else if (!usable) {
+      const reason = second.error instanceof QuoteError ? second.error.reason : 'api_error'
+      return { kind: 'quote_failed', reason, detail: ensureError(second.error).message }
+    }
   }
 
-  // POSTCONDITION, and the actual guarantee — the retry above is only an attempt to satisfy it. The
-  // second quote's own output can come back lower than the first's, which puts its min-out back under
-  // the floor; the retry can fail outright; and a venue that only lets us RECONSTRUCT its min-out
-  // cannot be checked at all. In every one of those cases the encoded bound does not protect the
-  // repay, so the venue is refused and the caller falls through to the next one. Keeping a
-  // known-underfloor quote here is what the earlier revision got wrong.
+  // POSTCONDITION, and the actual guarantee — the second pass above is only an attempt to satisfy it.
+  // The second quote's own output can come back lower than the first's, which puts its min-out back
+  // under the floor; and a venue that only lets us RECONSTRUCT its min-out cannot be checked at all. In
+  // both cases the encoded bound does not protect the repay, so the venue is refused and the caller
+  // falls through to the next one. Keeping a known-underfloor quote here is what an earlier revision
+  // got wrong. A second pass that never answered is NOT one of these cases — it returns above, as the
+  // transport failure it is.
   if (!clearsFloor(swap, minAcceptableAmountOut)) {
     return { kind: 'floor_unmet', swap, floor: minAcceptableAmountOut }
   }
@@ -547,12 +634,12 @@ export function composeMultiVenueQuoting(deps: {
   // `trusted` is true only when the curve ranked EVERY enabled venue on unclamped rungs, which is the
   // one case where the winner is genuinely known; anything less and the caller must keep its full
   // fall-through, because a probe that ranked less than everything could be hiding the healthy venue.
-  async function venuePlanFor(args: {
+  const venuePlanFor = async (args: {
     pair: VenuePair
     amountIn: bigint
     referenceAmountOut: bigint
     id?: string
-  }): Promise<{ order: Venue[]; estimates: Map<Venue, VenueCostEstimate>; trusted: boolean }> {
+  }): Promise<{ order: Venue[]; estimates: Map<Venue, VenueCostEstimate>; trusted: boolean }> => {
     const { pair, amountIn, referenceAmountOut, id } = args
     const { error: probeError } = await tryCatch(refresh(pair))
     if (probeError) {
@@ -605,10 +692,10 @@ export function composeMultiVenueQuoting(deps: {
       // A trusted curve ranked every enabled venue on exactly the axis `bad_route` and `floor_unmet`
       // measure, so once the winner has been quoted those two say nothing a runner-up would change and
       // the walk stops there — one candidate costs one venue's worth of calls. `quote_failed` is NOT
-      // on that axis: the curve ranked output, not reachability, so a timeout or a rate limit still
-      // falls through. Anything the curve cannot vouch for fails OPEN to the full pre-curve walk,
-      // because the guarantee it replaces is that a mis-ranked probe costs a fall-through, never a
-      // lost route.
+      // on that axis: the curve ranked output, not reachability, so a timeout or a rate limit — on the
+      // first pass or on the min-out re-derivation — still falls through. Anything the curve cannot
+      // vouch for fails OPEN to the full pre-curve walk, because the guarantee it replaces is that a
+      // mis-ranked probe costs a fall-through, never a lost route.
       const stopAfterWinner = trusted
 
       // Try the candidate venues in order; a quote or route-quality failure falls through to the next
@@ -682,6 +769,9 @@ export function composeMultiVenueQuoting(deps: {
           // costs — neither is realized on-chain execution, and reading them as such is the error the
           // pair exists to make visible.
           curveCostBps: estimates.get(venue)?.costBpsRaw ?? null,
+          // Cache age of the curve those bps came off, so a fidelity reading can be attributed to
+          // staleness rather than to the interpolation, and a fail-open is visible as `null`.
+          curveAgeMs: estimates.get(venue)?.ageMs ?? null,
           firmQuoteCostBps: routeCostBps({
             reference: referenceAmountOut,
             amountOut: outcome.swap.expectedAmountOut

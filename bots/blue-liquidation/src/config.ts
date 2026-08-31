@@ -85,10 +85,17 @@ const DEFAULT_POSITION_LIQUIDATION_COOLDOWN_MS = 0
 // queue ahead of a time-sensitive firm quote. `PROBE_STALE_MS` caps probe cadence per pair; a pair is
 // re-probed only when a liquidatable position touches it after the cache goes stale.
 //
-// This bot wires no USD price source, so the ladder keeps its whole-collateral-token reading and the
-// TTL stays long: it consumes venue ORDERING only, which is drift-immune at any cache age because
-// every venue at a rung shares one refresh (see `createVenueSelector`). Only the absolute route-cost
-// term decays with age, and nothing here reads it.
+// This bot wires no USD price source, so the ladder keeps its whole-collateral-token reading, and the
+// TTL stays long — ten minutes against midnight's 45 seconds — because what this bot consumes from the
+// curve is venue ORDERING, which is drift-immune at any cache age: every venue at a rung shares one
+// refresh, so their rates drift together (see `createVenueSelector`).
+//
+// The absolute cost LEVEL does decay with age, and the quoting layer does read it — it sets the
+// first-pass min-out denominator. That consumer carries its OWN age bound (`@repo/swaps`'
+// prediction-age ceiling), so a curve older than it falls back to the two-pass derivation for one extra
+// HTTP call rather than encoding a ten-minute-old denominator. Bounding the consumer rather than
+// shortening this TTL is deliberate: it protects both bots against a stale cache, including midnight's,
+// and it does not multiply blue's probe traffic across a much larger discovered pair set.
 const DEFAULT_PROBE_STALE_MS = 600_000
 const DEFAULT_PROBE_HTTP_RPS = 1
 const DEFAULT_PROBE_LADDER = ['0.01', '0.1', '1', '10', '100']

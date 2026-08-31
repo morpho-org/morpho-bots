@@ -2,8 +2,9 @@ import type { Backoff, CooldownStore, Logger, SimulateResult, SubmitOutcome } fr
 import type { QuoteOutcome, SwapPlan, VenueCostEstimate, VenuePair } from '@repo/swaps'
 import type { Address } from 'viem'
 
+import { venuePairKey } from '@repo/swaps'
 import { assertNever, lensKey, tryCatch } from '@repo/utils'
-import { formatUnits, getAddress } from 'viem'
+import { formatUnits } from 'viem'
 
 import type { BorrowerCandidate } from '../discovery/borrowers'
 import type { Market } from '../execution/encode-call'
@@ -17,6 +18,7 @@ import {
   capCandidates,
   isBadDebtRealization,
   MAX_PLAN_CANDIDATES_PER_POSITION,
+  MAX_PROBED_CANDIDATES_PER_POSITION,
   planCandidates,
   planSurplus
 } from '../sizing/plan'
@@ -82,10 +84,13 @@ type TickCounters = {
    */
   siblingSkipped: number
   /**
-   * Candidates dropped by preselection, before any venue call was spent on them, in two places that
-   * share one counter because both are the same verdict — "this position's better alternatives already
-   * had their turn" — and both are distinguished by the `reason` on their `preselect.skipped` line:
+   * Candidates dropped by preselection, before any venue call was spent on them, in three places that
+   * share one counter because all are the same verdict — "this position's better alternatives already
+   * had their turn" — each distinguished by the `reason` on its `preselect.skipped` line:
    *
+   * - `probe_cap` — beyond {@link MAX_PROBED_CANDIDATES_PER_POSITION} on the GROSS ordering, dropped
+   *   before its route was even resolved. The one cap applied blind, because it is what bounds the
+   *   indicative probe traffic that learning the cost would cost.
    * - `position_cap` — beyond `MAX_PLAN_CANDIDATES_PER_POSITION` on the FINAL net-of-route-cost
    *   ordering. Sizing used to truncate silently on gross surplus, before route cost could reorder;
    *   it now returns every candidate and the drop is both later and visible.
@@ -283,10 +288,11 @@ type PreparedRoute = { pair: VenuePair; amountIn: bigint }
 /**
  * What phase A.5 learned about one candidate's route. `unknown` is not an error state to recover from:
  * it is the fail-open signal that this candidate — and therefore its whole position — must be ordered
- * on gross surplus, exactly as before the probe curve existed.
+ * on gross surplus, exactly as before the probe curve existed. `no_route` is the opposite: a candidate
+ * that provably sells nothing, and so costs zero rather than being unpriced.
  */
 type RouteState =
-  | { kind: 'swap_free' }
+  | { kind: 'no_route' }
   | { kind: 'route'; route: PreparedRoute }
   | { kind: 'unknown' }
 
@@ -318,12 +324,9 @@ type TickRouting = {
   ) => readonly VenueCostEstimate[]
 }
 
-const pairKey = (pair: VenuePair): string =>
-  `${getAddress(pair.collateral)}:${getAddress(pair.loan)}`
-
 /**
- * Phase A.5: resolve the route every sized candidate would sell through, then warm those pairs' probe
- * curves so the ranking below can price them.
+ * Phase A.5: resolve the route every sized candidate would sell through, then start warming those
+ * pairs' probe curves so the ranking can price them.
  *
  * It is its own phase for two reasons. Phase A cannot await (see {@link sizeCandidates}), and `maintain`
  * cannot host this at all: it receives only a block number, so it would have to redo discovery and the
@@ -331,15 +334,23 @@ const pairKey = (pair: VenuePair): string =>
  * the time-critical work, and its failures surface as `queue.maintenance_failed`. The pair is not even
  * known before sizing — the unwrap chain decides which token is finally sold.
  *
- * **Pairs are deduplicated before anything is warmed**, so several slots on one pair — or several
- * positions in one market — trigger exactly one refresh; the distinct warms then run concurrently and
- * are serialized by the probe client's own rate limiter, and no refresh for a pair without a sized
- * candidate is ever issued.
+ * **The warm is started, never awaited.** A cold sweep is one indicative call per rung per venue, which
+ * at the venues' ~1 rps is seconds of wall clock — spent inside the maturity burst this ordering exists
+ * to win, and before any quote runs. So it warms for the NEXT tick and this tick reads whatever the
+ * cache already holds: a first tick falls open to gross ordering and the curve converges within a tick
+ * or two. `VenueSelector.refresh` dedupes an in-flight sweep, so neither the next tick nor the quoting
+ * layer's own refresh can double-probe a pair being warmed.
+ *
+ * **Pairs are deduplicated before anything is warmed**, keyed exactly as the probe cache keys them, so
+ * several slots on one pair — or several positions in one market — trigger one sweep; and no pair
+ * without a sized candidate is ever probed. A candidate that needs no route at all (a swap-free slot, a
+ * bad-debt write-off) resolves nothing and warms nothing.
  *
  * Failure is non-fatal in both stages: an unresolved candidate is left `unknown` and a failed warm
  * simply leaves the curve cold, which fails the affected positions open to gross-surplus ordering.
  *
- * Side effects: emits `route.unresolved` / `probe.warm_failed` per failure and `probe.warmed` once.
+ * Side effects: emits `route.unresolved` per failure, `probe.warm_failed` asynchronously per failed
+ * sweep, and `probe.warmed` when there was a pair to warm.
  */
 const prepareRoutes = async (deps: {
   sized: readonly SizedCandidate[]
@@ -351,8 +362,13 @@ const prepareRoutes = async (deps: {
   const pairs = new Map<string, VenuePair>()
 
   for (const candidate of sized) {
-    if (candidate.plan.swapFree) {
-      states.set(candidate, { kind: 'swap_free' })
+    // Two shapes need no route, and they must not be costed as `unknown`: that is a per-POSITION
+    // fail-open signal (see {@link RouteState}), so reporting it here would drop a whole write-off
+    // position back to gross ordering. A write-off also never reaches `quoteFor` at all — phase B
+    // gates it on the same predicate — so resolving its unwraps would be an HTTP call spent on a
+    // route nothing will ever sell through.
+    if (candidate.plan.swapFree || isBadDebtRealization(candidate.plan)) {
+      states.set(candidate, { kind: 'no_route' })
       continue
     }
     const resolved = await tryCatch(routing.resolveRoute(candidate.plan, candidate.out))
@@ -366,12 +382,13 @@ const prepareRoutes = async (deps: {
     }
     const route = resolved.data ?? null
     states.set(candidate, route ? { kind: 'route', route } : { kind: 'unknown' })
-    if (route) pairs.set(pairKey(route.pair), route.pair)
+    if (route) pairs.set(venuePairKey(route.pair), route.pair)
   }
 
-  await Promise.all(
-    [...pairs.values()].map(async pair => {
-      const { error } = await tryCatch(routing.warmRoute(pair))
+  for (const pair of pairs.values()) {
+    // Invoked INSIDE the thunk so a synchronous throw from `warmRoute` becomes a caught rejection
+    // rather than escaping this loop and aborting the tick.
+    void tryCatch((async () => routing.warmRoute(pair))()).then(({ error }) => {
       if (error) {
         logger.warn('probe.warm_failed', {
           collateral: pair.collateral,
@@ -380,8 +397,8 @@ const prepareRoutes = async (deps: {
         })
       }
     })
-  )
-  logger.info('probe.warmed', { pairs: pairs.size, candidates: sized.length })
+  }
+  if (pairs.size > 0) logger.info('probe.warmed', { pairs: pairs.size, candidates: sized.length })
   return states
 }
 
@@ -394,7 +411,8 @@ type CostedCandidate = SizedCandidate & {
 
 /**
  * Prices each candidate's route off the warm curve, in the SAME USD scale as its surplus so the two are
- * subtractable. A candidate sizing marked `swapFree` costs zero by construction: there is no route.
+ * subtractable. A candidate that sells nothing costs zero by construction — a `swapFree` slot, or a
+ * bad-debt write-off, which trades no assets at all.
  *
  * Everything else fails open to `null` (see {@link RouteState}) — a cold pair (`[]`), a `clamped`
  * estimate taken from a ladder end rather than between two rungs, no oracle reference, or an unpriced
@@ -414,7 +432,7 @@ const costRoutes = (deps: {
   deps.sized.map(candidate => {
     const uncosted = { ...candidate, routeCostUsd: null, routeCostBps: null }
     const state = deps.states.get(candidate) ?? { kind: 'unknown' as const }
-    if (state.kind === 'swap_free') return { ...candidate, routeCostUsd: 0n, routeCostBps: 0 }
+    if (state.kind === 'no_route') return { ...candidate, routeCostUsd: 0n, routeCostBps: 0 }
     if (state.kind === 'unknown') return uncosted
 
     const reference = expectedLoanOut(candidate.plan)
@@ -429,14 +447,19 @@ const costRoutes = (deps: {
   })
 
 /**
- * Truncates each POSITION's alternatives to {@link MAX_PLAN_CANDIDATES_PER_POSITION} over the final
- * ordering, preserving that ordering for the survivors and reporting what it dropped.
+ * Truncates each POSITION's alternatives to `limit` over the ordering it is given, preserving that
+ * ordering for the survivors and reporting what it dropped.
  *
- * The order of operations is the point: capping on gross surplus — as sizing did — can discard the
- * candidate that wins once route cost is charged, and nothing downstream can recover it.
+ * Applied twice per tick, at two different limits, and the order of operations is the point. The final
+ * {@link MAX_PLAN_CANDIDATES_PER_POSITION} cap must run over the NET ordering: capping on gross surplus
+ * — as sizing did — can discard the candidate that wins once route cost is charged, and nothing
+ * downstream can recover it. The earlier {@link MAX_PROBED_CANDIDATES_PER_POSITION} cap has to run on
+ * gross, because it is what bounds learning the cost at all; it is looser precisely so the net ordering
+ * still has room to reorder into the final cap.
  */
 const capPerPosition = <T extends { label: string; plan: LiquidationPlan }>(
-  ranked: readonly T[]
+  ranked: readonly T[],
+  limit: number
 ): { kept: T[]; dropped: T[] } => {
   const byLabel = new Map<string, T[]>()
   for (const candidate of ranked) {
@@ -446,11 +469,7 @@ const capPerPosition = <T extends { label: string; plan: LiquidationPlan }>(
   }
   const keep = new Set<T>()
   for (const group of byLabel.values()) {
-    for (const candidate of capCandidates(
-      group,
-      entry => entry.plan.swapFree,
-      MAX_PLAN_CANDIDATES_PER_POSITION
-    )) {
+    for (const candidate of capCandidates(group, entry => entry.plan.swapFree, limit)) {
       keep.add(candidate)
     }
   }
@@ -473,9 +492,10 @@ const capPerPosition = <T extends { label: string; plan: LiquidationPlan }>(
  * with zero new candidates. The lens reads every candidate fresh on-chain, so discovery is a coverage
  * source, never a correctness dependency.
  *
- * Between sizing and that expensive work sits phase A.5 ({@link prepareRoutes}), which warms the venue
- * probe curve for the pairs the sized candidates actually sell through, so the ordering can charge each
- * candidate its route cost instead of ranking on the oracle alone.
+ * Between sizing and that expensive work sits phase A.5 ({@link prepareRoutes}), which resolves the
+ * pairs the sized candidates actually sell through and starts (never awaits) warming their probe
+ * curves, so the ordering can charge each candidate its route cost instead of ranking on the oracle
+ * alone. A tick whose curve is not yet warm falls open to gross ordering rather than waiting for it.
  *
  * `tick.end` is emitted even when a position aborts the tick — with `complete: false`, so partial
  * counters can never be mistaken for a genuinely idle tick. See {@link TickCounters} for the
@@ -622,27 +642,44 @@ export async function runTick(deps: {
 
   counters.candidates = sized.length
 
-  // 4. Phase A.5 — the async step between sizing and the expensive work: resolve each candidate's
-  // route and warm the (deduplicated) probe curves for those pairs only.
-  const states = await prepareRoutes({ sized, routing, logger })
+  const skipPreselected = (
+    dropped: readonly { pair: LensInput; plan: LiquidationPlan }[],
+    reason: 'probe_cap' | 'position_cap'
+  ) => {
+    counters.preselectSkipped += dropped.length
+    for (const candidate of dropped) {
+      logger.info('preselect.skipped', {
+        marketId: candidate.pair.id,
+        borrower: candidate.pair.borrower,
+        collateralIndex: candidate.plan.collateralIndex,
+        postMaturityMode: candidate.plan.postMaturityMode,
+        reason
+      })
+    }
+  }
 
-  // 5. Rank net of route cost, THEN truncate. Both halves matter: charging the route makes a swap-free
+  // 4. Bound the probe fan-out BEFORE resolving anything, on the gross ordering — this is the one cap
+  // that must be applied blind, because it is what bounds learning the cost. It is looser than the
+  // final cap so the net ordering below still has a superset to reorder within.
+  const { kept: probeable, dropped: overProbeBound } = capPerPosition(
+    sized,
+    MAX_PROBED_CANDIDATES_PER_POSITION
+  )
+  skipPreselected(overProbeBound, 'probe_cap')
+
+  // 5. Phase A.5 — the async step between sizing and the expensive work: resolve each candidate's
+  // route and start warming the (deduplicated) probe curves for those pairs only. The warm is NOT
+  // awaited; this tick reads whatever the cache already holds (see {@link prepareRoutes}).
+  const states = await prepareRoutes({ sized: probeable, routing, logger })
+
+  // 6. Rank net of route cost, THEN truncate. Both halves matter: charging the route makes a swap-free
   // slot beat a nominally larger swap slot the incentive cannot fund, and capping afterwards means the
   // net winner is no longer discarded before it was ever compared.
   const scored = rankByNetUsdSurplus(
-    scoreNetOfRouteCost(costRoutes({ sized, states, routing, usdValueOf }))
+    scoreNetOfRouteCost(costRoutes({ sized: probeable, states, routing, usdValueOf }))
   )
-  const { kept, dropped } = capPerPosition(scored)
-  counters.preselectSkipped += dropped.length
-  for (const candidate of dropped) {
-    logger.info('preselect.skipped', {
-      marketId: candidate.pair.id,
-      borrower: candidate.pair.borrower,
-      collateralIndex: candidate.plan.collateralIndex,
-      postMaturityMode: candidate.plan.postMaturityMode,
-      reason: 'position_cap'
-    })
-  }
+  const { kept, dropped } = capPerPosition(scored, MAX_PLAN_CANDIDATES_PER_POSITION)
+  skipPreselected(dropped, 'position_cap')
 
   // A position's best swap-free candidate is exempt from the fall-through bound below, however late it
   // ranks — `kept` is in rank order, so the first one is the best. See `preselectSkipped`.
@@ -654,7 +691,7 @@ export async function runTick(deps: {
   }
   const attempts = new Map<string, number>()
 
-  // 6. Phase B — the expensive serial stages (one quote and one simulation each), worked in descending
+  // 7. Phase B — the expensive serial stages (one quote and one simulation each), worked in descending
   // expected-USD-profit order so the most valuable candidate gets the contested early seconds rather
   // than whichever borrower sorts first by address.
   //

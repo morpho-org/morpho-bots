@@ -29,11 +29,16 @@ const usdPrice = (whole: string) => async () => parseUnits(whole, USD_LADDER_PRI
 // A fake probe returning a fixed indicative output per `${venue}:${amountIn}`, recording every call.
 function fakeProbe(
   outputs: Record<string, bigint>,
-  opts: { throwFor?: (venue: Venue, amountIn: bigint) => boolean } = {}
+  opts: {
+    throwFor?: (venue: Venue, amountIn: bigint) => boolean
+    /** Blocks every probe until the returned promise settles, so a sweep can be held mid-flight. */
+    hold?: () => Promise<void>
+  } = {}
 ) {
   const calls: { venue: Venue; amountIn: bigint; tokenInDecimals?: number }[] = []
   const indicativeQuote = async (venue: Venue, params: PriceParameters) => {
     calls.push({ venue, amountIn: params.amountIn, tokenInDecimals: params.tokenInDecimals })
+    await opts.hold?.()
     if (opts.throwFor?.(venue, params.amountIn)) throw new QuoteError('no_route', 'probe boom')
     const out = outputs[`${venue}:${params.amountIn}`]
     if (out === undefined) throw new QuoteError('no_route', 'no output stubbed')
@@ -342,6 +347,73 @@ describe('createVenueSelector', () => {
 
       expect(probe.calls).toHaveLength(4)
       expect(selector.select(PAIR, SMALL, 100n)).toEqual([])
+    })
+
+    it('clamps a bracket too narrow to weight in float space, rather than reporting confidence', async () => {
+      // Two rungs whose bigint sizes differ by less than a double's ULP at that magnitude: the log
+      // span collapses to zero, so there is no interpolation to report. Every other unusable-bracket
+      // path already reports `clamped`, and a degenerate one presented as confident is worse than a
+      // clamp — it is the low rung's rate either way.
+      const lo = parseUnits('1000000000000', 18)
+      const hi = parseUnits('1000000000000.0000001', 18)
+      expect(hi).toBeGreaterThan(lo)
+      expect(Number(hi)).toBe(Number(lo))
+
+      const probe = fakeProbe({ [`0x:${lo}`]: 1_000_000n, [`0x:${hi}`]: 2_000_000n })
+      const selector = make(probe, {
+        ladderSizes: ['1000000000000', '1000000000000.0000001']
+      })
+      await selector.refresh(PAIR)
+
+      const [estimate] = selector.select(PAIR, lo + (hi - lo) / 2n)
+      expect(estimate?.clamped).toBe(true)
+    })
+  })
+
+  describe('concurrency', () => {
+    it('probes venues concurrently, so a sweep costs one venue-worth of rate-limit waits', async () => {
+      // Grouped by RUNG, not by venue: every venue's rung 0 is requested before any venue's rung 1. A
+      // serialized sweep multiplied its wall-clock by the venue count for no rate-limit benefit, since
+      // the client holds a separate token bucket per venue — and a liquidatable pair waits behind it.
+      const probe = fakeProbe(OUTPUTS)
+      await make(probe).refresh(PAIR)
+
+      expect(probe.calls.map(call => `${call.venue}:${call.amountIn}`)).toEqual([
+        `0x:${SMALL}`,
+        `1inch:${SMALL}`,
+        `0x:${LARGE}`,
+        `1inch:${LARGE}`
+      ])
+    })
+
+    it('does not start a second sweep for a pair already being swept', async () => {
+      // `updatedAt` is written only when a sweep completes, so the staleness gate alone cannot see an
+      // in-flight one. Without this, a non-blocking warm plus the composer's own refresh double-probes
+      // every cold pair.
+      const probe = fakeProbe(OUTPUTS)
+      const selector = make(probe)
+
+      await Promise.all([selector.refresh(PAIR), selector.refresh(PAIR)])
+      expect(probe.calls).toHaveLength(4)
+    })
+
+    it('does not wait behind an in-flight sweep', async () => {
+      // The second caller resolves without the cache being warm — that is the point: it reads a cold
+      // cache and fails open instead of blocking a firm quote behind a full ladder sweep.
+      let release = () => {}
+      const gate = new Promise<void>(resolve => {
+        release = resolve
+      })
+      const probe = fakeProbe(OUTPUTS, { hold: () => gate })
+      const selector = make(probe)
+
+      const first = selector.refresh(PAIR)
+      await selector.refresh(PAIR)
+      expect(selector.select(PAIR, SMALL)).toEqual([])
+
+      release()
+      await first
+      expect(selector.select(PAIR, SMALL)).not.toEqual([])
     })
   })
 })

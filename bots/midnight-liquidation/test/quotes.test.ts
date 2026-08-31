@@ -104,7 +104,8 @@ function fakeSelector(
         estimatedOut: 1000n,
         costBps: null,
         costBpsRaw: null,
-        clamped: options.clamped ?? false
+        clamped: options.clamped ?? false,
+        ageMs: 0
       })),
     snapshot: () => []
   }
@@ -138,8 +139,10 @@ describe('composeQuoting (Midnight lens-projection adapter)', () => {
   it('returns no_config when the plan indexes a missing collateral slot', async () => {
     const { selector, refreshed } = fakeSelector(['0x'])
     const { quoteFor } = compose(selector)
+    // `firmCalls: 0`, not absent: an absent count reads as unknown, and this path provably spent none.
     expect(await quoteFor({ ...PLAN, collateralIndex: 5 }, OUT, LABEL)).toEqual({
-      kind: 'no_config'
+      kind: 'no_config',
+      firmCalls: 0
     })
     expect(refreshed).toHaveLength(0) // never probed for a slot it can't route
   })
@@ -147,7 +150,7 @@ describe('composeQuoting (Midnight lens-projection adapter)', () => {
   it('returns no_config (and never probes) for an excluded collateral', async () => {
     const { selector, refreshed } = fakeSelector(['0x'])
     const { quoteFor } = compose(selector, { excludeCollaterals: [COLLATERAL] })
-    expect(await quoteFor(PLAN, OUT, LABEL)).toEqual({ kind: 'no_config' })
+    expect(await quoteFor(PLAN, OUT, LABEL)).toEqual({ kind: 'no_config', firmCalls: 0 })
     expect(refreshed).toHaveLength(0)
   })
 

@@ -48,7 +48,9 @@ export function composeQuoting(deps: {
       // anymore, so this is its escape hatch from the auto-unwrap path too.
       if (excludeCollaterals.some(token => isAddressEqual(token, out.params.collateralToken))) {
         logger.info('quote.excluded_collateral', { collateral: out.params.collateralToken })
-        return { kind: 'no_config' }
+        // `firmCalls: 0` explicitly: an absent count reads as UNKNOWN, and this path provably spent
+        // nothing (see {@link QuoteOutcome.firmCalls}).
+        return { kind: 'no_config', firmCalls: 0 }
       }
 
       return quoteRequest({

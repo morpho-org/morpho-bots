@@ -49,8 +49,13 @@ changes all three.
 - **Per-pool exclusion (`excludedSources`).** Explicitly deferred in
   [TIB-2026-08-28](./TIB-2026-08-28-midnight-send-shortfall-classification.md); this work is what
   makes per-pool cost observable enough to decide it later.
-- **Changing the correctness chain.** Firm quote → encoded min-out floor → oracle route-quality
-  guard → on-chain `simulate()` is untouched. The curve only orders and pre-screens.
+- **Widening what may be sent.** The gates on a broadcast — the venue-encoded min-out floor checked
+  against break-even, the oracle route-quality guard, and the on-chain `simulate()` ok-only rule — are
+  unchanged and none of them is derived from the curve. Note carefully that this is **narrower than the
+  earlier "the curve only orders and pre-screens"**: decision 7 puts the curve inside the derivation of
+  the min-out that is then checked. What survives is that nothing the curve produces is trusted — it is
+  a first guess at a denominator, and a floor derived from it is accepted only if the venue's own
+  reported minimum clears break-even on its own terms.
 
 ## Superseded Decisions
 
@@ -115,6 +120,15 @@ before candidates are ordered. It must run above the `MAX_PLAN_CANDIDATES_PER_PO
 can drop the cheapest-to-execute candidate before its cost is ever looked at, which is the exact
 failure this work is meant to remove.
 
+Removing that cap from sizing leaves the probe fan-out unbounded, though, and those are different
+costs: a 16-slot position in two modes is 32 candidates and up to 16 distinct pairs to sweep. So a
+**second, looser cap of `2 × MAX_PLAN_CANDIDATES_PER_POSITION` is applied on the gross ordering before
+any route is resolved** (`probe_cap` on `preselect.skipped`). It is the one cap that must be applied
+blind, because it is what bounds learning the cost at all; twice the plan cap so the priced set stays a
+strict superset of what the final cap keeps, leaving the net ordering room to reorder. Candidates past
+it are dropped rather than left uncosted — an uncosted candidate fails its whole position open to gross
+ordering, so leaving them in would defeat the ranking for exactly the positions the cap exists for.
+
 **5. The curve fails open.** A cold cache, a rung that returned no venue quote, or a size clamped
 past the ladder's ends all fall back to **gross-surplus ordering with full venue fall-through** —
 the July 9 behavior. This is the replacement for the superseded assumption: a bad probe still costs
@@ -125,8 +139,69 @@ correct-enough, so it must never be able to _remove_ coverage.
 **6. Probe budget: 8 rungs × 3 venues = 24 calls per pair per refresh**, on the isolated probe client
 at `PROBE_HTTP_RPS=1`, and only for pairs with a liquidatable position. That is up from 15 calls per
 pair, on a shorter TTL — but it stays on the separate rate-limited client, so a probe burst still
-cannot queue ahead of a live firm quote, and it is still O(liquidatable pairs) rather than
-O(candidates).
+cannot queue ahead of a live firm quote. Pairs are O(liquidatable pairs); the number of _candidates_
+whose route is resolved at all is bounded by decision 4's `probe_cap`, so one pathological position
+cannot turn its slot count into probe traffic.
+
+**The rate budget was never the binding constraint — wall-clock was, and it has to be reasoned about
+separately.** The client's token buckets are per venue, so serializing venues multiplied the sweep's
+latency by the venue count for no rate-limit benefit: 8 rungs × 3 venues at 1 rps is **~24 s per cold
+pair**, against a 45 s TTL. A continuously-liquidatable pair would then have spent more than half of
+wall-clock inside a refresh, awaited before any quote ran, during precisely the burst the ordering
+exists to win. Two changes bound it:
+
+- **Venues sweep concurrently, rungs serially within a venue.** Worst case becomes one venue's ladder,
+  **~8 s** for 8 rungs at 1 rps, and each venue's own bucket is still respected.
+- **The warm is started, not awaited.** A pair is warmed for the _next_ tick and the current tick reads
+  whatever the cache already holds, so warming leaves the critical path entirely. A first tick on a cold
+  pair therefore falls open to gross ordering (decision 5) and converges within a tick or two, which is
+  the cheaper side of the trade. `refresh` dedupes an in-flight sweep — returning rather than joining
+  it — so neither the following tick nor the quoting layer's own refresh can double-probe a pair being
+  warmed, and no caller can be made to wait behind someone else's sweep.
+
+**7. The curve also predicts the firm quote's min-out denominator — inside the encoded-floor
+derivation, and this is the one decision here that touches the correctness chain.** It is called out
+separately for that reason.
+
+The problem it solves is that an aggregator applies the slippage percentage we send to **its own**
+quote, which we do not know yet. Deriving the percentage against the oracle reference therefore lands
+its minimum at `quote · breakEven / reference`, below break-even for any route that costs something —
+i.e. always — so every aggregator quote cost a **second** HTTP call to re-derive against the output the
+first one reported. A trustworthy curve already estimates that output, so it can be used as the
+first-pass denominator and the second call saved.
+
+Preconditions, all of them necessary: the venue must be ranked, on an unclamped rung, and the curve
+must be **fresher than a prediction-age ceiling** independent of `PROBE_STALE_MS`. The last one is what
+keeps the asymmetry in decision 3 honest — ordering survives any cache age, an absolute denominator does
+not, and `blue-liquidation` deliberately runs a ten-minute TTL because ordering is all it consumed until
+this decision existed. Bounding the consumer rather than shortening that TTL protects both bots and does
+not multiply blue's probe traffic.
+
+**Risks, and what bounds each.**
+
+- _The prediction is too high_ → the encoded floor lands **below** break-even. Caught unconditionally:
+  the postcondition accepts a quote only when the **venue's own reported minimum** clears break-even, so
+  a bad prediction cannot produce a bad fill. It costs the second call back, which is what the
+  optimization was trying to save — the neutral outcome.
+- _The prediction is too low_ → the encoded floor lands **above** break-even, and this is the hazard
+  worth naming. The overshoot factor is `realQuote / prediction`, **unbounded in how pessimistic the
+  curve is**: a curve only 0.5% low encodes a floor ~62 bps above break-even, three times the whole
+  ~20 bps post-maturity incentive. Every fill in that band reverts at send although the repay would
+  have covered it — the exact failure the 2026-08-28 window measured, where a min-out shortfall
+  rejected 153 of 167 simulated sends. `clearsFloor` is one-sided and cannot see it.
+
+  So the postcondition is made **symmetric**: past a bound of twice the prediction margin, the second
+  pass is spent to re-derive against the venue's real quote and land the floor back on break-even. That
+  trades an unbounded economic cost for at most one extra HTTP call, which is the correct direction. The
+  bound is set at twice the margin because an accurate curve's overshoot **is** the margin — so the cap
+  is the amount deliberately spent plus rounding, not a multiple of the prize.
+
+- _The re-derivation itself fails_ (a 429 or a timeout on the second call) → reported as the
+  **transport** failure it is, never as the economic `floor_unmet`. The distinction is load-bearing:
+  decision 5's fall-through cap is entitled to stop the venue walk on an economic verdict, so
+  mislabelling a transient 429 as one would lose a liquidation the runner-up could have filled. When the
+  first quote already cleared the floor and only overshot it, a declined or failed re-quote simply
+  leaves that expensive floor standing rather than dropping a fundable fill.
 
 ### Implementation Phases
 
@@ -208,19 +283,32 @@ the curve exists to fix.
   routine noise.
 - Selection logs carry the **derived cost in bps** for the chosen venue and the rung(s) it was
   interpolated from, so a ranking decision can be reconstructed from the log alone.
-- **Fail-open is logged, not silent.** A cold, incomplete, or clamped curve emits an event when it
-  falls back to gross ordering; otherwise the degradation is invisible and would be mistaken for the
-  curve working.
-- Cache-age distribution at selection time, since the shorter TTL is the thing keeping the cost level
-  meaningful.
+- **Fail-open is inferable, not signalled by a dedicated event.** There is no `curve.fail_open` line:
+  the degradation is read off the events that already exist — `plan.built { routeCostBps: null }` for a
+  candidate whose cost could not be derived (cold, clamped, or unpriced), `select.cold_default` for a
+  pair with no curve at all, and `probe.warm_failed` / `probe.venue_error` for why. That was the
+  deliberate trade: the inference is a one-field filter on a line already emitted per candidate, and a
+  second event asserting the same thing can disagree with it. Read `routeCostBps: null` as **the**
+  fail-open signal.
+- Cache age at selection time is on `select.ok` as `curveAgeMs`, beside `curveCostBps` and
+  `firmQuoteCostBps`. Age is what separates the two readings of a probe-fidelity gap — a stale level
+  from a bad interpolation — and it is also the field that shows how often decision 7's prediction-age
+  ceiling is declining to predict.
 
 ## Security
 
-Unchanged trust boundary. Indicative probe outputs are still never executed: the firm quote's
-encoded min-out, the oracle route-quality guard, and the on-chain `simulate()` ok-only gate remain
-the whole trust chain. The curve influences only _ordering_ and _pre-screening_, so a wrong, stale,
-or manipulated probe can cost coverage or a fall-through — never a bad fill. Fail-open is what keeps
-a degraded curve from becoming a denial of coverage.
+Unchanged trust boundary, but state it precisely: the curve is now an **input to** the min-out
+derivation (decision 7), not merely an ordering signal, so "the curve only orders" is no longer the
+argument.
+
+What holds instead is that nothing the curve produces is ever trusted. Indicative probe outputs are
+still never executed. A curve-derived denominator only decides what slippage we **ask** a venue for; the
+quote is then accepted only if the **venue's own reported** minimum clears break-even on its own terms,
+and a reconstruction of that minimum never qualifies however large it looks. The oracle route-quality
+guard and the on-chain `simulate()` ok-only gate are unchanged. So a wrong, stale, or manipulated probe
+can still only cost coverage, a fall-through, or an extra HTTP call — never a bad fill. Fail-open, and
+decision 7's two-sided bound, are what keep a degraded curve from becoming either a denial of coverage
+or a floor nobody can fill.
 
 ## Future Considerations
 
