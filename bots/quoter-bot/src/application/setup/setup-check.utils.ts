@@ -282,11 +282,15 @@ const isTransientFailedCheck = (check: SetupCheck) => {
     const configuredMatches = typeof configured === 'number' && isSupportedChainId(configured)
     const connectedMatches =
       check.observed.connected === undefined || check.observed.connected === configured
+    const referenceMatches =
+      check.observed.referenceConnected === undefined ||
+      check.observed.referenceConnected === configured
     const deploymentMatches =
       check.observed.midnightCode === undefined || check.observed.midnightCode === 'deployed'
     return (
       configuredMatches &&
       connectedMatches &&
+      referenceMatches &&
       deploymentMatches &&
       check.observed.errors.length > 0 &&
       check.observed.errors.every(isTransientProviderFailure)
@@ -355,12 +359,18 @@ const bookProblems = (
  * @param config - Validated setup requirements.
  * @param chainId - Captured connected-chain response.
  * @param midnightCode - Captured Midnight runtime bytecode.
+ * @param referenceChainId - Captured archive-provider chain response, when a variable-rate strategy
+ * makes the archive provider load-bearing; `undefined` when no such strategy is active.
  * @returns The normalized chain setup check.
+ * @remarks The archive provider is gated here because nothing else observes its chain identity: a
+ * stale endpoint for another chain would otherwise let the variable-rate strategy derive quotes
+ * from foreign Blue state and submit them on the configured chain.
  */
 export const chainCheck = (
   config: SetupCheckConfig,
   chainId: Captured<number>,
-  midnightCode: Captured<`0x${string}` | undefined>
+  midnightCode: Captured<`0x${string}` | undefined>,
+  referenceChainId?: Captured<number>
 ) => {
   const required = { chainId: config.chainId, midnightCode: 'deployed' }
   const deployed = midnightCode.ok
@@ -368,11 +378,13 @@ export const chainCheck = (
     : undefined
   const errors = [
     ...(!chainId.ok ? [chainId.error] : []),
+    ...(referenceChainId !== undefined && !referenceChainId.ok ? [referenceChainId.error] : []),
     ...(!midnightCode.ok ? [midnightCode.error] : [])
   ]
   const observed = {
     configured: config.chainId,
     ...(chainId.ok ? { connected: chainId.value } : {}),
+    ...(referenceChainId?.ok ? { referenceConnected: referenceChainId.value } : {}),
     ...(deployed === undefined ? {} : { midnightCode: deployed ? 'deployed' : 'missing' }),
     ...(errors.length === 0 ? {} : { errors })
   }
@@ -381,6 +393,8 @@ export const chainCheck = (
     isSupportedChainId(config.chainId) &&
     chainId.ok &&
     chainId.value === config.chainId &&
+    (referenceChainId === undefined ||
+      (referenceChainId.ok && referenceChainId.value === config.chainId)) &&
     deployed === true
   return setupResult('chain', ready, observed, required)
 }

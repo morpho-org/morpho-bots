@@ -69,6 +69,22 @@ export const isSupportedChainId = (value: number): value is SupportedChainId =>
  */
 export const supportedChain = (chainId: SupportedChainId) => SUPPORTED_CHAINS[chainId]
 
+/** Reference-rate lookback window in seconds, matching `BlueBootstrapReferenceRateService`. */
+const REFERENCE_LOOKBACK_SECONDS = 21_600n
+
+/**
+ * Estimates how many blocks span the reference-rate lookback window on one chain.
+ * @param chainId - Supported EVM chain identifier.
+ * @returns The block count covering {@link REFERENCE_LOOKBACK_SECONDS} at that chain's cadence.
+ * @remarks A fixed block count is chain-specific: 10,800 blocks is six hours on Base's two-second
+ * cadence but about 36 hours on Ethereum's twelve-second cadence, which would make setup inspect
+ * far older state than the rate reader needs and fail readiness for a recently initialized or
+ * recently funded reference market. Derived from viem's `blockTime` so Base keeps its existing
+ * 10,800-block default exactly.
+ */
+export const referenceLookbackBlocks = (chainId: SupportedChainId) =>
+  REFERENCE_LOOKBACK_SECONDS / (BigInt(SUPPORTED_CHAINS[chainId].blockTime) / 1000n)
+
 /**
  * Resolves the chain ID used to label observability before configuration is validated.
  * @param environment - Process environment read for `CHAIN_ID`.

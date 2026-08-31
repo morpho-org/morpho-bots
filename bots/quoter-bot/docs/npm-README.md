@@ -1,7 +1,7 @@
 # @morpho-org/quoter
 
 Morpho Midnight quoter CLI: validates maker setup, bootstraps target lending positions, maintains
-two-sided rate ladders, and provides explicit recovery commands on Base.
+two-sided rate ladders, and provides explicit recovery commands on Ethereum mainnet and Base.
 
 The package ships one self-contained bundle — no dependencies are installed.
 

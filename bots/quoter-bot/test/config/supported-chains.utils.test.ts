@@ -5,6 +5,7 @@ import { describe, expect, test } from 'vitest'
 
 import {
   BASE_CHAIN_ID,
+  referenceLookbackBlocks,
   isSupportedChainId,
   MAINNET_CHAIN_ID,
   observabilityChainId,
@@ -105,6 +106,24 @@ describe('ratifierRuntimeHash', () => {
       expect(ratifierRuntimeHash(MAINNET_CHAIN_ID, type)).not.toBe(
         ratifierRuntimeHash(BASE_CHAIN_ID, type)
       )
+    }
+  })
+})
+
+describe('referenceLookbackBlocks', () => {
+  test('keeps the historical lookback at six hours on every chain', () => {
+    // A fixed block count is chain-specific. 10,800 blocks is six hours at Base's two-second
+    // cadence but ~36 hours at Ethereum's twelve seconds, which made setup inspect far older state
+    // than the rate reader needs and fail readiness for a recently funded reference market.
+    expect(referenceLookbackBlocks(BASE_CHAIN_ID)).toBe(10_800n)
+    expect(referenceLookbackBlocks(MAINNET_CHAIN_ID)).toBe(1_800n)
+  })
+
+  test('matches the reference rate service six-hour window at each chain cadence', () => {
+    const LOOKBACK_SECONDS = 21_600n
+    for (const chainId of [BASE_CHAIN_ID, MAINNET_CHAIN_ID] as const) {
+      const secondsPerBlock = BigInt(supportedChain(chainId).blockTime) / 1000n
+      expect(referenceLookbackBlocks(chainId) * secondsPerBlock).toBe(LOOKBACK_SECONDS)
     }
   })
 })

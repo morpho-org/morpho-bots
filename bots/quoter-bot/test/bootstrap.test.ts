@@ -71,6 +71,7 @@ const bootstrapConfiguration = {
 const readyState = (): SetupStateService => {
   return {
     getChainId: async () => 8453,
+    getReferenceChainId: async () => 8453,
     getCode: async () => '0x1234',
     getDerivedMaker: async () => maker,
     getNativeBalance: async () => 10n,

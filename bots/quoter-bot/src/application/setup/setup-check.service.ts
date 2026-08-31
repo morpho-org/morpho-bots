@@ -141,6 +141,8 @@ export type BookSetup = {
 export interface SetupStateService {
   /** Reads the connected RPC chain identifier. @returns The connected RPC chain identifier. */
   getChainId(): Promise<number>
+  /** Reads the archive provider's chain identifier. @returns The chain the reference provider is actually serving. */
+  getReferenceChainId(): Promise<number>
   /** Reads deployed runtime bytecode. @param address - Contract address to inspect. @returns Runtime bytecode, if deployed. */
   getCode(address: Address): Promise<Hex | undefined>
   /** Derives the configured maker locally. @returns The maker derived from the configured signing key, or `undefined` when no key was loaded. */
@@ -302,8 +304,13 @@ export class SetupCheckService {
     const referenceRead = this.referenceRequired
       ? capture(() => this.state.checkReference(), 'archive-rpc')
       : Promise.resolve(undefined)
+    // Only meaningful when a variable-rate strategy actually reads the archive provider.
+    const referenceChainIdRead = this.referenceRequired
+      ? capture(() => this.state.getReferenceChainId(), 'archive-rpc')
+      : Promise.resolve(undefined)
     const reads = await Promise.all([
       capture(() => this.state.getChainId()),
+      referenceChainIdRead,
       capture(() => this.state.getCode(this.config.midnight)),
       derivedMakerRead,
       capture(() => this.state.getNativeBalance(this.config.maker)),
@@ -317,6 +324,7 @@ export class SetupCheckService {
     ])
     const [
       chainId,
+      referenceChainId,
       midnightCode,
       derivedMaker,
       nativeBalance,
@@ -450,7 +458,7 @@ export class SetupCheckService {
         }
 
     const checks: SetupCheck[] = [
-      chainCheck(this.config, chainId, midnightCode),
+      chainCheck(this.config, chainId, midnightCode, referenceChainId),
       makerCheck,
       nativeCheck,
       allowanceCheck,

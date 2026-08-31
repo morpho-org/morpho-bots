@@ -134,6 +134,7 @@ const createState = (
     }
   }
   const reference = {
+    getChainId: async () => base.id,
     getBlock: async ({ blockTag, blockNumber }: { blockTag?: string; blockNumber?: bigint }) => {
       calls.push(blockTag ?? String(blockNumber))
       return blockTag === 'latest'
@@ -314,6 +315,7 @@ describe('ViemSetupStateService', () => {
           )
       }
       const reference = {
+        getChainId: async () => base.id,
         getBlock: () => rejectAt('reference', { number: 100n, timestamp: 1_000n }),
         readContract: () => rejectAt('reference-contract', {})
       }

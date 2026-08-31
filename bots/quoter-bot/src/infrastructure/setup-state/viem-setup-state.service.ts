@@ -12,7 +12,7 @@ import type { BookSetup, SetupStateService } from '../../application/setup/setup
 import type { SupportedChainId } from '../../config/supported-chains.utils'
 import type { JsonRequest } from './http-json.utils'
 
-import { ratifierRuntimeHash } from '../../config/supported-chains.utils'
+import { ratifierRuntimeHash, referenceLookbackBlocks } from '../../config/supported-chains.utils'
 import { booksJsonRequestFetch } from './http-json.utils'
 import { ProviderPaginationError } from './provider-pagination.error'
 import { executeProviderRead } from './provider-read.utils'
@@ -112,7 +112,7 @@ export class ViemSetupStateService implements SetupStateService {
    */
   constructor(
     private readonly chain: ChainReader,
-    private readonly reference: Pick<ChainReader, 'getBlock' | 'readContract'>,
+    private readonly reference: Pick<ChainReader, 'getChainId' | 'getBlock' | 'readContract'>,
     private readonly request: JsonRequest,
     private readonly options: SetupStateOptions
   ) {
@@ -134,6 +134,19 @@ export class ViemSetupStateService implements SetupStateService {
    */
   getChainId() {
     return executeProviderRead('rpc', 'chain-id', () => this.chain.getChainId())
+  }
+
+  /**
+   * Reads the connected chain identity through the archive-capable reference provider.
+   * @returns The chain ID the reference provider is actually serving.
+   * @throws `ProviderReadError` on a sanitized archive-RPC rejection.
+   * @remarks Read-only. The reference provider is configured separately from the current-state RPC,
+   * so a stale endpoint for another chain is only detectable here.
+   */
+  getReferenceChainId() {
+    return executeProviderRead('archive-rpc', 'reference-chain-id', () =>
+      this.reference.getChainId()
+    )
   }
 
   /**
@@ -457,7 +470,8 @@ export class ViemSetupStateService implements SetupStateService {
         'reference RPC latest block has no number'
       )
     }
-    const lookback = this.options.referenceLookbackBlocks ?? 10_800n
+    const lookback =
+      this.options.referenceLookbackBlocks ?? referenceLookbackBlocks(this.options.chainId)
     if (latest.number < lookback) {
       throw new ProviderResponseError(
         'archive-rpc',
