@@ -6,6 +6,7 @@ import { getAddress } from 'viem'
 import type { QuoteLogger } from './quoting'
 import type { PriceParameters, PriceQuote, Venue } from './types'
 
+import { routeCostBps } from './cost-bps.utils'
 import { InvalidProbeLadderError } from './invalid-probe-ladder.error'
 
 /** A collateral→loan swap pair the selector probes and ranks venues for. */
@@ -82,9 +83,6 @@ export type VenueSelector = {
 // ratio's significant digits even on a high-decimal-in / low-decimal-out pair.
 const RATE_SCALE = 10n ** 18n
 
-// Basis points times 100, so `costBps` carries two decimal places without a float divide.
-const CENTI_BPS = 1_000_000n
-
 const rateOf = (rung: RungQuote): bigint => (rung.expectedOut * RATE_SCALE) / rung.amountIn
 
 const ascending = (a: bigint, b: bigint): number => (a < b ? -1 : a > b ? 1 : 0)
@@ -142,12 +140,6 @@ const rateAt = (
   }
   const nearest = nearestProbed(rungs, amountIn)
   return nearest ? { rate: rateOf(nearest), clamped: true } : null
-}
-
-const costBpsOf = (referenceAmountOut: bigint | undefined, estimatedOut: bigint): number | null => {
-  if (referenceAmountOut === undefined || referenceAmountOut <= 0n) return null
-  const shortfall = referenceAmountOut - estimatedOut
-  return Number((shortfall * CENTI_BPS) / referenceAmountOut) / 100
 }
 
 /**
@@ -285,7 +277,7 @@ export function createVenueSelector(deps: {
       const interpolated = rateAt(entry.ladder, rungs, amountIn)
       if (!interpolated) continue
       const estimatedOut = (interpolated.rate * amountIn) / RATE_SCALE
-      const raw = costBpsOf(referenceAmountOut, estimatedOut)
+      const raw = routeCostBps({ reference: referenceAmountOut, amountOut: estimatedOut })
       ranked.push({
         rate: interpolated.rate,
         estimate: {

@@ -85,13 +85,18 @@ const OK_ZEROX_BODY = {
 }
 const httpStub: RateLimitedClient = { getJson: async <T>() => OK_ZEROX_BODY as T }
 
-// A selector stub: records which pairs were refreshed and returns a fixed best-first order.
-function fakeSelector(order: Venue[], onRefresh?: () => Promise<void>) {
+// A selector stub: records which pairs were refreshed and returns a fixed best-first order. `clamped`
+// makes the curve untrustworthy, which is how a case asks for the oracle-reference min-out derivation
+// instead of the curve-predicted one.
+function fakeSelector(
+  order: Venue[],
+  options: { onRefresh?: () => Promise<void>; clamped?: boolean } = {}
+) {
   const refreshed: VenuePair[] = []
   const selector: VenueSelector = {
     refresh: async pair => {
       refreshed.push(pair)
-      if (onRefresh) await onRefresh()
+      if (options.onRefresh) await options.onRefresh()
     },
     select: () =>
       order.map(venue => ({
@@ -99,7 +104,7 @@ function fakeSelector(order: Venue[], onRefresh?: () => Promise<void>) {
         estimatedOut: 1000n,
         costBps: null,
         costBpsRaw: null,
-        clamped: false
+        clamped: options.clamped ?? false
       })),
     snapshot: () => []
   }
@@ -163,8 +168,10 @@ describe('composeQuoting (Midnight lens-projection adapter)', () => {
   it('still quotes (cold-default) when the probe refresh throws', async () => {
     // Cold cache (select → []) + a refresh that rejects → the firm-quote step falls back to the
     // deterministic enabled-venue order rather than failing the position.
-    const { selector } = fakeSelector([], async () => {
-      throw new Error('probe boom')
+    const { selector } = fakeSelector([], {
+      onRefresh: async () => {
+        throw new Error('probe boom')
+      }
     })
     const { quoteFor } = compose(selector)
     expect((await quoteFor(PLAN, OUT, LABEL)).kind).toBe('swap')
@@ -173,7 +180,7 @@ describe('composeQuoting (Midnight lens-projection adapter)', () => {
   it('returns no_config when no venues are enabled (bad-debt-only posture)', async () => {
     const { selector } = fakeSelector([])
     const { quoteFor } = compose(selector, { venues: [] })
-    expect(await quoteFor(PLAN, OUT, LABEL)).toEqual({ kind: 'no_config' })
+    expect(await quoteFor(PLAN, OUT, LABEL)).toEqual({ kind: 'no_config', firmCalls: 0 })
   })
 
   it('threads the position label into quote log events as the correlation id', async () => {
@@ -201,7 +208,9 @@ describe('composeQuoting (Midnight lens-projection adapter)', () => {
         return OK_ZEROX_BODY as T
       }
     }
-    const { selector } = fakeSelector(['0x'])
+    // Clamped, so the percentage is derived against the oracle reference: the adapter's projection is
+    // what is pinned here, not the curve's prediction of the venue's own output.
+    const { selector } = fakeSelector(['0x'], { clamped: true })
     return compose(selector, { httpClient: capturing })
       .quoteFor(PLAN, OUT, LABEL)
       .then(() => {

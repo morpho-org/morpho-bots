@@ -20,6 +20,7 @@ import type { Unwrapper, UnwrapResolution } from './unwrappers/resolve'
 import type { VenueCostEstimate, VenuePair } from './venue-selector'
 
 import { BPS } from './constants'
+import { routeCostBps } from './cost-bps.utils'
 import { QuoteError } from './types'
 import { resolveUnwraps } from './unwrappers/resolve'
 import { priceLifi, quoteLifi } from './venues/lifi'
@@ -167,6 +168,52 @@ type FirmQuoteOutcome =
   | { kind: 'bad_route'; swap: Swap }
   | { kind: 'floor_unmet'; swap: Swap; floor: bigint }
 
+/**
+ * How far below its interpolated estimate the curve's prediction of a venue's own output is taken,
+ * in bps — see {@link predictedVenueOut} for why the bias must point down.
+ *
+ * Absorbs the probe-versus-firm-quote gap (a probe has no taker and asks for no slippage) plus the
+ * price drift a cached rate carries. Undersized, it merely costs the second pass back; oversized, it
+ * tightens the encoded floor above break-even, where a fill the repay would have covered reverts.
+ */
+const CURVE_PREDICTION_MARGIN_BPS = 25n
+
+/**
+ * A curve estimate turned into a first-pass min-out denominator, or `undefined` when the curve has
+ * nothing trustworthy to say (an unranked venue, or an estimate clamped off the probed ladder).
+ *
+ * Biased DOWN, and only the direction is load-bearing: an aggregator encodes `quote · floor /
+ * denominator`, so a denominator UNDER the venue's real quote lands the encoded floor at or above
+ * break-even — safe, and it clears {@link clearsFloor} on the first call — while one over it lands
+ * below, where the postcondition refuses the quote and the second pass re-derives against the real
+ * output. Capped at the oracle reference for the reason a scored cost is floored at zero: a venue
+ * quoting above the oracle is a stale oracle, not a better route.
+ */
+const predictedVenueOut = (
+  estimate: VenueCostEstimate | undefined,
+  referenceAmountOut: bigint
+): bigint | undefined => {
+  if (!estimate || estimate.clamped || estimate.estimatedOut <= 0n) return undefined
+  const capped =
+    estimate.estimatedOut < referenceAmountOut ? estimate.estimatedOut : referenceAmountOut
+  return (capped * (BPS - CURVE_PREDICTION_MARGIN_BPS)) / BPS
+}
+
+// Counts the firm venue HTTP requests one quoted candidate spends, for
+// {@link QuoteOutcome.firmCalls}. It counts requests that reach a venue rather than quote attempts,
+// so an adapter failing before its first request (a missing `tokenInDecimals`, an unreachable venue
+// arm) truthfully costs nothing.
+const countingClient = (client: RateLimitedClient) => {
+  let calls = 0
+  const counted: RateLimitedClient = {
+    getJson: <T>(args: Parameters<RateLimitedClient['getJson']>[0]) => {
+      calls += 1
+      return client.getJson<T>(args)
+    }
+  }
+  return { counted, calls: () => calls }
+}
+
 // One firm venue quote shared by both composers: build the venue params, dispatch under `tryCatch`,
 // then oracle-sanity the quoted output and fold a success into the plan's final step. `venueEntry` is
 // resolved INSIDE the awaited thunk so a synchronous adapter/entry throw (e.g. an unreachable uniswap
@@ -181,6 +228,12 @@ async function firmQuoteVenue(args: {
   steps: SwapStep[]
   request: QuoteRequest
   maxRouteImpactBps: number
+  /**
+   * Predicted venue output for the first pass's min-out denominator (see {@link predictedVenueOut}).
+   * Absent falls back to the oracle reference, which a real route always undershoots — so the second
+   * pass then runs for every aggregator.
+   */
+  predictedAmountOut?: bigint
 }): Promise<FirmQuoteOutcome> {
   const { httpClient, chainId, executor, venueEntry } = args
   const { tokenIn, amountIn, steps, request, maxRouteImpactBps } = args
@@ -213,17 +266,18 @@ async function firmQuoteVenue(args: {
   const quote = async (params: QuoteParameters) =>
     tryCatch((async () => quoteByVenue(httpClient, venueEntry(), params))())
 
-  const first = await quote(paramsFor(referenceAmountOut))
+  const first = await quote(paramsFor(args.predictedAmountOut ?? referenceAmountOut))
   if (first.error || !first.data) {
     const reason = first.error instanceof QuoteError ? first.error.reason : 'api_error'
     return { kind: 'quote_failed', reason, detail: ensureError(first.error).message }
   }
 
-  // The aggregators apply the slippage percentage to THEIR OWN quote, which sits under the oracle
-  // reference by the execution cost, so a percentage derived against the reference lands their min-out
-  // at `quote · floor / reference` — strictly BELOW break-even. Re-deriving against the venue's own
-  // quoted output puts it back. Uniswap applies the percentage to the reference itself and is already
-  // at or above the floor, so it never takes this branch.
+  // The aggregators apply the slippage percentage to THEIR OWN quote, so the first pass can only ever
+  // PREDICT that denominator: it lands their min-out at `quote · floor / prediction`, which sits below
+  // break-even whenever the prediction was too high — always, for the oracle reference, since a real
+  // route costs something. Re-deriving against the venue's own quoted output puts it back exactly.
+  // Uniswap applies the percentage to the reference itself and is already at or above the floor, so it
+  // never takes this branch.
   let swap = first.data
   // A `derived` minimum can never clear the floor however it is asked for, so a retry there is a second
   // API call that is guaranteed not to help.
@@ -404,12 +458,13 @@ export type QuoteLogger = {
  * runtime and rank venues by a cached probe (see {@link createVenueSelector}). For each
  * liquidatable position it first runs the pre-swap unwrap chain, then refreshes + takes the
  * selector's best-first venue order for the POST-unwrap pair (falling back to the deterministic
- * enabled order for venues the probe couldn't rank), fetches ONE firm quote from the top venue,
- * sanity-checks it against the oracle reference, and — coverage-first — falls through to the next
- * venue on failure (bounded by the enabled set) before giving up. A firm quote is requested only
- * AFTER the venue is chosen, never fanned out across venues at once. Quotes are made ONLY for
- * liquidatable positions, so API + probe usage is bounded by the (small) liquidatable set, never the
- * full candidate universe.
+ * enabled order for venues the probe couldn't rank), fetches ONE firm quote from the top venue, and
+ * sanity-checks it against the oracle reference. A curve that ranked every enabled venue on unclamped
+ * rungs already names the winner, so the walk stops there; every other curve state (cold, incomplete,
+ * clamped) fails open to the coverage-first fall-through through the whole enabled set. A firm quote
+ * is requested only AFTER the venue is chosen, never fanned out across venues at once, and its real
+ * cost is reported as {@link QuoteOutcome.firmCalls}. Quotes are made ONLY for liquidatable positions,
+ * so API + probe usage is bounded by the (small) liquidatable set, never the full candidate universe.
  *
  * No enabled venues → `no_config` (no API call, no probe), preserving the caller's no-swap posture —
  * but the {@link swapFreePlan} short-circuit is evaluated FIRST, so a sell path already ending in the
@@ -433,8 +488,15 @@ export function composeMultiVenueQuoting(deps: {
    * probes price the tradable underlying. Failures are non-fatal (cold-default venue order).
    */
   refresh: (pair: VenuePair) => Promise<void>
-  /** Best-first venues (with interpolated outputs) for a pair+size, from the probe cache; `[]` if cold. */
-  select: (pair: VenuePair, amountIn: bigint) => readonly VenueCostEstimate[]
+  /**
+   * Best-first venues (with interpolated outputs and per-venue costs against `referenceAmountOut`)
+   * for a pair+size, from the probe cache; `[]` if cold. Satisfied by `VenueSelector.select`.
+   */
+  select: (
+    pair: VenuePair,
+    amountIn: bigint,
+    referenceAmountOut?: bigint
+  ) => readonly VenueCostEstimate[]
   logger: QuoteLogger
 }): { quoteFor: (request: QuoteRequest) => Promise<QuoteOutcome> } {
   const {
@@ -474,7 +536,17 @@ export function composeMultiVenueQuoting(deps: {
   // NOT rank (a cold pair, or a venue whose probe transiently failed) are appended in deterministic
   // configured order rather than dropped — a probe hiccup must not hide a healthy venue from the
   // firm-quote fall-through for a full staleMs window. A probe failure is likewise non-fatal.
-  async function venueOrderFor(pair: VenuePair, amountIn: bigint, id?: string): Promise<Venue[]> {
+  //
+  // `trusted` is true only when the curve ranked EVERY enabled venue on unclamped rungs, which is the
+  // one case where the winner is genuinely known; anything less and the caller must keep its full
+  // fall-through, because a probe that ranked less than everything could be hiding the healthy venue.
+  async function venuePlanFor(args: {
+    pair: VenuePair
+    amountIn: bigint
+    referenceAmountOut: bigint
+    id?: string
+  }): Promise<{ order: Venue[]; estimates: Map<Venue, VenueCostEstimate>; trusted: boolean }> {
+    const { pair, amountIn, referenceAmountOut, id } = args
     const { error: probeError } = await tryCatch(refresh(pair))
     if (probeError) {
       logger.warn('probe.error', {
@@ -485,12 +557,17 @@ export function composeMultiVenueQuoting(deps: {
       })
     }
 
-    const ranked = select(pair, amountIn).map(estimate => estimate.venue)
-    const order = [...ranked, ...venues.filter(venue => !ranked.includes(venue))]
+    const ranked = select(pair, amountIn, referenceAmountOut)
+    const estimates = new Map(ranked.map(estimate => [estimate.venue, estimate]))
+    const order = [...estimates.keys(), ...venues.filter(venue => !estimates.has(venue))]
     if (ranked.length === 0) {
       logger.info('select.cold_default', { collateral: pair.collateral, loan: pair.loan, order })
     }
-    return order
+    const trusted =
+      ranked.length > 0 &&
+      venues.every(venue => estimates.has(venue)) &&
+      ranked.every(estimate => !estimate.clamped)
+    return { order, estimates, trusted }
   }
 
   return {
@@ -498,7 +575,7 @@ export function composeMultiVenueQuoting(deps: {
       const { collateralToken, loanToken, referenceAmountOut, id } = request
 
       const unwrapped = await tryResolveUnwraps(unwrappers, request, executor, logger)
-      if ('outcome' in unwrapped) return unwrapped.outcome
+      if ('outcome' in unwrapped) return { ...unwrapped.outcome, firmCalls: 0 }
       const { resolution } = unwrapped
 
       // Nothing left to sell, so this resolves WITHOUT a venue — deliberately ahead of the
@@ -506,22 +583,32 @@ export function composeMultiVenueQuoting(deps: {
       // all, so a keyless / bad-debt-only deployment must still be able to liquidate it; gating on
       // `venues` first would refuse the one case that provably does not need one.
       if (isAddressEqual(resolution.token, loanToken)) {
-        return swapFreePlan({ resolution, request, maxRouteImpactBps, logger })
+        return { ...swapFreePlan({ resolution, request, maxRouteImpactBps, logger }), firmCalls: 0 }
       }
 
-      if (venues.length === 0) return { kind: 'no_config' }
+      if (venues.length === 0) return { kind: 'no_config', firmCalls: 0 }
 
       const pair: VenuePair = { collateral: resolution.token, loan: loanToken }
-      const order = await venueOrderFor(pair, resolution.amountIn, id)
+      const { order, estimates, trusted } = await venuePlanFor({
+        pair,
+        amountIn: resolution.amountIn,
+        referenceAmountOut,
+        id
+      })
+      // A trusted curve already ranked every enabled venue, so the walk stops at the winner and one
+      // candidate costs one venue's worth of calls. Anything else fails OPEN to the full fall-through:
+      // the pre-curve guarantee is that a mis-ranked probe costs a fall-through, never a lost route.
+      const candidates = trusted ? order.slice(0, 1) : order
 
-      // Try the ranked venues in order; a quote or route-quality failure falls through to the next
+      // Try the candidate venues in order; a quote or route-quality failure falls through to the next
       // (coverage-first). Only the CHOSEN venue is firm-quoted per step — never all venues at once.
       // `lastReason` is last-venue-wins, so a transport failure after a floor miss reports the failure
       // and the caller still backs off — the conservative direction of the two.
+      const { counted, calls } = countingClient(httpClient)
       let lastReason: QuoteFailureReason = 'no_route'
-      for (const venue of order) {
+      for (const venue of candidates) {
         const outcome = await firmQuoteVenue({
-          httpClient,
+          httpClient: counted,
           chainId,
           executor,
           venueEntry: () => entryFor(venue),
@@ -529,7 +616,8 @@ export function composeMultiVenueQuoting(deps: {
           amountIn: resolution.amountIn,
           steps: resolution.steps,
           request,
-          maxRouteImpactBps
+          maxRouteImpactBps,
+          predictedAmountOut: predictedVenueOut(estimates.get(venue), referenceAmountOut)
         })
         if (outcome.kind === 'quote_failed') {
           lastReason = outcome.reason
@@ -576,11 +664,21 @@ export function composeMultiVenueQuoting(deps: {
           expected: outcome.swap.expectedAmountOut,
           oracle: referenceAmountOut,
           amountOutMinimum: outcome.swap.amountOutMinimum,
+          // The probe-fidelity pair: what the curve interpolated this route would cost against the
+          // oracle, beside the same figure off the quote the venue actually returned. Both are QUOTED
+          // costs — neither is realized on-chain execution, and reading them as such is the error the
+          // pair exists to make visible.
+          curveCostBps: estimates.get(venue)?.costBpsRaw ?? null,
+          firmQuoteCostBps: routeCostBps({
+            reference: referenceAmountOut,
+            amountOut: outcome.swap.expectedAmountOut
+          }),
+          firmCalls: calls(),
           order
         })
-        return { kind: 'swap', plan: outcome.plan }
+        return { kind: 'swap', plan: outcome.plan, firmCalls: calls() }
       }
-      return { kind: 'failed', reason: lastReason }
+      return { kind: 'failed', reason: lastReason, firmCalls: calls() }
     }
   }
 }
