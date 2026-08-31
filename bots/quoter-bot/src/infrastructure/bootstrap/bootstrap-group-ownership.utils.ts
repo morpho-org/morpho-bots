@@ -8,9 +8,11 @@ import { bytesToHex, hexToBytes, isHex, keccak256, size, stringToHex } from 'vie
 
 import type { BootstrapOffer } from '../../domain/bootstrap/position-bootstrap'
 
+import { BASE_CHAIN_ID } from '../../config/supported-chains.utils'
 import { BootstrapAdapterError } from './bootstrap-adapter.error'
 
 type BootstrapGroupOwnershipConfig = {
+  chainId: number
   maker: Address
   marketIds: readonly Hex[]
   configuredGroupIds: readonly Hex[]
@@ -119,6 +121,24 @@ const strategyId = (config: BootstrapGroupOwnershipConfig) =>
   keccak256(
     stringToHex(
       JSON.stringify({
+        chainId: config.chainId,
+        maker: config.maker,
+        marketIds: config.marketIds.map(canonicalId).toSorted()
+      })
+    )
+  )
+
+/**
+ * Rebuilds the chain-less strategy key used before the bot supported more than one chain.
+ * @param config - Maker and configured markets defining one strategy.
+ * @returns The pre-multi-chain strategy key for that maker and market set.
+ * @remarks Only Base could be configured while this key was in use, so state stored under it is
+ * Base state by construction and is adopted on Base alone.
+ */
+const preMultiChainStrategyId = (config: BootstrapGroupOwnershipConfig) =>
+  keccak256(
+    stringToHex(
+      JSON.stringify({
         maker: config.maker,
         marketIds: config.marketIds.map(canonicalId).toSorted()
       })
@@ -131,7 +151,7 @@ const strategyId = (config: BootstrapGroupOwnershipConfig) =>
  * @param dependencies - Optional state directory override used by isolated tests.
  * @returns A source that reads explicit IDs and atomically remembers confirmed bot-issued IDs and offer intent.
  * @throws `BootstrapAdapterError` when persisted ownership state is malformed or insecurely permissioned.
- * @remarks State is namespaced by maker and configured markets, stored mode `0600`, and never infers ownership from market membership.
+ * @remarks State is namespaced by chain, maker, and configured markets, stored mode `0600`, and never infers ownership from market membership.
  */
 export const createBootstrapGroupOwnership = (
   config: BootstrapGroupOwnershipConfig,
@@ -142,15 +162,25 @@ export const createBootstrapGroupOwnership = (
     dependencies.stateDirectory ??
     join(process.env.XDG_STATE_HOME ?? join(homedir(), '.local', 'state'), 'morpho-quoter-bot')
   const path = join(directory, `${strategy}.json`)
+  // Pre-multi-chain state is Base state by construction, so only Base adopts it; writes always
+  // land on the chain-scoped path, migrating it forward on first write.
+  const preMultiChainPath =
+    config.chainId === BASE_CHAIN_ID
+      ? join(directory, `${preMultiChainStrategyId(config)}.json`)
+      : undefined
   const configured = config.configuredGroupIds.map(canonicalId)
 
-  const readPersisted = async (): Promise<CanonicalOwnershipState> => {
+  const readPersistedFrom = async (
+    statePath: string,
+    expectedStrategy: Hex,
+    fallback?: () => Promise<CanonicalOwnershipState>
+  ): Promise<CanonicalOwnershipState> => {
     let metadata
     try {
-      metadata = await lstat(path)
+      metadata = await lstat(statePath)
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-        return { confirmedGroupIds: [], reservedGroupIds: [], offers: [] }
+        return fallback ? fallback() : { confirmedGroupIds: [], reservedGroupIds: [], offers: [] }
       }
       throw new BootstrapAdapterError('group-ownership-state')
     }
@@ -161,8 +191,10 @@ export const createBootstrapGroupOwnership = (
       throw new BootstrapAdapterError('group-ownership-state')
     }
     try {
-      const value = JSON.parse(await readFile(path, 'utf8')) as Record<string, unknown>
-      if (value.strategy !== strategy) throw new BootstrapAdapterError('group-ownership-state')
+      const value = JSON.parse(await readFile(statePath, 'utf8')) as Record<string, unknown>
+      if (value.strategy !== expectedStrategy) {
+        throw new BootstrapAdapterError('group-ownership-state')
+      }
       if (value.version === 1 && Array.isArray(value.groupIds)) {
         return {
           confirmedGroupIds: value.groupIds.map(canonicalId),
@@ -199,6 +231,15 @@ export const createBootstrapGroupOwnership = (
       throw new BootstrapAdapterError('group-ownership-state')
     }
   }
+
+  const readPersisted = () =>
+    readPersistedFrom(
+      path,
+      strategy,
+      preMultiChainPath === undefined
+        ? undefined
+        : () => readPersistedFrom(preMultiChainPath, preMultiChainStrategyId(config))
+    )
 
   const writePersisted = async (state: CanonicalOwnershipState) => {
     await mkdir(directory, { recursive: true, mode: 0o700 })

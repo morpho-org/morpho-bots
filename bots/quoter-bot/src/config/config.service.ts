@@ -151,6 +151,11 @@ export class ConfigService {
     return this.values.setup
   }
 
+  /** Exposes the validated target chain. @returns The supported chain ID every client, address lookup, and Morpho API query is bound to. */
+  get chainId() {
+    return this.values.setup.chainId
+  }
+
   /** Exposes the redaction-sensitive current RPC endpoint. @returns Current-state Base RPC URL; callers must not include it in reports or logs. */
   get rpcUrl() {
     return this.values.rpcUrl

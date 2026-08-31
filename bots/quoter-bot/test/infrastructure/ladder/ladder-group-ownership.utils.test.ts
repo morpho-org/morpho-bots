@@ -5,6 +5,7 @@ import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { keccak256, stringToHex } from 'viem'
+import { base, mainnet } from 'viem/chains'
 import { describe, expect, test } from 'vitest'
 
 import type { LadderQuoteSet } from '../../../src/domain/ladder/ladder'
@@ -27,11 +28,146 @@ const quote: LadderQuoteSet = {
 }
 
 describe('createLadderGroupOwnership', () => {
+  test('isolates publications per chain for the same maker', async () => {
+    // Regression: the strategy key used to be {strategy, maker} with no chain. One maker running
+    // Base and mainnet against a shared XDG_STATE_HOME made each chain read the other's
+    // publications as removed markets and cancel their group IDs on the wrong chain.
+    const stateDirectory = await mkdtemp(join(tmpdir(), 'ladder-ownership-chains-'))
+    try {
+      const baseOwnership = createLadderGroupOwnership(
+        { chainId: base.id, maker, strategyMarketIds: [marketId] },
+        { stateDirectory }
+      )
+      await baseOwnership.reserve({
+        marketId,
+        quote,
+        groups: [{ groupId: lowerGroup, side: 'lower', rungIndexes: [0] }]
+      })
+      await baseOwnership.confirm([lowerGroup])
+
+      const mainnetOwnership = createLadderGroupOwnership(
+        { chainId: mainnet.id, maker, strategyMarketIds: [marketId] },
+        { stateDirectory }
+      )
+      // Mainnet must not inherit the Base group, or it would cancel it on mainnet.
+      expect(await mainnetOwnership.readGroupIds()).toEqual([])
+
+      await mainnetOwnership.reserve({
+        marketId,
+        quote,
+        groups: [{ groupId: higherGroup, side: 'higher', rungIndexes: [0] }]
+      })
+      await mainnetOwnership.confirm([higherGroup])
+
+      // Each chain still sees exactly its own group after the other has written.
+      expect(await mainnetOwnership.readGroupIds()).toEqual([higherGroup])
+      expect(await baseOwnership.readGroupIds()).toEqual([lowerGroup])
+      expect(jsonFiles(stateDirectory)).toHaveLength(2)
+    } finally {
+      await rm(stateDirectory, { recursive: true, force: true })
+    }
+  })
+
+  test('never adopts a market-scoped legacy ladder file on another chain', async () => {
+    // The market-scoped legacy key is rebuilt from the candidate file's own market IDs, so a Base
+    // file self-attributes on any chain unless legacy adoption is restricted to Base.
+    const stateDirectory = await mkdtemp(join(tmpdir(), 'ladder-ownership-legacy-chain-'))
+    try {
+      const legacyStrategy = keccak256(
+        stringToHex(JSON.stringify({ strategy: 'ladder', maker, marketIds: [marketId] }))
+      )
+      await writeFile(
+        join(stateDirectory, `${legacyStrategy}.json`),
+        JSON.stringify({
+          version: 1,
+          strategy: legacyStrategy,
+          publications: [
+            {
+              marketId,
+              status: 'confirmed',
+              quote: {
+                marketId,
+                centerRateBps: '500',
+                groupMode: 'shared-rung',
+                lower: [{ index: 0, rateBps: '450', assets: '10' }],
+                higher: [{ index: 0, rateBps: '550', assets: '20' }]
+              },
+              groups: [{ groupId: lowerGroup, side: 'lower', rungIndexes: [0] }]
+            }
+          ]
+        }),
+        { mode: 0o600 }
+      )
+
+      const mainnetOwnership = createLadderGroupOwnership(
+        { chainId: mainnet.id, maker, strategyMarketIds: [marketId] },
+        { stateDirectory }
+      )
+      expect(await mainnetOwnership.readGroupIds()).toEqual([])
+
+      const baseOwnership = createLadderGroupOwnership(
+        { chainId: base.id, maker, strategyMarketIds: [marketId] },
+        { stateDirectory }
+      )
+      expect(await baseOwnership.readGroupIds()).toEqual([lowerGroup])
+    } finally {
+      await rm(stateDirectory, { recursive: true, force: true })
+    }
+  })
+
+  test('migrates pre-multi-chain state forward on Base but never on mainnet', async () => {
+    const stateDirectory = await mkdtemp(join(tmpdir(), 'ladder-ownership-migrate-'))
+    try {
+      // State written under the chain-less key that existed before multi-chain support.
+      const preMultiChainStrategy = keccak256(
+        stringToHex(JSON.stringify({ strategy: 'ladder', maker }))
+      )
+      await writeFile(
+        join(stateDirectory, `${preMultiChainStrategy}.json`),
+        JSON.stringify({
+          version: 1,
+          strategy: preMultiChainStrategy,
+          publications: [
+            {
+              marketId,
+              status: 'confirmed',
+              quote: {
+                marketId,
+                centerRateBps: '500',
+                groupMode: 'shared-rung',
+                lower: [{ index: 0, rateBps: '450', assets: '10' }],
+                higher: [{ index: 0, rateBps: '550', assets: '20' }]
+              },
+              groups: [{ groupId: lowerGroup, side: 'lower', rungIndexes: [0] }]
+            }
+          ]
+        }),
+        { mode: 0o600 }
+      )
+
+      // Only Base could be configured when that key was in use, so Base adopts it...
+      const baseOwnership = createLadderGroupOwnership(
+        { chainId: base.id, maker, strategyMarketIds: [marketId] },
+        { stateDirectory }
+      )
+      expect(await baseOwnership.readGroupIds()).toEqual([lowerGroup])
+
+      // ...and mainnet must not, or it would import Base publications as its own.
+      const mainnetOwnership = createLadderGroupOwnership(
+        { chainId: mainnet.id, maker, strategyMarketIds: [marketId] },
+        { stateDirectory }
+      )
+      expect(await mainnetOwnership.readGroupIds()).toEqual([])
+    } finally {
+      await rm(stateDirectory, { recursive: true, force: true })
+    }
+  })
+
   test('keeps ownership stable when configured ladder markets change', async () => {
     const stateDirectory = await mkdtemp(join(tmpdir(), 'ladder-ownership-'))
     try {
       const ownership = createLadderGroupOwnership(
-        { maker, strategyMarketIds: [marketId] },
+        { chainId: base.id, maker, strategyMarketIds: [marketId] },
         { stateDirectory }
       )
       await ownership.reserve({
@@ -50,7 +186,7 @@ describe('createLadderGroupOwnership', () => {
       expect(await ownership.read()).toMatchObject([{ status: 'confirmed' }])
 
       const ownershipAfterUnrelatedAllowlistEdit = createLadderGroupOwnership(
-        { maker, strategyMarketIds: [marketId, `0x${'55'.repeat(32)}`] },
+        { chainId: base.id, maker, strategyMarketIds: [marketId, `0x${'55'.repeat(32)}`] },
         { stateDirectory }
       )
       expect(await ownershipAfterUnrelatedAllowlistEdit.readGroupIds()).toEqual([
@@ -72,7 +208,7 @@ describe('createLadderGroupOwnership', () => {
     const addedMarketId: Hex = `0x${'55'.repeat(32)}`
     try {
       const oldOwnership = createLadderGroupOwnership(
-        { maker, strategyMarketIds: [marketId] },
+        { chainId: base.id, maker, strategyMarketIds: [marketId] },
         { stateDirectory }
       )
       await oldOwnership.reserve({
@@ -95,7 +231,7 @@ describe('createLadderGroupOwnership', () => {
       )
 
       const changedOwnership = createLadderGroupOwnership(
-        { maker, strategyMarketIds: [marketId, addedMarketId] },
+        { chainId: base.id, maker, strategyMarketIds: [marketId, addedMarketId] },
         { stateDirectory }
       )
       expect(await changedOwnership.readGroupIds()).toEqual([lowerGroup])
@@ -112,7 +248,7 @@ describe('createLadderGroupOwnership', () => {
     const replacementMarketId: Hex = `0x${'77'.repeat(32)}`
     try {
       const oldOwnership = createLadderGroupOwnership(
-        { maker, strategyMarketIds: [marketId, unpublishedMarketId] },
+        { chainId: base.id, maker, strategyMarketIds: [marketId, unpublishedMarketId] },
         { stateDirectory }
       )
       await oldOwnership.reserve({
@@ -141,7 +277,7 @@ describe('createLadderGroupOwnership', () => {
       )
 
       const changedOwnership = createLadderGroupOwnership(
-        { maker, strategyMarketIds: [marketId, replacementMarketId] },
+        { chainId: base.id, maker, strategyMarketIds: [marketId, replacementMarketId] },
         { stateDirectory }
       )
       await changedOwnership.migrate(async () => [lowerGroup])
@@ -158,7 +294,7 @@ describe('createLadderGroupOwnership', () => {
     const replacementMarketId: Hex = `0x${'77'.repeat(32)}`
     try {
       const oldOwnership = createLadderGroupOwnership(
-        { maker, strategyMarketIds: [marketId, unpublishedMarketId] },
+        { chainId: base.id, maker, strategyMarketIds: [marketId, unpublishedMarketId] },
         { stateDirectory }
       )
       await oldOwnership.reserve({
@@ -190,7 +326,7 @@ describe('createLadderGroupOwnership', () => {
       )
 
       const changedOwnership = createLadderGroupOwnership(
-        { maker, strategyMarketIds: [marketId, replacementMarketId] },
+        { chainId: base.id, maker, strategyMarketIds: [marketId, replacementMarketId] },
         { stateDirectory }
       )
       await changedOwnership.migrate(async () => [])
@@ -208,7 +344,7 @@ describe('createLadderGroupOwnership', () => {
     const replacementMarketId: Hex = `0x${'77'.repeat(32)}`
     try {
       const oldOwnership = createLadderGroupOwnership(
-        { maker, strategyMarketIds: [marketId, unpublishedMarketId] },
+        { chainId: base.id, maker, strategyMarketIds: [marketId, unpublishedMarketId] },
         { stateDirectory }
       )
       await oldOwnership.reserve({
@@ -240,7 +376,7 @@ describe('createLadderGroupOwnership', () => {
       )
 
       const changedOwnership = createLadderGroupOwnership(
-        { maker, strategyMarketIds: [marketId, replacementMarketId] },
+        { chainId: base.id, maker, strategyMarketIds: [marketId, replacementMarketId] },
         { stateDirectory }
       )
       await changedOwnership.migrate(async () => [lowerGroup])
@@ -256,7 +392,7 @@ describe('createLadderGroupOwnership', () => {
     const stateDirectory = await mkdtemp(join(tmpdir(), 'ladder-ownership-migration-'))
     try {
       const ownership = createLadderGroupOwnership(
-        { maker, strategyMarketIds: [marketId] },
+        { chainId: base.id, maker, strategyMarketIds: [marketId] },
         { stateDirectory }
       )
       await ownership.reserve({
@@ -292,7 +428,7 @@ describe('createLadderGroupOwnership', () => {
     const foreignMaker: Address = '0x9999999999999999999999999999999999999999'
     try {
       const foreignOwnership = createLadderGroupOwnership(
-        { maker: foreignMaker, strategyMarketIds: [marketId] },
+        { chainId: base.id, maker: foreignMaker, strategyMarketIds: [marketId] },
         { stateDirectory }
       )
       await foreignOwnership.reserve({
@@ -304,7 +440,7 @@ describe('createLadderGroupOwnership', () => {
       if (!foreignName) throw new TypeError('Expected foreign ownership state')
 
       const ownership = createLadderGroupOwnership(
-        { maker, strategyMarketIds: [marketId] },
+        { chainId: base.id, maker, strategyMarketIds: [marketId] },
         { stateDirectory }
       )
 
@@ -321,7 +457,7 @@ describe('createLadderGroupOwnership', () => {
     const stateDirectory = await mkdtemp(join(tmpdir(), 'ladder-ownership-security-'))
     try {
       const ownership = createLadderGroupOwnership(
-        { maker, strategyMarketIds: [marketId] },
+        { chainId: base.id, maker, strategyMarketIds: [marketId] },
         { stateDirectory }
       )
       await ownership.reserve({
@@ -345,7 +481,7 @@ describe('createLadderGroupOwnership', () => {
     const stateDirectory = await mkdtemp(join(tmpdir(), 'ladder-ownership-write-validation-'))
     try {
       const ownership = createLadderGroupOwnership(
-        { maker, strategyMarketIds: [marketId] },
+        { chainId: base.id, maker, strategyMarketIds: [marketId] },
         { stateDirectory }
       )
       await ownership.reserve({

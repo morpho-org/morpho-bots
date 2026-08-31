@@ -1,6 +1,7 @@
 # Copy to quoter-bot.yaml (preferred) or quoter-bot.yml.
 # Never commit the real file. Prefer environment variables for secrets and chmod 600 the file.
 chain:
+  # Supported: 1 (Ethereum mainnet) or 8453 (Base). RPC endpoints must match this id.
   id: 8453
   rpcUrl: 'https://base-rpc.example'
   # Required by commands whose active targetRate strategy is variable_rate_avg.

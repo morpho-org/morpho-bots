@@ -16,17 +16,17 @@ catalogs:
       specifier: 2.2.0
       version: 2.2.0
     '@morpho-org/blue-sdk':
-      specifier: 6.5.0
-      version: 6.5.0
+      specifier: 6.7.0
+      version: 6.7.0
     '@morpho-org/blue-sdk-viem':
-      specifier: 5.2.1
-      version: 5.2.1
+      specifier: 5.4.0
+      version: 5.4.0
     '@morpho-org/midnight-sdk':
       specifier: 1.3.0
       version: 1.3.0
     '@morpho-org/morpho-ts':
-      specifier: 2.8.0
-      version: 2.8.0
+      specifier: 2.10.0
+      version: 2.10.0
     '@morpho-org/viem-dlc':
       specifier: 0.0.11
       version: 0.0.11
@@ -325,13 +325,13 @@ importers:
         version: 10.0.0
       '@morpho-org/midnight-sdk':
         specifier: 'catalog:'
-        version: 1.3.0(@morpho-org/morpho-ts@2.8.0)(viem@2.47.17(typescript@6.0.2)(zod@4.4.3))
+        version: 1.3.0(@morpho-org/morpho-ts@2.10.0)(viem@2.47.17(typescript@6.0.2)(zod@4.4.3))
       '@morpho-org/morpho-sdk':
-        specifier: 5.4.1
-        version: 5.4.1(viem@2.47.17(typescript@6.0.2)(zod@4.4.3))
+        specifier: 5.7.0
+        version: 5.7.0(viem@2.47.17(typescript@6.0.2)(zod@4.4.3))
       '@morpho-org/morpho-ts':
         specifier: 'catalog:'
-        version: 2.8.0
+        version: 2.10.0
       '@noble/curves':
         specifier: 'catalog:'
         version: 1.9.1
@@ -416,10 +416,10 @@ importers:
     dependencies:
       '@morpho-org/blue-sdk':
         specifier: 'catalog:'
-        version: 6.5.0(@morpho-org/morpho-ts@2.8.0)
+        version: 6.7.0(@morpho-org/morpho-ts@2.10.0)
       '@morpho-org/blue-sdk-viem':
         specifier: 'catalog:'
-        version: 5.2.1(@morpho-org/blue-sdk@6.5.0(@morpho-org/morpho-ts@2.8.0))(@morpho-org/morpho-ts@2.8.0)(viem@2.47.17(typescript@6.0.2)(zod@4.4.3))
+        version: 5.4.0(@morpho-org/blue-sdk@6.7.0(@morpho-org/morpho-ts@2.10.0))(@morpho-org/morpho-ts@2.10.0)(viem@2.47.17(typescript@6.0.2)(zod@4.4.3))
       '@repo/bot-kit':
         specifier: workspace:*
         version: link:../../packages/bot-kit
@@ -465,10 +465,10 @@ importers:
     dependencies:
       '@morpho-org/blue-sdk':
         specifier: 'catalog:'
-        version: 6.5.0(@morpho-org/morpho-ts@2.8.0)
+        version: 6.7.0(@morpho-org/morpho-ts@2.10.0)
       '@morpho-org/blue-sdk-viem':
         specifier: 'catalog:'
-        version: 5.2.1(@morpho-org/blue-sdk@6.5.0(@morpho-org/morpho-ts@2.8.0))(@morpho-org/morpho-ts@2.8.0)(viem@2.47.17(typescript@6.0.2)(zod@4.4.3))
+        version: 5.4.0(@morpho-org/blue-sdk@6.7.0(@morpho-org/morpho-ts@2.10.0))(@morpho-org/morpho-ts@2.10.0)(viem@2.47.17(typescript@6.0.2)(zod@4.4.3))
       '@repo/bot-kit':
         specifier: workspace:*
         version: link:../../packages/bot-kit
@@ -673,7 +673,7 @@ importers:
         version: 3.12.1
       '@morpho-org/morpho-ts':
         specifier: 'catalog:'
-        version: 2.8.0
+        version: 2.10.0
       '@morpho-org/viem-dlc':
         specifier: 'catalog:'
         version: 0.0.11(typescript@6.0.2)(viem@2.47.17(typescript@6.0.2)(zod@4.4.3))
@@ -713,10 +713,10 @@ importers:
         version: 3.1101.0
       '@morpho-org/midnight-sdk':
         specifier: 'catalog:'
-        version: 1.3.0(@morpho-org/morpho-ts@2.8.0)(viem@2.47.17(typescript@6.0.2)(zod@4.4.3))
+        version: 1.3.0(@morpho-org/morpho-ts@2.10.0)(viem@2.47.17(typescript@6.0.2)(zod@4.4.3))
       '@morpho-org/morpho-ts':
         specifier: 'catalog:'
-        version: 2.8.0
+        version: 2.10.0
       '@noble/curves':
         specifier: 'catalog:'
         version: 1.9.1
@@ -1207,17 +1207,17 @@ packages:
     resolution: {integrity: sha512-UMnlJggWIAYzZv8PN9dR3v7qMDG7vKVyPJjyfypBa8Y2yLk/4XzDp2fAvSd1OJKWQh03lO7GfGpo87SSYoIANg==}
     engines: {node: '>=18'}
 
-  '@morpho-org/blue-sdk-viem@5.2.1':
-    resolution: {integrity: sha512-3XFxpnKcoglzYm+Ph9BCLScqafWSBlmDyjQcUgEQ0z2VFOiUSpyWb+aF5NawdpCwMz/TyZBc4LedAf2ahm4f8A==}
+  '@morpho-org/blue-sdk-viem@5.4.0':
+    resolution: {integrity: sha512-cGrCXmjobH2gZbxbV/fz3VkgaLbGNj32KuyPWxGVzmVLbPeamjyNJS7XfsuaST5lUO5/pgaj8eS4Twr1Lh7TKA==}
     peerDependencies:
-      '@morpho-org/blue-sdk': ^6.4.0
-      '@morpho-org/morpho-ts': ^2.7.0
+      '@morpho-org/blue-sdk': ^6.6.0
+      '@morpho-org/morpho-ts': ^2.10.0
       viem: ^2.0.0
 
-  '@morpho-org/blue-sdk@6.5.0':
-    resolution: {integrity: sha512-yu+/i/DNkx/FSjckLwa1/p7cUchQ0VVdFPqpcgng1Fy02fYbKEaM772Tu6IFHBabrNly4pO1J+GJ+xxdFVM1IQ==}
+  '@morpho-org/blue-sdk@6.7.0':
+    resolution: {integrity: sha512-A8J4YiYtRNrVGfsMnL3oq8+cz87uSFbkB2R3uQC9R9bLh+d05XVK0QhTResZNE7zGvUCizVnwa/Yf6MDhB/QEQ==}
     peerDependencies:
-      '@morpho-org/morpho-ts': ^2.7.0
+      '@morpho-org/morpho-ts': ^2.10.0
 
   '@morpho-org/midnight-sdk@1.3.0':
     resolution: {integrity: sha512-O96+FFzku6m2eZPL1vUjyUS+U+I+HLP9w/dOYLMzNiRo76/79glh+ThprKMqDeNVvk2AXB7ZefnKP3JFaDIj2A==}
@@ -1225,13 +1225,13 @@ packages:
       '@morpho-org/morpho-ts': ^2.8.0
       viem: ^2.0.0
 
-  '@morpho-org/morpho-sdk@5.4.1':
-    resolution: {integrity: sha512-sUyoaXjCBDkm/lB6lvXBu6UDuUQkmk1HWj4Ov6g0N8l6LgEfGXMa2uuenmS3pTErlwzlQCESEbNDZBPY4+kjTQ==}
+  '@morpho-org/morpho-sdk@5.7.0':
+    resolution: {integrity: sha512-TeK9+Hqu6F/ErQxaGzOAOhRWf47zvCeOxhKqLXpCAUvC6UvZJ+LnE0un9XNyyNRMLkp0672oJ2PfmY1wbnlr4g==}
     peerDependencies:
       viem: ^2.0.0
 
-  '@morpho-org/morpho-ts@2.8.0':
-    resolution: {integrity: sha512-I+fSrYjx8VYHgzaTGUdGmxKM7qDrOWNBM4Yz/6hgum2tlCcgb5MN1sJVgztbO4nOk5C9Ly9I752CiyyYr2oeOg==}
+  '@morpho-org/morpho-ts@2.10.0':
+    resolution: {integrity: sha512-6C9CbzHxSg1PupCyGKDZ/r0BV6kF+v66gwMbkExRQXU48pBKR6SRGvPogj/MjhIdW4uMvWEtilLyvzaaEYYjaw==}
 
   '@morpho-org/viem-dlc@0.0.11':
     resolution: {integrity: sha512-aIam52kaN/Lt2eQuZpcDWPqKKyv/ltH7Di/HoNjdzlWN4ccuk4Keuw63RuP1pXtGAowmxNGblyPnHwja8QohsA==}
@@ -3273,32 +3273,32 @@ snapshots:
     dependencies:
       '@loglayer/shared': 4.3.0
 
-  '@morpho-org/blue-sdk-viem@5.2.1(@morpho-org/blue-sdk@6.5.0(@morpho-org/morpho-ts@2.8.0))(@morpho-org/morpho-ts@2.8.0)(viem@2.47.17(typescript@6.0.2)(zod@4.4.3))':
+  '@morpho-org/blue-sdk-viem@5.4.0(@morpho-org/blue-sdk@6.7.0(@morpho-org/morpho-ts@2.10.0))(@morpho-org/morpho-ts@2.10.0)(viem@2.47.17(typescript@6.0.2)(zod@4.4.3))':
     dependencies:
-      '@morpho-org/blue-sdk': 6.5.0(@morpho-org/morpho-ts@2.8.0)
-      '@morpho-org/morpho-ts': 2.8.0
+      '@morpho-org/blue-sdk': 6.7.0(@morpho-org/morpho-ts@2.10.0)
+      '@morpho-org/morpho-ts': 2.10.0
       viem: 2.47.17(typescript@6.0.2)(zod@4.4.3)
 
-  '@morpho-org/blue-sdk@6.5.0(@morpho-org/morpho-ts@2.8.0)':
+  '@morpho-org/blue-sdk@6.7.0(@morpho-org/morpho-ts@2.10.0)':
     dependencies:
-      '@morpho-org/morpho-ts': 2.8.0
+      '@morpho-org/morpho-ts': 2.10.0
       '@noble/hashes': 2.2.0
 
-  '@morpho-org/midnight-sdk@1.3.0(@morpho-org/morpho-ts@2.8.0)(viem@2.47.17(typescript@6.0.2)(zod@4.4.3))':
+  '@morpho-org/midnight-sdk@1.3.0(@morpho-org/morpho-ts@2.10.0)(viem@2.47.17(typescript@6.0.2)(zod@4.4.3))':
     dependencies:
-      '@morpho-org/morpho-ts': 2.8.0
+      '@morpho-org/morpho-ts': 2.10.0
       viem: 2.47.17(typescript@6.0.2)(zod@4.4.3)
 
-  '@morpho-org/morpho-sdk@5.4.1(viem@2.47.17(typescript@6.0.2)(zod@4.4.3))':
+  '@morpho-org/morpho-sdk@5.7.0(viem@2.47.17(typescript@6.0.2)(zod@4.4.3))':
     dependencies:
-      '@morpho-org/blue-sdk': 6.5.0(@morpho-org/morpho-ts@2.8.0)
-      '@morpho-org/blue-sdk-viem': 5.2.1(@morpho-org/blue-sdk@6.5.0(@morpho-org/morpho-ts@2.8.0))(@morpho-org/morpho-ts@2.8.0)(viem@2.47.17(typescript@6.0.2)(zod@4.4.3))
-      '@morpho-org/midnight-sdk': 1.3.0(@morpho-org/morpho-ts@2.8.0)(viem@2.47.17(typescript@6.0.2)(zod@4.4.3))
-      '@morpho-org/morpho-ts': 2.8.0
+      '@morpho-org/blue-sdk': 6.7.0(@morpho-org/morpho-ts@2.10.0)
+      '@morpho-org/blue-sdk-viem': 5.4.0(@morpho-org/blue-sdk@6.7.0(@morpho-org/morpho-ts@2.10.0))(@morpho-org/morpho-ts@2.10.0)(viem@2.47.17(typescript@6.0.2)(zod@4.4.3))
+      '@morpho-org/midnight-sdk': 1.3.0(@morpho-org/morpho-ts@2.10.0)(viem@2.47.17(typescript@6.0.2)(zod@4.4.3))
+      '@morpho-org/morpho-ts': 2.10.0
       viem: 2.47.17(typescript@6.0.2)(zod@4.4.3)
       zod: 4.4.3
 
-  '@morpho-org/morpho-ts@2.8.0': {}
+  '@morpho-org/morpho-ts@2.10.0': {}
 
   '@morpho-org/viem-dlc@0.0.11(typescript@6.0.2)(viem@2.47.17(typescript@6.0.2)(zod@4.4.3))':
     dependencies:

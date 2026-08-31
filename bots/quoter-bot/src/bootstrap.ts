@@ -121,22 +121,29 @@ const defaultState = async (config: ConfigService, ignoredOfferGroupIds: readonl
         deriveSignerAddress: () => makerAccountAddress(identity)
       }
   const ownership = createBootstrapGroupOwnership({
+    chainId: config.chainId,
     maker: config.setup.maker,
     marketIds: config.setup.marketIds,
     configuredGroupIds: config.v0OfferGroupIds
   })
   const ladderOwnership = createLadderGroupOwnership({
+    chainId: config.chainId,
     maker: config.setup.maker,
     strategyMarketIds: config.ladder.map(item => item.marketId)
   })
 
   return new ViemSetupStateService(
-    createChainReader(config.rpcUrl, config.requestTimeoutMs),
-    createChainReader(config.referenceRpcUrl ?? config.rpcUrl, config.requestTimeoutMs),
+    createChainReader(config.rpcUrl, config.requestTimeoutMs, config.chainId),
+    createChainReader(
+      config.referenceRpcUrl ?? config.rpcUrl,
+      config.requestTimeoutMs,
+      config.chainId
+    ),
     (url, provider, timeoutMs) =>
       requestJson(url, provider, Math.min(config.requestTimeoutMs, timeoutMs ?? Infinity)),
     {
       ...identityOptions,
+      chainId: config.chainId,
       midnight: config.setup.midnight,
       loanAsset: config.setup.loanAsset,
       morphoApiBaseUrl: config.morphoApiBaseUrl,

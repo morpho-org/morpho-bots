@@ -11,7 +11,6 @@ import {
   type Address,
   type Hex
 } from 'viem'
-import { base } from 'viem/chains'
 
 import type {
   BootstrapSubmittedTransaction,
@@ -27,6 +26,7 @@ import type { BootstrapOffer } from '../../domain/bootstrap/position-bootstrap'
 import type { HistoricalBlockReader } from '../reference/blue-reference-reader.utils'
 import type { BootstrapActiveGroup, BootstrapInventoryReader } from './bootstrap-position.service'
 
+import { supportedChain } from '../../config/supported-chains.utils'
 import { invalidateOffersBatch } from '../invalidation/batch-offer-invalidation.utils'
 import { OfferInvalidationAdapterError } from '../invalidation/offer-invalidation-adapter.error'
 import { pendingLadderQuoteSets } from '../ladder/ladder-active-publication.utils'
@@ -203,20 +203,22 @@ export const createProductionBootstrapAdapters = (
 ): ProductionBootstrapAdapters | Promise<ProductionBootstrapAdapters> => {
   const maker = config.identity.maker
   const client = createPublicClient({
-    chain: base,
+    chain: supportedChain(config.chainId),
     transport: http(config.rpcUrl, { timeout: config.requestTimeoutMs })
   }).extend(morphoViemExtension({ supportSignature: true, supportDeployless: true }))
   const referenceClient = createPublicClient({
-    chain: base,
+    chain: supportedChain(config.chainId),
     transport: http(config.referenceRpcUrl ?? config.rpcUrl, { timeout: config.requestTimeoutMs })
   })
-  const midnight = client.morpho.midnight(base.id)
+  const midnight = client.morpho.midnight(config.chainId)
   const ownership = createBootstrapGroupOwnership({
+    chainId: config.chainId,
     maker,
     marketIds: config.setup.marketIds,
     configuredGroupIds: config.v0OfferGroupIds
   })
   const ladderOwnership = createLadderGroupOwnership({
+    chainId: config.chainId,
     maker,
     strategyMarketIds: config.ladder.map(item => item.marketId)
   })
@@ -232,6 +234,7 @@ export const createProductionBootstrapAdapters = (
     (await ladderOwnership.readGroupIds()).filter((groupId: Hex) => !ignoredGroupIds.has(groupId))
   const readGroups = () =>
     readBootstrapGroups({
+      chainId: config.chainId,
       maker,
       morphoApiBaseUrl: config.morphoApiBaseUrl,
       requestTimeoutMs: config.requestTimeoutMs
@@ -645,7 +648,7 @@ export const createProductionBootstrapAdapters = (
   }
   const wallet = createWalletClient({
     account,
-    chain: base,
+    chain: supportedChain(config.chainId),
     transport: http(config.rpcUrl, { timeout: config.requestTimeoutMs })
   })
     .extend(publicActions)
@@ -758,7 +761,11 @@ export const createProductionBootstrapAdapters = (
       if (tree.root !== output.root) {
         throw new BootstrapAdapterError('unexpected-requirement')
       }
-      const requirementClient = createBootstrapRequirementClient({ account, chain: base, tree })
+      const requirementClient = createBootstrapRequirementClient({
+        account,
+        chain: supportedChain(config.chainId),
+        tree
+      })
       const { signatures, transactions: ratificationTransactions } =
         await prepareBootstrapRequirements(
           await output.getRequirements(),
@@ -786,10 +793,10 @@ export const createProductionBootstrapAdapters = (
       const transaction = output.buildTx(signatures)
       const publicationPolicy = {
         kind: 'publication' as const,
-        target: getChainAddress(base.id, 'midnightMempool'),
+        target: getChainAddress(config.chainId, 'midnightMempool'),
         offer: created,
         ratifierType: output.ratifierType,
-        chainId: base.id,
+        chainId: config.chainId,
         root: output.root,
         maker
       }
@@ -822,7 +829,7 @@ export const createProductionBootstrapAdapters = (
             },
             validate: payload =>
               validateBootstrapMempoolPayload({
-                chainId: base.id,
+                chainId: config.chainId,
                 baseUrl: `${config.morphoApiBaseUrl}/v0/midnight`,
                 payload
               }),

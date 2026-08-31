@@ -9,20 +9,19 @@ import { erc20Abi, isAddress, isAddressEqual, keccak256, zeroAddress, zeroHash }
 import { privateKeyToAccount } from 'viem/accounts'
 
 import type { BookSetup, SetupStateService } from '../../application/setup/setup-check.service'
+import type { SupportedChainId } from '../../config/supported-chains.utils'
 import type { JsonRequest } from './http-json.utils'
 
-import { BASE_CHAIN_ID } from '../../config/config.utils'
+import { ratifierRuntimeHash, referenceLookbackBlocks } from '../../config/supported-chains.utils'
 import { booksJsonRequestFetch } from './http-json.utils'
 import { ProviderPaginationError } from './provider-pagination.error'
 import { executeProviderRead } from './provider-read.utils'
 import { ProviderResponseError } from './provider-response.error'
 import {
   addressValue,
-  BASE_ECRECOVER_RATIFIER_RUNTIME_HASH,
-  BASE_SETTER_RATIFIER_RUNTIME_HASH,
   DEFAULT_REQUEST_TIMEOUT_MS,
   invertedMarketIds,
-  listedBaseMarketIds,
+  listedMarketIds,
   marketFromApi,
   marketFromContract,
   MAX_OFFER_ITEMS,
@@ -77,6 +76,7 @@ export interface ChainReader {
 }
 
 type SetupStateOptions = {
+  chainId: SupportedChainId
   midnight: Address
   loanAsset: Address
   morphoApiBaseUrl: string
@@ -112,7 +112,7 @@ export class ViemSetupStateService implements SetupStateService {
    */
   constructor(
     private readonly chain: ChainReader,
-    private readonly reference: Pick<ChainReader, 'getBlock' | 'readContract'>,
+    private readonly reference: Pick<ChainReader, 'getChainId' | 'getBlock' | 'readContract'>,
     private readonly request: JsonRequest,
     private readonly options: SetupStateOptions
   ) {
@@ -134,6 +134,19 @@ export class ViemSetupStateService implements SetupStateService {
    */
   getChainId() {
     return executeProviderRead('rpc', 'chain-id', () => this.chain.getChainId())
+  }
+
+  /**
+   * Reads the connected chain identity through the archive-capable reference provider.
+   * @returns The chain ID the reference provider is actually serving.
+   * @throws `ProviderReadError` on a sanitized archive-RPC rejection.
+   * @remarks Read-only. The reference provider is configured separately from the current-state RPC,
+   * so a stale endpoint for another chain is only detectable here.
+   */
+  getReferenceChainId() {
+    return executeProviderRead('archive-rpc', 'reference-chain-id', () =>
+      this.reference.getChainId()
+    )
   }
 
   /**
@@ -231,19 +244,15 @@ export class ViemSetupStateService implements SetupStateService {
         'Midnight isAuthorized response must be boolean'
       )
     }
-    const type = isAddressEqual(ratifier, getChainAddress(BASE_CHAIN_ID, 'setterRatifier'))
+    const chainId = this.options.chainId
+    const type = isAddressEqual(ratifier, getChainAddress(chainId, 'setterRatifier'))
       ? ('setter' as const)
-      : isAddressEqual(ratifier, getChainAddress(BASE_CHAIN_ID, 'ecrecoverRatifier'))
+      : isAddressEqual(ratifier, getChainAddress(chainId, 'ecrecoverRatifier'))
         ? ('ecrecover' as const)
         : undefined
     const listed = type !== undefined
     const deployed = code !== undefined && code !== '0x'
-    const expectedRuntimeHash =
-      type === 'setter'
-        ? BASE_SETTER_RATIFIER_RUNTIME_HASH
-        : type === 'ecrecover'
-          ? BASE_ECRECOVER_RATIFIER_RUNTIME_HASH
-          : undefined
+    const expectedRuntimeHash = type === undefined ? undefined : ratifierRuntimeHash(chainId, type)
     const surfaceMatches =
       deployed && expectedRuntimeHash !== undefined && keccak256(code) === expectedRuntimeHash
     if (!surfaceMatches || type === undefined) {
@@ -311,8 +320,9 @@ export class ViemSetupStateService implements SetupStateService {
    */
   async getBook(id: Hex): Promise<BookSetup> {
     const requestTimeoutMs = this.options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS
+    const chainId = this.options.chainId
     const listingQuery = new URLSearchParams({
-      chain_ids: String(BASE_CHAIN_ID),
+      chain_ids: String(chainId),
       market_ids: id,
       listed: 'true',
       limit: String(PAGE_SIZE)
@@ -321,7 +331,7 @@ export class ViemSetupStateService implements SetupStateService {
       executeProviderRead('morpho-api', 'book-api', () =>
         MidnightApi.fetchBooks({
           baseUrl: `${this.options.morphoApiBaseUrl}/v0/midnight`,
-          chainIds: [BASE_CHAIN_ID],
+          chainIds: [chainId],
           marketIds: [id],
           limit: 1,
           fetch: booksJsonRequestFetch(this.request, requestTimeoutMs)
@@ -359,7 +369,7 @@ export class ViemSetupStateService implements SetupStateService {
       )
     }
     const apiMarket = marketFromApi(apiResponse.data[0])
-    const allowlisted = listedBaseMarketIds(listingResponse).includes(id)
+    const allowlisted = listedMarketIds(listingResponse, chainId).includes(id)
     const contractMarket = marketFromContract(contractResponse)
     if (apiMarket.id !== id) {
       throw new ProviderResponseError(
@@ -368,8 +378,12 @@ export class ViemSetupStateService implements SetupStateService {
         `Morpho API returned ${apiMarket.id} for ${id}`
       )
     }
-    if (apiMarket.chainId !== BASE_CHAIN_ID) {
-      throw new ProviderResponseError('morpho-api', 'book-chain', 'API market chain id is not Base')
+    if (apiMarket.chainId !== chainId) {
+      throw new ProviderResponseError(
+        'morpho-api',
+        'book-chain',
+        'API market chain id is not the configured chain'
+      )
     }
     if (!isAddressEqual(apiMarket.midnight, this.options.midnight)) {
       throw new ProviderResponseError(
@@ -378,8 +392,12 @@ export class ViemSetupStateService implements SetupStateService {
         'API market points at an unexpected Midnight contract'
       )
     }
-    if (contractMarket.chainId !== BigInt(BASE_CHAIN_ID)) {
-      throw new ProviderResponseError('rpc', 'book-chain', 'market chain id is not Base')
+    if (contractMarket.chainId !== BigInt(chainId)) {
+      throw new ProviderResponseError(
+        'rpc',
+        'book-chain',
+        'market chain id is not the configured chain'
+      )
     }
     if (!isAddressEqual(contractMarket.midnight, this.options.midnight)) {
       throw new ProviderResponseError(
@@ -452,7 +470,8 @@ export class ViemSetupStateService implements SetupStateService {
         'reference RPC latest block has no number'
       )
     }
-    const lookback = this.options.referenceLookbackBlocks ?? 10_800n
+    const lookback =
+      this.options.referenceLookbackBlocks ?? referenceLookbackBlocks(this.options.chainId)
     if (latest.number < lookback) {
       throw new ProviderResponseError(
         'archive-rpc',
@@ -467,7 +486,7 @@ export class ViemSetupStateService implements SetupStateService {
     const [paramsResponse, marketResponse] = await Promise.all([
       executeProviderRead('archive-rpc', 'reference-market-params', () =>
         this.reference.readContract({
-          address: getChainAddress(BASE_CHAIN_ID, 'morpho'),
+          address: getChainAddress(this.options.chainId, 'morpho'),
           abi: blueAbi,
           functionName: 'idToMarketParams',
           args: [this.options.referenceMarketId],
@@ -476,7 +495,7 @@ export class ViemSetupStateService implements SetupStateService {
       ),
       executeProviderRead('archive-rpc', 'reference-market-state', () =>
         this.reference.readContract({
-          address: getChainAddress(BASE_CHAIN_ID, 'morpho'),
+          address: getChainAddress(this.options.chainId, 'morpho'),
           abi: blueAbi,
           functionName: 'market',
           args: [this.options.referenceMarketId],
@@ -577,7 +596,7 @@ export class ViemSetupStateService implements SetupStateService {
       if (remainingMs <= 0) throw morphoApiTimeout()
       pageCount += 1
       const query = new URLSearchParams({
-        chain_ids: String(BASE_CHAIN_ID),
+        chain_ids: String(this.options.chainId),
         limit: String(PAGE_SIZE)
       })
       if (cursor !== null) query.set('cursor', cursor)
@@ -606,7 +625,7 @@ export class ViemSetupStateService implements SetupStateService {
           'Morpho API offer-group page size exceeded'
         )
       }
-      const pageOffers = offersFromGroups(groups)
+      const pageOffers = offersFromGroups(groups, this.options.chainId)
       if (offers.length + pageOffers.length > MAX_OFFER_ITEMS) {
         throw new ProviderPaginationError(
           'morpho-api',

@@ -2,6 +2,8 @@ import type { Address, Hex } from 'viem'
 
 import { waitForMonitorInterval } from '@repo/monitoring'
 
+import type { SupportedChainId } from '../../config/supported-chains.utils'
+
 import { operatorErrorName } from '../operator-error-name.utils'
 import { SetupCheckAbortedError } from './setup-check-aborted.error'
 import {
@@ -93,10 +95,10 @@ export type SetupCheckMonitorReport =
       lastReport: SetupCheckReport
     }
 
-/** Validated configuration required to evaluate quoter readiness on Base. */
+/** Validated configuration required to evaluate quoter readiness on a supported chain. */
 export type SetupCheckConfig = {
-  /** Configured EVM chain identifier; V0 requires Base (`8453`). */
-  chainId: number
+  /** Configured EVM chain identifier, narrowed to a chain the bot supports. */
+  chainId: SupportedChainId
   /** Expected maker derived from the configured signing key. */
   maker: Address
   /** Expected Midnight singleton address. */
@@ -139,6 +141,8 @@ export type BookSetup = {
 export interface SetupStateService {
   /** Reads the connected RPC chain identifier. @returns The connected RPC chain identifier. */
   getChainId(): Promise<number>
+  /** Reads the archive provider's chain identifier. @returns The chain the reference provider is actually serving. */
+  getReferenceChainId(): Promise<number>
   /** Reads deployed runtime bytecode. @param address - Contract address to inspect. @returns Runtime bytecode, if deployed. */
   getCode(address: Address): Promise<Hex | undefined>
   /** Derives the configured maker locally. @returns The maker derived from the configured signing key, or `undefined` when no key was loaded. */
@@ -300,8 +304,13 @@ export class SetupCheckService {
     const referenceRead = this.referenceRequired
       ? capture(() => this.state.checkReference(), 'archive-rpc')
       : Promise.resolve(undefined)
+    // Only meaningful when a variable-rate strategy actually reads the archive provider.
+    const referenceChainIdRead = this.referenceRequired
+      ? capture(() => this.state.getReferenceChainId(), 'archive-rpc')
+      : Promise.resolve(undefined)
     const reads = await Promise.all([
       capture(() => this.state.getChainId()),
+      referenceChainIdRead,
       capture(() => this.state.getCode(this.config.midnight)),
       derivedMakerRead,
       capture(() => this.state.getNativeBalance(this.config.maker)),
@@ -315,6 +324,7 @@ export class SetupCheckService {
     ])
     const [
       chainId,
+      referenceChainId,
       midnightCode,
       derivedMaker,
       nativeBalance,
@@ -448,7 +458,7 @@ export class SetupCheckService {
         }
 
     const checks: SetupCheck[] = [
-      chainCheck(this.config, chainId, midnightCode),
+      chainCheck(this.config, chainId, midnightCode, referenceChainId),
       makerCheck,
       nativeCheck,
       allowanceCheck,

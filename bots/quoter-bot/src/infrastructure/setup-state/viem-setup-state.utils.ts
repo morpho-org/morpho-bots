@@ -5,7 +5,6 @@ import { bytesToHex, getAddress, hexToBytes, isAddress, isHex, size } from 'viem
 import type { OwnedOverlapBookOffer } from '../intentional-overlap.utils'
 
 import { SafeProviderError } from '../../application/setup/safe-provider.error'
-import { BASE_CHAIN_ID } from '../../config/config.utils'
 import { hasInvalidOwnedBootstrapLadderSpread } from '../intentional-overlap.utils'
 import { ProviderResponseError } from './provider-response.error'
 
@@ -13,12 +12,8 @@ export const PAGE_SIZE = 100
 export const MAX_OFFER_PAGES = 100
 export const MAX_OFFER_ITEMS = 100_000
 export const DEFAULT_REQUEST_TIMEOUT_MS = 10_000
-// morpho-org/deployments@24c04410 address-book.json, Base EcrecoverRatifier.
-// The deployment-specific runtime hash includes the immutable Midnight target.
-export const BASE_ECRECOVER_RATIFIER_RUNTIME_HASH =
-  '0xcce1e0dd38ae831e81a9270627af2c24c208409ec03d5654a28a33ead53b1ac1'
-export const BASE_SETTER_RATIFIER_RUNTIME_HASH =
-  '0xace63c5b7c1b611d0b9c04df3993ce0cf24a172287c9e0755d18606b7465c235'
+// Per-chain ratifier runtime hashes live in config/supported-chains.utils.ts, beside the chain's
+// Midnight addresses, because the ratifier runtime embeds its immutable Midnight target.
 const invalidProviderValue = (message: string) =>
   new ProviderResponseError('provider', 'decode', message)
 /**
@@ -135,19 +130,22 @@ export const marketFromApi = (value: unknown) => {
 }
 
 /**
- * Extracts canonical Base market IDs proven listed by the documented markets endpoint.
+ * Extracts canonical market IDs proven listed by the documented markets endpoint.
  * @param value - Untrusted `listed=true` markets response.
- * @returns Canonical IDs whose rows explicitly identify Base and `listed: true`.
+ * @param chainId - Configured chain every accepted row must identify.
+ * @returns Canonical IDs whose rows explicitly identify the configured chain and `listed: true`.
  * @throws When the response envelope or any listing identity field is malformed.
+ * @remarks Rows naming any other chain are dropped rather than rejected, so a provider that widens
+ * its response to further chains cannot promote a foreign market into the configured chain's set.
  */
-export const listedBaseMarketIds = (value: unknown) => {
+export const listedMarketIds = (value: unknown, chainId: number) => {
   const response = objectValue(value, 'Morpho API markets response')
   return arrayValue(response.data, 'Morpho API markets data').flatMap(item => {
     const market = objectValue(item, 'Morpho API listed market')
     const id = bytes32Value(market.market_id, 'listed market_id')
-    const chainId = integerValue(market.chain_id, 'listed market chain_id')
+    const rowChainId = integerValue(market.chain_id, 'listed market chain_id')
     const listed = booleanValue(market.listed, 'listed market flag')
-    return chainId === BASE_CHAIN_ID && listed ? [id] : []
+    return rowChainId === chainId && listed ? [id] : []
   })
 }
 
@@ -172,14 +170,17 @@ export const offerFromApi = (value: unknown, group: Hex) => {
 /**
  * Parses and flattens one active offer-group page from the Router endpoint.
  * @param value - Untrusted page data array.
+ * @param chainId - Configured chain every accepted group must identify.
  * @returns Canonical group IDs paired with every nested active offer.
  * @throws When a group ID, nested offer list, or offer field is malformed.
+ * @remarks Groups naming any other chain are skipped, so foreign-chain offers can never enter the
+ * overlap and exposure checks computed from this page.
  */
-export const offersFromGroups = (value: unknown) =>
+export const offersFromGroups = (value: unknown, chainId: number) =>
   arrayValue(value, 'Router data').flatMap(groupValue => {
     const group = objectValue(groupValue, 'Router offer group')
-    const chainId = integerValue(group.chain_id, 'offer group chain_id')
-    if (chainId !== BASE_CHAIN_ID) return []
+    const groupChainId = integerValue(group.chain_id, 'offer group chain_id')
+    if (groupChainId !== chainId) return []
     const groupId = bytes32Value(group.id, 'offer group id')
     return arrayValue(group.offers, 'Router active offers').map(offer =>
       offerFromApi(offer, groupId)

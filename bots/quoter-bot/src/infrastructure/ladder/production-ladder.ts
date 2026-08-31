@@ -10,7 +10,6 @@ import {
   publicActions,
   type Hex
 } from 'viem'
-import { base } from 'viem/chains'
 
 import type {
   LadderMakeService,
@@ -29,6 +28,7 @@ import type { OwnedOverlapBookOffer } from '../intentional-overlap.utils'
 import type { HistoricalBlockReader } from '../reference/blue-reference-reader.utils'
 import type { OwnedLadderPublication } from './ladder-group-ownership.utils'
 
+import { supportedChain } from '../../config/supported-chains.utils'
 import { createBootstrapGroupOwnership } from '../bootstrap/bootstrap-group-ownership.utils'
 import {
   bootstrapBookOffers,
@@ -311,20 +311,22 @@ export const createProductionLadderAdapters = (
 ): ProductionLadderAdapters | Promise<ProductionLadderAdapters> => {
   const maker = config.identity.maker
   const client = createPublicClient({
-    chain: base,
+    chain: supportedChain(config.chainId),
     transport: http(config.rpcUrl, { timeout: config.requestTimeoutMs })
   }).extend(morphoViemExtension({ supportSignature: true, supportDeployless: true }))
   const referenceClient = createPublicClient({
-    chain: base,
+    chain: supportedChain(config.chainId),
     transport: http(config.referenceRpcUrl ?? config.rpcUrl, { timeout: config.requestTimeoutMs })
   })
-  const midnight = client.morpho.midnight(base.id)
+  const midnight = client.morpho.midnight(config.chainId)
   const bootstrapOwnership = createBootstrapGroupOwnership({
+    chainId: config.chainId,
     maker,
     marketIds: config.setup.marketIds,
     configuredGroupIds: config.v0OfferGroupIds
   })
   const ladderOwnership = createLadderGroupOwnership({
+    chainId: config.chainId,
     maker,
     strategyMarketIds: config.ladder.map(item => item.marketId)
   })
@@ -334,6 +336,7 @@ export const createProductionLadderAdapters = (
   // Deduplication is concurrent-only, so every fresh call still reads current group state.
   const readGroups = createRepeatableSingleFlight(() =>
     readBootstrapGroups({
+      chainId: config.chainId,
       maker,
       morphoApiBaseUrl: config.morphoApiBaseUrl,
       requestTimeoutMs: config.requestTimeoutMs
@@ -603,7 +606,7 @@ export const createProductionLadderAdapters = (
         : { ownBootstrapBuyTickCeiling: bootstrapTickCeiling })
     })
     await prepared.tree.mempoolValidate({
-      chainId: base.id,
+      chainId: config.chainId,
       apiUrl: `${config.morphoApiBaseUrl}/v0/midnight`
     })
     return prepared
@@ -657,12 +660,12 @@ export const createProductionLadderAdapters = (
   }
   const wallet = createWalletClient({
     account,
-    chain: base,
+    chain: supportedChain(config.chainId),
     transport: http(config.rpcUrl, { timeout: config.requestTimeoutMs })
   })
     .extend(publicActions)
     .extend(morphoViemExtension({ supportSignature: true, supportDeployless: true }))
-  const mempool = getChainAddress(base.id, 'midnightMempool')
+  const mempool = getChainAddress(config.chainId, 'midnightMempool')
 
   const transport: LadderOfferTransport = {
     readActive,
@@ -676,7 +679,7 @@ export const createProductionLadderAdapters = (
     listBookOffers: async marketId => (await completeBookOffers(marketId)).book,
     preparePublication: async quote => {
       const prepared = await prepareUnsignedPublication(quote)
-      const ratifierType = configuredRatifierType(config.setup.ratifier)
+      const ratifierType = configuredRatifierType(config.setup.ratifier, config.chainId)
       const ratification = await prepareLadderRatification({
         type: ratifierType,
         tree: prepared.tree,
@@ -685,7 +688,7 @@ export const createProductionLadderAdapters = (
       })
       if (ratification.approval === undefined) {
         await prepared.tree.mempoolValidate({
-          chainId: base.id,
+          chainId: config.chainId,
           apiUrl: `${config.morphoApiBaseUrl}/v0/midnight`,
           ratification: ratification.validation
         })
@@ -728,7 +731,7 @@ export const createProductionLadderAdapters = (
               if (ratification.approval === undefined) return
               try {
                 await prepared.tree.mempoolValidate({
-                  chainId: base.id,
+                  chainId: config.chainId,
                   apiUrl: `${config.morphoApiBaseUrl}/v0/midnight`,
                   ratification: ratification.validation
                 })

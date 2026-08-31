@@ -1,6 +1,6 @@
 # Quoter bot
 
-The bot validates its Base and Midnight setup, bootstraps target lending positions, maintains
+The bot validates its chain and Midnight setup, bootstraps target lending positions, maintains
 two-sided rate ladders, and provides explicit recovery commands. Start with read-only mode to inspect
 every intended action before enabling signing.
 
@@ -231,7 +231,7 @@ no group argument it reads the complete active maker group set and invalidates e
 including groups that are not owned by the bootstrap or ladder strategy. Because one Midnight group
 can cap several offers, one cancellation invalidates every offer in that group. With an optional
 0x-prefixed bytes32 argument, `invalidate <group-id>` directly invalidates only that group without
-depending on API indexing. Before a live cancellation it still verifies the connected Base chain,
+depending on API indexing. Before a live cancellation it still verifies the connected chain,
 deployed configured Midnight contract, maker/private-key agreement, and configured native gas
 reserve. Maker-wide invalidation submits one zero-value native Midnight `multicall(bytes[])`; each
 ordered inner call is exactly `setConsumed(groupId, MAX_OFFER_CAP, MAKER_ADDRESS)`. Midnight executes
@@ -471,9 +471,9 @@ unit; for six-decimal USDC, `101000000` is 101 USDC. No value is inferred from a
 
 | Environment variable             | YAML key                            | Requirement and behavior                                                                                                                                                                                                                                                                                                                                            |
 | -------------------------------- | ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `CHAIN_ID`                       | `chain.id`                          | Required. Must be `8453`; all protocol, token, market, and transaction operations run on Base.                                                                                                                                                                                                                                                                      |
-| `RPC_URL`                        | `chain.rpcUrl`                      | Required. Current-state Base JSON-RPC endpoint used for blocks, balances, allowances, positions, contract reads, simulation, transaction submission, and receipts.                                                                                                                                                                                                  |
-| `REFERENCE_RPC_URL`              | `chain.archiveRpcUrl`               | Required when the selected command has an active `variable_rate_avg` target. Archive-capable Base JSON-RPC endpoint used to read the reference Morpho Blue market at historical blocks.                                                                                                                                                                             |
+| `CHAIN_ID`                       | `chain.id`                          | Required. Must be `1` (Ethereum mainnet) or `8453` (Base); all protocol, token, market, and transaction operations run on the selected chain.                                                                                                                                                                                                                       |
+| `RPC_URL`                        | `chain.rpcUrl`                      | Required. Current-state JSON-RPC endpoint for the configured chain, used for blocks, balances, allowances, positions, contract reads, simulation, transaction submission, and receipts.                                                                                                                                                                             |
+| `REFERENCE_RPC_URL`              | `chain.archiveRpcUrl`               | Required when the selected command has an active `variable_rate_avg` target. Archive-capable JSON-RPC endpoint for the configured chain, used to read the reference Morpho Blue market at historical blocks.                                                                                                                                                        |
 | `MAKER_ADDRESS`                  | `identity.makerAddress`             | Required. EVM address whose balance, allowance, credit, offers, and exposure the bot manages. In write mode it must match the selected signer.                                                                                                                                                                                                                      |
 | `KEY_STORAGE_METHOD`             | `identity.keyStorageMethod`         | Optional only for backward-compatible `MAKER_PRIVATE_KEY` use; otherwise `private-key`, `keystore`, `aws`, or `middleware`. Exactly one effective source is required in write mode.                                                                                                                                                                                 |
 | `MAKER_PRIVATE_KEY`              | `identity.makerPrivateKey`          | Local private-key source. Must be a 0x-prefixed 32-byte secp256k1 key. `--private-key` overrides config. Never include it in committed configuration or logs.                                                                                                                                                                                                       |
@@ -663,7 +663,7 @@ after outer environment whitespace is trimmed.
 
 Setup verifies all of the following from the typed configuration:
 
-- Base chain identity and configured Midnight bytecode.
+- Configured chain identity and configured Midnight bytecode.
 - Native reserve, loan-token allowance, and ratifier readiness for the configured maker address.
 - Maker/private-key agreement in write mode; only this signer-identity check is `not-required` with
   `--readonly`. Maker identity is reduced to configured/derived/matches status and the address is
@@ -683,7 +683,7 @@ sources remains unknown, fails readiness, and requires an operator decision; mar
 permits reconciliation or hard-halt cancellation. The request timeout is an aggregate fetch/RPC bound and
 does not reveal endpoint details in failures.
 
-Bootstrap offer-group reads request Base explicitly, ignore well-formed rows from other chains, and fail
+Bootstrap offer-group reads request the configured chain explicitly, ignore well-formed rows from other chains, and fail
 closed on malformed chain identity, asset strings, or empty/repeated pagination cursors. The variable Blue
 reference hard-fails when its latest checkpoint is more than five minutes behind wall-clock time.
 

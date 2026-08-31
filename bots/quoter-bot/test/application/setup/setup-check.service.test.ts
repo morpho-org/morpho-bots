@@ -39,6 +39,7 @@ const config: SetupCheckConfig = {
 const readyState = (): SetupStateService => {
   return {
     getChainId: async () => 8453,
+    getReferenceChainId: async () => 8453,
     getCode: async () => '0x1234',
     getDerivedMaker: async () => maker,
     getNativeBalance: async () => 10n,
@@ -74,6 +75,34 @@ const readyState = (): SetupStateService => {
 }
 
 describe('SetupCheckService', () => {
+  test('fails readiness when the archive provider serves a different chain', async () => {
+    // Regression: only the current-state reader's chain was checked. A stale Base
+    // REFERENCE_RPC_URL paired with CHAIN_ID=1 let the variable-rate strategy derive quotes from
+    // Base Blue state and submit them on mainnet whenever the reference market resolved on both.
+    // The current-state reader agrees with the configured chain, so the archive mismatch is the
+    // only thing that can fail this check.
+    const state = {
+      ...readyState(),
+      getChainId: async () => 1,
+      getReferenceChainId: async () => 8453
+    }
+    const report = await new SetupCheckService(state, { ...config, chainId: 1 }).check()
+    const chain = report.checks.find(check => check.name === 'chain')
+
+    expect(chain?.observed).toMatchObject({ configured: 1, connected: 1, referenceConnected: 8453 })
+    expect(chain?.status).toBe('failed')
+    expect(report.ready).toBe(false)
+  })
+
+  test('passes readiness when both providers serve the configured chain', async () => {
+    const state = { ...readyState(), getChainId: async () => 1, getReferenceChainId: async () => 1 }
+    const report = await new SetupCheckService(state, { ...config, chainId: 1 }).check()
+    const chain = report.checks.find(check => check.name === 'chain')
+
+    expect(chain?.status).toBe('passed')
+    expect(chain?.observed).toMatchObject({ configured: 1, connected: 1, referenceConnected: 1 })
+  })
+
   test('halts monitoring after emitting the first failed readiness report', async () => {
     const controller = new AbortController()
     const reports: { ready: boolean; report: SetupCheckReport }[] = []

@@ -3,7 +3,7 @@ import type { Address } from 'viem'
 import { Offer, SetterRatifierUtils, Tree, setterRatifierAbi } from '@morpho-org/midnight-sdk'
 import { createWalletClient, custom, decodeFunctionData, zeroAddress } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
-import { base } from 'viem/chains'
+import { base, mainnet } from 'viem/chains'
 import { describe, expect, test } from 'vitest'
 
 import {
@@ -17,11 +17,32 @@ const collateral: Address = '0x4444444444444444444444444444444444444444'
 const oracle: Address = '0x5555555555555555555555555555555555555555'
 const setterRatifier: Address = '0x800B5F12A61B8198a5a6EfD794Cac6699B294d63'
 
+const baseEcrecoverRatifier: Address = '0xd6e70365C8E8DDa9a4ca662C07bbE663b017755E'
+const mainnetSetterRatifier: Address = '0xb72c416382c8A6399D0765CebfB032F040B00B3c'
+const mainnetEcrecoverRatifier: Address = '0xAC439c81CAA6ef4C7B7E8F0110F8CE63A4b6D43e'
+
 describe('prepareLadderRatification', () => {
   test('selects only canonical Base ratifier addresses', () => {
-    expect(configuredRatifierType(setterRatifier)).toBe('setter')
-    expect(configuredRatifierType('0xd6e70365C8E8DDa9a4ca662C07bbE663b017755E')).toBe('ecrecover')
-    expect(() => configuredRatifierType('0x1111111111111111111111111111111111111111')).toThrow()
+    expect(configuredRatifierType(setterRatifier, base.id)).toBe('setter')
+    expect(configuredRatifierType(baseEcrecoverRatifier, base.id)).toBe('ecrecover')
+    expect(() =>
+      configuredRatifierType('0x1111111111111111111111111111111111111111', base.id)
+    ).toThrow()
+  })
+
+  test('selects only canonical mainnet ratifier addresses', () => {
+    expect(configuredRatifierType(mainnetSetterRatifier, mainnet.id)).toBe('setter')
+    expect(configuredRatifierType(mainnetEcrecoverRatifier, mainnet.id)).toBe('ecrecover')
+    expect(() =>
+      configuredRatifierType('0x1111111111111111111111111111111111111111', mainnet.id)
+    ).toThrow()
+  })
+
+  test('rejects a ratifier canonical on the other chain', () => {
+    expect(() => configuredRatifierType(setterRatifier, mainnet.id)).toThrow()
+    expect(() => configuredRatifierType(baseEcrecoverRatifier, mainnet.id)).toThrow()
+    expect(() => configuredRatifierType(mainnetSetterRatifier, base.id)).toThrow()
+    expect(() => configuredRatifierType(mainnetEcrecoverRatifier, base.id)).toThrow()
   })
 
   test('prepares Setter proof items and the canonical root-approval transaction without signing', async () => {

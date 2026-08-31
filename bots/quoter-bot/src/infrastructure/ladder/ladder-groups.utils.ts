@@ -49,12 +49,14 @@ const decimal = (value: unknown) => {
 
 /**
  * Reads active maker groups through the Router HTTP boundary.
- * @param parameters - API origin, maker, timeout, and optional request implementation.
- * @returns Strictly parsed active group projections.
- * @throws `LadderAdapterError` for malformed or failed provider responses.
+ * @param parameters - API origin, chain, maker, timeout, and optional request implementation.
+ * @returns Strictly parsed active group projections for the configured chain.
+ * @throws `LadderAdapterError` for malformed or failed provider responses, including a group that
+ * reports a chain other than the configured one.
  */
 export const readLadderGroups = async (parameters: {
   baseUrl: string
+  chainId: number
   maker: Address
   timeoutMs: number
   request?: JsonRequest
@@ -70,7 +72,10 @@ export const readLadderGroups = async (parameters: {
     const remainingMs = Math.floor(deadline - performance.now())
     if (remainingMs <= 0) throw new LadderAdapterError('offer-groups-timeout')
     pages += 1
-    const query = new URLSearchParams({ chain_ids: '8453', limit: String(PAGE_SIZE) })
+    const query = new URLSearchParams({
+      chain_ids: String(parameters.chainId),
+      limit: String(PAGE_SIZE)
+    })
     if (cursor) query.set('cursor', cursor)
     const raw = await request(
       `${parameters.baseUrl}/v0/midnight/users/${parameters.maker}/offer-groups?${query.toString()}`,
@@ -103,7 +108,7 @@ export const readLadderGroups = async (parameters: {
       throw new LadderAdapterError('offer-groups-response')
     }
     const group = value as Record<string, unknown>
-    if (group.chain_id !== 8453 || !Array.isArray(group.offers)) {
+    if (group.chain_id !== parameters.chainId || !Array.isArray(group.offers)) {
       throw new LadderAdapterError('offer-groups-response')
     }
     const offers = group.offers.map(value => {

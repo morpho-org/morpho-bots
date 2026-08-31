@@ -10,6 +10,11 @@ import {
   ladderConfigsValue,
   parseBytes32
 } from './market-collections'
+import {
+  isSupportedChainId,
+  SUPPORTED_CHAIN_IDS,
+  type SupportedChainId
+} from './supported-chains.utils'
 
 export {
   bootstrapConfigsValue,
@@ -20,9 +25,6 @@ export {
 
 /** String-valued runtime environment boundary accepted by configuration parsing. */
 export type Environment = Record<string, string | undefined>
-
-/** Base mainnet chain ID — the only chain the quoter-bot bot supports. */
-export const BASE_CHAIN_ID = 8453
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 10_000
 const MAXIMUM_REQUEST_TIMEOUT_MS = 120_000
@@ -43,19 +45,19 @@ const requiredValue = (environment: Environment, name: string) => {
 }
 
 /**
- * Parses the only supported chain from trimmed unsigned decimal notation.
+ * Parses a supported chain from trimmed unsigned decimal notation.
  * @param environment - Environment map containing the required chain identifier.
- * @returns The supported chain identifier.
- * @throws When CHAIN_ID is absent, malformed, unsafe, or unsupported.
+ * @returns The supported chain identifier, narrowed to a chain the bot can serve.
+ * @throws When CHAIN_ID is absent, malformed, unsafe, or names an unsupported chain.
  */
-export const chainIdValue = (environment: Environment) => {
+export const chainIdValue = (environment: Environment): SupportedChainId => {
   const raw = requiredValue(environment, 'CHAIN_ID')
   const chainId = /^\d+$/.test(raw) ? Number(raw) : Number.NaN
-  if (!Number.isSafeInteger(chainId) || chainId !== BASE_CHAIN_ID) {
+  if (!Number.isSafeInteger(chainId) || !isSupportedChainId(chainId)) {
     throw new ConfigValidationError(
       'CHAIN_ID',
       'unsupported-chain',
-      `Unsupported CHAIN_ID; supported: ${BASE_CHAIN_ID}`
+      `Unsupported CHAIN_ID; supported: ${SUPPORTED_CHAIN_IDS.join(', ')}`
     )
   }
   return chainId

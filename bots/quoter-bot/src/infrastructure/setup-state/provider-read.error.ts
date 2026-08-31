@@ -17,6 +17,7 @@ export type ProviderOperation =
   | 'market-listing'
   | 'book-market'
   | 'book-tick-spacing'
+  | 'reference-chain-id'
   | 'reference-latest-block'
   | 'reference-historical-block'
   | 'reference-market-params'

@@ -6,7 +6,7 @@ import {
 
 import { operatorErrorName } from './application/operator-error-name.utils'
 import { createApplication } from './bootstrap'
-import { BASE_CHAIN_ID } from './config/config.utils'
+import { resolveObservabilityChainId } from './config/observability-chain.utils'
 import {
   QUOTER_BOT_VERBOSE_COMMANDS,
   runQuoterBotEntrypoint
@@ -26,11 +26,16 @@ const requestShutdown = () => shutdown.abort()
 process.once('SIGINT', requestShutdown)
 process.once('SIGTERM', requestShutdown)
 
+// Resolved once, from the same sources configuration reads, so the observability record and its
+// monitoring logger always report the chain the bot actually runs on. Both used to be pinned to
+// Base, and reading only the environment mislabels a mainnet run configured through YAML alone.
+const chainId = await resolveObservabilityChainId(process.env, process.argv.slice(2))
+
 const observability = createBotObservability({
   bot: 'quoter-bot',
-  chainId: BASE_CHAIN_ID,
+  chainId,
   errorName: operatorErrorName,
-  logger: createMonitoringLogger({ bot: 'quoter-bot', chainId: BASE_CHAIN_ID })
+  logger: createMonitoringLogger({ bot: 'quoter-bot', chainId })
 })
 const removeProcessObservers = installProcessObservers(observability)
 await observability.start()
