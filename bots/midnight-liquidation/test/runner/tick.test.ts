@@ -9,6 +9,7 @@ import { getAddress } from 'viem'
 import { describe, expect, it } from 'vitest'
 
 import type { BorrowerCandidate } from '../../src/discovery/borrowers'
+import type { RevertStreak, RevertStreakStore } from '../../src/runner/revert-streak'
 import type { LiquidationPlan } from '../../src/sizing/plan'
 import type { LensCollateral, LensInput, LensOut } from '../../src/state/lens.sol'
 
@@ -25,6 +26,16 @@ function spyLogger() {
     error: make('error')
   }
   return { logger, events }
+}
+
+// The tick must classify no send outcome on a path that aborts, so either call is a failure.
+const unreachableStreaks: RevertStreakStore = {
+  record: () => {
+    throw new Error('unexpected streak record')
+  },
+  reset: () => {
+    throw new Error('unexpected streak reset')
+  }
 }
 
 // The sums documented on TickCounters. Asserted rather than eyeballed so a new loop exit that forgets
@@ -48,6 +59,9 @@ const expectCounterIdentities = (c: Record<string, number>) => {
       c.reverted!
   )
   expect(c.ok).toBe(c.submitted! + c.notSent!)
+  // Decomposes `notSent`, so it sits after that sum: the three no-broadcast outcomes are handled
+  // differently and must never be collapsed.
+  expect(c.notSent).toBe(c.sendRefused! + c.sendReverted! + c.sendRejected!)
 }
 
 const BORROWER: Address = getAddress('0x1111111111111111111111111111111111111111')
@@ -144,6 +158,14 @@ function lensOut(overrides: Partial<LensOut> = {}): LensOut {
 const candidates = (...borrowers: Address[]): BorrowerCandidate[] =>
   borrowers.map(borrower => ({ marketId: MARKET, borrower }))
 
+// A two-slot position: `collateralParams[1]` (COLLATERAL, 86% lltv) needs a swap and outranks
+// `collateralParams[0]` (the loan token itself, 98% lltv) on surplus, so it is tried first.
+const twoSlots = () =>
+  lensOut({
+    activatedBitmap: 0b11n,
+    collaterals: [slot({ index: 1 }), slot({ index: 0, maxLif: LOAN_MAX_LIF })]
+  })
+
 // Per-borrower readings, so one tick can hold candidates with different surpluses / loan tokens.
 function stubReadLensByBorrower(byBorrower: Map<Address, LensOut>) {
   return async (pairs: LensInput[]) => {
@@ -181,6 +203,8 @@ function runWith(opts: {
   submitOutcome?: SubmitOutcome
   /** Models a send that claimed a nonce but produced no hash, which aborts the tick. */
   submitThrows?: Error
+  /** What the streak store reports back for a recorded execution revert. */
+  revertStreak?: RevertStreak
   /** Distinct readings per borrower, for ordering cases. Overrides `out`. */
   outsByBorrower?: Map<Address, LensOut>
   /** Defaults to an identity valuation, so surplusUsd tracks surplus and ordering is deterministic. */
@@ -218,6 +242,26 @@ function runWith(opts: {
   // Collateral tokens phase A.5 asked to be warmed, in call order — one entry per refresh actually
   // issued, so a duplicate here is a duplicated probe burst.
   const warmed: Address[] = []
+  // Every streak call in order, so a test can pin that the tick records the chain's declines and ends
+  // the streak on everything else — the store's own arithmetic is covered in revert-streak.test.ts.
+  const streakCalls: { kind: 'record' | 'reset'; label: string; selector?: Hex }[] = []
+  const revertStreaks: RevertStreakStore = {
+    record: (label, selector) => {
+      streakCalls.push({ kind: 'record', label, selector })
+      return (
+        opts.revertStreak ?? {
+          count: 1,
+          durationMs: 0,
+          selector,
+          selectorConstant: true,
+          escalate: false
+        }
+      )
+    },
+    reset: label => {
+      streakCalls.push({ kind: 'reset', label })
+    }
+  }
   const routing = {
     resolveRoute: async (plan: LiquidationPlan, out: LensOut) => {
       const collateral = out.market.collateralParams[plan.collateralIndex]
@@ -279,6 +323,7 @@ function runWith(opts: {
     },
     backoff,
     cooldown,
+    revertStreaks,
     inflightLabels: () => opts.inflight ?? new Set(),
     usdValueOf: opts.usdValueOf ?? ((_loanToken, loanUnits) => loanUnits),
     routing,
@@ -293,6 +338,7 @@ function runWith(opts: {
     quoteCalls: () => quoteCalls,
     order,
     warmed,
+    streakCalls,
     events
   }))
 }
@@ -320,6 +366,9 @@ describe('runTick', () => {
       reverted: 0,
       submitted: 1,
       notSent: 0,
+      sendRefused: 0,
+      sendReverted: 0,
+      sendRejected: 0,
       unpriced: 0
     })
     expect(simulateCalls()).toBe(1)
@@ -524,7 +573,14 @@ describe('runTick', () => {
         submitOutcome: { sent: false, reason: 'refused' }
       })
       expect(submitCalls()).toBe(1)
-      expect(counters).toMatchObject({ ok: 1, submitted: 0, notSent: 1 })
+      expect(counters).toMatchObject({
+        ok: 1,
+        submitted: 0,
+        notSent: 1,
+        sendRefused: 1,
+        sendReverted: 0,
+        sendRejected: 0
+      })
       expect(backoff.shouldSkip(LABEL, 1n)).toBe(true)
       // Not re-armed: the next block may try again, which is the point of not blaming the position.
       expect(backoff.shouldSkip(LABEL, 101n)).toBe(false)
@@ -535,13 +591,85 @@ describe('runTick', () => {
       // The send itself failed, which is a fact about this position. Reaching submit at all means any
       // earlier entry had expired, so leaving it untouched would suppress nothing and the next block
       // would re-quote, re-simulate and re-send — the exact loop backoff exists to stop.
-      const { counters, backoff } = await runWith({
+      const { counters, backoff, streakCalls } = await runWith({
         seedBackoffAt: 1n,
         submitOutcome: { sent: false, reason: 'send_failed', executionRevert: false }
       })
-      expect(counters).toMatchObject({ ok: 1, submitted: 0, notSent: 1 })
+      expect(counters).toMatchObject({
+        ok: 1,
+        submitted: 0,
+        notSent: 1,
+        sendRefused: 0,
+        sendReverted: 0,
+        sendRejected: 1
+      })
       expect(backoff.shouldSkip(LABEL, 101n)).toBe(true)
+      // The chain never saw this plan, so it cannot extend a streak of the chain declining it.
+      expect(streakCalls).toEqual([{ kind: 'reset', label: LABEL }])
       expectCounterIdentities(counters)
+    })
+
+    it('does not extend the suppression window when the CHAIN declined the send', async () => {
+      // The measured 2026-08-28 shape: `simulate.ok` at `latest`, then a min-out shortfall on the send.
+      // Post-maturity the LIF ramps on wall-clock, so that says nothing about the next block — backing
+      // off here is what sampled the ramp exponentially and produced 25-31s gaps between attempts.
+      const { counters, backoff, streakCalls } = await runWith({
+        seedBackoffAt: 1n,
+        submitOutcome: {
+          sent: false,
+          reason: 'send_failed',
+          executionRevert: true,
+          selector: '0x08c379a0'
+        }
+      })
+      expect(counters).toMatchObject({
+        ok: 1,
+        submitted: 0,
+        notSent: 1,
+        sendRefused: 0,
+        sendReverted: 1,
+        sendRejected: 0
+      })
+      expect(backoff.shouldSkip(LABEL, 101n)).toBe(false)
+      // Reported, not suppressed: the streak is the backstop for a persistent estimator-only revert.
+      expect(streakCalls).toEqual([{ kind: 'record', label: LABEL, selector: '0x08c379a0' }])
+      expectCounterIdentities(counters)
+    })
+
+    it('escalates a revert streak that has run past the threshold', async () => {
+      const { events } = await runWith({
+        submitOutcome: {
+          sent: false,
+          reason: 'send_failed',
+          executionRevert: true,
+          selector: '0x08c379a0'
+        },
+        revertStreak: {
+          count: 37,
+          durationMs: 16 * 60_000,
+          selector: '0x08c379a0',
+          selectorConstant: true,
+          escalate: true
+        }
+      })
+      const escalation = events.find(e => e.event === 'send.revert_streak')
+      expect(escalation?.level).toBe('warn')
+      // The count rides along with the duration so a count-based rule can be calibrated later, and the
+      // selector says whether the chain keeps refusing for the SAME reason.
+      expect(escalation?.fields).toMatchObject({
+        borrower: BORROWER,
+        reverts: 37,
+        durationMs: 16 * 60_000,
+        selector: '0x08c379a0',
+        selectorConstant: true
+      })
+    })
+
+    it('stays quiet while the streak is inside the threshold', async () => {
+      const { events } = await runWith({
+        submitOutcome: { sent: false, reason: 'send_failed', executionRevert: true }
+      })
+      expect(events.some(e => e.event === 'send.revert_streak')).toBe(false)
     })
 
     it('clears backoff and counts submitted only when the queue broadcast', async () => {
@@ -551,6 +679,11 @@ describe('runTick', () => {
       })
       expect(counters).toMatchObject({ ok: 1, submitted: 1, notSent: 0 })
       expect(backoff.shouldSkip(LABEL, 1n)).toBe(false)
+    })
+
+    it('ends the revert streak on a broadcast', async () => {
+      const { streakCalls } = await runWith({ submitOutcome: { sent: true } })
+      expect(streakCalls).toEqual([{ kind: 'reset', label: LABEL }])
     })
 
     it('emits tick.end with complete: false when a submit aborts the tick', async () => {
@@ -574,6 +707,7 @@ describe('runTick', () => {
           },
           backoff: createBackoff({ baseBlocks: 2n, maxBlocks: 64n }),
           cooldown: createCooldownStore({ cooldownMs: 0 }),
+          revertStreaks: unreachableStreaks,
           inflightLabels: () => new Set(),
           usdValueOf: (_loanToken, loanUnits) => loanUnits,
           // A fully cold curve, so this case exercises the fail-open ordering it always did.
@@ -587,6 +721,83 @@ describe('runTick', () => {
       ).rejects.toThrow('nonce claimed, no hash')
       const end = events.find(e => e.event === 'tick.end')
       expect(end?.fields).toMatchObject({ ok: 1, submitted: 0, notSent: 0, complete: false })
+      // `expectCounterIdentities` cannot be used here: `ok === submitted + notSent` is intentionally
+      // short by one on this path. The `notSent` decomposition still holds, because the throw
+      // increments none of its four terms.
+      const fields = end?.fields as Record<string, number>
+      expect(fields.notSent).toBe(fields.sendRefused! + fields.sendReverted! + fields.sendRejected!)
+    })
+
+    // `pendingBackoff` is keyed by POSITION and shared by every sibling candidate, so not ARMING it on
+    // an execution revert is necessary but not sufficient: an earlier sibling has usually armed it
+    // already. A chain-declined send is the position's latest and best evidence, so it clears the entry
+    // the way a broadcast does — otherwise the exemption is silently undone by whichever sibling ran
+    // first, which is the common case on a multi-collateral position.
+    describe('sibling precedence', () => {
+      const declined: SubmitOutcome = {
+        sent: false,
+        reason: 'send_failed',
+        executionRevert: true,
+        selector: '0x08c379a0'
+      }
+
+      it('a quote failure then an execution revert leaves the position unsuppressed', async () => {
+        const { counters, backoff } = await runWith({
+          out: twoSlots(),
+          quoteOutcomes: [
+            { kind: 'failed', reason: 'timeout' },
+            { kind: 'swap', plan: SWAP_PLAN }
+          ],
+          submitOutcome: declined
+        })
+        expect(counters).toMatchObject({ candidates: 2, quoteFailed: 1, ok: 1, sendReverted: 1 })
+        expect(backoff.shouldSkip(LABEL, 101n)).toBe(false)
+        expectCounterIdentities(counters)
+      })
+
+      it('a no-route quote then an execution revert leaves the position unsuppressed', async () => {
+        const { counters, backoff } = await runWith({
+          out: twoSlots(),
+          quoteOutcomes: [
+            { kind: 'failed', reason: 'no_route' },
+            { kind: 'swap', plan: SWAP_PLAN }
+          ],
+          submitOutcome: declined
+        })
+        expect(counters).toMatchObject({ candidates: 2, quoteFailed: 1, ok: 1, sendReverted: 1 })
+        expect(backoff.shouldSkip(LABEL, 101n)).toBe(false)
+        expectCounterIdentities(counters)
+      })
+
+      it('a simulation revert then an execution revert leaves the position unsuppressed', async () => {
+        const { counters, backoff } = await runWith({
+          out: twoSlots(),
+          simulateResults: [{ status: 'revert', reason: 'stale quote' }, { status: 'ok' }],
+          submitOutcome: declined
+        })
+        expect(counters).toMatchObject({ candidates: 2, reverted: 1, ok: 1, sendReverted: 1 })
+        expect(backoff.shouldSkip(LABEL, 101n)).toBe(false)
+        expectCounterIdentities(counters)
+      })
+
+      it('leaves an opted-in cooldown armed, unlike backoff', async () => {
+        // The cooldown is a flat, default-off window an operator opts into to throttle a class of
+        // positions; it never samples the LIF ramp geometrically the way backoff does, so lifting it is
+        // an operator's call rather than an inference from one sibling's outcome.
+        const cooldown = createCooldownStore({ cooldownMs: 60_000 })
+        const { counters, backoff } = await runWith({
+          cooldown,
+          out: twoSlots(),
+          quoteOutcomes: [
+            { kind: 'failed', reason: 'no_route' },
+            { kind: 'swap', plan: SWAP_PLAN }
+          ],
+          submitOutcome: declined
+        })
+        expect(counters).toMatchObject({ quoteFailed: 1, sendReverted: 1 })
+        expect(backoff.shouldSkip(LABEL, 101n)).toBe(false)
+        expect(cooldown.shouldSkip(LABEL)).toBe(true)
+      })
     })
   })
 
@@ -880,14 +1091,6 @@ describe('runTick', () => {
   })
 
   describe('multi-collateral candidate fall-through', () => {
-    // A two-slot position: `collateralParams[1]` (COLLATERAL, 86% lltv) needs a swap and outranks
-    // `collateralParams[0]` (the loan token itself, 98% lltv) on surplus, so it is tried first.
-    const twoSlots = () =>
-      lensOut({
-        activatedBitmap: 0b11n,
-        collaterals: [slot({ index: 1 }), slot({ index: 0, maxLif: LOAN_MAX_LIF })]
-      })
-
     it('counts one planned POSITION but two CANDIDATES', async () => {
       // The two `tick.end` identities count different things; this is the case that separates them.
       const { counters } = await runWith({ out: twoSlots() })

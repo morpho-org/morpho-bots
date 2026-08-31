@@ -49,6 +49,7 @@ import { createTokenPriceSource } from './discovery/token-prices'
 import { encodeLiquidationExec } from './execution/encode-call'
 import { composeQuoting } from './quotes'
 import { revertReason } from './revert.utils'
+import { createRevertStreakStore } from './runner/revert-streak'
 import { runTick } from './runner/tick'
 import { readMidnightLiquidationLens } from './state/lens.sol'
 
@@ -220,6 +221,9 @@ async function main() {
   // Opt-in per-position cooldown (default disabled): one in-memory store for the process lifetime,
   // complementary to `backoff` (see POSITION_LIQUIDATION_COOLDOWN_MS).
   const cooldown = createCooldownStore({ cooldownMs: config.positionCooldownMs })
+  // Telemetry only: an execution-reverted send is exempt from backoff, so this is what reports a
+  // position whose sends keep being declined for longer than the LIF ramp can explain.
+  const revertStreaks = createRevertStreakStore()
 
   // The exec calldata for one liquidation — the same bytes the simulate gate checks and the queue
   // broadcasts, so a sim-ok plan and its broadcast can't drift.
@@ -372,6 +376,7 @@ async function main() {
       },
       backoff,
       cooldown,
+      revertStreaks,
       inflightLabels: () => queue.inflightLabels(),
       usdValueOf: tokenPrices.usdValueOf,
       // Phase A.5's probe seam. `refresh` is staleness-gated and `select` is a pure cache lookup, so

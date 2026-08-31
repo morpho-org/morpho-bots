@@ -10,6 +10,7 @@ import type { BorrowerCandidate } from '../discovery/borrowers'
 import type { Market } from '../execution/encode-call'
 import type { LiquidationPlan, PlanSkipReason } from '../sizing/plan'
 import type { LensInput, LensOut } from '../state/lens.sol'
+import type { RevertStreakStore } from './revert-streak'
 
 import { MAX_PRESELECTED_CANDIDATES_PER_POSITION } from '../constants'
 import { USD_PRICE_SCALE_DECIMALS } from '../discovery/token-prices'
@@ -37,6 +38,7 @@ import { rankByNetUsdSurplus, scoreNetOfRouteCost } from './ranking'
  * candidates   === cooledDown + backoffSkipped + siblingSkipped + preselectSkipped
  *                  + noSwapPath + quoteFailed + quoteUnprofitable + ok + reverted   (per CANDIDATE)
  * ok           === submitted + notSent
+ * notSent      === sendRefused + sendReverted + sendRejected
  * ```
  *
  * **The two middle identities count different things**, because one position can yield several
@@ -50,8 +52,8 @@ import { rankByNetUsdSurplus, scoreNetOfRouteCost } from './ranking'
  * `candidates` sum, and any future plan-stage skip rides `planSkipped`. `unpriced` is an attribute: an
  * unpriced candidate is still worked, just ordered last, so it deliberately joins no sum.
  *
- * On `complete: false` the last identity is short by one: an aborting `submit` throws after `ok` was
- * counted.
+ * On `complete: false` the `ok` identity is short by one: an aborting `submit` throws after `ok` was
+ * counted. The `notSent` decomposition still holds, since that throw increments none of its four terms.
  */
 type TickCounters = {
   /** Lens inputs read this tick — the post-whitelist discovery universe. */
@@ -129,6 +131,25 @@ type TickCounters = {
   submitted: number
   /** The queue returned without broadcasting (a send failure, or a queue-wide refusal). */
   notSent: number
+  /**
+   * A queue-wide refusal (aborted send latch, failed nonce sync, nonce hole) that would have refused
+   * any position, so it is held against none — see {@link SubmitOutcome}.
+   */
+  sendRefused: number
+  /**
+   * The node declined THIS plan with an on-chain execution revert. An economic outcome post-maturity,
+   * counted separately from {@link TickCounters.sendRejected} because it deliberately does not extend
+   * the position's suppression window: every one observed on 2026-08-28 was a min-out shortfall against
+   * whichever pool the aggregator routed through, and the LIF ramp lifts break-even on a wall-clock
+   * scale, so it says nothing about the next block.
+   *
+   * **Not folded into `quoteUnprofitable`**, however similar the verdict reads: that counter sits in the
+   * per-candidate `candidates` sum and this candidate was already counted there as `ok`, so sharing it
+   * would break that identity by one for every execution-reverted send.
+   */
+  sendReverted: number
+  /** The send machinery failed (nonce, funds, RPC) — nothing was learned about the plan, so it backs off. */
+  sendRejected: number
   /**
    * Planned candidates whose loan token had no usable USD price, so they were ordered last rather than
    * ranked. An attribute of a worked position, not a loop exit — it joins no identity. A persistently
@@ -535,9 +556,10 @@ export async function runTick(deps: {
   /**
    * Broadcasts a plan via the pending queue (builds the exec tx, derives fees, tracks the nonce).
    * Resolves whether a transaction actually went out: ONLY `sent: true` may clear the
-   * position's backoff or count as `submitted`. A `sent: false` outcome carries why, and the two
-   * reasons are not interchangeable — see {@link SubmitOutcome}. Throws when a send claimed a nonce but produced no hash — the tick aborts
-   * by design, so the signer's cursor rollback is not raced.
+   * position's backoff or count as `submitted`. A `sent: false` outcome carries why, and the three
+   * cases are not interchangeable — see {@link SubmitOutcome} and the submit branch below. Throws when
+   * a send claimed a nonce but produced no hash — the tick aborts by design, so the signer's cursor
+   * rollback is not raced.
    */
   submit: (args: {
     market: Market
@@ -555,6 +577,11 @@ export async function runTick(deps: {
    * included). Disabled by default (`POSITION_LIQUIDATION_COOLDOWN_MS=0`) — `shouldSkip` always false.
    */
   cooldown: CooldownStore
+  /**
+   * Watches consecutive execution-reverted sends per position and reports a streak that has run too
+   * long. Pure telemetry — it suppresses nothing (see {@link RevertStreakStore}).
+   */
+  revertStreaks: RevertStreakStore
   /** Labels (`${id}:${borrower}`) already in flight — skipped to avoid re-submitting each block. */
   inflightLabels: () => ReadonlySet<string>
   /**
@@ -584,6 +611,7 @@ export async function runTick(deps: {
     submit,
     backoff,
     cooldown,
+    revertStreaks,
     inflightLabels,
     usdValueOf,
     routing,
@@ -624,6 +652,9 @@ export async function runTick(deps: {
     reverted: 0,
     submitted: 0,
     notSent: 0,
+    sendRefused: 0,
+    sendReverted: 0,
+    sendRejected: 0,
     unpriced: 0
   }
 
@@ -897,20 +928,53 @@ export async function runTick(deps: {
         if (outcome.sent) {
           submittedLabels.add(label)
           backoff.clear(label)
+          revertStreaks.reset(label)
           // A broadcast settles the position for this tick, so a lower-ranked sibling's earlier
           // failure must not still suppress it: this candidate succeeded where that one didn't.
           pendingBackoff.delete(label)
           pendingCooldown.delete(label)
           counters.submitted += 1
         } else {
-          // Nothing was broadcast, so the position's failure history stands: clearing backoff here is
-          // what let a failing position reset to attempt 1 and re-quote every other block.
+          // Nothing was broadcast, so the position's failure history stands: `backoff.clear` stays gated
+          // on a real broadcast, because clearing it here is what let a failing position reset to attempt
+          // 1 and re-quote every other block.
           counters.notSent += 1
-          // A rejected send is a fact about THIS position, and backoff is the only thing stopping the next
-          // block from re-quoting, re-simulating and re-sending it — reaching this line at all means any
-          // earlier entry had already expired, so leaving it untouched suppresses nothing. A queue-wide
-          // refusal says nothing about the position, so it records nothing.
-          if (outcome.reason === 'send_failed') pendingBackoff.add(label)
+          if (outcome.reason === 'refused') {
+            // Queue-wide — it would have refused any position. So it arms nothing, and it does not break
+            // the revert streak either: nothing was sent, so the chain said nothing about this plan.
+            counters.sendRefused += 1
+          } else if (outcome.executionRevert) {
+            counters.sendReverted += 1
+            // The chain declined this plan at this block. Post-maturity that is an economic verdict on a
+            // ramping incentive, not a fact about the next block, so it must not extend the window.
+            // DELETING, not merely not adding: `pendingBackoff` is keyed by POSITION, so a lower-ranked
+            // sibling's quote or simulation failure may already have armed it — and a chain-declined send
+            // is later and better evidence than either, exactly as a broadcast is. `pendingCooldown` is
+            // deliberately left armed: it is a flat, default-off window an operator opts into to throttle
+            // a position class, so lifting it is an operator's call rather than an inference from one
+            // sibling's outcome.
+            pendingBackoff.delete(label)
+            // No throttle on this path, so a persistent estimator-only revert (expired route deadline,
+            // malformed calldata, a gate that keeps closing) would re-quote forever without progressing.
+            // Reported, never suppressed — see {@link RevertStreakStore}.
+            const streak = revertStreaks.record(label, outcome.selector)
+            if (streak.escalate) {
+              logger.warn('send.revert_streak', {
+                marketId: pair.id,
+                borrower: pair.borrower,
+                reverts: streak.count,
+                durationMs: streak.durationMs,
+                selector: streak.selector ?? null,
+                selectorConstant: streak.selectorConstant
+              })
+            }
+          } else {
+            counters.sendRejected += 1
+            // The send machinery failed (nonce, funds, RPC): a fact about this position that says nothing
+            // about the chain's view of the plan, so it arms backoff and ends the streak.
+            pendingBackoff.add(label)
+            revertStreaks.reset(label)
+          }
         }
       }
     }

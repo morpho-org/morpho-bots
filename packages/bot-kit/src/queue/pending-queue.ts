@@ -70,12 +70,15 @@ export type SubmitArgs = {
  *
  * `send_failed` carries `executionRevert`, which splits that fact in two. `true` means the chain
  * declined this plan right now — a caller may treat it as economic. `false` means the send machinery
- * failed (nonce, funds, RPC) and nothing was learned about the plan itself.
+ * failed (nonce, funds, RPC) and nothing was learned about the plan itself. `selector` is the revert
+ * payload's 4-byte selector when it carried one: a caller watching consecutive declines needs to know
+ * whether the chain keeps refusing for the SAME reason, which the decoded message cannot be relied on
+ * to say.
  */
 export type SubmitOutcome =
   | { sent: true }
   | { sent: false; reason: 'refused' }
-  | { sent: false; reason: 'send_failed'; executionRevert: boolean }
+  | { sent: false; reason: 'send_failed'; executionRevert: boolean; selector?: Hex }
 
 /** One tracked tx — the queue's full per-nonce record. */
 type Pending = {
@@ -294,7 +297,12 @@ export function createPendingQueue({
         sendAborted = true
         throw sent.error
       }
-      return { sent: false, reason: 'send_failed', executionRevert }
+      return {
+        sent: false,
+        reason: 'send_failed',
+        executionRevert,
+        ...(selector ? { selector } : {})
+      }
     }
     const { nonce, txHash } = sent.data
     pending.set(nonce, {

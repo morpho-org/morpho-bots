@@ -657,10 +657,13 @@ describe('submit outcome', () => {
     }
     const { logger, events } = captureLogger()
     const { queue } = setup({ send, logger })
+    // The selector rides the outcome, not just the log line: the caller watching consecutive declines
+    // needs to know whether the chain keeps refusing for the same reason.
     expect(await submitOne(queue)).toEqual({
       sent: false,
       reason: 'send_failed',
-      executionRevert: true
+      executionRevert: true,
+      selector: data.slice(0, 10)
     })
     const failed = events.find(e => e.event === 'tx.submit_failed')
     expect(failed?.fields?.reason).toBe('return too low')
