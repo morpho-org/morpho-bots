@@ -249,7 +249,7 @@ const LadderGraphic = ({
               key={`${rung.side}-${rung.index}-${rungIndex}`}
               className={`rung rung--${rung.side}`}
               style={{ top: `${rung.y}%` }}
-              title={`${rung.sideLabel} rung at ${rung.rateBps} BPS · allocation ${format(rung.allocationAssets)} · offer cap ${format(rung.offerMaxAssets)}`}
+              title={`${rung.sideLabel} rung at ${rung.rateBps} BPS · allocation ${format(rung.allocationAssets)} (${rung.allocationAssets}) · offer cap ${format(rung.offerMaxAssets)} (${rung.offerMaxAssets})`}
             >
               <span className="rung-rate">
                 {rung.side === 'higher' ? '▲' : '●'} {rung.rateBps}
@@ -257,7 +257,9 @@ const LadderGraphic = ({
               <span className="rung-depth">
                 <b style={{ width: `${Math.max(1, rung.allocationBarRatio * 100)}%` }} />
               </span>
-              <span className="rung-size">{format(rung.allocationAssets)}</span>
+              <span className="rung-size">
+                {amountCell(rung.allocationAssets, format(rung.allocationAssets))}
+              </span>
             </i>
           ))}
           <b
@@ -343,9 +345,9 @@ const DisplayUnits = ({
         />
       </label>
       <p id="units-help">
-        Display only: every amount below is shown in whole loan-asset units at this scale, with the
-        exact raw integer on hover. Starts at 6 for USDC — correct it for another loan asset, or
-        clear it to read raw integers.
+        Display only: amounts below are shown in whole loan-asset units at this scale, with the
+        exact raw integer on hover in the plots and tables. Starts at 6 for USDC — correct it for
+        another loan asset, or clear it to read raw integers everywhere.
       </p>
     </div>
   </section>

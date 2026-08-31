@@ -964,8 +964,8 @@ decimals never apply. The entry starts at 6 as a convenience for USDC, the loan 
 resolved from chain data, so it must be corrected for any other loan asset, and clearing it returns
 every amount to its exact raw integer. A supplied entry renders raw asset and credit amounts as whole token units across the previews,
 callouts, rung tables, and accessible descriptions, rounding the fractional units away so magnitudes
-stay scannable; a non-zero amount below one unit renders as `<1` rather than zero, and hovering any
-amount reveals its exact raw integer. The entry is display state only: it is never exported, never enters the URL
+stay scannable; a non-zero amount below one unit renders as `<1` rather than zero, and hovering an
+amount in the plots or tables reveals its exact raw integer. The entry is display state only: it is never exported, never enters the URL
 fragment, and leaves the editors and the four collection outputs on exact raw integers. An entry
 that is not a whole number of at most 36 decimals is marked invalid and leaves amounts raw rather
 than showing a misleading amount.
