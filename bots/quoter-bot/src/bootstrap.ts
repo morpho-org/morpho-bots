@@ -126,6 +126,7 @@ const defaultState = async (config: ConfigService, ignoredOfferGroupIds: readonl
     configuredGroupIds: config.v0OfferGroupIds
   })
   const ladderOwnership = createLadderGroupOwnership({
+    chainId: config.chainId,
     maker: config.setup.maker,
     strategyMarketIds: config.ladder.map(item => item.marketId)
   })

@@ -7,6 +7,7 @@ import { bytesToHex, hexToBytes, isHex, keccak256, size, stringToHex } from 'vie
 
 import type { LadderQuoteSet, LadderRung } from '../../domain/ladder/ladder'
 
+import { BASE_CHAIN_ID } from '../../config/supported-chains.utils'
 import { LadderAdapterError } from './ladder-adapter.error'
 
 /** Relationship between one protocol group and the quote-set rungs it caps. */
@@ -25,6 +26,7 @@ export type OwnedLadderPublication = {
 }
 
 type LadderOwnershipConfig = {
+  chainId: number
   maker: Address
   strategyMarketIds: readonly Hex[]
 }
@@ -162,7 +164,26 @@ const strategyId = (config: LadderOwnershipConfig) =>
     stringToHex(
       JSON.stringify({
         strategy: 'ladder',
+        chainId: config.chainId,
         maker: config.maker
+      })
+    )
+  )
+
+/**
+ * Rebuilds the chain-less strategy key used before the bot supported more than one chain.
+ * @param maker - Maker whose ladder publications were persisted under the chain-less key.
+ * @returns The pre-multi-chain strategy key for that maker.
+ * @remarks Only Base could be configured while this key was in use, so state stored under it is
+ * Base state by construction and is migrated forward on Base alone. Adopting it on another chain
+ * would import foreign publications and cancel groups that never existed there.
+ */
+const preMultiChainStrategyId = (maker: Address) =>
+  keccak256(
+    stringToHex(
+      JSON.stringify({
+        strategy: 'ladder',
+        maker
       })
     )
   )
@@ -208,12 +229,14 @@ const serializePublication = (publication: OwnedLadderPublication): PersistedPub
 
 /**
  * Creates durable, strategy-scoped ownership for ladder publication groups.
- * @param config - Maker and ladder-strategy market namespace.
+ * @param config - Chain, maker, and ladder-strategy market namespace.
  * @param dependencies - Optional isolated state directory for tests.
  * @returns Atomic publication reservation, confirmation, removal, and read operations.
  * @throws `LadderAdapterError` when persisted state is malformed, foreign, or insecure.
  * @remarks State contains no key, signature, URL, transaction, or maker address and is mode `0600`.
  * Legacy market-scoped state remains readable without mutation and is migrated only by writer paths.
+ * State is namespaced per chain: the same maker running two chains against one state directory keeps
+ * separate publications, so neither chain sees the other's groups as removed and cancels them.
  */
 export const createLadderGroupOwnership = (
   config: LadderOwnershipConfig,
@@ -221,11 +244,17 @@ export const createLadderGroupOwnership = (
 ) => {
   const strategy = strategyId(config)
   const legacyStrategy = legacyStrategyId(config.maker, config.strategyMarketIds)
+  const preMultiChainStrategy =
+    config.chainId === BASE_CHAIN_ID ? preMultiChainStrategyId(config.maker) : undefined
   const directory =
     dependencies.stateDirectory ??
     join(process.env.XDG_STATE_HOME ?? join(homedir(), '.local', 'state'), 'morpho-quoter-bot')
   const path = join(directory, `${strategy}.json`)
   const legacyPath = join(directory, `${legacyStrategy}.json`)
+  const preMultiChainPath =
+    preMultiChainStrategy === undefined
+      ? undefined
+      : join(directory, `${preMultiChainStrategy}.json`)
 
   const write = async (publications: readonly OwnedLadderPublication[]) => {
     await mkdir(directory, { recursive: true, mode: 0o700 })
@@ -311,6 +340,7 @@ export const createLadderGroupOwnership = (
         )
       if (
         candidatePath !== legacyPath &&
+        candidatePath !== preMultiChainPath &&
         candidateStrategy !== attributableLegacyStrategy &&
         !verifiedLegacyState
       ) {
