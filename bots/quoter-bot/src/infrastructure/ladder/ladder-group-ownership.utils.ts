@@ -338,14 +338,16 @@ export const createLadderGroupOwnership = (
         publications.some(publication =>
           publication.groups.some(group => verifiedGroupIds.has(group.groupId))
         )
-      if (
-        candidatePath !== legacyPath &&
-        candidatePath !== preMultiChainPath &&
-        candidateStrategy !== attributableLegacyStrategy &&
-        !verifiedLegacyState
-      ) {
-        continue
-      }
+      // Every legacy key predates multi-chain support and encodes no chain, and
+      // `attributableLegacyStrategy` is rebuilt from the candidate file's own market IDs, so a Base
+      // file self-attributes on any chain. Only Base may adopt a legacy file by key; another chain
+      // adopts one solely when a group inside it is verified as owned on that chain.
+      const adoptableByKey =
+        config.chainId === BASE_CHAIN_ID &&
+        (candidatePath === legacyPath ||
+          candidatePath === preMultiChainPath ||
+          candidateStrategy === attributableLegacyStrategy)
+      if (!adoptableByKey && !verifiedLegacyState) continue
       states.push({ path: candidatePath, publications })
     }
     return states

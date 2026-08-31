@@ -68,6 +68,53 @@ describe('createLadderGroupOwnership', () => {
     }
   })
 
+  test('never adopts a market-scoped legacy ladder file on another chain', async () => {
+    // The market-scoped legacy key is rebuilt from the candidate file's own market IDs, so a Base
+    // file self-attributes on any chain unless legacy adoption is restricted to Base.
+    const stateDirectory = await mkdtemp(join(tmpdir(), 'ladder-ownership-legacy-chain-'))
+    try {
+      const legacyStrategy = keccak256(
+        stringToHex(JSON.stringify({ strategy: 'ladder', maker, marketIds: [marketId] }))
+      )
+      await writeFile(
+        join(stateDirectory, `${legacyStrategy}.json`),
+        JSON.stringify({
+          version: 1,
+          strategy: legacyStrategy,
+          publications: [
+            {
+              marketId,
+              status: 'confirmed',
+              quote: {
+                marketId,
+                centerRateBps: '500',
+                groupMode: 'shared-rung',
+                lower: [{ index: 0, rateBps: '450', assets: '10' }],
+                higher: [{ index: 0, rateBps: '550', assets: '20' }]
+              },
+              groups: [{ groupId: lowerGroup, side: 'lower', rungIndexes: [0] }]
+            }
+          ]
+        }),
+        { mode: 0o600 }
+      )
+
+      const mainnetOwnership = createLadderGroupOwnership(
+        { chainId: mainnet.id, maker, strategyMarketIds: [marketId] },
+        { stateDirectory }
+      )
+      expect(await mainnetOwnership.readGroupIds()).toEqual([])
+
+      const baseOwnership = createLadderGroupOwnership(
+        { chainId: base.id, maker, strategyMarketIds: [marketId] },
+        { stateDirectory }
+      )
+      expect(await baseOwnership.readGroupIds()).toEqual([lowerGroup])
+    } finally {
+      await rm(stateDirectory, { recursive: true, force: true })
+    }
+  })
+
   test('migrates pre-multi-chain state forward on Base but never on mainnet', async () => {
     const stateDirectory = await mkdtemp(join(tmpdir(), 'ladder-ownership-migrate-'))
     try {
