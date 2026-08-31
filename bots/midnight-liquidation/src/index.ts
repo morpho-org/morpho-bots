@@ -48,9 +48,9 @@ import { createListedMarketFilter, createUnionListedMarketFilter } from './disco
 import { createTokenPriceSource } from './discovery/token-prices'
 import { encodeLiquidationExec } from './execution/encode-call'
 import { composeQuoting } from './quotes'
+import { revertReason } from './revert.utils'
 import { runTick } from './runner/tick'
 import { readMidnightLiquidationLens } from './state/lens.sol'
-import { revertReason } from './tx-error'
 
 async function main() {
   const config = loadConfig()

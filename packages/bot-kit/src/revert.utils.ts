@@ -1,47 +1,46 @@
 import type { Abi, Hex } from 'viem'
 
-import { BaseError, decodeErrorResult, ExecutionRevertedError } from 'viem'
+import { BaseError, decodeErrorResult, ExecutionRevertedError, size, slice } from 'viem'
 
-/**
- * Raised by the signer when an initial broadcast fails after the bot has already claimed a nonce.
- * The tx hash is unknown, so the queue cannot track a pending hash; callers must treat this as a
- * tick-level failure and retry after the signer rolls its local nonce cursor back.
- */
-export class TxSendError extends Error {
-  readonly nonce: number | undefined
-  readonly originalError: unknown
+import { TxSendError } from './tx-send.error'
 
-  constructor(error: unknown, nonce?: number) {
-    super(error instanceof Error ? error.message : String(error))
-    this.name = 'TxSendError'
-    this.nonce = nonce
-    this.originalError = error
-  }
-}
+const SELECTOR_BYTES = 4
 
-function unwrapSendError(error: unknown): unknown {
-  return error instanceof TxSendError ? error.originalError : error
-}
+const unwrapSendError = (error: unknown): unknown =>
+  error instanceof TxSendError ? error.originalError : error
 
 /**
  * True if `error` is an on-chain execution revert (the tx cannot succeed) rather than a transient
  * RPC/network error (timeout, HTTP, nonce). The pending queue uses this to decide whether a stuck
  * tx should be dropped (a revert won't fix itself, so bumping is futile) or retried (transient).
  */
-export function isExecutionRevert(error: unknown): boolean {
-  error = unwrapSendError(error)
-  if (!(error instanceof BaseError)) return false
-  if (error.walk(e => e instanceof ExecutionRevertedError) !== null) return true
+export const isExecutionRevert = (error: unknown): boolean => {
+  const unwrapped = unwrapSendError(error)
+  if (!(unwrapped instanceof BaseError)) return false
+  if (unwrapped.walk(e => e instanceof ExecutionRevertedError) !== null) return true
   // Some transports surface the canonical message without viem's typed subclass.
-  return /execution reverted/i.test(error.shortMessage)
+  return /execution reverted/i.test(unwrapped.shortMessage)
 }
 
 /** The ABI-encoded revert payload a node returned, if any (searched across the viem error chain). */
-function revertData(error: BaseError): Hex | undefined {
+const revertData = (error: BaseError): Hex | undefined => {
   const withData = error.walk(e => typeof (e as { data?: unknown }).data === 'string') as {
     data?: Hex
   } | null
   return withData?.data?.startsWith('0x') ? withData.data : undefined
+}
+
+/**
+ * The revert payload's 4-byte selector, or `undefined` when the error carries no payload (or one too
+ * short to hold a selector). Attributes a revert that {@link revertReason} could not decode, since
+ * the selector identifies the reverting contract's error even when no ABI in reach defines it.
+ */
+export const revertSelector = (error: unknown): Hex | undefined => {
+  const unwrapped = unwrapSendError(error)
+  if (!(unwrapped instanceof BaseError)) return undefined
+  const data = revertData(unwrapped)
+  if (!data || size(data) < SELECTOR_BYTES) return undefined
+  return slice(data, 0, SELECTOR_BYTES)
 }
 
 /**
@@ -70,12 +69,12 @@ const decodeStandardRevert: RevertDecoder = data => {
  * viem's `decodeErrorResult` also handles the standard `Error`/`Panic` selectors with a custom ABI,
  * so the returned decoder covers standard reverts too.
  */
-export function abiRevertDecoder(abi: Abi): RevertDecoder {
-  return data => {
+export const abiRevertDecoder =
+  (abi: Abi): RevertDecoder =>
+  data => {
     const { errorName, args } = decodeErrorResult({ abi, data })
     return args && args.length > 0 ? `${errorName}(${args.join(', ')})` : errorName
   }
-}
 
 /**
  * A concise, log-safe failure reason: the decoded revert (via `decode`, defaulting to the standard
@@ -83,10 +82,15 @@ export function abiRevertDecoder(abi: Abi): RevertDecoder {
  * the request/calldata dump that bloats `error.message` (and gets truncated by log shippers).
  * Protocols with custom ABI errors pass `abiRevertDecoder(theirAbi)`.
  */
-export function revertReason(error: unknown, decode: RevertDecoder = decodeStandardRevert): string {
-  error = unwrapSendError(error)
-  if (!(error instanceof BaseError)) return error instanceof Error ? error.message : String(error)
-  const data = revertData(error)
+export const revertReason = (
+  error: unknown,
+  decode: RevertDecoder = decodeStandardRevert
+): string => {
+  const unwrapped = unwrapSendError(error)
+  if (!(unwrapped instanceof BaseError)) {
+    return unwrapped instanceof Error ? unwrapped.message : String(unwrapped)
+  }
+  const data = revertData(unwrapped)
   if (data) {
     try {
       return decode(data)
@@ -94,5 +98,5 @@ export function revertReason(error: unknown, decode: RevertDecoder = decodeStand
       // Not an error shape the decoder knows — fall through to viem's short message.
     }
   }
-  return error.shortMessage
+  return unwrapped.shortMessage
 }

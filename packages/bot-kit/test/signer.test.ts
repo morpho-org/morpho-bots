@@ -8,7 +8,7 @@ import type { Policy } from '../src/policy'
 
 import { EXECUTOR_SELECTOR, PolicyViolationError } from '../src/policy'
 import { createSigner } from '../src/signer'
-import { TxSendError } from '../src/tx-error'
+import { TxSendError } from '../src/tx-send.error'
 
 const EXECUTOR = `0x${'11'.repeat(20)}` as const
 const POLICY: Policy = {

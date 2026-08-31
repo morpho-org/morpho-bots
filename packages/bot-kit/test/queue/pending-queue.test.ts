@@ -1,6 +1,6 @@
 import type { Address, Hex } from 'viem'
 
-import { ExecutionRevertedError } from 'viem'
+import { encodeErrorResult, ExecutionRevertedError } from 'viem'
 import { describe, expect, it } from 'vitest'
 
 import type { Logger, LogLevel } from '../../src/logger'
@@ -15,7 +15,7 @@ import type {
 } from '../../src/queue/pending-queue'
 
 import { createPendingQueue } from '../../src/queue/pending-queue'
-import { TxSendError } from '../../src/tx-error'
+import { TxSendError } from '../../src/tx-send.error'
 
 // The cooldown the opted-in cases run with (mirrors midnight's SETTLED_COOLDOWN_BLOCKS tuning).
 const SETTLED_COOLDOWN_BLOCKS = 20n
@@ -639,7 +639,49 @@ describe('submit outcome', () => {
     // The node rejected THIS position's transaction — a fact about the position, so a caller must be
     // able to re-arm its backoff. Collapsing this with a queue refusal is what let a failing send
     // re-quote and re-send every block.
-    expect(await submitOne(queue)).toEqual({ sent: false, reason: 'send_failed' })
+    expect(await submitOne(queue)).toEqual({
+      sent: false,
+      reason: 'send_failed',
+      executionRevert: false
+    })
+  })
+
+  it('reports executionRevert on a send the chain reverted, and logs its selector', async () => {
+    const data = encodeErrorResult({
+      abi: [{ type: 'error', name: 'Error', inputs: [{ type: 'string' }] }] as const,
+      errorName: 'Error',
+      args: ['return too low']
+    })
+    const send: SendTx = async () => {
+      throw Object.assign(new ExecutionRevertedError({}), { data })
+    }
+    const { logger, events } = captureLogger()
+    const { queue } = setup({ send, logger })
+    expect(await submitOne(queue)).toEqual({
+      sent: false,
+      reason: 'send_failed',
+      executionRevert: true
+    })
+    const failed = events.find(e => e.event === 'tx.submit_failed')
+    expect(failed?.fields?.reason).toBe('return too low')
+    expect(failed?.fields?.executionRevert).toBe(true)
+    expect(failed?.fields?.selector).toBe(data.slice(0, 10))
+  })
+
+  it('omits the selector when a transport failure carries no revert payload', async () => {
+    const send: SendTx = async () => {
+      throw new Error('nonce too low')
+    }
+    const { logger, events } = captureLogger()
+    const { queue } = setup({ send, logger })
+    expect(await submitOne(queue)).toEqual({
+      sent: false,
+      reason: 'send_failed',
+      executionRevert: false
+    })
+    const failed = events.find(e => e.event === 'tx.submit_failed')
+    expect(failed?.fields?.executionRevert).toBe(false)
+    expect(failed?.fields).not.toHaveProperty('selector')
   })
 
   it('reports refused when the empty-queue nonce re-sync throws', async () => {

@@ -349,7 +349,7 @@ describe('runTick', () => {
       // would re-quote, re-simulate and re-send.
       const { counters, backoff } = await runWith({
         seedBackoffAt: 1n,
-        submitOutcome: { sent: false, reason: 'send_failed' }
+        submitOutcome: { sent: false, reason: 'send_failed', executionRevert: false }
       })
       expect(counters).toMatchObject({ ok: 1, submitted: 0, notSent: 1 })
       expect(backoff.shouldSkip(LABEL, 101n)).toBe(true)

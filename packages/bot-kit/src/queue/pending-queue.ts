@@ -5,7 +5,12 @@ import { tryCatch } from '@repo/utils'
 
 import type { Logger } from '../logger'
 
-import { isExecutionRevert, revertReason as defaultRevertReason, TxSendError } from '../tx-error'
+import {
+  isExecutionRevert,
+  revertReason as defaultRevertReason,
+  revertSelector
+} from '../revert.utils'
+import { TxSendError } from '../tx-send.error'
 import { bumpFees } from './fee-policy'
 
 /** Default blocks a pending tx may sit unconfirmed before the queue bumps its fee and replaces it. */
@@ -62,8 +67,15 @@ export type SubmitArgs = {
  * have refused any position, so a caller must NOT hold it against this one. `send_failed` means the
  * node rejected this position's own transaction (`tx.submit_failed`), which is a fact about the
  * position and should re-arm whatever per-position backoff the caller keeps.
+ *
+ * `send_failed` carries `executionRevert`, which splits that fact in two. `true` means the chain
+ * declined this plan right now — a caller may treat it as economic. `false` means the send machinery
+ * failed (nonce, funds, RPC) and nothing was learned about the plan itself.
  */
-export type SubmitOutcome = { sent: true } | { sent: false; reason: 'refused' | 'send_failed' }
+export type SubmitOutcome =
+  | { sent: true }
+  | { sent: false; reason: 'refused' }
+  | { sent: false; reason: 'send_failed'; executionRevert: boolean }
 
 /** One tracked tx — the queue's full per-nonce record. */
 type Pending = {
@@ -264,9 +276,13 @@ export function createPendingQueue({
       })
     )
     if (sent.error) {
+      const executionRevert = isExecutionRevert(sent.error)
+      const selector = revertSelector(sent.error)
       logger.warn('tx.submit_failed', {
         label: args.label,
         reason: revertReason(sent.error),
+        executionRevert,
+        ...(selector ? { selector } : {}),
         ...(sent.error instanceof TxSendError && sent.error.nonce !== undefined
           ? { nonce: sent.error.nonce }
           : {})
@@ -278,7 +294,7 @@ export function createPendingQueue({
         sendAborted = true
         throw sent.error
       }
-      return { sent: false, reason: 'send_failed' }
+      return { sent: false, reason: 'send_failed', executionRevert }
     }
     const { nonce, txHash } = sent.data
     pending.set(nonce, {

@@ -38,10 +38,10 @@ import { SETTLED_COOLDOWN_BLOCKS } from './constants'
 import { createGraphqlCandidateSource, discoverCandidates } from './discovery/borrowers'
 import { encodeLiquidationExec } from './execution/encode-call'
 import { composeQuoting } from './quotes'
+import { revertReason } from './revert.utils'
 import { runTick } from './runner/tick'
 import { readBlueLiquidationLens } from './state/lens.sol'
 import { createMarketParamsResolver, multicallIdToMarketParams } from './state/market-params'
-import { revertReason } from './tx-error'
 
 async function main() {
   const config = loadConfig()

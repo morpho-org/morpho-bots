@@ -21,9 +21,9 @@ import { getBlockNumber, readContract } from 'viem/actions'
 
 import { loadConfig } from './config'
 import { createIntervalGate } from './interval-gate'
+import { revertReason } from './revert.utils'
 import { runTick } from './runner/tick'
 import { createStrategy } from './strategies'
-import { revertReason } from './tx-error'
 import { checkVaults } from './vault-checks'
 import { fetchVaultData } from './vault-data'
 
