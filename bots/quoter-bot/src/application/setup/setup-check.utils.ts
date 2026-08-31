@@ -334,12 +334,7 @@ const isTransientFailedCheck = (check: SetupCheck) => {
 export const hasOnlyTransientProviderFailures = (report: SetupCheckReport) =>
   !report.ready && report.checks.every(isTransientFailedCheck)
 
-const bookProblems = (
-  requestedId: `0x${string}`,
-  book: BookSetup,
-  config: SetupCheckConfig,
-  latestTimestamp?: bigint
-) => {
+const bookProblems = (requestedId: `0x${string}`, book: BookSetup, config: SetupCheckConfig) => {
   const reasons: unknown[] = []
   if (book.id !== requestedId) reasons.push(`provider returned ${book.id}`)
   if (!book.allowlisted) reasons.push('not allowlisted')
@@ -348,9 +343,6 @@ const bookProblems = (
     reasons.push(`unexpected loan asset ${book.loanAsset}`)
   }
   if (book.tickSpacing <= 0) reasons.push('tick spacing is inaccessible')
-  if (latestTimestamp !== undefined && book.maturity <= latestTimestamp) {
-    reasons.push(`matured at ${book.maturity}`)
-  }
   return { id: requestedId, reasons }
 }
 
@@ -423,12 +415,7 @@ export const booksCheck = (
   const invalidBooks = books.flatMap(({ requestedId, response }) => {
     const problem = !response.ok
       ? { id: requestedId, reasons: [{ providerError: response.error }] as unknown[] }
-      : bookProblems(
-          requestedId,
-          response.value,
-          config,
-          timestamp.ok ? timestamp.value : undefined
-        )
+      : bookProblems(requestedId, response.value, config)
     if (!timestamp.ok) problem.reasons.push({ timestampProviderError: timestamp.error })
 
     return problem.reasons.length === 0 ? [] : [problem]

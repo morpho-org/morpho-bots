@@ -1080,7 +1080,7 @@ describe('SetupCheckService', () => {
     })
   })
 
-  test('accepts exact funding thresholds and rejects maturity at the current timestamp', async () => {
+  test('accepts exact funding thresholds and continues when a configured market has matured', async () => {
     const exactThresholds = await new SetupCheckService(readyState(), config).check()
     expect(exactThresholds.checks.find(check => check.name === 'native-balance')?.status).toBe(
       'passed'
@@ -1100,9 +1100,11 @@ describe('SetupCheckService', () => {
     })
     const maturityBoundary = await new SetupCheckService(state, config).check()
 
-    expect(maturityBoundary.checks.find(check => check.name === 'books')?.observed).toEqual([
-      { id: marketId, reasons: ['matured at 1000'] }
-    ])
+    expect(maturityBoundary.checks.find(check => check.name === 'books')).toMatchObject({
+      status: 'passed',
+      observed: []
+    })
+    expect(maturityBoundary.ready).toBe(true)
   })
 
   test('reports every unsafe book property so the operator can remediate it', async () => {
@@ -1128,8 +1130,7 @@ describe('SetupCheckService', () => {
             'not allowlisted',
             'inactive',
             `unexpected loan asset ${ratifier}`,
-            'tick spacing is inaccessible',
-            'matured at 1000'
+            'tick spacing is inaccessible'
           ]
         }
       ],
