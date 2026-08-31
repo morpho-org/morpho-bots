@@ -6,11 +6,11 @@ import {
   setterRatifierAbi,
   type Tree
 } from '@morpho-org/midnight-sdk'
+import { getChainAddress } from '@morpho-org/morpho-ts'
 import { encodeFunctionData, isAddressEqual } from 'viem'
 
 import type { SupportedChainId } from '../../config/supported-chains.utils'
 
-import { chainAddress } from '../../config/supported-chains.utils'
 import { LadderAdapterError } from './ladder-adapter.error'
 import { signLadderTree } from './ladder-signature.utils'
 
@@ -37,8 +37,8 @@ export const configuredRatifierType = (
   ratifier: Address,
   chainId: SupportedChainId
 ): RatifierType => {
-  if (isAddressEqual(ratifier, chainAddress(chainId, 'setterRatifier'))) return 'setter'
-  if (isAddressEqual(ratifier, chainAddress(chainId, 'ecrecoverRatifier'))) return 'ecrecover'
+  if (isAddressEqual(ratifier, getChainAddress(chainId, 'setterRatifier'))) return 'setter'
+  if (isAddressEqual(ratifier, getChainAddress(chainId, 'ecrecoverRatifier'))) return 'ecrecover'
   throw new LadderAdapterError('unsupported-ratifier')
 }
 

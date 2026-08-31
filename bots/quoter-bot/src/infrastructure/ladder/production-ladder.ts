@@ -1,5 +1,6 @@
 import { MAX_TICK, midnightAbi, Payload, TickLib } from '@morpho-org/midnight-sdk'
 import { morphoViemExtension } from '@morpho-org/morpho-sdk'
+import { getChainAddress } from '@morpho-org/morpho-ts'
 import {
   createPublicClient,
   createWalletClient,
@@ -27,7 +28,7 @@ import type { OwnedOverlapBookOffer } from '../intentional-overlap.utils'
 import type { HistoricalBlockReader } from '../reference/blue-reference-reader.utils'
 import type { OwnedLadderPublication } from './ladder-group-ownership.utils'
 
-import { chainAddress, supportedChain } from '../../config/supported-chains.utils'
+import { supportedChain } from '../../config/supported-chains.utils'
 import { createBootstrapGroupOwnership } from '../bootstrap/bootstrap-group-ownership.utils'
 import {
   bootstrapBookOffers,
@@ -623,7 +624,7 @@ export const createProductionLadderAdapters = (
   })
     .extend(publicActions)
     .extend(morphoViemExtension({ supportSignature: true, supportDeployless: true }))
-  const mempool = chainAddress(config.chainId, 'midnightMempool')
+  const mempool = getChainAddress(config.chainId, 'midnightMempool')
 
   const transport: LadderOfferTransport = {
     readActive,

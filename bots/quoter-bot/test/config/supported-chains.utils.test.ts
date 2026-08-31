@@ -5,7 +5,6 @@ import { describe, expect, test } from 'vitest'
 
 import {
   BASE_CHAIN_ID,
-  chainAddress,
   isSupportedChainId,
   MAINNET_CHAIN_ID,
   observabilityChainId,
@@ -32,50 +31,50 @@ describe('supportedChain', () => {
   })
 })
 
-describe('chainAddress', () => {
+describe('Midnight addresses from the Morpho SDK registry', () => {
+  // These are read straight from the pinned SDK registry (no local registration). The assertions
+  // pin the exact deployments this bot quotes against, so an SDK downgrade or an upstream address
+  // change fails here instead of at runtime on a live chain.
   test('resolves the canonical Midnight addresses on mainnet', () => {
-    expect(chainAddress(MAINNET_CHAIN_ID, 'midnight')).toBe(
+    expect(getChainAddress(MAINNET_CHAIN_ID, 'midnight')).toBe(
       getAddress('0x471686c42792F93528B000beF54bC10E3aa2045f')
     )
-    expect(chainAddress(MAINNET_CHAIN_ID, 'midnightMempool')).toBe(
+    expect(getChainAddress(MAINNET_CHAIN_ID, 'midnightMempool')).toBe(
       getAddress('0xde2d62449301a09A51EbF9326EA60d2e8BF4A8F7')
     )
-    expect(chainAddress(MAINNET_CHAIN_ID, 'ecrecoverRatifier')).toBe(
+    expect(getChainAddress(MAINNET_CHAIN_ID, 'ecrecoverRatifier')).toBe(
       getAddress('0xAC439c81CAA6ef4C7B7E8F0110F8CE63A4b6D43e')
     )
-    expect(chainAddress(MAINNET_CHAIN_ID, 'setterRatifier')).toBe(
+    expect(getChainAddress(MAINNET_CHAIN_ID, 'setterRatifier')).toBe(
       getAddress('0xb72c416382c8A6399D0765CebfB032F040B00B3c')
     )
   })
 
-  test('leaves the Base Midnight addresses untouched', () => {
-    expect(chainAddress(BASE_CHAIN_ID, 'midnightMempool')).toBe(
+  test('resolves the canonical Midnight addresses on Base', () => {
+    expect(getChainAddress(BASE_CHAIN_ID, 'midnightMempool')).toBe(
       getAddress('0xdD6DCE32e21f7b020898a8258dA37355b4017993')
     )
-    expect(chainAddress(BASE_CHAIN_ID, 'ecrecoverRatifier')).toBe(
+    expect(getChainAddress(BASE_CHAIN_ID, 'ecrecoverRatifier')).toBe(
       getAddress('0xd6e70365C8E8DDa9a4ca662C07bbE663b017755E')
     )
-    expect(chainAddress(BASE_CHAIN_ID, 'setterRatifier')).toBe(
+    expect(getChainAddress(BASE_CHAIN_ID, 'setterRatifier')).toBe(
       getAddress('0x800B5F12A61B8198a5a6EfD794Cac6699B294d63')
     )
   })
 
-  test('registers Midnight addresses by merging, keeping mainnet Morpho Blue intact', () => {
-    // Registration must not replace the upstream chain-1 record: the reference-rate reads still
-    // resolve `morpho` from it, so a replacing registration would break them silently.
-    expect(chainAddress(MAINNET_CHAIN_ID, 'morpho')).toBe(getChainAddress(mainnet.id, 'morpho'))
-    expect(chainAddress(MAINNET_CHAIN_ID, 'morpho')).toBe(
+  test('keeps Morpho Blue resolvable on both supported chains', () => {
+    expect(getChainAddress(MAINNET_CHAIN_ID, 'morpho')).toBe(
       getAddress('0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb')
     )
-    expect(chainAddress(BASE_CHAIN_ID, 'morpho')).toBe(getChainAddress(base.id, 'morpho'))
+    expect(getChainAddress(BASE_CHAIN_ID, 'morpho')).toBeDefined()
   })
 
   test('gives each chain a distinct Midnight singleton and mempool', () => {
-    expect(chainAddress(MAINNET_CHAIN_ID, 'midnight')).not.toBe(
-      chainAddress(BASE_CHAIN_ID, 'midnight')
+    expect(getChainAddress(MAINNET_CHAIN_ID, 'midnight')).not.toBe(
+      getChainAddress(BASE_CHAIN_ID, 'midnight')
     )
-    expect(chainAddress(MAINNET_CHAIN_ID, 'midnightMempool')).not.toBe(
-      chainAddress(BASE_CHAIN_ID, 'midnightMempool')
+    expect(getChainAddress(MAINNET_CHAIN_ID, 'midnightMempool')).not.toBe(
+      getChainAddress(BASE_CHAIN_ID, 'midnightMempool')
     )
   })
 })

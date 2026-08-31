@@ -1,5 +1,6 @@
 import { midnightAbi, Offer, TickLib, Tree } from '@morpho-org/midnight-sdk'
 import { morphoViemExtension } from '@morpho-org/morpho-sdk'
+import { getChainAddress } from '@morpho-org/morpho-ts'
 import {
   createPublicClient,
   createWalletClient,
@@ -25,7 +26,7 @@ import type { BootstrapOffer } from '../../domain/bootstrap/position-bootstrap'
 import type { HistoricalBlockReader } from '../reference/blue-reference-reader.utils'
 import type { BootstrapActiveGroup, BootstrapInventoryReader } from './bootstrap-position.service'
 
-import { chainAddress, supportedChain } from '../../config/supported-chains.utils'
+import { supportedChain } from '../../config/supported-chains.utils'
 import { invalidateOffersBatch } from '../invalidation/batch-offer-invalidation.utils'
 import { OfferInvalidationAdapterError } from '../invalidation/offer-invalidation-adapter.error'
 import { pendingLadderQuoteSets } from '../ladder/ladder-active-publication.utils'
@@ -788,7 +789,7 @@ export const createProductionBootstrapAdapters = (
       const transaction = output.buildTx(signatures)
       const publicationPolicy = {
         kind: 'publication' as const,
-        target: chainAddress(config.chainId, 'midnightMempool'),
+        target: getChainAddress(config.chainId, 'midnightMempool'),
         offer: created,
         ratifierType: output.ratifierType,
         chainId: config.chainId,

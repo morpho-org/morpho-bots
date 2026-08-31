@@ -4,6 +4,7 @@ import { ecrecoverRatifierAbi, midnightAbi, setterRatifierAbi } from '@morpho-or
 import { MidnightApi } from '@morpho-org/midnight-sdk/api'
 import { blueAbi } from '@morpho-org/morpho-sdk/abis'
 import { restructure } from '@morpho-org/morpho-sdk/utils'
+import { getChainAddress } from '@morpho-org/morpho-ts'
 import { erc20Abi, isAddress, isAddressEqual, keccak256, zeroAddress, zeroHash } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
 
@@ -11,7 +12,7 @@ import type { BookSetup, SetupStateService } from '../../application/setup/setup
 import type { SupportedChainId } from '../../config/supported-chains.utils'
 import type { JsonRequest } from './http-json.utils'
 
-import { chainAddress, ratifierRuntimeHash } from '../../config/supported-chains.utils'
+import { ratifierRuntimeHash } from '../../config/supported-chains.utils'
 import { booksJsonRequestFetch } from './http-json.utils'
 import { ProviderPaginationError } from './provider-pagination.error'
 import { executeProviderRead } from './provider-read.utils'
@@ -231,9 +232,9 @@ export class ViemSetupStateService implements SetupStateService {
       )
     }
     const chainId = this.options.chainId
-    const type = isAddressEqual(ratifier, chainAddress(chainId, 'setterRatifier'))
+    const type = isAddressEqual(ratifier, getChainAddress(chainId, 'setterRatifier'))
       ? ('setter' as const)
-      : isAddressEqual(ratifier, chainAddress(chainId, 'ecrecoverRatifier'))
+      : isAddressEqual(ratifier, getChainAddress(chainId, 'ecrecoverRatifier'))
         ? ('ecrecover' as const)
         : undefined
     const listed = type !== undefined
@@ -471,7 +472,7 @@ export class ViemSetupStateService implements SetupStateService {
     const [paramsResponse, marketResponse] = await Promise.all([
       executeProviderRead('archive-rpc', 'reference-market-params', () =>
         this.reference.readContract({
-          address: chainAddress(this.options.chainId, 'morpho'),
+          address: getChainAddress(this.options.chainId, 'morpho'),
           abi: blueAbi,
           functionName: 'idToMarketParams',
           args: [this.options.referenceMarketId],
@@ -480,7 +481,7 @@ export class ViemSetupStateService implements SetupStateService {
       ),
       executeProviderRead('archive-rpc', 'reference-market-state', () =>
         this.reference.readContract({
-          address: chainAddress(this.options.chainId, 'morpho'),
+          address: getChainAddress(this.options.chainId, 'morpho'),
           abi: blueAbi,
           functionName: 'market',
           args: [this.options.referenceMarketId],
