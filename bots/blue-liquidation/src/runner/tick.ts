@@ -146,6 +146,9 @@ export async function runTick(deps: {
     if (!liquidationPlan) continue
     counters.planned += 1
     logger.info('plan.built', {
+      id: label,
+      // Human-readable extras only: the pair `id` is built from, kept for an operator reading one
+      // line. Grouping keys on `id`.
       marketId: id,
       borrower: pair.borrower,
       seizedAssets: liquidationPlan.seizedAssets
@@ -156,7 +159,7 @@ export async function runTick(deps: {
     // disabled (POSITION_LIQUIDATION_COOLDOWN_MS=0).
     if (cooldown.shouldSkip(label)) {
       counters.cooledDown += 1
-      logger.info('cooldown.skip', { marketId: id, borrower: pair.borrower })
+      logger.info('cooldown.skip', { id: label, marketId: id, borrower: pair.borrower })
       continue
     }
     // Suppress positions that keep failing to quote/simulate — bounds API + RPC usage under a
@@ -169,7 +172,7 @@ export async function runTick(deps: {
     if (outcome.kind === 'no_config') {
       counters.noSwapPath += 1
       cooldown.mark(label)
-      logger.info('config.no_swap_path', { marketId: id, borrower: pair.borrower })
+      logger.info('config.no_swap_path', { id: label, marketId: id, borrower: pair.borrower })
       continue
     }
     if (outcome.kind === 'failed') {
@@ -186,7 +189,7 @@ export async function runTick(deps: {
       plan: liquidationPlan,
       swapPlan
     })
-    const fields = { marketId: id, borrower: pair.borrower }
+    const fields = { id: label, marketId: id, borrower: pair.borrower }
     switch (result.status) {
       case 'ok':
         counters.ok += 1

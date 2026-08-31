@@ -260,6 +260,18 @@ distinct nonces, EIP-1559 ≥12.5% fee bump on stuck nonces, and a hard `MAX_FEE
 drops rather than chases a gas spike. State is not persisted — chain truth wins; a restart re-derives
 the nonce from `getTransactionCount('pending')`.
 
+### Log correlation
+
+Every position-scoped event — `plan.*`, `cooldown.*`, `config.*`, `quote.*`, `unwrap.*`, `select.*`,
+`simulate.*`, `tx.*`, `queue.*`, `nonce.*` — carries the position in one field, **`id`**, whose value
+is `lensKey(marketId, borrower)`: the two halves joined by `:` with both lowercased. So a window's
+events group into one row per position with **no normalization in the query** (`GROUP BY id`). `tx.*`
+used to name the same string `label`; it does not any more. `plan.built` also keeps `marketId` and
+`borrower` as human-readable extras — for reading a single line, not for grouping.
+
+A Blue market has exactly one collateral, so one position is one candidate: unlike
+`bots/midnight-liquidation`, `id` alone identifies a row and no candidate discriminator is emitted.
+
 ## Testing
 
 - `pnpm test` — unit tests for the math, LIF, seize-exact planner (incl. the underflow-safety sweep),

@@ -540,10 +540,10 @@ does not broadcast.
 
 On simulation success, `@repo/bot-kit`'s shared pending queue
 ([packages/bot-kit/src/queue/pending-queue.ts](../../packages/bot-kit/src/queue/pending-queue.ts))
-sends the transaction through the signer client and tracks it by nonce and `(marketId, borrower)`
-label.
+sends the transaction through the signer client and tracks it by nonce and by the position's
+`(marketId, borrower)` key.
 
-While a label is pending, later ticks skip that position. On each block the queue checks receipts,
+While that position is in flight, later ticks skip it. On each block the queue checks receipts,
 logs confirmed or reverted transactions, and fee-bumps stuck transactions until either they confirm,
 hit the fee ceiling, or exhaust bump attempts.
 
@@ -587,6 +587,25 @@ Queue state is in-memory. On restart, chain truth wins: the bot rediscovers live
 signer nonce cursor starts from the pending chain nonce. If the initial raw broadcast fails after a
 nonce is claimed but before a hash is returned, the signer rolls the cursor back and the queue aborts
 that tick instead of counting a hashless transaction as submitted.
+
+### Log Correlation
+
+Every position-scoped event — `plan.*`, `preselect.*`, `route.*`, `cooldown.*`, `config.*`, `quote.*`,
+`unwrap.*`, `select.*`, `simulate.*`, `send.*`, `tx.*`, `queue.*`, `nonce.*` — carries the position in
+one field, **`id`**, whose value is `lensKey(marketId, borrower)`: the two halves joined by `:` with
+both lowercased. So a maturity's events group into one row per position with **no normalization in the
+query** (`GROUP BY id`). `tx.*` used to name the same string `label`; it does not any more.
+
+`plan.built` also keeps `marketId` and `borrower` as human-readable extras. They are for an operator
+reading a single line — grouping keys on `id`.
+
+`id` identifies a **position**, and one position now yields several candidates (one per activated
+collateral slot, and a matured-and-unhealthy slot in both open modes). The per-**candidate** key is
+therefore `(id, collateralIndex, postMaturityMode)`, and both discriminators are carried on every
+per-candidate event, the `@repo/swaps` quote events included. Two exceptions, deliberately:
+`send.revert_streak` is per position because the streak spans whichever siblings reverted, and
+`probe.*` events are per venue pair rather than per position — several positions in one market share
+one probe.
 
 ## Important Operational Notes
 

@@ -98,7 +98,12 @@ export function composeQuoting(deps: {
       // The operator opt-out applies to the RAW collateral — midnight has no per-collateral config
       // file, so this is its escape hatch from the auto-unwrap path too.
       if (excluded(collateral.token)) {
-        logger.info('quote.excluded_collateral', { collateral: collateral.token })
+        logger.info('quote.excluded_collateral', {
+          id: label,
+          collateralIndex: plan.collateralIndex,
+          postMaturityMode: plan.postMaturityMode,
+          collateral: collateral.token
+        })
         return { kind: 'no_config', firmCalls: 0 }
       }
 
@@ -112,7 +117,13 @@ export function composeQuoting(deps: {
         // mode by surplus, so the LIF is not recoverable from `postMaturityMode` or from chain time.
         minAcceptableAmountOut: plan.impliedRepaidUnits,
         // The tick's position label (`${id}:${borrower}`) — the correlation id join across quote logs.
-        id: label
+        id: label,
+        // Named exactly as the tick names them on its own events, so a join over both needs no
+        // normalization: one position emits several candidates under one `id`.
+        candidate: {
+          collateralIndex: plan.collateralIndex,
+          postMaturityMode: plan.postMaturityMode
+        }
       })
     }
   }

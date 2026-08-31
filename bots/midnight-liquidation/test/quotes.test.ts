@@ -201,6 +201,26 @@ describe('composeQuoting (Midnight lens-projection adapter)', () => {
     expect(selectOk?.fields?.id).toBe(LABEL)
   })
 
+  it('threads the candidate discriminator, so two candidates of one position stay separable', async () => {
+    // The swaps-side gap BOTS-90 leaves otherwise: both candidates carry one `id`, so without the
+    // discriminator their `select.ok` rows are indistinguishable.
+    const events: { event: string; fields?: Record<string, unknown> }[] = []
+    const capturing: Logger = {
+      debug: () => {},
+      info: (event, fields) => events.push({ event, fields }),
+      warn: () => {},
+      error: () => {}
+    }
+    const { selector } = fakeSelector(['0x'])
+    const { quoteFor } = compose(selector, { logger: capturing })
+    await quoteFor(PLAN, OUT, LABEL)
+    await quoteFor({ ...PLAN, postMaturityMode: true }, OUT, LABEL)
+    const rows = events.filter(e => e.event === 'select.ok')
+    expect(rows.map(e => e.fields?.id)).toEqual([LABEL, LABEL])
+    expect(rows.map(e => e.fields?.collateralIndex)).toEqual([0, 0])
+    expect(rows.map(e => e.fields?.postMaturityMode)).toEqual([false, true])
+  })
+
   it('projects the plan break-even into the venue slippage it asks for', () => {
     // seizedAssets 1000 at price 1e36 -> reference 1000; break-even 800 -> 2000bps of allowance. Pins
     // that the adapter threads `impliedRepaidUnits` rather than leaving the floor unset.

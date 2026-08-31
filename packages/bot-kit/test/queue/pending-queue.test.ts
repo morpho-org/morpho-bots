@@ -378,7 +378,7 @@ describe('drop', () => {
     const dropped = events.find(e => e.event === 'tx.dropped')
     expect(dropped?.level).toBe('warn')
     expect(dropped?.fields).toMatchObject({
-      label: 'market:borrower',
+      id: 'market:borrower',
       nonce: 7,
       txHash: hashOf(1),
       reason: 'nonce_consumed'
@@ -416,7 +416,7 @@ describe('nonce-consumed reconciliation', () => {
     await queue.onBlock(1n)
     expect(queue.size).toBe(0)
     expect(events.find(e => e.event === 'tx.dropped')?.fields).toMatchObject({
-      label: 'market:borrower',
+      id: 'market:borrower',
       nonce: 7,
       txHash: hashOf(1),
       reason: 'nonce_consumed'
@@ -558,9 +558,7 @@ describe('nonce-hole latch', () => {
     expect(await ctx.submit('c', 6n)).toEqual({ sent: false, reason: 'refused' })
     expect(ctx.sends.length).toBe(sendsAfterDrop) // no new broadcast
     expect(ctx.queue.size).toBe(1)
-    expect(ctx.events.some(e => e.event === 'queue.nonce_hole' && e.fields?.label === 'c')).toBe(
-      true
-    )
+    expect(ctx.events.some(e => e.event === 'queue.nonce_hole' && e.fields?.id === 'c')).toBe(true)
     // The chain now consumes past the dropped nonce (7 mined → count 8 > hole high 7): latch clears.
     ctx.consumedRef.value = 8
     await ctx.queue.onBlock(7n)

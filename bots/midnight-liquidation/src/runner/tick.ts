@@ -196,6 +196,7 @@ const LEVEL_BY_REASON: Record<PlanSkipReason, 'debug' | 'info' | 'warn'> = {
  */
 type SizedCandidate = {
   pair: LensInput
+  /** The position's {@link lensKey} — suppression-store key AND the `id` field of every log event. */
   label: string
   out: LensOut
   plan: LiquidationPlan
@@ -270,6 +271,7 @@ const sizeCandidates = (deps: {
     // them, because a matured-and-unhealthy slot is sized in BOTH modes and they are gated separately.
     for (const { reason, collateralIndex, headroom } of skips) {
       logger[LEVEL_BY_REASON[reason]]('plan.skipped', {
+        id: label,
         marketId: pair.id,
         borrower: pair.borrower,
         collateralIndex,
@@ -395,9 +397,11 @@ const prepareRoutes = async (deps: {
     const resolved = await tryCatch(routing.resolveRoute(candidate.plan, candidate.out))
     if (resolved.error) {
       logger.warn('route.unresolved', {
+        id: candidate.label,
         marketId: candidate.pair.id,
         borrower: candidate.pair.borrower,
         collateralIndex: candidate.plan.collateralIndex,
+        postMaturityMode: candidate.plan.postMaturityMode,
         detail: resolved.error.message
       })
     }
@@ -674,12 +678,13 @@ export async function runTick(deps: {
   counters.candidates = sized.length
 
   const skipPreselected = (
-    dropped: readonly { pair: LensInput; plan: LiquidationPlan }[],
+    dropped: readonly { pair: LensInput; label: string; plan: LiquidationPlan }[],
     reason: 'probe_cap' | 'position_cap'
   ) => {
     counters.preselectSkipped += dropped.length
     for (const candidate of dropped) {
       logger.info('preselect.skipped', {
+        id: candidate.label,
         marketId: candidate.pair.id,
         borrower: candidate.pair.borrower,
         collateralIndex: candidate.plan.collateralIndex,
@@ -768,6 +773,7 @@ export async function runTick(deps: {
       ) {
         counters.preselectSkipped += 1
         logger.info('preselect.skipped', {
+          id: label,
           marketId: pair.id,
           borrower: pair.borrower,
           collateralIndex: liquidationPlan.collateralIndex,
@@ -782,6 +788,9 @@ export async function runTick(deps: {
       // lines IS the record of what the bot worked and in what order, which is how the 31 Jul maturity
       // was reconstructed at all.
       logger.info('plan.built', {
+        id: label,
+        // Human-readable extras only: the pair `id` is built from, kept for an operator reading one
+        // line. Grouping keys on `id`.
         marketId: pair.id,
         borrower: pair.borrower,
         rank,
@@ -803,7 +812,13 @@ export async function runTick(deps: {
       // (POSITION_LIQUIDATION_COOLDOWN_MS=0).
       if (cooldown.shouldSkip(label)) {
         counters.cooledDown += 1
-        logger.info('cooldown.skip', { marketId: pair.id, borrower: pair.borrower })
+        logger.info('cooldown.skip', {
+          id: label,
+          marketId: pair.id,
+          borrower: pair.borrower,
+          collateralIndex: liquidationPlan.collateralIndex,
+          postMaturityMode: liquidationPlan.postMaturityMode
+        })
         continue
       }
 
@@ -829,6 +844,7 @@ export async function runTick(deps: {
           counters.noSwapPath += 1
           pendingCooldown.add(label)
           logger.info('config.no_swap_path', {
+            id: label,
             marketId: pair.id,
             borrower: pair.borrower,
             collateralIndex: liquidationPlan.collateralIndex,
@@ -869,6 +885,7 @@ export async function runTick(deps: {
           // the route can clear `requiredRepay` and still be rejected, and an operator cannot tell
           // which rule fired without seeing the bar that was applied.
           logger.info('quote.unprofitable', {
+            id: label,
             marketId: pair.id,
             borrower: pair.borrower,
             collateralIndex: liquidationPlan.collateralIndex,
@@ -891,10 +908,11 @@ export async function runTick(deps: {
         plan: liquidationPlan,
         swapPlan
       })
-      // `collateralIndex` and `postMaturityMode` identify WHICH candidate this was: several entries
-      // per position share a (marketId, borrower), so without them two attempts on one position are
-      // indistinguishable in the log join.
+      // `id` joins the position across stages; `collateralIndex` and `postMaturityMode` identify WHICH
+      // candidate this was, since several entries per position share one `id` and without them two
+      // attempts on one position are indistinguishable in the log join.
       const fields = {
+        id: label,
         marketId: pair.id,
         borrower: pair.borrower,
         collateralIndex: liquidationPlan.collateralIndex,
@@ -965,7 +983,10 @@ export async function runTick(deps: {
             // Only the crossing, so one stuck position is one warn per streak rather than one per tick
             // (two, when both its siblings revert) for as long as it stays stuck.
             if (streak.escalate === 'crossed') {
+              // No candidate discriminator: the streak is keyed by POSITION and spans whichever
+              // siblings reverted, so attributing it to one `(slot, mode)` would misreport it.
               logger.warn('send.revert_streak', {
+                id: label,
                 marketId: pair.id,
                 borrower: pair.borrower,
                 reverts: streak.count,

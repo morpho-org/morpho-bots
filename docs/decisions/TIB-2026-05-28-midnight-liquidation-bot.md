@@ -744,6 +744,13 @@ are deferred to v1 (see Future Considerations).
 _Update (2026-07-14): the BetterStack log-forwarding half is now implemented additively — see
 [TIB-2026-07-14-betterstack-log-forwarding](./TIB-2026-07-14-betterstack-log-forwarding.md)._
 
+_Update (2026-08-31, BOTS-90): the field names in the catalogue above are historical. Every
+position-scoped event now carries the position as a single **`id`** field valued
+`lensKey(marketId, borrower)` — including the `tx.*` events, whose `label` field was renamed to `id`.
+`marketId` / `borrower` survive on `plan.built` as human-readable extras only. See
+[TIB-2026-08-28-midnight-send-shortfall-classification](./TIB-2026-08-28-midnight-send-shortfall-classification.md)
+and the bots' READMEs._
+
 ## Security
 
 - **Private key handling.** `LIQUIDATOR_PRIVATE_KEY` read from env once at startup, never logged,

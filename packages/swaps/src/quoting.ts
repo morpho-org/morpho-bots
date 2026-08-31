@@ -141,7 +141,23 @@ export type QuoteRequest = {
   tokenInDecimals?: number
   /** The position's correlation id — threaded into log events only, never parsed. */
   id?: string
+  /**
+   * Which of the position's candidates this request is for, when a protocol yields several from one
+   * {@link QuoteRequest.id} (Midnight's `(collateral slot, mode)` alternatives). Spread verbatim onto
+   * this package's log events, under the same never-parsed contract as `id`: without it two candidates
+   * of one position emit rows a query cannot tell apart. Fields must be named exactly as the calling
+   * bot names them on its own events, since a join spanning both must not normalize.
+   */
+  candidate?: Readonly<Record<string, boolean | number | string>>
 }
+
+/**
+ * The correlation fields every event in this package carries: the position's join key plus whatever
+ * discriminates the candidate within it. `id` is spread LAST of the two so a stray `candidate.id`
+ * cannot shadow the join key, and each event's own fields are spread after this so neither can shadow
+ * them.
+ */
+const correlationOf = (request: QuoteRequest) => ({ ...request.candidate, id: request.id })
 
 // Normalizes a venue adapter's Swap into the plan's final step: the spender becomes the step's
 // approval target and the venue-agnostic call fields carry over verbatim.
@@ -439,7 +455,7 @@ async function tryResolveUnwraps(
   if (error || !resolution) {
     const reason = error instanceof QuoteError ? error.reason : 'api_error'
     logger.warn('unwrap.failed', {
-      id: request.id,
+      ...correlationOf(request),
       collateral: request.collateralToken,
       reason,
       detail: ensureError(error).message
@@ -448,7 +464,7 @@ async function tryResolveUnwraps(
   }
   if (resolution.steps.length > 0) {
     logger.info('unwrap.resolved', {
-      id: request.id,
+      ...correlationOf(request),
       collateral: request.collateralToken,
       path: [...resolution.steps.map(step => step.tokenIn), resolution.token],
       amountIn: resolution.amountIn
@@ -495,8 +511,8 @@ const swapFreePlan = (args: {
     })
   ) {
     logger.warn('unwrap.bad_route', {
+      ...correlationOf(request),
       venue: path,
-      id: request.id,
       collateral: request.collateralToken,
       expected: resolution.amountIn,
       oracle: request.referenceAmountOut
@@ -509,8 +525,8 @@ const swapFreePlan = (args: {
   // unrelated: a chain can clear `maxRouteImpactBps` and still land under the repay.
   if (resolution.amountIn < request.minAcceptableAmountOut) {
     logger.info('quote.floor_unmet', {
+      ...correlationOf(request),
       venue: path,
-      id: request.id,
       collateral: request.collateralToken,
       expected: resolution.amountIn,
       amountOutMinimum: resolution.amountIn,
@@ -520,8 +536,8 @@ const swapFreePlan = (args: {
     return { kind: 'failed', reason: 'floor_unmet' }
   }
   logger.info('quote.ok', {
+    ...correlationOf(request),
     venue: path,
-    id: request.id,
     collateral: request.collateralToken,
     expected: resolution.amountIn,
     oracle: request.referenceAmountOut,
@@ -638,13 +654,14 @@ export function composeMultiVenueQuoting(deps: {
     pair: VenuePair
     amountIn: bigint
     referenceAmountOut: bigint
-    id?: string
+    /** {@link correlationOf}'s output for the request being quoted. */
+    correlation: Record<string, unknown>
   }): Promise<{ order: Venue[]; estimates: Map<Venue, VenueCostEstimate>; trusted: boolean }> => {
-    const { pair, amountIn, referenceAmountOut, id } = args
+    const { pair, amountIn, referenceAmountOut, correlation } = args
     const { error: probeError } = await tryCatch(refresh(pair))
     if (probeError) {
       logger.warn('probe.error', {
-        id,
+        ...correlation,
         collateral: pair.collateral,
         loan: pair.loan,
         detail: probeError.message
@@ -655,7 +672,12 @@ export function composeMultiVenueQuoting(deps: {
     const estimates = new Map(ranked.map(estimate => [estimate.venue, estimate]))
     const order = [...estimates.keys(), ...venues.filter(venue => !estimates.has(venue))]
     if (ranked.length === 0) {
-      logger.info('select.cold_default', { collateral: pair.collateral, loan: pair.loan, order })
+      logger.info('select.cold_default', {
+        ...correlation,
+        collateral: pair.collateral,
+        loan: pair.loan,
+        order
+      })
     }
     const trusted =
       ranked.length > 0 &&
@@ -666,7 +688,8 @@ export function composeMultiVenueQuoting(deps: {
 
   return {
     async quoteFor(request) {
-      const { collateralToken, loanToken, referenceAmountOut, id } = request
+      const { collateralToken, loanToken, referenceAmountOut } = request
+      const correlation = correlationOf(request)
 
       const unwrapped = await tryResolveUnwraps(unwrappers, request, executor, logger)
       if ('outcome' in unwrapped) return { ...unwrapped.outcome, firmCalls: 0 }
@@ -687,7 +710,7 @@ export function composeMultiVenueQuoting(deps: {
         pair,
         amountIn: resolution.amountIn,
         referenceAmountOut,
-        id
+        correlation
       })
       // A trusted curve ranked every enabled venue on exactly the axis `bad_route` and `floor_unmet`
       // measure, so once the winner has been quoted those two say nothing a runner-up would change and
@@ -720,8 +743,8 @@ export function composeMultiVenueQuoting(deps: {
         if (outcome.kind === 'quote_failed') {
           lastReason = outcome.reason
           logger.warn('quote.failed', {
+            ...correlation,
             venue,
-            id,
             collateral: collateralToken,
             reason: lastReason,
             detail: outcome.detail
@@ -734,8 +757,8 @@ export function composeMultiVenueQuoting(deps: {
           // every venue misses it for every candidate on every block until the incentive catches up.
           // That is the ordinary early-ramp shape, not an anomaly to page on.
           logger.info('quote.floor_unmet', {
+            ...correlation,
             venue,
-            id,
             collateral: collateralToken,
             expected: outcome.swap.expectedAmountOut,
             amountOutMinimum: outcome.swap.amountOutMinimum,
@@ -748,8 +771,8 @@ export function composeMultiVenueQuoting(deps: {
         if (outcome.kind === 'bad_route') {
           lastReason = 'bad_route'
           logger.warn('quote.route_quality_failed', {
+            ...correlation,
             venue,
-            id,
             collateral: collateralToken,
             expected: outcome.swap.expectedAmountOut,
             oracle: referenceAmountOut
@@ -758,8 +781,8 @@ export function composeMultiVenueQuoting(deps: {
           continue
         }
         logger.info('select.ok', {
+          ...correlation,
           venue,
-          id,
           collateral: collateralToken,
           expected: outcome.swap.expectedAmountOut,
           oracle: referenceAmountOut,

@@ -3,7 +3,7 @@ import type { CooldownStore } from '@repo/bot-kit'
 import type { QuoteOutcome, SwapPlan, VenuePair } from '@repo/swaps'
 import type { Address, Hex } from 'viem'
 
-import { createBackoff, createCooldownStore, TxSendError } from '@repo/bot-kit'
+import { createBackoff, createCooldownStore, createPendingQueue, TxSendError } from '@repo/bot-kit'
 import { lensKey } from '@repo/utils'
 import { getAddress } from 'viem'
 import { describe, expect, it } from 'vitest'
@@ -225,8 +225,12 @@ function runWith(opts: {
   routeCostBps?: Map<Address, number>
   /** Models an estimate taken from a ladder end: present in the curve, but not trustworthy. */
   clampedRoutes?: boolean
+  /** Shared spy, so a caller can observe the tick's and the queue's events in ONE stream. */
+  spy?: ReturnType<typeof spyLogger>
+  /** Replaces the stub `submit` — used to broadcast through a real pending queue. */
+  submitWith?: (args: { label: string; blockNumber: bigint }) => Promise<SubmitOutcome>
 }) {
-  const { logger, events } = spyLogger()
+  const { logger, events } = opts.spy ?? spyLogger()
   const order: Address[] = []
   let simulateCalls = 0
   let submitCalls = 0
@@ -316,9 +320,10 @@ function runWith(opts: {
         opts.simulateResults?.[Math.min(simulateCalls - 1, opts.simulateResults.length - 1)]
       return sequenced ?? opts.simulateResult ?? { status: 'ok' }
     },
-    submit: async () => {
+    submit: async args => {
       submitCalls += 1
       if (opts.submitThrows) throw opts.submitThrows
+      if (opts.submitWith) return opts.submitWith(args)
       return opts.submitOutcome ?? { sent: true }
     },
     backoff,
@@ -1629,6 +1634,51 @@ describe('runTick', () => {
       expect(end?.fields?.firmCalls).toBeNull()
       expect(end?.fields).toMatchObject({ firmCallsUnknown: 1 })
       expect(typeof end?.fields?.durationMs).toBe('number')
+    })
+  })
+  describe('position join key', () => {
+    it('emits one id that joins plan.built to the queue tx.sent', async () => {
+      // BOTS-90's acceptance criterion as a test: grouping a maturity's events by `id` must not split
+      // one position. Broadcast through the REAL queue, since the split was between the tick's field
+      // name and the queue's — a stubbed submit cannot see it.
+      const spy = spyLogger()
+      const queue = createPendingQueue({
+        send: async () => ({ nonce: 7, txHash: `0x${'1'.repeat(64)}` }),
+        getReceipt: async () => null,
+        getBaseFee: async () => 1n,
+        maxFeeWei: 10n ** 18n,
+        logger: spy.logger
+      })
+      await runWith({
+        spy,
+        submitWith: ({ label, blockNumber }) =>
+          queue.submit({
+            request: { to: ROUTER, data: '0x' },
+            label,
+            maxFeePerGas: 1000n,
+            maxPriorityFeePerGas: 1000n,
+            blockNumber
+          })
+      })
+      const planBuilt = spy.events.find(e => e.event === 'plan.built')
+      const txSent = spy.events.find(e => e.event === 'tx.sent')
+      expect(planBuilt?.fields?.id).toBe(LABEL)
+      expect(txSent?.fields?.id).toBe(planBuilt?.fields?.id)
+    })
+
+    it('gives one position two candidate rows sharing the id, separated by the discriminator', async () => {
+      // Multi-collateral: `id` alone can no longer identify a ROW, so the pair
+      // (collateralIndex, postMaturityMode) is what has to separate the position's alternatives.
+      const { events } = await runWith({
+        out: twoSlots(),
+        quoteOutcome: { kind: 'failed', reason: 'no_route' }
+      })
+      const built = events.filter(e => e.event === 'plan.built')
+      expect(built.map(e => e.fields?.id)).toEqual([LABEL, LABEL])
+      expect(built.map(e => [e.fields?.collateralIndex, e.fields?.postMaturityMode])).toEqual([
+        [1, false],
+        [0, false]
+      ])
     })
   })
 })

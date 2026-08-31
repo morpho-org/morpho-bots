@@ -27,8 +27,9 @@ what remains unobserved. A future reader who needs one thing from this document 
 distinction, not the numbers.
 
 Source data throughout: BetterStack source `2607569` (`t384553.bot_liquidation_midnight`), window
-2026-08-28 15:00:00–15:10:00 UTC, joined to Base receipts. Log joins key on `label` — the `tx.*`
-events carry the position identity in `label`, not `id`.
+2026-08-28 15:00:00–15:10:00 UTC, joined to Base receipts. The joins below key on `label`, which is
+what the `tx.*` events carried at the time; BOTS-90 has since renamed that emitted field to `id`
+(same value), so reproducing this analysis on a current window keys on `id` instead.
 
 ## Goals / Non-Goals
 
@@ -329,9 +330,16 @@ protocol switch buried in it.
   its ramp does not trip it. The count is emitted alongside so a count-based rule can be calibrated
   from real data later if one turns out to be wanted.
 
-- Dashboards joining sends to outcomes must key on `label`; `tx.*` events do not carry `id` **at the
-  time of this decision**. BOTS-90 normalizes that to a single `id` field across `plan.*`, `quote.*`,
-  `select.*`, `simulate.*` and `tx.*` in both liquidators — expect this line to be superseded.
+- ~~Dashboards joining sends to outcomes must key on `label`; `tx.*` events do not carry `id` **at the
+  time of this decision**.~~ **Superseded by BOTS-90**, which landed in the same release train: every
+  position-scoped event in both liquidators — `plan.*`, `preselect.*`, `route.*`, `cooldown.*`,
+  `config.*`, `quote.*`, `unwrap.*`, `select.*`, `simulate.*`, `send.*`, `tx.*`, `queue.*`, `nonce.*` —
+  now carries the position as **`id`**, valued `lensKey(marketId, borrower)` (both halves lowercased),
+  so `GROUP BY id` needs no normalization. The queue's emitted `label` field is renamed to `id`; its
+  `SubmitArgs.label` input and in-flight map keys keep the name, because they are behavioral. That
+  rename also changes the `tx.*` log schema of `vault-v1-reallocation`, `vault-v2-reallocation` and
+  `midnight-crossed-books`, which pass a vault address or a market id as the same key. Join sends to
+  outcomes on `id`.
 - `tick.end` counter identities **do change**, in two places, and a dashboard summing them must be
   updated with the release rather than after it:
   - `notSent === sendRefused + sendReverted + sendRejected` is new. `sendReverted` is the exempt class
