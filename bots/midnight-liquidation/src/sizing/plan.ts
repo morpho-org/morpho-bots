@@ -4,9 +4,9 @@ import { min, mulDivDown, mulDivUp } from './math'
 import { isRcfExempt, maxRepaidNormalMode } from './rcf'
 
 /**
- * Ceiling on the candidates {@link planCandidates} returns per position, after ranking. The tick
- * spends one quote plus one simulation per candidate it tries, so an unbounded list would let a
- * single pathological position exhaust the venue rate budget for every other position in the tick.
+ * Ceiling on the candidates a caller keeps per position. The tick spends one quote plus one simulation
+ * per candidate it tries, so an unbounded list would let a single pathological position exhaust the
+ * venue rate budget for every other position in the tick.
  *
  * **This is a real limit, not just a backstop, and the bot does NOT currently support the protocol's
  * full collateral range.** Midnight allows `MAX_COLLATERALS_PER_BORROWER` (16) activated slots per
@@ -16,10 +16,9 @@ import { isRcfExempt, maxRepaidNormalMode } from './rcf'
  * would start silently truncating.** Raise this (and re-check the rate budget) before such a market
  * ships, or accept that only the top-ranked few are ever attempted.
  *
- * What survives truncation is surplus-ordered, so it drops the least valuable candidates — with one
- * exception, see {@link planCandidates}: a swap-free candidate is never truncated away, because its
- * value is certainty of execution rather than surplus. That is what keeps the guarantee meaningful
- * even when the cap binds.
+ * {@link planCandidates} deliberately does NOT apply it: truncating on the gross, oracle-only surplus
+ * it ranks by can discard a candidate that wins once route cost is charged, and that decision is
+ * irreversible downstream. The caller applies {@link capCandidates} to its own final ordering instead.
  */
 export const MAX_PLAN_CANDIDATES_PER_POSITION = 4
 
@@ -416,14 +415,26 @@ const bySurplusThenPostMaturity = (a: LiquidationPlan, b: LiquidationPlan): numb
   return a.postMaturityMode ? -1 : 1
 }
 
-// Truncates a ranked candidate list to MAX_PLAN_CANDIDATES_PER_POSITION, keeping the best swap-free
-// candidate even when surplus alone would have dropped it — a swap-free candidate is the only kind
-// guaranteed to be fundable, so it is the last one worth discarding.
-const capCandidates = (ranked: LiquidationPlan[]): LiquidationPlan[] => {
-  if (ranked.length <= MAX_PLAN_CANDIDATES_PER_POSITION) return ranked
-  const kept = ranked.slice(0, MAX_PLAN_CANDIDATES_PER_POSITION)
-  if (kept.some(plan => plan.swapFree)) return kept
-  const swapFree = ranked.find(plan => plan.swapFree)
+/**
+ * Truncates ONE position's ranked candidate list to `limit`, keeping the best swap-free candidate even
+ * when the ranking alone would have dropped it — a swap-free candidate is the only kind guaranteed to
+ * be fundable, so it is the last one worth discarding.
+ *
+ * The caller's ranking decides what survives, so this must be applied to the FINAL ordering (net of
+ * route cost, not the gross surplus {@link planCandidates} ranks by) and to one position's
+ * alternatives, never across a batch spanning several positions.
+ *
+ * Generic over the candidate so it can cap a plan list or a tick-enriched one; non-mutating.
+ */
+export const capCandidates = <T>(
+  ranked: readonly T[],
+  isSwapFree: (candidate: T) => boolean,
+  limit: number
+): T[] => {
+  if (ranked.length <= limit) return [...ranked]
+  const kept = ranked.slice(0, limit)
+  if (kept.some(isSwapFree)) return kept
+  const swapFree = ranked.find(isSwapFree)
   if (swapFree) kept[kept.length - 1] = swapFree
   return kept
 }
@@ -481,10 +492,12 @@ export const planWithReason = (input: PlanInput, options: PlanOptions = {}): Pla
  * Ordering is surplus-descending, then post-maturity first on a tie (whose gate cannot close between
  * read and exec, unlike normal mode's). Surplus is oracle-only and gross of execution cost, so it
  * systematically flatters a slot that needs a swap: a cbBTC slot at ~420 bps outranks a loan-token
- * slot at ~60 bps even though only the latter is certain to execute. That is deliberate — the ranking
- * chases the larger prize first and falls through — but it is why truncation to
- * {@link MAX_PLAN_CANDIDATES_PER_POSITION} **never drops the best swap-free candidate**: it would
- * otherwise discard the only entry guaranteed to be fundable.
+ * slot at ~60 bps even though only the latter is certain to execute.
+ *
+ * **The list is UNCAPPED**, because this ordering is not the one to truncate on: route cost is
+ * frequently the deciding term rather than a tiebreaker, so a caller that can price it must re-rank
+ * before applying {@link MAX_PLAN_CANDIDATES_PER_POSITION} through {@link capCandidates}. The bound on
+ * a position's candidate count is the protocol's `MAX_COLLATERALS_PER_BORROWER` times two modes.
  *
  * A matured-and-unhealthy slot contributes **two** entries, one per open on-chain gate — see
  * {@link openModePlans} for why the loser is kept rather than discarded.
@@ -559,7 +572,7 @@ export const planCandidates = (
     skips.push({ reason: 'nothing_to_seize', collateralIndex: 0 })
   }
 
-  return { plans: capCandidates(plans.toSorted(bySurplusThenPostMaturity)), skips }
+  return { plans: plans.toSorted(bySurplusThenPostMaturity), skips }
 }
 
 /**

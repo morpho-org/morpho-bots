@@ -1,6 +1,6 @@
 import type { Logger, SimulateResult, SubmitOutcome } from '@repo/bot-kit'
 import type { CooldownStore } from '@repo/bot-kit'
-import type { QuoteOutcome, SwapPlan } from '@repo/swaps'
+import type { QuoteOutcome, SwapPlan, VenuePair } from '@repo/swaps'
 import type { Address, Hex } from 'viem'
 
 import { createBackoff, createCooldownStore, TxSendError } from '@repo/bot-kit'
@@ -9,6 +9,7 @@ import { getAddress } from 'viem'
 import { describe, expect, it } from 'vitest'
 
 import type { BorrowerCandidate } from '../../src/discovery/borrowers'
+import type { LiquidationPlan } from '../../src/sizing/plan'
 import type { LensCollateral, LensInput, LensOut } from '../../src/state/lens.sol'
 
 import { runTick } from '../../src/runner/tick'
@@ -39,6 +40,7 @@ const expectCounterIdentities = (c: Record<string, number>) => {
     c.cooledDown! +
       c.backoffSkipped! +
       c.siblingSkipped! +
+      c.preselectSkipped! +
       c.noSwapPath! +
       c.quoteFailed! +
       c.quoteUnprofitable! +
@@ -58,6 +60,9 @@ const ROUTER: Address = getAddress('0x5555555555555555555555555555555555555555')
 const ZERO = '0x0000000000000000000000000000000000000000' as const
 const MARKET: Hex = `0x${'a'.repeat(64)}`
 const LABEL = lensKey(MARKET, BORROWER)
+// Extra collateral tokens for multi-slot fixtures. All sort after TOKEN and among themselves, so
+// `collateralParams` stays ascending as the protocol requires.
+const collateralAt = (nibble: string): Address => getAddress(`0x${nibble.repeat(40)}`)
 // 3.63% incentive → a 349bps headroom ceiling; the ramp reaches 3bps about 30s past maturity.
 const WAD_ONE = 10n ** 18n
 const MAX_LIF = 1036269430051813471n
@@ -187,6 +192,15 @@ function runWith(opts: {
   quoteOutcomes?: QuoteOutcome[]
   /** Per-call simulate results, same sequencing as `quoteOutcomes`. */
   simulateResults?: SimulateResult[]
+  /**
+   * What the fake probe curve reports, in bps of the oracle reference, keyed by the collateral token
+   * being sold — the axis a real pair differs by. A token ABSENT from the map reads as a cold pair
+   * (`routeCost` → `[]`), which is what the fail-open path keys on; an empty/omitted map is therefore
+   * a fully cold curve, i.e. exactly the pre-curve behaviour.
+   */
+  routeCostBps?: Map<Address, number>
+  /** Models an estimate taken from a ladder end: present in the curve, but not trustworthy. */
+  clampedRoutes?: boolean
 }) {
   const { logger, events } = spyLogger()
   const order: Address[] = []
@@ -201,6 +215,36 @@ function runWith(opts: {
   const defaultOutcome: QuoteOutcome = opts.noSwap
     ? { kind: 'no_config' }
     : { kind: 'swap', plan: SWAP_PLAN }
+  // Collateral tokens phase A.5 asked to be warmed, in call order — one entry per refresh actually
+  // issued, so a duplicate here is a duplicated probe burst.
+  const warmed: Address[] = []
+  const routing = {
+    resolveRoute: async (plan: LiquidationPlan, out: LensOut) => {
+      const collateral = out.market.collateralParams[plan.collateralIndex]
+      if (!collateral || collateral.token === out.market.loanToken) return null
+      return {
+        pair: { collateral: collateral.token, loan: out.market.loanToken },
+        amountIn: plan.seizedAssets
+      }
+    },
+    warmRoute: async (pair: VenuePair) => {
+      warmed.push(pair.collateral)
+    },
+    routeCost: (pair: VenuePair, _amountIn: bigint, referenceAmountOut: bigint) => {
+      const bps = opts.routeCostBps?.get(pair.collateral)
+      if (bps === undefined) return []
+      const cost = (referenceAmountOut * BigInt(bps)) / 10_000n
+      return [
+        {
+          venue: '0x' as const,
+          estimatedOut: referenceAmountOut - cost,
+          costBps: bps,
+          costBpsRaw: bps,
+          clamped: opts.clampedRoutes ?? false
+        }
+      ]
+    }
+  }
   const result = runTick({
     discover: async () => {
       if (opts.discoverError) throw opts.discoverError
@@ -236,6 +280,7 @@ function runWith(opts: {
     cooldown,
     inflightLabels: () => opts.inflight ?? new Set(),
     usdValueOf: opts.usdValueOf ?? ((_loanToken, loanUnits) => loanUnits),
+    routing,
     logger
   })
   return result.then(counters => ({
@@ -246,6 +291,7 @@ function runWith(opts: {
     submitCalls: () => submitCalls,
     quoteCalls: () => quoteCalls,
     order,
+    warmed,
     events
   }))
 }
@@ -265,6 +311,7 @@ describe('runTick', () => {
       cooledDown: 0,
       backoffSkipped: 0,
       siblingSkipped: 0,
+      preselectSkipped: 0,
       noSwapPath: 0,
       quoteFailed: 0,
       quoteUnprofitable: 0,
@@ -528,6 +575,12 @@ describe('runTick', () => {
           cooldown: createCooldownStore({ cooldownMs: 0 }),
           inflightLabels: () => new Set(),
           usdValueOf: (_loanToken, loanUnits) => loanUnits,
+          // A fully cold curve, so this case exercises the fail-open ordering it always did.
+          routing: {
+            resolveRoute: async () => null,
+            warmRoute: async () => {},
+            routeCost: () => []
+          },
           logger
         })
       ).rejects.toThrow('nonce claimed, no hash')
@@ -963,6 +1016,305 @@ describe('runTick', () => {
       const sims = events.filter(e => e.event.startsWith('simulate.'))
       expect(sims).toHaveLength(2)
       expect(sims.map(e => e.fields?.collateralIndex)).toEqual([1, 0])
+    })
+  })
+
+  describe('net-of-route-cost ordering', () => {
+    // Extra collateral tokens, in `collateralParams` order: slot index i+1 sells `SWAP_TOKENS[i]`.
+    const SWAP_TOKENS = ['8', '9', 'a', 'b', 'c'].map(collateralAt)
+    // Against this fixture's debt (1000, maxDebt 900, cap-bound) a slot's gross surplus is exactly
+    // `1000 * (maxLif - 1)`, and its oracle reference is `1000 * maxLif` — so maxLif 1.10 is a surplus
+    // of 100 on a reference of 1100, and the loan-token slot's 1.006036 maxLif is a surplus of 6.
+    const lifFor = (surplus: number) => WAD_ONE + BigInt(surplus) * 10n ** 15n
+
+    /**
+     * A position with one activated slot per requested gross surplus, each selling its own collateral
+     * token, optionally plus the market's own loan-token slot at index 0 — the swap-free alternative,
+     * whose surplus is always 6.
+     */
+    const multiSlot = (args: { surpluses: number[]; withLoanSlot?: boolean }): LensOut => {
+      const base = lensOut()
+      const swapSlots = args.surpluses.map((surplus, i) =>
+        slot({ index: i + 1, maxLif: lifFor(surplus) })
+      )
+      return lensOut({
+        collaterals: args.withLoanSlot
+          ? [...swapSlots, slot({ index: 0, maxLif: LOAN_MAX_LIF })]
+          : swapSlots,
+        market: {
+          ...base.market,
+          collateralParams: [
+            base.market.collateralParams[0]!,
+            ...SWAP_TOKENS.slice(0, args.surpluses.length).map(token => ({
+              token,
+              lltv: 860000000000000000n,
+              liquidationCursor: 250000000000000000n,
+              oracle: ORACLE
+            }))
+          ]
+        }
+      })
+    }
+
+    const costs = (...bps: [Address, number][]) => new Map(bps)
+
+    const builtIndexes = (events: { event: string; fields?: Record<string, unknown> }[]) =>
+      events.filter(e => e.event === 'plan.built').map(e => e.fields?.collateralIndex)
+
+    const preselectSkips = (events: { event: string; fields?: Record<string, unknown> }[]) =>
+      events
+        .filter(e => e.event === 'preselect.skipped')
+        .map(e => [e.fields?.collateralIndex, e.fields?.reason])
+
+    it('flips a pair of candidates that gross surplus would have ranked the other way', async () => {
+      // Slot 1 is worth 100 gross but pays 300 bps of a 1100 reference (33); slot 2 is worth 80 and
+      // pays nothing. 67 < 80, so the cheaper route wins — the ordering the oracle alone cannot see.
+      const out = multiSlot({ surpluses: [100, 80] })
+      const priced = await runWith({
+        out,
+        routeCostBps: costs([SWAP_TOKENS[0]!, 300], [SWAP_TOKENS[1]!, 0])
+      })
+      expect(builtIndexes(priced.events)).toEqual([2])
+      expect(priced.events.find(e => e.event === 'plan.built')?.fields).toMatchObject({
+        routeCostBps: 0,
+        netUsd: '0.0000008'
+      })
+
+      const gross = await runWith({ out })
+      expect(builtIndexes(gross.events)).toEqual([1])
+    })
+
+    it('prefers the swap-free candidate over a higher-gross one that pays route cost', async () => {
+      // The measured shape: a loan-as-collateral slot pays zero, so a nominally larger swap slot loses
+      // to it on a route cost of a few tens of bps. 8 gross - 30 bps of 1008 (3) = 5, against 6.
+      const out = multiSlot({ surpluses: [8], withLoanSlot: true })
+      const priced = await runWith({ out, routeCostBps: costs([SWAP_TOKENS[0]!, 30]) })
+      expect(builtIndexes(priced.events)).toEqual([0])
+
+      const gross = await runWith({ out })
+      expect(builtIndexes(gross.events)).toEqual([1])
+    })
+
+    it('keeps the true net winner that gross ordering would have truncated away', async () => {
+      // Five candidates, cap four. Gross order is 100/80/60/40/20 and drops the 20; net order puts the
+      // 20 FIRST, because it is the only one whose route is free. Capping before re-ranking — what
+      // sizing used to do — would have discarded the winner before it was ever compared.
+      const out = multiSlot({ surpluses: [100, 80, 60, 40, 20] })
+      const priced = SWAP_TOKENS.map((token, i) => [token, i < 4 ? 1000 : 0] as [Address, number])
+      const { counters, events } = await runWith({ out, routeCostBps: costs(...priced) })
+      expect(builtIndexes(events)).toEqual([5])
+      expect(preselectSkips(events)).toEqual([[4, 'position_cap']])
+      expect(counters).toMatchObject({ candidates: 5, preselectSkipped: 1, submitted: 1 })
+      expectCounterIdentities(counters)
+
+      const gross = await runWith({ out })
+      expect(builtIndexes(gross.events)).toEqual([1])
+      expect(preselectSkips(gross.events)).toEqual([[5, 'position_cap']])
+    })
+
+    it('never lets the cap discard the best swap-free candidate', async () => {
+      // Four free-routing swap slots outrank the swap-free one on net as well as gross, so the cap
+      // would drop it on the ordering alone — it is the only candidate guaranteed to be fundable.
+      const out = multiSlot({ surpluses: [100, 80, 60, 40], withLoanSlot: true })
+      const free = SWAP_TOKENS.slice(0, 4).map(token => [token, 0] as [Address, number])
+      const { counters, events } = await runWith({
+        out,
+        routeCostBps: costs(...free),
+        quoteOutcome: { kind: 'failed', reason: 'no_route' }
+      })
+      // The 40-gross slot is the one the cap gives up for it; index 0 is never a `position_cap` drop.
+      expect(preselectSkips(events)).toContainEqual([4, 'position_cap'])
+      expect(builtIndexes(events)).toContain(0)
+      expectCounterIdentities(counters)
+    })
+
+    it('falls open to gross ordering, with no new cutoff, when the curve is cold', async () => {
+      const out = multiSlot({ surpluses: [100, 80, 60] })
+      const { counters, events, quoteCalls } = await runWith({
+        out,
+        quoteOutcome: { kind: 'failed', reason: 'no_route' }
+      })
+      expect(builtIndexes(events)).toEqual([1, 2, 3])
+      expect(quoteCalls()).toBe(3)
+      expect(counters).toMatchObject({ candidates: 3, preselectSkipped: 0, quoteFailed: 3 })
+      expectCounterIdentities(counters)
+    })
+
+    it('falls open the same way when the best estimate is clamped', async () => {
+      // A clamped estimate comes from a ladder end rather than from between two rungs, so it cannot be
+      // trusted at this size. Priced, it would have ordered 2/3/1 and quoted only two of the three.
+      const out = multiSlot({ surpluses: [100, 80, 60] })
+      const map = costs([SWAP_TOKENS[0]!, 1000], [SWAP_TOKENS[1]!, 0], [SWAP_TOKENS[2]!, 0])
+      const clamped = await runWith({
+        out,
+        routeCostBps: map,
+        clampedRoutes: true,
+        quoteOutcome: { kind: 'failed', reason: 'no_route' }
+      })
+      expect(builtIndexes(clamped.events)).toEqual([1, 2, 3])
+      expect(clamped.counters).toMatchObject({ preselectSkipped: 0, quoteFailed: 3 })
+
+      const trusted = await runWith({
+        out,
+        routeCostBps: map,
+        quoteOutcome: { kind: 'failed', reason: 'no_route' }
+      })
+      expect(builtIndexes(trusted.events)).toEqual([2, 3])
+      expect(trusted.counters).toMatchObject({ preselectSkipped: 1, quoteFailed: 2 })
+    })
+
+    it('leaves a position whose loan token is unpriced on gross ordering', async () => {
+      // Both terms come from the same USD conversion, so an unpriced loan token makes the cost unknown
+      // rather than zero — the position must not be scored as if its route were free.
+      const out = multiSlot({ surpluses: [100, 80] })
+      const { counters, events } = await runWith({
+        out,
+        routeCostBps: costs([SWAP_TOKENS[0]!, 300], [SWAP_TOKENS[1]!, 0]),
+        usdValueOf: () => null,
+        quoteOutcome: { kind: 'failed', reason: 'no_route' }
+      })
+      expect(builtIndexes(events)).toEqual([1, 2])
+      expect(counters).toMatchObject({ unpriced: 2, preselectSkipped: 0 })
+    })
+  })
+
+  describe('bounded preselection', () => {
+    const SWAP_TOKENS = ['8', '9', 'a', 'b', 'c'].map(collateralAt)
+    const lifFor = (surplus: number) => WAD_ONE + BigInt(surplus) * 10n ** 15n
+
+    // Three swap slots plus the loan-token slot, all routing free, so the ordering is the gross one and
+    // the bound is what decides how many quotes the position spends.
+    const fourCandidates = (): LensOut => {
+      const base = lensOut()
+      return lensOut({
+        collaterals: [
+          ...[100, 80, 60].map((surplus, i) => slot({ index: i + 1, maxLif: lifFor(surplus) })),
+          slot({ index: 0, maxLif: LOAN_MAX_LIF })
+        ],
+        market: {
+          ...base.market,
+          collateralParams: [
+            base.market.collateralParams[0]!,
+            ...SWAP_TOKENS.slice(0, 3).map(token => ({
+              token,
+              lltv: 860000000000000000n,
+              liquidationCursor: 250000000000000000n,
+              oracle: ORACLE
+            }))
+          ]
+        }
+      })
+    }
+    const freeRoutes = new Map(SWAP_TOKENS.slice(0, 3).map(token => [token, 0]))
+
+    it('quotes the top-ranked candidate plus a bounded fall-through, reserving the swap-free one', async () => {
+      const { counters, events, quoteCalls } = await runWith({
+        out: fourCandidates(),
+        routeCostBps: freeRoutes,
+        quoteOutcome: { kind: 'failed', reason: 'no_route' }
+      })
+      // Two attempts, then the third swap slot is dropped — but the swap-free candidate is exempt from
+      // the bound however late it ranks, so it still gets its turn in the same tick.
+      expect(quoteCalls()).toBe(3)
+      expect(
+        events.filter(e => e.event === 'plan.built').map(e => e.fields?.collateralIndex)
+      ).toEqual([1, 2, 0])
+      expect(
+        events
+          .filter(e => e.event === 'preselect.skipped')
+          .map(e => [e.fields?.collateralIndex, e.fields?.reason])
+      ).toEqual([[3, 'fall_through_bound']])
+      expect(counters).toMatchObject({ candidates: 4, quoteFailed: 3, preselectSkipped: 1 })
+      expectCounterIdentities(counters)
+    })
+
+    it('spends no fall-through on a position that already broadcast', async () => {
+      const { counters } = await runWith({ out: fourCandidates(), routeCostBps: freeRoutes })
+      expect(counters).toMatchObject({
+        candidates: 4,
+        submitted: 1,
+        siblingSkipped: 3,
+        preselectSkipped: 0
+      })
+      expectCounterIdentities(counters)
+    })
+
+    it('does not consume the bound with candidates excluded BEFORE the suppression checks', async () => {
+      // A cooldown skip spends no venue call, so it must not consume a budget that exists to cap venue
+      // calls — every candidate reports the one verdict that applies, rather than two of them reporting
+      // `cooledDown` and the rest `preselectSkipped`.
+      const cooldown = createCooldownStore({ cooldownMs: 60_000 })
+      cooldown.mark(LABEL)
+      const { counters } = await runWith({
+        out: fourCandidates(),
+        routeCostBps: freeRoutes,
+        cooldown
+      })
+      expect(counters).toMatchObject({ candidates: 4, cooledDown: 4, preselectSkipped: 0 })
+      expectCounterIdentities(counters)
+    })
+
+    it('does not consume the bound with candidates excluded AFTER the cooldown check either', async () => {
+      const { counters } = await runWith({
+        out: fourCandidates(),
+        routeCostBps: freeRoutes,
+        seedBackoffAt: 100n
+      })
+      expect(counters).toMatchObject({ candidates: 4, backoffSkipped: 4, preselectSkipped: 0 })
+      expectCounterIdentities(counters)
+    })
+  })
+
+  describe('phase A.5 probe warming', () => {
+    it('warms a pair once for several candidates that share it', async () => {
+      const second = getAddress('0x6666666666666666666666666666666666666666')
+      const { warmed } = await runWith({ borrowers: [BORROWER, second] })
+      expect(warmed).toEqual([COLLATERAL])
+    })
+
+    it('warms nothing for a candidate that needs no route', async () => {
+      // The swap-free slot resolves to no pair at all, so it never costs a probe burst.
+      const { warmed } = await runWith({
+        out: lensOut({
+          activatedBitmap: 0b11n,
+          collaterals: [slot({ index: 1 }), slot({ index: 0, maxLif: LOAN_MAX_LIF })]
+        })
+      })
+      expect(warmed).toEqual([COLLATERAL])
+    })
+
+    it('warms no pair for a position sizing never reached', async () => {
+      // A cold refresh is one venue call per ladder rung per venue, so warming has to be scoped to the
+      // pairs that actually have a sized candidate — an in-flight position has none.
+      const { warmed } = await runWith({ inflight: new Set([LABEL]) })
+      expect(warmed).toEqual([])
+    })
+  })
+
+  describe('firm-call budget', () => {
+    it('sums the firm calls a tick actually spent onto tick.end', async () => {
+      const { events } = await runWith({
+        out: lensOut({
+          activatedBitmap: 0b11n,
+          collaterals: [slot({ index: 1 }), slot({ index: 0, maxLif: LOAN_MAX_LIF })]
+        }),
+        quoteOutcomes: [
+          { kind: 'failed', reason: 'no_route', firmCalls: 2 },
+          { kind: 'swap', plan: SWAP_PLAN, firmCalls: 3 }
+        ]
+      })
+      expect(events.find(e => e.event === 'tick.end')?.fields).toMatchObject({
+        firmCalls: 5,
+        firmCallsUnknown: 0
+      })
+    })
+
+    it('reports an absent count as unknown rather than as zero', async () => {
+      const { events } = await runWith({})
+      const end = events.find(e => e.event === 'tick.end')
+      expect(end?.fields?.firmCalls).toBeNull()
+      expect(end?.fields).toMatchObject({ firmCallsUnknown: 1 })
+      expect(typeof end?.fields?.durationMs).toBe('number')
     })
   })
 })

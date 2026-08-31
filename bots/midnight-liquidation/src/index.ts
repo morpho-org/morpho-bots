@@ -203,7 +203,7 @@ async function main() {
     : null
   const unwrappers = [createErc4626Unwrapper({ client, logger }), ...(pendle ? [pendle] : [])]
 
-  const { quoteFor } = composeQuoting({
+  const { quoteFor, resolveRoute } = composeQuoting({
     httpClient,
     selector: venueSelector,
     chainId: config.chainId,
@@ -376,6 +376,14 @@ async function main() {
       cooldown,
       inflightLabels: () => queue.inflightLabels(),
       usdValueOf: tokenPrices.usdValueOf,
+      // Phase A.5's probe seam. `refresh` is staleness-gated and `select` is a pure cache lookup, so
+      // the tick warms only the pairs its sized candidates sell through and the composer's own refresh
+      // for the same pair is a no-op afterwards.
+      routing: {
+        resolveRoute,
+        warmRoute: venueSelector.refresh,
+        routeCost: venueSelector.select
+      },
       logger
     })
 

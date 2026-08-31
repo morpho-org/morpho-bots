@@ -4,7 +4,7 @@ import type { CollateralSlot, LiquidationPlan, PlanInput } from '../../src/sizin
 
 import { ORACLE_PRICE_SCALE, WAD } from '../../src/constants'
 import {
-  MAX_PLAN_CANDIDATES_PER_POSITION,
+  capCandidates,
   maxSeizeForCap,
   plan,
   planCandidates,
@@ -527,21 +527,12 @@ describe('planCandidates', () => {
     expect(plans[0]).toMatchObject({ seizedAssets: 0n, collateralIndex: 0 })
   })
 
-  it('truncates to MAX_PLAN_CANDIDATES_PER_POSITION', () => {
+  it('does NOT truncate: the caller caps its own final ordering', () => {
+    // Truncating here would cap on gross surplus, before route cost can reorder — and the candidate
+    // dropped that way is unrecoverable downstream.
     const many = Array.from({ length: 8 }, (_, i) => slot({ index: i, amt: 1000n * WAD }))
     const { plans } = planCandidates(baseInput({ collaterals: many }))
-    expect(plans).toHaveLength(MAX_PLAN_CANDIDATES_PER_POSITION)
-  })
-
-  it('keeps the swap-free candidate when truncation would have dropped it', () => {
-    // The loan slot's surplus is the smallest of the nine, so surplus alone sorts it last. It is also
-    // the only candidate guaranteed to be fundable, so it must survive the cut.
-    const many = Array.from({ length: 8 }, (_, i) => slot({ index: i + 1, amt: 1000n * WAD }))
-    const { plans } = planCandidates(
-      baseInput({ collaterals: [...many, loanSlot({ amt: 1000n * WAD })] })
-    )
-    expect(plans).toHaveLength(MAX_PLAN_CANDIDATES_PER_POSITION)
-    expect(plans.some(candidate => candidate.swapFree)).toBe(true)
+    expect(plans).toHaveLength(8)
   })
 
   it('returns BOTH open modes for a matured-and-unhealthy slot', () => {
@@ -603,5 +594,40 @@ describe('planCandidates', () => {
       })
     )
     expect(plans[0]?.postMaturityMode).toBe(true)
+  })
+})
+
+describe('capCandidates', () => {
+  // Only the two fields the cap reads, so these cases are about the policy rather than about sizing.
+  const entry = (id: string, swapFree = false) => ({ id, swapFree })
+
+  it('keeps the input unchanged when it already fits', () => {
+    const kept = capCandidates([entry('a'), entry('b')], candidate => candidate.swapFree, 4)
+    expect(kept.map(candidate => candidate.id)).toEqual(['a', 'b'])
+  })
+
+  it('keeps the best `limit` candidates in the caller order', () => {
+    const ranked = Array.from({ length: 6 }, (_, i) => entry(`c${i}`))
+    const kept = capCandidates(ranked, candidate => candidate.swapFree, 4)
+    expect(kept.map(candidate => candidate.id)).toEqual(['c0', 'c1', 'c2', 'c3'])
+  })
+
+  it('substitutes the best swap-free candidate for the last survivor', () => {
+    const ranked = [...Array.from({ length: 5 }, (_, i) => entry(`c${i}`)), entry('free', true)]
+    const kept = capCandidates(ranked, candidate => candidate.swapFree, 4)
+    expect(kept.map(candidate => candidate.id)).toEqual(['c0', 'c1', 'c2', 'free'])
+  })
+
+  it('substitutes nothing when a swap-free candidate already survived', () => {
+    const ranked = [entry('free', true), ...Array.from({ length: 5 }, (_, i) => entry(`c${i}`))]
+    const kept = capCandidates(ranked, candidate => candidate.swapFree, 4)
+    expect(kept.map(candidate => candidate.id)).toEqual(['free', 'c0', 'c1', 'c2'])
+  })
+
+  it('does not mutate its input', () => {
+    const ranked = [...Array.from({ length: 5 }, (_, i) => entry(`c${i}`)), entry('free', true)]
+    capCandidates(ranked, candidate => candidate.swapFree, 4)
+    expect(ranked).toHaveLength(6)
+    expect(ranked[5]?.id).toBe('free')
   })
 })

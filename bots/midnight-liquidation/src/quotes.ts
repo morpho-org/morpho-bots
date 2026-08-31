@@ -1,8 +1,15 @@
 import type { Logger } from '@repo/bot-kit'
-import type { QuoteOutcome, RateLimitedClient, Unwrapper, Venue, VenueSelector } from '@repo/swaps'
+import type {
+  QuoteOutcome,
+  RateLimitedClient,
+  Unwrapper,
+  Venue,
+  VenuePair,
+  VenueSelector
+} from '@repo/swaps'
 import type { Address } from 'viem'
 
-import { composeMultiVenueQuoting } from '@repo/swaps'
+import { composeMultiVenueQuoting, resolveUnwraps } from '@repo/swaps'
 import { isAddressEqual } from 'viem'
 
 import type { LiquidationPlan } from './sizing/plan'
@@ -18,6 +25,12 @@ import { expectedLoanOut } from './execution/swap-step'
  * so no venue calls hit quiet markets — and picks the best venue from the warm cache, firm-quoting
  * only the chosen one. A missing collateral slot or an operator-excluded collateral short-circuits
  * to `no_config` (no API call), preserving no-API-call semantics for a position the bot won't route.
+ *
+ * `resolveRoute` exposes just the pair half of that pipeline, for the tick's phase A.5, so the expensive
+ * half is not duplicated: the probe refresh the composer then drives for the same pair is absorbed by
+ * the selector's staleness gate, phase A.5 having already warmed it. Resolving twice is free for plain
+ * collateral (the unwrappers memoize their negatives per token) but does cost one extra amount-dependent
+ * read per candidate for a genuinely exotic one — an `eth_call`, never a venue call.
  */
 export function composeQuoting(deps: {
   httpClient: RateLimitedClient
@@ -30,10 +43,29 @@ export function composeQuoting(deps: {
   unwrappers: readonly Unwrapper[]
   excludeCollaterals: readonly Address[]
   logger: Logger
-}): { quoteFor: (plan: LiquidationPlan, out: LensOut, label: string) => Promise<QuoteOutcome> } {
-  const { selector, excludeCollaterals, logger, ...rest } = deps
+}): {
+  quoteFor: (plan: LiquidationPlan, out: LensOut, label: string) => Promise<QuoteOutcome>
+  /**
+   * The pair a candidate's seize would actually be sold through, resolved through the same unwrap
+   * chain and the same operator opt-out `quoteFor` applies — so the tick warms and prices the venue
+   * pair the firm quote will really use, not the raw collateral.
+   *
+   * `null` when there is nothing to probe: no such collateral slot, an excluded collateral, or a sell
+   * path that already ends in the loan token. Callers must read that as unknown route cost rather than
+   * as free; only sizing's `swapFree` flag asserts that no route is needed.
+   */
+  resolveRoute: (
+    plan: LiquidationPlan,
+    out: LensOut
+  ) => Promise<{ pair: VenuePair; amountIn: bigint } | null>
+} {
+  const { selector, excludeCollaterals, logger, executor, unwrappers, ...rest } = deps
+  const excluded = (token: Address) =>
+    excludeCollaterals.some(candidate => isAddressEqual(candidate, token))
   const { quoteFor: quoteRequest } = composeMultiVenueQuoting({
     ...rest,
+    executor,
+    unwrappers,
     // The composer owns the probe refresh now: it runs after unwrap resolution so probes price the
     // tradable underlying, not an exotic collateral the venues can't quote.
     refresh: selector.refresh,
@@ -42,12 +74,28 @@ export function composeQuoting(deps: {
   })
 
   return {
+    async resolveRoute(plan, out) {
+      const collateral = out.market.collateralParams[plan.collateralIndex]
+      if (!collateral || excluded(collateral.token)) return null
+      const resolution = await resolveUnwraps(unwrappers, {
+        token: collateral.token,
+        amountIn: plan.seizedAssets,
+        executor,
+        stopToken: out.market.loanToken
+      })
+      if (isAddressEqual(resolution.token, out.market.loanToken)) return null
+      return {
+        pair: { collateral: resolution.token, loan: out.market.loanToken },
+        amountIn: resolution.amountIn
+      }
+    },
+
     async quoteFor(plan, out, label) {
       const collateral = out.market.collateralParams[plan.collateralIndex]
       if (!collateral) return { kind: 'no_config' }
       // The operator opt-out applies to the RAW collateral — midnight has no per-collateral config
       // file, so this is its escape hatch from the auto-unwrap path too.
-      if (excludeCollaterals.some(token => isAddressEqual(token, collateral.token))) {
+      if (excluded(collateral.token)) {
         logger.info('quote.excluded_collateral', { collateral: collateral.token })
         return { kind: 'no_config' }
       }

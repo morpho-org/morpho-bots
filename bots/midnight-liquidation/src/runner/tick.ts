@@ -1,20 +1,28 @@
 import type { Backoff, CooldownStore, Logger, SimulateResult, SubmitOutcome } from '@repo/bot-kit'
-import type { QuoteOutcome, SwapPlan } from '@repo/swaps'
+import type { QuoteOutcome, SwapPlan, VenueCostEstimate, VenuePair } from '@repo/swaps'
 import type { Address } from 'viem'
 
 import { assertNever, lensKey, tryCatch } from '@repo/utils'
-import { formatUnits } from 'viem'
+import { formatUnits, getAddress } from 'viem'
 
 import type { BorrowerCandidate } from '../discovery/borrowers'
 import type { Market } from '../execution/encode-call'
 import type { LiquidationPlan, PlanSkipReason } from '../sizing/plan'
 import type { LensInput, LensOut } from '../state/lens.sol'
 
+import { MAX_PRESELECTED_CANDIDATES_PER_POSITION } from '../constants'
 import { USD_PRICE_SCALE_DECIMALS } from '../discovery/token-prices'
-import { isBadDebtRealization, planCandidates, planSurplus } from '../sizing/plan'
+import { expectedLoanOut } from '../execution/swap-step'
+import {
+  capCandidates,
+  isBadDebtRealization,
+  MAX_PLAN_CANDIDATES_PER_POSITION,
+  planCandidates,
+  planSurplus
+} from '../sizing/plan'
 import { isLiquidatable, planInputFromLens } from './eligibility'
 import { assessProfitability } from './profitability'
-import { rankByUsdSurplus } from './ranking'
+import { rankByNetUsdSurplus, scoreNetOfRouteCost } from './ranking'
 
 /**
  * Per-tick outcome tally, emitted as `tick.end`, ordered as the pipeline runs. On a tick that ran to
@@ -24,7 +32,7 @@ import { rankByUsdSurplus } from './ranking'
  * ```text
  * pairs        >= liquidatable
  * liquidatable === inflightSkipped + planSkipped + planned          (per POSITION)
- * candidates   === cooledDown + backoffSkipped + siblingSkipped
+ * candidates   === cooledDown + backoffSkipped + siblingSkipped + preselectSkipped
  *                  + noSwapPath + quoteFailed + quoteUnprofitable + ok + reverted   (per CANDIDATE)
  * ok           === submitted + notSent
  * ```
@@ -60,9 +68,9 @@ type TickCounters = {
   planSkipped: number
   planned: number
   /**
-   * `(slot, mode)` candidates phase A produced across all planned positions — what phase B actually
-   * iterates. Exceeds `planned` on a multi-collateral position, and on a matured-and-unhealthy one
-   * (sized in both open modes). The head of the per-candidate identity.
+   * `(slot, mode)` candidates phase A produced across all planned positions. Exceeds `planned` on a
+   * multi-collateral position, and on a matured-and-unhealthy one (sized in both open modes). The head
+   * of the per-candidate identity — phase B iterates whatever `preselectSkipped` did not drop.
    */
   candidates: number
   cooledDown: number
@@ -73,6 +81,30 @@ type TickCounters = {
    * additional work.
    */
   siblingSkipped: number
+  /**
+   * Candidates dropped by preselection, before any venue call was spent on them, in two places that
+   * share one counter because both are the same verdict — "this position's better alternatives already
+   * had their turn" — and both are distinguished by the `reason` on their `preselect.skipped` line:
+   *
+   * - `position_cap` — beyond `MAX_PLAN_CANDIDATES_PER_POSITION` on the FINAL net-of-route-cost
+   *   ordering. Sizing used to truncate silently on gross surplus, before route cost could reorder;
+   *   it now returns every candidate and the drop is both later and visible.
+   * - `fall_through_bound` — the position had already spent
+   *   `MAX_PRESELECTED_CANDIDATES_PER_POSITION` attempts this tick.
+   *
+   * **A `cooledDown`, `backoffSkipped` or `siblingSkipped` candidate does NOT consume the bound**, and
+   * the reason is not symmetry: the bound exists to cap HTTP calls per position, and a suppressed
+   * candidate spends none. Both suppression stores are keyed by POSITION and neither is written until
+   * the tick's `finally`, so their verdict is constant across a position's candidates within one tick —
+   * were they to consume the bound, a cooled-down position would report its first candidates as
+   * `cooledDown` and the rest as `preselectSkipped`, splitting one verdict across two counters.
+   *
+   * The bound also never drops a position's best swap-free candidate, which is exempt however late it
+   * ranks: it is the only kind guaranteed to be fundable, so its worst case is one wasted attempt while
+   * dropping it can forfeit the position (see {@link capCandidates}). It is likewise never applied to a
+   * position whose route costs are unknown, since the ordering it would cut is then only gross surplus.
+   */
+  preselectSkipped: number
   noSwapPath: number
   quoteFailed: number
   /**
@@ -160,7 +192,8 @@ type SizedCandidate = {
  * break the ranking's internal consistency: the price snapshot is replaced wholesale by an independent
  * refresh loop, so yielding mid-phase would score some candidates against one snapshot and the rest
  * against the next. Because this function is not `async`, both hazards are compile errors rather than
- * review comments. Keep it that way; if a future stage genuinely needs I/O, it belongs in phase B.
+ * review comments. Keep it that way; a stage that genuinely needs I/O belongs in {@link prepareRoutes}
+ * (phase A.5), which runs once over the whole sized batch rather than per position.
  *
  * Side effect: increments `counters` in place (`liquidatable`, `inflightSkipped`, `planSkipped`,
  * `planned`, `unpriced`) and emits `plan.skipped` for each position sizing rejected. A sizing skip
@@ -244,6 +277,189 @@ const sizeCandidates = (deps: {
   return sized
 }
 
+/** The pair a candidate's seize is actually sold through, and the worst-case amount of it. */
+type PreparedRoute = { pair: VenuePair; amountIn: bigint }
+
+/**
+ * What phase A.5 learned about one candidate's route. `unknown` is not an error state to recover from:
+ * it is the fail-open signal that this candidate — and therefore its whole position — must be ordered
+ * on gross surplus, exactly as before the probe curve existed.
+ */
+type RouteState =
+  | { kind: 'swap_free' }
+  | { kind: 'route'; route: PreparedRoute }
+  | { kind: 'unknown' }
+
+/**
+ * The probe-curve seam phase A.5 drives. Bundled because all three parts address ONE cache:
+ * `resolveRoute` says which pair a candidate refers to, `warmRoute` fills it, `routeCost` reads it.
+ */
+type TickRouting = {
+  /**
+   * The POST-unwrap `(collateral, loan)` pair this candidate's seize will be sold through, or `null`
+   * when there is no pair to probe — no collateral slot, an operator-excluded collateral, or a sell
+   * path that already ends in the loan token. `null` is treated as unknown cost rather than as free:
+   * only sizing's `swapFree` flag asserts that no route is needed.
+   *
+   * Async, which is the entire reason phase A.5 exists — see {@link sizeCandidates}.
+   */
+  resolveRoute: (plan: LiquidationPlan, out: LensOut) => Promise<PreparedRoute | null>
+  /**
+   * Fills the probe cache for one pair. A cold refresh is one indicative venue call per ladder rung per
+   * venue on the isolated probe client, so it is driven only for pairs that have a sized candidate.
+   * Contractually idempotent + staleness-gated, so a warm pair costs nothing.
+   */
+  warmRoute: (pair: VenuePair) => Promise<void>
+  /** Best-first interpolated estimates from the cache; `[]` while the pair is cold. Pure/synchronous. */
+  routeCost: (
+    pair: VenuePair,
+    amountIn: bigint,
+    referenceAmountOut: bigint
+  ) => readonly VenueCostEstimate[]
+}
+
+const pairKey = (pair: VenuePair): string =>
+  `${getAddress(pair.collateral)}:${getAddress(pair.loan)}`
+
+/**
+ * Phase A.5: resolve the route every sized candidate would sell through, then warm those pairs' probe
+ * curves so the ranking below can price them.
+ *
+ * It is its own phase for two reasons. Phase A cannot await (see {@link sizeCandidates}), and `maintain`
+ * cannot host this at all: it receives only a block number, so it would have to redo discovery and the
+ * lens read to learn which pairs matter, it is awaited before every tick so probing there delays exactly
+ * the time-critical work, and its failures surface as `queue.maintenance_failed`. The pair is not even
+ * known before sizing — the unwrap chain decides which token is finally sold.
+ *
+ * **Pairs are deduplicated before anything is warmed**, so several slots on one pair — or several
+ * positions in one market — trigger exactly one refresh; the distinct warms then run concurrently and
+ * are serialized by the probe client's own rate limiter, and no refresh for a pair without a sized
+ * candidate is ever issued.
+ *
+ * Failure is non-fatal in both stages: an unresolved candidate is left `unknown` and a failed warm
+ * simply leaves the curve cold, which fails the affected positions open to gross-surplus ordering.
+ *
+ * Side effects: emits `route.unresolved` / `probe.warm_failed` per failure and `probe.warmed` once.
+ */
+const prepareRoutes = async (deps: {
+  sized: readonly SizedCandidate[]
+  routing: TickRouting
+  logger: Logger
+}): Promise<Map<SizedCandidate, RouteState>> => {
+  const { sized, routing, logger } = deps
+  const states = new Map<SizedCandidate, RouteState>()
+  const pairs = new Map<string, VenuePair>()
+
+  for (const candidate of sized) {
+    if (candidate.plan.swapFree) {
+      states.set(candidate, { kind: 'swap_free' })
+      continue
+    }
+    const resolved = await tryCatch(routing.resolveRoute(candidate.plan, candidate.out))
+    if (resolved.error) {
+      logger.warn('route.unresolved', {
+        marketId: candidate.pair.id,
+        borrower: candidate.pair.borrower,
+        collateralIndex: candidate.plan.collateralIndex,
+        detail: resolved.error.message
+      })
+    }
+    const route = resolved.data ?? null
+    states.set(candidate, route ? { kind: 'route', route } : { kind: 'unknown' })
+    if (route) pairs.set(pairKey(route.pair), route.pair)
+  }
+
+  await Promise.all(
+    [...pairs.values()].map(async pair => {
+      const { error } = await tryCatch(routing.warmRoute(pair))
+      if (error) {
+        logger.warn('probe.warm_failed', {
+          collateral: pair.collateral,
+          loan: pair.loan,
+          detail: error.message
+        })
+      }
+    })
+  )
+  logger.info('probe.warmed', { pairs: pairs.size, candidates: sized.length })
+  return states
+}
+
+/** A sized candidate priced against the probe curve — the input {@link scoreNetOfRouteCost} ranks. */
+type CostedCandidate = SizedCandidate & {
+  routeCostUsd: bigint | null
+  /** The leading venue's cost against the oracle. Reported for forensics; the USD figure is scored. */
+  routeCostBps: number | null
+}
+
+/**
+ * Prices each candidate's route off the warm curve, in the SAME USD scale as its surplus so the two are
+ * subtractable. A candidate sizing marked `swapFree` costs zero by construction: there is no route.
+ *
+ * Everything else fails open to `null` (see {@link RouteState}) — a cold pair (`[]`), a `clamped`
+ * estimate taken from a ladder end rather than between two rungs, no oracle reference, or an unpriced
+ * loan token. Cost is floored at zero: a venue quoting above the oracle is a stale oracle, never a
+ * bonus to score (see {@link VenueCostEstimate.costBps}).
+ *
+ * Reads only the LEADING venue's estimate, because that is the venue the quoting layer will try first.
+ * Pure: {@link TickRouting.routeCost} is a cache lookup, cheap enough for the protocol's ceiling of 16
+ * collateral slots in two modes.
+ */
+const costRoutes = (deps: {
+  sized: readonly SizedCandidate[]
+  states: Map<SizedCandidate, RouteState>
+  routing: TickRouting
+  usdValueOf: (loanToken: Address, loanUnits: bigint) => bigint | null
+}): CostedCandidate[] =>
+  deps.sized.map(candidate => {
+    const uncosted = { ...candidate, routeCostUsd: null, routeCostBps: null }
+    const state = deps.states.get(candidate) ?? { kind: 'unknown' as const }
+    if (state.kind === 'swap_free') return { ...candidate, routeCostUsd: 0n, routeCostBps: 0 }
+    if (state.kind === 'unknown') return uncosted
+
+    const reference = expectedLoanOut(candidate.plan)
+    const best = deps.routing.routeCost(state.route.pair, state.route.amountIn, reference)[0]
+    if (!best || best.clamped || best.costBps === null) return uncosted
+    const shortfall = reference > best.estimatedOut ? reference - best.estimatedOut : 0n
+    return {
+      ...candidate,
+      routeCostUsd: deps.usdValueOf(candidate.out.market.loanToken, shortfall),
+      routeCostBps: best.costBps
+    }
+  })
+
+/**
+ * Truncates each POSITION's alternatives to {@link MAX_PLAN_CANDIDATES_PER_POSITION} over the final
+ * ordering, preserving that ordering for the survivors and reporting what it dropped.
+ *
+ * The order of operations is the point: capping on gross surplus — as sizing did — can discard the
+ * candidate that wins once route cost is charged, and nothing downstream can recover it.
+ */
+const capPerPosition = <T extends { label: string; plan: LiquidationPlan }>(
+  ranked: readonly T[]
+): { kept: T[]; dropped: T[] } => {
+  const byLabel = new Map<string, T[]>()
+  for (const candidate of ranked) {
+    const group = byLabel.get(candidate.label)
+    if (group) group.push(candidate)
+    else byLabel.set(candidate.label, [candidate])
+  }
+  const keep = new Set<T>()
+  for (const group of byLabel.values()) {
+    for (const candidate of capCandidates(
+      group,
+      entry => entry.plan.swapFree,
+      MAX_PLAN_CANDIDATES_PER_POSITION
+    )) {
+      keep.add(candidate)
+    }
+  }
+  return {
+    kept: ranked.filter(candidate => keep.has(candidate)),
+    dropped: ranked.filter(candidate => !keep.has(candidate))
+  }
+}
+
 /**
  * One tick: enumerate the over-inclusive (id, borrower) candidate universe from discovery, read the
  * liquidation lens fresh for the whole batch (one deployless `eth_call`), and for each liquidatable
@@ -257,9 +473,14 @@ const sizeCandidates = (deps: {
  * with zero new candidates. The lens reads every candidate fresh on-chain, so discovery is a coverage
  * source, never a correctness dependency.
  *
+ * Between sizing and that expensive work sits phase A.5 ({@link prepareRoutes}), which warms the venue
+ * probe curve for the pairs the sized candidates actually sell through, so the ordering can charge each
+ * candidate its route cost instead of ranking on the oracle alone.
+ *
  * `tick.end` is emitted even when a position aborts the tick — with `complete: false`, so partial
  * counters can never be mistaken for a genuinely idle tick. See {@link TickCounters} for the
- * counter identities.
+ * counter identities; it also carries `firmCalls` / `firmCallsUnknown` and `durationMs`, which are the
+ * two figures a maturity's retry period is actually set by.
  */
 export async function runTick(deps: {
   discover: () => Promise<BorrowerCandidate[]>
@@ -323,6 +544,11 @@ export async function runTick(deps: {
    * exists to win. Ranking only — never a gate on whether to attempt a liquidation.
    */
   usdValueOf: (loanToken: Address, loanUnits: bigint) => bigint | null
+  /**
+   * The probe-curve seam phase A.5 drives, so candidates can be ordered net of what their route costs
+   * rather than on the oracle alone. Every part of it fails open — see {@link prepareRoutes}.
+   */
+  routing: TickRouting
   logger: Logger
 }): Promise<TickCounters> {
   const {
@@ -340,8 +566,10 @@ export async function runTick(deps: {
     cooldown,
     inflightLabels,
     usdValueOf,
+    routing,
     logger
   } = deps
+  const startedAt = performance.now()
 
   // 1. Discover the over-inclusive (id, borrower) universe → lens inputs (caller = the Executor
   // singleton). A transient discovery failure is non-fatal: log it and proceed with zero candidates
@@ -368,6 +596,7 @@ export async function runTick(deps: {
     cooledDown: 0,
     backoffSkipped: 0,
     siblingSkipped: 0,
+    preselectSkipped: 0,
     noSwapPath: 0,
     quoteFailed: 0,
     quoteUnprofitable: 0,
@@ -393,7 +622,39 @@ export async function runTick(deps: {
 
   counters.candidates = sized.length
 
-  // 4. Phase B — the expensive serial stages (one quote and one simulation each), worked in descending
+  // 4. Phase A.5 — the async step between sizing and the expensive work: resolve each candidate's
+  // route and warm the (deduplicated) probe curves for those pairs only.
+  const states = await prepareRoutes({ sized, routing, logger })
+
+  // 5. Rank net of route cost, THEN truncate. Both halves matter: charging the route makes a swap-free
+  // slot beat a nominally larger swap slot the incentive cannot fund, and capping afterwards means the
+  // net winner is no longer discarded before it was ever compared.
+  const scored = rankByNetUsdSurplus(
+    scoreNetOfRouteCost(costRoutes({ sized, states, routing, usdValueOf }))
+  )
+  const { kept, dropped } = capPerPosition(scored)
+  counters.preselectSkipped += dropped.length
+  for (const candidate of dropped) {
+    logger.info('preselect.skipped', {
+      marketId: candidate.pair.id,
+      borrower: candidate.pair.borrower,
+      collateralIndex: candidate.plan.collateralIndex,
+      postMaturityMode: candidate.plan.postMaturityMode,
+      reason: 'position_cap'
+    })
+  }
+
+  // A position's best swap-free candidate is exempt from the fall-through bound below, however late it
+  // ranks — `kept` is in rank order, so the first one is the best. See `preselectSkipped`.
+  const reserved = new Map<string, (typeof kept)[number]>()
+  for (const candidate of kept) {
+    if (candidate.plan.swapFree && !reserved.has(candidate.label)) {
+      reserved.set(candidate.label, candidate)
+    }
+  }
+  const attempts = new Map<string, number>()
+
+  // 6. Phase B — the expensive serial stages (one quote and one simulation each), worked in descending
   // expected-USD-profit order so the most valuable candidate gets the contested early seconds rather
   // than whichever borrower sorts first by address.
   //
@@ -408,16 +669,42 @@ export async function runTick(deps: {
   const pendingBackoff = new Set<string>()
   const pendingCooldown = new Set<string>()
   let complete = false
+  // Firm venue calls this tick, `null` while no quote reported any: an absent `firmCalls` is unknown,
+  // not zero (see {@link QuoteOutcome.firmCalls}), so `firmCallsUnknown` is what says whether the sum
+  // is complete. The pair of them, with `durationMs`, is what the next maturity's retry period is set
+  // against — the budget is HTTP calls per candidate, not candidates worked.
+  let firmCalls: number | null = null
+  let firmCallsUnknown = 0
   try {
     let rank = 0
-    for (const { pair, label, out, plan: liquidationPlan, surplus, surplusUsd } of rankByUsdSurplus(
-      sized
-    )) {
+    for (const candidate of kept) {
+      const { pair, label, out, plan: liquidationPlan, surplus, surplusUsd } = candidate
       rank += 1
       // One liquidation per position per tick: a higher-ranked sibling already went out, and these
       // alternatives would each be a second `liquidate` against the same debt.
       if (submittedLabels.has(label)) {
         counters.siblingSkipped += 1
+        continue
+      }
+      // Bounded fall-through: this position's better alternatives already spent their attempts, and
+      // beyond the bound the ordering says this one loses on cost rather than merely sorting late. Only
+      // applied where that ordering is trustworthy, and never to the reserved swap-free candidate.
+      const spent = attempts.get(label) ?? 0
+      if (
+        candidate.costed &&
+        spent >= MAX_PRESELECTED_CANDIDATES_PER_POSITION &&
+        reserved.get(label) !== candidate
+      ) {
+        counters.preselectSkipped += 1
+        logger.info('preselect.skipped', {
+          marketId: pair.id,
+          borrower: pair.borrower,
+          collateralIndex: liquidationPlan.collateralIndex,
+          postMaturityMode: liquidationPlan.postMaturityMode,
+          rank,
+          attempts: spent,
+          reason: 'fall_through_bound'
+        })
         continue
       }
       // Emitted here, per candidate, rather than batched in phase A: the timestamp sequence of these
@@ -432,7 +719,11 @@ export async function runTick(deps: {
         repaidUnits: liquidationPlan.repaidUnits,
         postMaturityMode: liquidationPlan.postMaturityMode,
         surplus,
-        surplusUsd: surplusUsd === null ? null : formatUnits(surplusUsd, USD_PRICE_SCALE_DECIMALS)
+        surplusUsd: surplusUsd === null ? null : formatUnits(surplusUsd, USD_PRICE_SCALE_DECIMALS),
+        // The two terms the ordering compared, so a rank can be re-derived from the log line alone.
+        routeCostBps: candidate.routeCostBps,
+        netUsd:
+          candidate.netUsd === null ? null : formatUnits(candidate.netUsd, USD_PRICE_SCALE_DECIMALS)
       })
 
       // Opt-in cooldown (complementary to backoff): a position whose last attempt produced no
@@ -447,15 +738,22 @@ export async function runTick(deps: {
 
       // The swap funds repay/seize liquidations. Pure bad-debt realization transfers no assets, so it
       // deliberately skips quoting and executes as a no-callback `liquidate`.
+      const needsSwap = !isBadDebtRealization(liquidationPlan)
+      // Suppress positions that keep failing to quote/simulate — bounds API + RPC usage under a
+      // backlog, since executable quotes are spent only on positions not currently backed off.
+      if (needsSwap && backoff.shouldSkip(label, chainHead)) {
+        counters.backoffSkipped += 1
+        continue
+      }
+      // Past every suppression gate, so this candidate is about to spend venue and/or simulation work:
+      // the one place the fall-through bound is consumed.
+      attempts.set(label, spent + 1)
+
       let swapPlan: SwapPlan | null = null
-      if (!isBadDebtRealization(liquidationPlan)) {
-        // Suppress positions that keep failing to quote/simulate — bounds API + RPC usage under a
-        // backlog, since executable quotes are spent only on positions not currently backed off.
-        if (backoff.shouldSkip(label, chainHead)) {
-          counters.backoffSkipped += 1
-          continue
-        }
+      if (needsSwap) {
         const quote = await quoteFor(liquidationPlan, out, label)
+        if (typeof quote.firmCalls === 'number') firmCalls = (firmCalls ?? 0) + quote.firmCalls
+        else firmCallsUnknown += 1
         if (quote.kind === 'no_config') {
           counters.noSwapPath += 1
           pendingCooldown.add(label)
@@ -585,7 +883,13 @@ export async function runTick(deps: {
     // preamble). In the `finally` so an aborting `submit` still records what the tick learned.
     for (const label of pendingCooldown) cooldown.mark(label)
     for (const label of pendingBackoff) backoff.record(label, chainHead)
-    logger.info('tick.end', { ...counters, complete })
+    logger.info('tick.end', {
+      ...counters,
+      firmCalls,
+      firmCallsUnknown,
+      durationMs: Math.round(performance.now() - startedAt),
+      complete
+    })
   }
   return counters
 }
