@@ -66,7 +66,8 @@ export type SubmitArgs = {
  * (`tx.send_aborted`, `nonce.sync_failed`, `queue.nonce_hole`) — a queue-wide condition that would
  * have refused any position, so a caller must NOT hold it against this one. `send_failed` means the
  * node rejected this position's own transaction (`tx.submit_failed`), which is a fact about the
- * position and should re-arm whatever per-position backoff the caller keeps.
+ * position — though whether that fact re-arms a caller's per-position backoff turns on the
+ * `executionRevert` split below.
  *
  * `send_failed` carries `executionRevert`, which splits that fact in two. `true` means the chain
  * declined this plan right now — a caller may treat it as economic. `false` means the send machinery
@@ -101,7 +102,9 @@ export type PendingQueue = {
    *
    * On failure the outcome distinguishes {@link SubmitOutcome}'s two reasons, which callers must not
    * collapse: `refused` is queue-wide and says nothing about this position, while `send_failed` is
-   * this position's own send being rejected.
+   * this position's own send being rejected. Nor may a caller collapse `send_failed`'s
+   * `executionRevert` split — an execution revert is the chain's verdict on the plan, a false one is
+   * the send machinery failing, and only the latter is evidence about the position.
    *
    * Concurrent calls are serialized end to end (latch checks → `syncNonce` → `send` → tracking), so a
    * pass that submits for several positions at once cannot hand two of them the same nonce and cannot

@@ -735,6 +735,9 @@ export async function runTick(deps: {
   // being grouped to make the bookkeeping work.
   const submittedLabels = new Set<string>()
   const pendingBackoff = new Set<string>()
+  // Positions an execution-reverted send exempts from `pendingBackoff` — see the `executionRevert`
+  // arm for why the exemption has to be a latch.
+  const backoffExempt = new Set<string>()
   const pendingCooldown = new Set<string>()
   let complete = false
   // Firm venue calls this tick, `null` while no quote reported any: an absent `firmCalls` is unknown,
@@ -947,18 +950,21 @@ export async function runTick(deps: {
             counters.sendReverted += 1
             // The chain declined this plan at this block. Post-maturity that is an economic verdict on a
             // ramping incentive, not a fact about the next block, so it must not extend the window.
-            // DELETING, not merely not adding: `pendingBackoff` is keyed by POSITION, so a lower-ranked
-            // sibling's quote or simulation failure may already have armed it — and a chain-declined send
-            // is later and better evidence than either, exactly as a broadcast is. `pendingCooldown` is
-            // deliberately left armed: it is a flat, default-off window an operator opts into to throttle
-            // a position class, so lifting it is an operator's call rather than an inference from one
-            // sibling's outcome.
-            pendingBackoff.delete(label)
+            // A LATCH, not a delete, because `pendingBackoff` is keyed by POSITION and the exemption has
+            // to hold whatever order this position's siblings ran in: unlike a broadcast, an execution
+            // revert does not enter `submittedLabels`, so the next-ranked candidate still runs and can
+            // arm the entry AFTER this one — a delete would only survive when the reverted send happened
+            // to be the position's last event of the tick. `pendingCooldown` is deliberately left armed:
+            // it is a flat, default-off window an operator opts into to throttle a position class, so
+            // lifting it is an operator's call rather than an inference from one sibling's outcome.
+            backoffExempt.add(label)
             // No throttle on this path, so a persistent estimator-only revert (expired route deadline,
             // malformed calldata, a gate that keeps closing) would re-quote forever without progressing.
-            // Reported, never suppressed — see {@link RevertStreakStore}.
+            // Reported, never suppressed — see RevertStreakStore.
             const streak = revertStreaks.record(label, outcome.selector)
-            if (streak.escalate) {
+            // Only the crossing, so one stuck position is one warn per streak rather than one per tick
+            // (two, when both its siblings revert) for as long as it stays stuck.
+            if (streak.escalate === 'crossed') {
               logger.warn('send.revert_streak', {
                 marketId: pair.id,
                 borrower: pair.borrower,
@@ -983,7 +989,9 @@ export async function runTick(deps: {
     // Suppression applied once per position, after every candidate has had its turn (see the phase B
     // preamble). In the `finally` so an aborting `submit` still records what the tick learned.
     for (const label of pendingCooldown) cooldown.mark(label)
-    for (const label of pendingBackoff) backoff.record(label, chainHead)
+    for (const label of pendingBackoff) {
+      if (!backoffExempt.has(label)) backoff.record(label, chainHead)
+    }
     logger.info('tick.end', {
       ...counters,
       firmCalls,

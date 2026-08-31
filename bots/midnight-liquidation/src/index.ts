@@ -222,7 +222,7 @@ async function main() {
   // complementary to `backoff` (see POSITION_LIQUIDATION_COOLDOWN_MS).
   const cooldown = createCooldownStore({ cooldownMs: config.positionCooldownMs })
   // Telemetry only: an execution-reverted send is exempt from backoff, so this is what reports a
-  // position whose sends keep being declined for longer than the LIF ramp can explain.
+  // position whose sends keep being declined — see `createRevertStreakStore` for the threshold.
   const revertStreaks = createRevertStreakStore()
 
   // The exec calldata for one liquidation — the same bytes the simulate gate checks and the queue

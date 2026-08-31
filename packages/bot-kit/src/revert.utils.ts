@@ -12,7 +12,9 @@ const unwrapSendError = (error: unknown): unknown =>
 /**
  * True if `error` is an on-chain execution revert (the tx cannot succeed) rather than a transient
  * RPC/network error (timeout, HTTP, nonce). The pending queue uses this to decide whether a stuck
- * tx should be dropped (a revert won't fix itself, so bumping is futile) or retried (transient).
+ * tx should be dropped (a revert won't fix itself, so bumping is futile) or retried (transient). It
+ * is also what the queue reports as `SubmitOutcome.executionRevert`, so a bot whose incentive ramps
+ * on wall-clock decides on this predicate alone whether a failed send suppresses the position.
  */
 export const isExecutionRevert = (error: unknown): boolean => {
   const unwrapped = unwrapSendError(error)

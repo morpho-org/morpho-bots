@@ -238,7 +238,10 @@ executable quote from the top venue — `0x` / `1inch` / `lifi` (one rate-limite
 route-bound fixed sell amount; LiFi routes keyless) — falling through to the next venue on failure.
 A free oracle-based route-quality check (against the full-path oracle reference) rejects any route
 more than `MAX_ROUTE_IMPACT_BPS` below it. Quotes are made only for the small liquidatable set; a
-per-`(id, borrower)` exponential backoff suppresses repeated failures.
+per-`(id, borrower)` exponential backoff suppresses repeated failures — including a send the chain
+declined with an execution revert, which is a deliberate divergence from `bots/midnight-liquidation`
+(blue's liquidation incentive is static, so a shortfall on this block does predict the next one; see
+[TIB-2026-08-28](../../docs/decisions/TIB-2026-08-28-midnight-send-shortfall-classification.md)).
 
 ### Simulation
 

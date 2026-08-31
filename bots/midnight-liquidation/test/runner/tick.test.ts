@@ -199,7 +199,7 @@ function runWith(opts: {
   headroomFloorBps?: number
   minSurplusBps?: number
   cooldown?: CooldownStore
-  /** Models the queue's outcome; the two no-broadcast reasons are NOT interchangeable. */
+  /** Models the queue's outcome; the three no-broadcast outcomes are NOT interchangeable. */
   submitOutcome?: SubmitOutcome
   /** Models a send that claimed a nonce but produced no hash, which aborts the tick. */
   submitThrows?: Error
@@ -254,7 +254,7 @@ function runWith(opts: {
           durationMs: 0,
           selector,
           selectorConstant: true,
-          escalate: false
+          escalate: 'below'
         }
       )
     },
@@ -568,7 +568,7 @@ describe('runTick', () => {
       // Seeded at block 1 (suppressed until 3) so it does not suppress this tick at 100. A queue-wide
       // refusal says nothing about this position, so its history must survive un-extended: clearing
       // it is what let a failing position reset to attempt 1 and re-quote every other block.
-      const { counters, backoff, submitCalls } = await runWith({
+      const { counters, backoff, submitCalls, streakCalls } = await runWith({
         seedBackoffAt: 1n,
         submitOutcome: { sent: false, reason: 'refused' }
       })
@@ -584,6 +584,9 @@ describe('runTick', () => {
       expect(backoff.shouldSkip(LABEL, 1n)).toBe(true)
       // Not re-armed: the next block may try again, which is the point of not blaming the position.
       expect(backoff.shouldSkip(LABEL, 101n)).toBe(false)
+      // Nothing was sent, so the chain said nothing about this plan: the streak must be neither
+      // extended nor reset.
+      expect(streakCalls).toEqual([])
       expectCounterIdentities(counters)
     })
 
@@ -649,7 +652,7 @@ describe('runTick', () => {
           durationMs: 16 * 60_000,
           selector: '0x08c379a0',
           selectorConstant: true,
-          escalate: true
+          escalate: 'crossed'
         }
       })
       const escalation = events.find(e => e.event === 'send.revert_streak')
@@ -668,6 +671,22 @@ describe('runTick', () => {
     it('stays quiet while the streak is inside the threshold', async () => {
       const { events } = await runWith({
         submitOutcome: { sent: false, reason: 'send_failed', executionRevert: true }
+      })
+      expect(events.some(e => e.event === 'send.revert_streak')).toBe(false)
+    })
+
+    it('stays quiet on an already-escalated streak, so a stuck position warns once', async () => {
+      // This path has no throttle by design, so an `ongoing` streak would otherwise ship a warn every
+      // tick — twice on a tick where both siblings revert — for as long as the position stays stuck.
+      const { events } = await runWith({
+        submitOutcome: { sent: false, reason: 'send_failed', executionRevert: true },
+        revertStreak: {
+          count: 120,
+          durationMs: 60 * 60_000,
+          selector: '0x08c379a0',
+          selectorConstant: true,
+          escalate: 'ongoing'
+        }
       })
       expect(events.some(e => e.event === 'send.revert_streak')).toBe(false)
     })
@@ -724,15 +743,19 @@ describe('runTick', () => {
       // `expectCounterIdentities` cannot be used here: `ok === submitted + notSent` is intentionally
       // short by one on this path. The `notSent` decomposition still holds, because the throw
       // increments none of its four terms.
-      const fields = end?.fields as Record<string, number>
-      expect(fields.notSent).toBe(fields.sendRefused! + fields.sendReverted! + fields.sendRejected!)
+      // Read per key rather than casting the whole bag: a missing counter must fail this assertion
+      // (`Number(undefined)` is NaN), not be typed into existence.
+      const counted = (key: string) => Number(end?.fields?.[key])
+      expect(counted('notSent')).toBe(
+        counted('sendRefused') + counted('sendReverted') + counted('sendRejected')
+      )
     })
 
     // `pendingBackoff` is keyed by POSITION and shared by every sibling candidate, so not ARMING it on
-    // an execution revert is necessary but not sufficient: an earlier sibling has usually armed it
-    // already. A chain-declined send is the position's latest and best evidence, so it clears the entry
-    // the way a broadcast does — otherwise the exemption is silently undone by whichever sibling ran
-    // first, which is the common case on a multi-collateral position.
+    // an execution revert is necessary but not sufficient: a sibling arms it on either side of the
+    // reverted send. Unlike a broadcast, an execution revert does not enter `submittedLabels`, so the
+    // next-ranked candidate still runs — hence both orderings below, which is what a delete rather than
+    // a latch gets wrong on the common multi-collateral position.
     describe('sibling precedence', () => {
       const declined: SubmitOutcome = {
         sent: false,
@@ -773,6 +796,31 @@ describe('runTick', () => {
         const { counters, backoff } = await runWith({
           out: twoSlots(),
           simulateResults: [{ status: 'revert', reason: 'stale quote' }, { status: 'ok' }],
+          submitOutcome: declined
+        })
+        expect(counters).toMatchObject({ candidates: 2, reverted: 1, ok: 1, sendReverted: 1 })
+        expect(backoff.shouldSkip(LABEL, 101n)).toBe(false)
+        expectCounterIdentities(counters)
+      })
+
+      it('an execution revert then a quote failure leaves the position unsuppressed', async () => {
+        const { counters, backoff } = await runWith({
+          out: twoSlots(),
+          quoteOutcomes: [
+            { kind: 'swap', plan: SWAP_PLAN },
+            { kind: 'failed', reason: 'no_route' }
+          ],
+          submitOutcome: declined
+        })
+        expect(counters).toMatchObject({ candidates: 2, quoteFailed: 1, ok: 1, sendReverted: 1 })
+        expect(backoff.shouldSkip(LABEL, 101n)).toBe(false)
+        expectCounterIdentities(counters)
+      })
+
+      it('an execution revert then a simulation revert leaves the position unsuppressed', async () => {
+        const { counters, backoff } = await runWith({
+          out: twoSlots(),
+          simulateResults: [{ status: 'ok' }, { status: 'revert', reason: 'stale quote' }],
           submitOutcome: declined
         })
         expect(counters).toMatchObject({ candidates: 2, reverted: 1, ok: 1, sendReverted: 1 })

@@ -8,7 +8,7 @@ import type { Hex } from 'viem'
  * sweep_period` — the sweep period being exactly what shrinks as the bot gets faster. A count
  * threshold would need recalibrating on every latency win and would start firing on healthy positions.
  * 15 minutes sits past the 4–9 minutes positions actually took to clear on 2026-08-28 and well inside
- * the 60-minute ramp ({@link TIME_TO_MAX_LIF}).
+ * the 60-minute `TIME_TO_MAX_LIF` ramp.
  */
 export const REVERT_STREAK_ESCALATE_MS = 15 * 60_000
 
@@ -26,19 +26,29 @@ export type RevertStreak = {
    * streak, which reads as ordinary min-out shortfalls against whichever pool the route hit.
    */
   selectorConstant: boolean
-  /** The streak has run longer than the store's threshold — see {@link REVERT_STREAK_ESCALATE_MS}. */
-  escalate: boolean
+  /**
+   * Where this revert sits against the store's threshold ({@link REVERT_STREAK_ESCALATE_MS}):
+   * `crossed` on the one revert that first runs past it, `ongoing` on every revert after that. A
+   * reporter must fire on `crossed` alone — `ongoing` repeats for as long as the position stays
+   * stuck, which on a per-block sweep is unbounded.
+   */
+  escalate: 'below' | 'crossed' | 'ongoing'
 }
 
 /**
  * Per-position tracker of consecutive execution-reverted sends, keyed by the `${id}:${borrower}`
  * label. The backstop that makes running an execution-reverted send with NO retry throttle
  * defensible: a min-out shortfall clears as the LIF ramps, but a persistent estimator-only failure —
- * an expired route deadline, malformed aggregator calldata, a gate that keeps closing — passes
- * `eth_call` at `latest` and fails `eth_estimateGas` against pending state indefinitely, which would
- * otherwise burn quotes forever without progressing. It only reports; it never suppresses.
+ * an expired route deadline, malformed aggregator calldata, a gate that keeps closing — can pass the
+ * simulation and fail the send's gas estimate indefinitely, which would otherwise burn quotes forever
+ * without progressing. Both calls run at `latest`; they diverge because they are issued by DIFFERENT
+ * clients over their own `failover` transport pairs, so they can observe different heads, different
+ * provider-side estimator behaviour, and pool state that moved in between. It only reports; it never
+ * suppresses.
  *
- * In-memory only, like {@link Backoff} and {@link CooldownStore} — chain truth wins on restart.
+ * In-memory only, like the shared `Backoff` and `CooldownStore` — chain truth wins on restart. Entries
+ * for a position that recovers to non-liquidatable are never re-checked and linger until process exit:
+ * the same accepted, bounded leak `createBackoff` documents at its canonical home.
  */
 export type RevertStreakStore = {
   /** Extends `label`'s streak with one execution-reverted send and returns its state. */
@@ -47,8 +57,18 @@ export type RevertStreakStore = {
   reset: (label: string) => void
 }
 
-type Entry = { count: number; startedAt: number; selector: Hex | undefined; constant: boolean }
+type Entry = {
+  count: number
+  startedAt: number
+  selector: Hex | undefined
+  constant: boolean
+  escalated: boolean
+}
 
+/**
+ * Lives in this bot rather than `@repo/bot-kit` because the threshold is calibrated against one bot's
+ * incentive shape — a wall-clock LIF ramp — and no second consumer exists yet.
+ */
 export const createRevertStreakStore = (
   opts: { escalateAfterMs?: number; now?: () => number } = {}
 ): RevertStreakStore => {
@@ -60,22 +80,18 @@ export const createRevertStreakStore = (
     record: (label, selector) => {
       const at = now()
       const previous = streaks.get(label)
-      const entry: Entry = previous
-        ? {
-            count: previous.count + 1,
-            startedAt: previous.startedAt,
-            selector,
-            constant: previous.constant && previous.selector === selector
-          }
-        : { count: 1, startedAt: at, selector, constant: true }
-      streaks.set(label, entry)
-      const durationMs = at - entry.startedAt
+      const count = (previous?.count ?? 0) + 1
+      const startedAt = previous?.startedAt ?? at
+      const constant = previous ? previous.constant && previous.selector === selector : true
+      const durationMs = at - startedAt
+      const past = durationMs > escalateAfterMs
+      streaks.set(label, { count, startedAt, selector, constant, escalated: past })
       return {
-        count: entry.count,
+        count,
         durationMs,
         selector,
-        selectorConstant: entry.constant,
-        escalate: durationMs > escalateAfterMs
+        selectorConstant: constant,
+        escalate: past ? (previous?.escalated ? 'ongoing' : 'crossed') : 'below'
       }
     },
     reset: label => {
