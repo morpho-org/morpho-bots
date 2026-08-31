@@ -146,16 +146,19 @@ export type QuoteRequest = {
    * {@link QuoteRequest.id} (Midnight's `(collateral slot, mode)` alternatives). Spread verbatim onto
    * this package's log events, under the same never-parsed contract as `id`: without it two candidates
    * of one position emit rows a query cannot tell apart. Fields must be named exactly as the calling
-   * bot names them on its own events, since a join spanning both must not normalize.
+   * bot names them on its own events, since a join spanning both must not normalize — and must avoid
+   * the names those events already use (`venue`, `collateral`, `loan`, `reason`, `expected`, `oracle`,
+   * `floor`, `order`, `detail`, `path`, `amountIn`, `amountOutMinimum`, `minOutSource`), each of which
+   * wins the spread and would drop the discriminator from the row.
    */
   candidate?: Readonly<Record<string, boolean | number | string>>
 }
 
 /**
- * The correlation fields every event in this package carries: the position's join key plus whatever
- * discriminates the candidate within it. `id` is spread LAST of the two so a stray `candidate.id`
- * cannot shadow the join key, and each event's own fields are spread after this so neither can shadow
- * them.
+ * The correlation fields every event {@link composeMultiVenueQuoting} emits carries — and every hop it
+ * drives through {@link Unwrapper.resolve} — being the position's join key plus whatever discriminates
+ * the candidate within it. `id` is spread LAST of the two so a stray `candidate.id` cannot shadow the
+ * join key, and each event's own fields are spread after this so neither can shadow them.
  */
 const correlationOf = (request: QuoteRequest) => ({ ...request.candidate, id: request.id })
 
@@ -449,7 +452,8 @@ async function tryResolveUnwraps(
       token: request.collateralToken,
       amountIn: request.amountIn,
       executor,
-      stopToken: request.loanToken
+      stopToken: request.loanToken,
+      correlation: correlationOf(request)
     })
   )
   if (error || !resolution) {
@@ -655,7 +659,7 @@ export function composeMultiVenueQuoting(deps: {
     amountIn: bigint
     referenceAmountOut: bigint
     /** {@link correlationOf}'s output for the request being quoted. */
-    correlation: Record<string, unknown>
+    correlation: ReturnType<typeof correlationOf>
   }): Promise<{ order: Venue[]; estimates: Map<Venue, VenueCostEstimate>; trusted: boolean }> => {
     const { pair, amountIn, referenceAmountOut, correlation } = args
     const { error: probeError } = await tryCatch(refresh(pair))

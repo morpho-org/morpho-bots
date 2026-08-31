@@ -64,7 +64,6 @@ export function composeQuoting(deps: {
         // Break-even, straight off the plan: the loan assets `liquidate` will pull for this seize,
         // including the shares round-trip Blue settles through.
         minAcceptableAmountOut: plan.impliedRepaidAssets,
-        // The tick's position label (`${id}:${borrower}`) — the correlation id join across quote logs.
         id: label
       })
     }

@@ -330,9 +330,14 @@ type TickRouting = {
    * path that already ends in the loan token. `null` is treated as unknown cost rather than as free:
    * only sizing's `swapFree` flag asserts that no route is needed.
    *
-   * Async, which is the entire reason phase A.5 exists — see {@link sizeCandidates}.
+   * Async, which is the entire reason phase A.5 exists — see {@link sizeCandidates}. `label` is
+   * correlation only: it is what the unwrap hops log their diagnostics under.
    */
-  resolveRoute: (plan: LiquidationPlan, out: LensOut) => Promise<PreparedRoute | null>
+  resolveRoute: (
+    plan: LiquidationPlan,
+    out: LensOut,
+    label: string
+  ) => Promise<PreparedRoute | null>
   /**
    * Fills the probe cache for one pair. A cold refresh is one indicative venue call per ladder rung per
    * venue on the isolated probe client, so it is driven only for pairs that have a sized candidate.
@@ -394,7 +399,9 @@ const prepareRoutes = async (deps: {
       states.set(candidate, { kind: 'no_route' })
       continue
     }
-    const resolved = await tryCatch(routing.resolveRoute(candidate.plan, candidate.out))
+    const resolved = await tryCatch(
+      routing.resolveRoute(candidate.plan, candidate.out, candidate.label)
+    )
     if (resolved.error) {
       logger.warn('route.unresolved', {
         id: candidate.label,
@@ -789,8 +796,6 @@ export async function runTick(deps: {
       // was reconstructed at all.
       logger.info('plan.built', {
         id: label,
-        // Human-readable extras only: the pair `id` is built from, kept for an operator reading one
-        // line. Grouping keys on `id`.
         marketId: pair.id,
         borrower: pair.borrower,
         rank,

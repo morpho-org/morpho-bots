@@ -112,6 +112,12 @@ label or a manual production workflow dispatch and the `crossed-books-prod` GitH
 Each GitHub Environment defines `RAILWAY_PROJECT_ID` as a variable and `RAILWAY_TOKEN` as a secret;
 bot runtime secrets remain on Railway.
 
+## Observability
+
+The shared queue identifies a tracked transaction by the key this bot hands it, under the field `id`
+(it was `label`). This bot's key is the **market id**, so `tx.*.id` is a market rather than a
+position — it does not join to a liquidator's `id`, which is `marketId:borrower`.
+
 ## Test
 
 ```sh

@@ -323,6 +323,20 @@ describe('createPendingQueue', () => {
     expect(queue.inflightLabels().has('market:borrower')).toBe(true)
   })
 
+  it('emits the tracking key as `id` on the send and on the settlement', async () => {
+    // The field name is the schema every dashboard joins on, and this package owns it. The behavioral
+    // key keeps the name `label` on the way IN — see SubmitArgs.label.
+    const { logger, events } = captureLogger()
+    const { queue } = setup({
+      logger,
+      getReceipt: async () => ({ status: 'success', blockNumber: 10n })
+    })
+    await submitOne(queue, 0n)
+    await queue.onBlock(1n)
+    expect(events.find(e => e.event === 'tx.sent')?.fields?.id).toBe('market:borrower')
+    expect(events.find(e => e.event === 'tx.confirmed')?.fields?.id).toBe('market:borrower')
+  })
+
   it('keeps a confirmed label in the backpressure set for the cooldown, then releases it', async () => {
     const { queue } = setup({ getReceipt: async () => ({ status: 'success', blockNumber: 10n }) })
     await submitOne(queue, 0n)

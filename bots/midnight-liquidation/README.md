@@ -590,22 +590,39 @@ that tick instead of counting a hashless transaction as submitted.
 
 ### Log Correlation
 
-Every position-scoped event — `plan.*`, `preselect.*`, `route.*`, `cooldown.*`, `config.*`, `quote.*`,
-`unwrap.*`, `select.*`, `simulate.*`, `send.*`, `tx.*`, `queue.*`, `nonce.*` — carries the position in
-one field, **`id`**, whose value is `lensKey(marketId, borrower)`: the two halves joined by `:` with
-both lowercased. So a maturity's events group into one row per position with **no normalization in the
-query** (`GROUP BY id`). `tx.*` used to name the same string `label`; it does not any more.
+Every **position-scoped** event carries the position in one field, **`id`**, whose value is
+`lensKey(marketId, borrower)`: the two halves joined by `:` with both lowercased. So a maturity's
+events group into one row per position with **no normalization in the query** (`GROUP BY id`). `tx.*`
+used to name the same string `label`; it does not any more. The full set:
+
+`plan.skipped`, `plan.built`, `preselect.skipped`, `route.unresolved`, `cooldown.skip`,
+`config.no_swap_path`, `quote.excluded_collateral`, `quote.unprofitable`, `unwrap.failed`,
+`unwrap.resolved`, `unwrap.bad_route`, `unwrap.preview_reverted`, `unwrap.preview_zero`,
+`quote.floor_unmet`, `quote.ok`, `quote.failed`, `quote.route_quality_failed`, `probe.error`,
+`select.cold_default`, `select.ok`, `simulate.ok`, `simulate.revert`, `send.revert_streak`,
+`tx.send_aborted`, `tx.submit_failed`, `tx.sent`, `tx.bumped`, `tx.confirmed`, `tx.reverted`,
+`tx.dropped`, `tx.replace_failed`, `tx.onblock_error`, `nonce.sync_failed`, `queue.nonce_hole`.
 
 `plan.built` also keeps `marketId` and `borrower` as human-readable extras. They are for an operator
 reading a single line — grouping keys on `id`.
 
-`id` identifies a **position**, and one position now yields several candidates (one per activated
+`id` identifies a **position**, and one position yields several candidates (one per activated
 collateral slot, and a matured-and-unhealthy slot in both open modes). The per-**candidate** key is
-therefore `(id, collateralIndex, postMaturityMode)`, and both discriminators are carried on every
-per-candidate event, the `@repo/swaps` quote events included. Two exceptions, deliberately:
-`send.revert_streak` is per position because the streak spans whichever siblings reverted, and
-`probe.*` events are per venue pair rather than per position — several positions in one market share
-one probe.
+therefore `(id, collateralIndex, postMaturityMode)`, and both discriminators ride on every
+per-candidate event, the `@repo/swaps` quote events included. `send.revert_streak` deliberately
+carries none: the streak is keyed by position and spans whichever siblings reverted, so attributing it
+to one `(slot, mode)` would misreport it.
+
+Everything else is scoped to something other than a position and carries **no** `id`, by design —
+don't group it by one:
+
+- **per tick** — `discover.*`, `lens.read`, `probe.warmed`, `tick.end`, `tick.error`, `block.new`
+- **per venue pair** — `probe.warm_failed`, `probe.venue_error`, `probe.refreshed` (several positions
+  in one market share a probe)
+- **queue-wide** — `queue.nonce_hole_cleared`, `queue.maintenance_failed`, `reconcile.failed` (a
+  condition that would have refused any position)
+- **process / config** — `startup`, `shutdown`, `quoting.*`, `markets.*`, `prices.*`, `discovery.*`,
+  `signer.*`, `heartbeat.*`, `runner.*`, `watcher.error`, `pendle.*`
 
 ## Important Operational Notes
 

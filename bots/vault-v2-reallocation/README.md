@@ -177,6 +177,11 @@ stamped on every line. Key events: `startup`, `allocator.missing_role`, `realloc
 `vault.error`, per-pass `tick.end` counters, and the shared bot-kit `tx.*` / `signer.balance` /
 `block.new` events. BetterStack shipping and heartbeat are opt-in via the env vars above.
 
+The shared queue identifies a tracked transaction by the key this bot hands it, under the field `id`
+(it was `label`). This bot's key is the **vault address, checksummed** — not a liquidator's
+`lensKey` — so `tx.*.id` does not join to this bot's own events, which key on `vault`. Compare the two
+case-insensitively.
+
 ## Testing
 
 ```sh

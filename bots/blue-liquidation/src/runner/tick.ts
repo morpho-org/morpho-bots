@@ -147,8 +147,6 @@ export async function runTick(deps: {
     counters.planned += 1
     logger.info('plan.built', {
       id: label,
-      // Human-readable extras only: the pair `id` is built from, kept for an operator reading one
-      // line. Grouping keys on `id`.
       marketId: id,
       borrower: pair.borrower,
       seizedAssets: liquidationPlan.seizedAssets

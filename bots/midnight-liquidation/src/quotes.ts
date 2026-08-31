@@ -18,6 +18,15 @@ import type { LensOut } from './state/lens.sol'
 import { expectedLoanOut } from './execution/swap-step'
 
 /**
+ * What separates one position's `(slot, mode)` alternatives in a log row, for `@repo/swaps`'
+ * `QuoteRequest.candidate`. Correlation only; the quoting layer never reads it.
+ */
+const candidateOf = (plan: LiquidationPlan) => ({
+  collateralIndex: plan.collateralIndex,
+  postMaturityMode: plan.postMaturityMode
+})
+
+/**
  * The Midnight-shaped adapter over `@repo/swaps`' {@link composeMultiVenueQuoting}: keeps the
  * `(plan, out)` signature the tick consumes and projects the lens output into the package's plain
  * `QuoteRequest`. The package resolves the pre-swap unwrap chain, then refreshes the venue probe
@@ -56,7 +65,8 @@ export function composeQuoting(deps: {
    */
   resolveRoute: (
     plan: LiquidationPlan,
-    out: LensOut
+    out: LensOut,
+    label: string
   ) => Promise<{ pair: VenuePair; amountIn: bigint } | null>
 } {
   const { selector, excludeCollaterals, logger, executor, unwrappers, ...rest } = deps
@@ -74,14 +84,15 @@ export function composeQuoting(deps: {
   })
 
   return {
-    async resolveRoute(plan, out) {
+    async resolveRoute(plan, out, label) {
       const collateral = out.market.collateralParams[plan.collateralIndex]
       if (!collateral || excluded(collateral.token)) return null
       const resolution = await resolveUnwraps(unwrappers, {
         token: collateral.token,
         amountIn: plan.seizedAssets,
         executor,
-        stopToken: out.market.loanToken
+        stopToken: out.market.loanToken,
+        correlation: { id: label, ...candidateOf(plan) }
       })
       if (isAddressEqual(resolution.token, out.market.loanToken)) return null
       return {
@@ -100,8 +111,7 @@ export function composeQuoting(deps: {
       if (excluded(collateral.token)) {
         logger.info('quote.excluded_collateral', {
           id: label,
-          collateralIndex: plan.collateralIndex,
-          postMaturityMode: plan.postMaturityMode,
+          ...candidateOf(plan),
           collateral: collateral.token
         })
         return { kind: 'no_config', firmCalls: 0 }
@@ -116,14 +126,8 @@ export function composeQuoting(deps: {
         // the plan was sized at. Read rather than recomputed — the matured-and-unhealthy branch picks a
         // mode by surplus, so the LIF is not recoverable from `postMaturityMode` or from chain time.
         minAcceptableAmountOut: plan.impliedRepaidUnits,
-        // The tick's position label (`${id}:${borrower}`) — the correlation id join across quote logs.
         id: label,
-        // Named exactly as the tick names them on its own events, so a join over both needs no
-        // normalization: one position emits several candidates under one `id`.
-        candidate: {
-          collateralIndex: plan.collateralIndex,
-          postMaturityMode: plan.postMaturityMode
-        }
+        candidate: candidateOf(plan)
       })
     }
   }

@@ -17,6 +17,12 @@ export type Unwrapper = {
     token: Address
     amountIn: bigint
     executor: Address
+    /**
+     * Correlation fields for whichever candidate drove this hop, spread onto any per-hop log event.
+     * Never parsed, and never a reason to behave differently — a hop's outcome depends on the token
+     * and the amount alone.
+     */
+    correlation?: Readonly<Record<string, unknown>>
   }) => Promise<{ step: SwapStep; expectedAmountOut: bigint; amountOutMinimum: bigint } | null>
 }
 
@@ -46,9 +52,16 @@ export type UnwrapResolution = {
  */
 export async function resolveUnwraps(
   unwrappers: readonly Unwrapper[],
-  args: { token: Address; amountIn: bigint; executor: Address; stopToken: Address }
+  args: {
+    token: Address
+    amountIn: bigint
+    executor: Address
+    stopToken: Address
+    /** Forwarded verbatim to every hop — see {@link Unwrapper.resolve}. */
+    correlation?: Readonly<Record<string, unknown>>
+  }
 ): Promise<UnwrapResolution> {
-  const { executor, stopToken } = args
+  const { executor, stopToken, correlation } = args
   const steps: SwapStep[] = []
   let token = args.token
   let amountIn = args.amountIn
@@ -58,7 +71,7 @@ export async function resolveUnwraps(
 
     let advanced = false
     for (const unwrapper of unwrappers) {
-      const result = await unwrapper.resolve({ token, amountIn, executor })
+      const result = await unwrapper.resolve({ token, amountIn, executor, correlation })
       if (!result) continue
       // A hop that doesn't change the token can never terminate — treat it as "does not apply".
       if (isAddressEqual(result.step.tokenIn, result.step.tokenOut)) continue

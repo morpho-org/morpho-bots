@@ -55,11 +55,10 @@ export type SubmitArgs = {
   request: TxRequest
   /**
    * Opaque key this send is tracked and deduplicated under — a liquidator's `lensKey` position key, a
-   * reallocation bot's vault address, a resolver's market id. **Behavioral**, and deliberately still
-   * named `label` while the queue LOGS it as `id`: the two names are not a half-finished rename.
-   * {@link PendingQueue.inflightLabels} membership is tested against this exact string every tick, so
-   * changing its name or its casing here would silently miss a live entry and let a second
-   * nonce-consuming send go out for a position already in flight.
+   * reallocation bot's vault address, a resolver's market id. Logged as `id`; behavioral here, and the
+   * divergence is deliberate: {@link PendingQueue.inflightLabels} membership is tested against this
+   * exact string every tick, so renaming it or normalizing its casing would silently miss a live entry
+   * and let a second nonce-consuming send go out for a position already in flight.
    */
   label: string
   maxFeePerGas: bigint
@@ -123,7 +122,7 @@ export type PendingQueue = {
   readonly size: number
   snapshot(): { nonce: number; txHash: Hex; attempt: number }[]
   /**
-   * Labels (`${id}:${borrower}`) the tick must NOT re-submit — its backpressure set. Covers
+   * {@link SubmitArgs.label}s the tick must NOT re-submit — its backpressure set. Covers
    * currently-pending txs AND, when `settledCooldownBlocks` is set, positions whose tx settled
    * within that many blocks. The cooldown matters when sends and reads use different RPCs: a tx
    * confirms on the send RPC before the (laggy) read RPC reflects the cleared position, so without

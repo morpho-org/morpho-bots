@@ -494,6 +494,66 @@ describe('composeMultiVenueQuoting', () => {
 // Every case here reads the FALLBACK derivation, so the curve is clamped throughout: the percentage
 // under test is the one derived against the oracle reference, which is what a venue is asked for when
 // the probe has no trustworthy prediction of its output.
+describe('correlation fields', () => {
+  // These carry the position join key and the candidate discriminator across the pipeline stages, so
+  // a maturity's events group without normalization. Correlation only — never parsed, never branched on.
+  const correlated: QuoteRequest = {
+    ...REQUEST,
+    id: '0xabc:0x1111111111111111111111111111111111111111',
+    candidate: { collateralIndex: 2, postMaturityMode: true }
+  }
+
+  it('spreads the candidate discriminator beside the id on every quote event', async () => {
+    const { quoteFor, events } = composeMulti(
+      ['0x'],
+      [{ venue: '0x', expectedOut: 1000n }],
+      multiHttp({ '0x': zeroxBody('1000') })
+    )
+    await quoteFor(correlated)
+    const selectOk = events.find(e => e.event === 'select.ok')
+    expect(selectOk?.fields).toMatchObject({
+      id: correlated.id,
+      collateralIndex: 2,
+      postMaturityMode: true
+    })
+  })
+
+  it('never lets the discriminator shadow the join key', async () => {
+    // The discriminator is caller-supplied, so a key collision must not be able to rewrite `id` —
+    // that would resurrect exactly the split this field set exists to remove.
+    const { quoteFor, events } = composeMulti(
+      ['0x'],
+      [{ venue: '0x', expectedOut: 1000n }],
+      multiHttp({ '0x': zeroxBody('1000') })
+    )
+    await quoteFor({ ...correlated, candidate: { ...correlated.candidate, id: 'spoofed' } })
+    expect(events.find(e => e.event === 'select.ok')?.fields?.id).toBe(correlated.id)
+  })
+
+  it('reaches the unwrap hops, so a per-hop diagnostic is attributable', async () => {
+    const seen: (Record<string, unknown> | undefined)[] = []
+    const probe: Unwrapper = {
+      kind: 'probe',
+      resolve: async ({ correlation }) => {
+        seen.push(correlation)
+        return null
+      }
+    }
+    const { quoteFor } = composeMulti(
+      ['0x'],
+      [{ venue: '0x', expectedOut: 1000n }],
+      multiHttp({ '0x': zeroxBody('1000') }),
+      { unwrappers: [probe] }
+    )
+    await quoteFor(correlated)
+    expect(seen[0]).toEqual({
+      collateralIndex: 2,
+      postMaturityMode: true,
+      id: correlated.id
+    })
+  })
+})
+
 describe('economic min-out floor', () => {
   // Captures the slippage each venue was asked for, which is the aggregators' ONLY min-out lever.
   const capturingHttp = (body: unknown) => {

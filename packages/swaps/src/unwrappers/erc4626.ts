@@ -80,7 +80,7 @@ export function createErc4626Unwrapper(deps: { client: Client; logger: QuoteLogg
 
   return {
     kind: 'erc4626',
-    async resolve({ token, amountIn, executor }) {
+    async resolve({ token, amountIn, executor, correlation }) {
       const underlying = await underlyingFor(token)
       if (underlying === null) return null
 
@@ -97,11 +97,11 @@ export function createErc4626Unwrapper(deps: { client: Client; logger: QuoteLogg
         })
       } catch (error) {
         if (!isContractLevelFailure(error)) throw error
-        logger.warn('unwrap.preview_reverted', { unwrapper: 'erc4626', token })
+        logger.warn('unwrap.preview_reverted', { ...correlation, unwrapper: 'erc4626', token })
         return null
       }
       if (previewed === 0n) {
-        logger.warn('unwrap.preview_zero', { unwrapper: 'erc4626', token })
+        logger.warn('unwrap.preview_zero', { ...correlation, unwrapper: 'erc4626', token })
         return null
       }
 

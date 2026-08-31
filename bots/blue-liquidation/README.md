@@ -262,15 +262,28 @@ the nonce from `getTransactionCount('pending')`.
 
 ### Log correlation
 
-Every position-scoped event — `plan.*`, `cooldown.*`, `config.*`, `quote.*`, `unwrap.*`, `select.*`,
-`simulate.*`, `tx.*`, `queue.*`, `nonce.*` — carries the position in one field, **`id`**, whose value
-is `lensKey(marketId, borrower)`: the two halves joined by `:` with both lowercased. So a window's
-events group into one row per position with **no normalization in the query** (`GROUP BY id`). `tx.*`
-used to name the same string `label`; it does not any more. `plan.built` also keeps `marketId` and
-`borrower` as human-readable extras — for reading a single line, not for grouping.
+Every **position-scoped** event carries the position in one field, **`id`**, whose value is
+`lensKey(marketId, borrower)`: the two halves joined by `:` with both lowercased. So a window's events
+group into one row per position with **no normalization in the query** (`GROUP BY id`). `tx.*` used to
+name the same string `label`; it does not any more. The full set:
 
-A Blue market has exactly one collateral, so one position is one candidate: unlike
-`bots/midnight-liquidation`, `id` alone identifies a row and no candidate discriminator is emitted.
+`plan.built`, `cooldown.skip`, `config.no_swap_path`, `quote.excluded_collateral`, `unwrap.failed`,
+`unwrap.resolved`, `unwrap.bad_route`, `unwrap.preview_reverted`, `unwrap.preview_zero`,
+`quote.floor_unmet`, `quote.ok`, `quote.failed`, `quote.route_quality_failed`, `probe.error`,
+`select.cold_default`, `select.ok`, `simulate.ok`, `simulate.revert`, `tx.send_aborted`,
+`tx.submit_failed`, `tx.sent`, `tx.bumped`, `tx.confirmed`, `tx.reverted`, `tx.dropped`,
+`tx.replace_failed`, `tx.onblock_error`, `nonce.sync_failed`, `queue.nonce_hole`.
+
+`plan.built` also keeps `marketId` and `borrower` as human-readable extras — for reading a single
+line, not for grouping. A Blue market has exactly one collateral, so one position is one candidate:
+unlike `bots/midnight-liquidation`, `id` alone identifies a row and no candidate discriminator is
+emitted.
+
+Everything else is scoped to something other than a position and carries **no** `id`, by design —
+per tick (`discover.*`, `lens.read`, `tick.end`, `tick.error`, `block.new`), per venue pair
+(`probe.venue_error`, `probe.refreshed`), queue-wide (`queue.nonce_hole_cleared`,
+`queue.maintenance_failed`, `reconcile.failed`), or process/config (`startup`, `shutdown`,
+`quoting.*`, `discovery.*`, `signer.*`, `heartbeat.*`, `runner.*`, `watcher.error`, `pendle.*`).
 
 ## Testing
 
