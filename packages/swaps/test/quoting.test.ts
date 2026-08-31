@@ -158,6 +158,7 @@ function composeMulti(
         venue,
         estimatedOut: expectedOut,
         costBps: null,
+        costBpsRaw: null,
         clamped: false
       }))
     },

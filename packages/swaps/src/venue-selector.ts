@@ -33,9 +33,17 @@ export type VenueCostEstimate = {
    * Route cost against the caller's oracle: `(reference - estimatedOut) / reference * 1e4`. `null`
    * when no reference was supplied — venue ORDERING needs none, because every venue at a rung is
    * probed in the same refresh, so their ratio is immune to the price drift `estimatedOut` carries.
-   * Floored at `0`: a venue beating the oracle is a stale oracle, never a bonus to score.
+   * Floored at `0`: a venue beating the oracle is a stale oracle, never a bonus to score. See
+   * {@link VenueCostEstimate.costBpsRaw} when the sign itself is the signal.
    */
   costBps: number | null
+  /**
+   * The same figure unfloored, so a venue quoting ABOVE the oracle stays visible as the negative it
+   * is. Observability only — never score on it. A persistently negative value is the signature of a
+   * stale or optimistic oracle rather than a free lunch, which is how the 2026-08-28 maturity's
+   * first-minute readings were misread.
+   */
+  costBpsRaw: number | null
   /** `amountIn` fell outside the probed ladder, or a bracketing rung was missing for this venue. */
   clamped: boolean
 }
@@ -139,7 +147,6 @@ const rateAt = (
 const costBpsOf = (referenceAmountOut: bigint | undefined, estimatedOut: bigint): number | null => {
   if (referenceAmountOut === undefined || referenceAmountOut <= 0n) return null
   const shortfall = referenceAmountOut - estimatedOut
-  if (shortfall <= 0n) return 0
   return Number((shortfall * CENTI_BPS) / referenceAmountOut) / 100
 }
 
@@ -278,12 +285,14 @@ export function createVenueSelector(deps: {
       const interpolated = rateAt(entry.ladder, rungs, amountIn)
       if (!interpolated) continue
       const estimatedOut = (interpolated.rate * amountIn) / RATE_SCALE
+      const raw = costBpsOf(referenceAmountOut, estimatedOut)
       ranked.push({
         rate: interpolated.rate,
         estimate: {
           venue,
           estimatedOut,
-          costBps: costBpsOf(referenceAmountOut, estimatedOut),
+          costBps: raw === null ? null : Math.max(raw, 0),
+          costBpsRaw: raw,
           clamped: interpolated.clamped
         }
       })

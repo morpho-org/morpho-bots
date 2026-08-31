@@ -71,7 +71,13 @@ function fakeSelector(order: Venue[], onRefresh?: () => Promise<void>) {
       if (onRefresh) await onRefresh()
     },
     select: () =>
-      order.map(venue => ({ venue, estimatedOut: 1000n, costBps: null, clamped: false })),
+      order.map(venue => ({
+        venue,
+        estimatedOut: 1000n,
+        costBps: null,
+        costBpsRaw: null,
+        clamped: false
+      })),
     snapshot: () => []
   }
   return { selector, refreshed }

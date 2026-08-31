@@ -285,6 +285,18 @@ describe('createVenueSelector', () => {
       const [best] = selector.select(PAIR, SMALL, 80n) // estimatedOut 100 > reference 80
       expect(best?.costBps).toBe(0)
     })
+
+    it('keeps the unfloored cost on costBpsRaw so a stale oracle stays visible', async () => {
+      const probe = fakeProbe(OUTPUTS)
+      const selector = make(probe)
+      await selector.refresh(PAIR)
+
+      // estimatedOut 100 against a reference of 80 is -2500 bps: the signature of a stale oracle,
+      // which the floored `costBps` deliberately hides from scorers and must not lose entirely.
+      const [best] = selector.select(PAIR, SMALL, 80n)
+      expect(best?.costBpsRaw).toBe(-2500)
+      expect(best?.costBps).toBe(0)
+    })
   })
 
   describe('degradation', () => {
