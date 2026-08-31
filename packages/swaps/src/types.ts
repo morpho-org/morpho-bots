@@ -167,10 +167,19 @@ export type QuoteFailureReason =
  *   fails the oracle sanity check) → skip and back the position off, or an economic `floor_unmet`
  *   verdict → skip WITHOUT backing off (see {@link QuoteFailureReason}).
  */
-export type QuoteOutcome =
+export type QuoteOutcome = (
   | { kind: 'swap'; plan: SwapPlan }
   | { kind: 'no_config' }
   | { kind: 'failed'; reason: QuoteFailureReason }
+) & {
+  /**
+   * Firm venue HTTP calls this outcome actually spent, so a caller can budget the real cost rather
+   * than the number of candidates it worked. One candidate can cost more than one call: the composer
+   * falls through venues, and each venue attempt may take a second pass to land its min-out floor.
+   * Optional because only the multi-venue composer counts; treat an absent value as unknown, not 0.
+   */
+  firmCalls?: number
+}
 
 /** Thrown by adapters/HTTP client to carry a classified {@link QuoteFailureReason}. */
 export class QuoteError extends Error {
