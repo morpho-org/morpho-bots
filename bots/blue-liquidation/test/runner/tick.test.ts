@@ -355,6 +355,17 @@ describe('runTick', () => {
       expect(backoff.shouldSkip(LABEL, 101n)).toBe(true)
     })
 
+    it("keeps backoff on an execution-reverted send: blue's incentive is static", async () => {
+      // Pins the divergence documented at the backoff.record call in src/runner/tick.ts: midnight
+      // exempts this case, blue must not.
+      const { counters, backoff } = await runWith({
+        seedBackoffAt: 1n,
+        submitOutcome: { sent: false, reason: 'send_failed', executionRevert: true }
+      })
+      expect(counters).toMatchObject({ ok: 1, submitted: 0, notSent: 1 })
+      expect(backoff.shouldSkip(LABEL, 101n)).toBe(true)
+    })
+
     it('clears backoff and counts submitted only when the queue broadcast', async () => {
       const { counters, backoff } = await runWith({
         seedBackoffAt: 1n,

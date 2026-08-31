@@ -226,6 +226,9 @@ export async function runTick(deps: {
         // block from re-quoting, re-simulating and re-sending it — reaching this line at all means any
         // earlier entry had already expired, so leaving it untouched suppresses nothing. A queue-wide
         // refusal says nothing about the position, so it records nothing.
+        // Blue keeps backoff on every rejected send, including an execution revert, because its
+        // liquidation incentive is static — unlike midnight, which exempts that case. See
+        // docs/decisions/TIB-2026-08-28-midnight-send-shortfall-classification.md.
         if (outcome.reason === 'send_failed') backoff.record(label, chainHead)
       }
     }
