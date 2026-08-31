@@ -9,8 +9,27 @@ import type { PriceParameters, PriceQuote, Venue } from './types'
 /** A collateral→loan swap pair the selector probes and ranks venues for. */
 export type VenuePair = { collateral: Address; loan: Address }
 
-/** A venue and its indicative output for a probe size — the unit `select` ranks and returns. */
-export type VenueQuoteEstimate = { venue: Venue; expectedOut: bigint }
+/**
+ * A venue's estimated execution at one size, interpolated from the cached probe curve.
+ *
+ * The cache holds venue rates only — no oracle — so `costBps` is derived per call from the caller's
+ * own `referenceAmountOut`. Two markets sharing a pair therefore read one cached curve and each get
+ * a cost against their own oracle. `clamped` marks an estimate taken from a ladder end rather than
+ * between two rungs; callers must fail open on it (see {@link VenueSelector.select}).
+ */
+export type VenueCostEstimate = {
+  venue: Venue
+  /** Interpolated output for the requested `amountIn`, in loan-token base units. */
+  estimatedOut: bigint
+  /**
+   * Route cost against the caller's oracle: `(reference - estimatedOut) / reference * 1e4`. `null`
+   * when no reference was supplied — venue ORDERING needs none, because every venue at a rung is
+   * probed in the same refresh, so their ratio is immune to the price drift `estimatedOut` carries.
+   */
+  costBps: number | null
+  /** `amountIn` fell outside the probed ladder, or a bracketing rung was missing for this venue. */
+  clamped: boolean
+}
 
 /**
  * One pair's cached probe: the base-unit sizes we priced at, and — per ladder index — the best-first
@@ -19,15 +38,22 @@ export type VenueQuoteEstimate = { venue: Venue; expectedOut: bigint }
 type PairCache = {
   updatedAt: number
   ladder: bigint[]
-  rankedByBucket: VenueQuoteEstimate[][]
+  rankedByBucket: VenueCostEstimate[][]
 }
 
 /** A process-lifetime probe cache + best-first venue lookup, keyed by chain + collateral + loan. */
 export type VenueSelector = {
   /** Probe every enabled venue for `pair` at each ladder point, unless the cache is still fresh. */
   refresh: (pair: VenuePair) => Promise<void>
-  /** Best-first venues for `pair` at the `amountIn` size bucket; `[]` when the pair is not yet probed. */
-  select: (pair: VenuePair, amountIn: bigint) => VenueQuoteEstimate[]
+  /**
+   * Best-first venues for `pair` at `amountIn`, interpolated across the probed ladder; `[]` when the
+   * pair is not yet probed. Pass `referenceAmountOut` to populate {@link VenueCostEstimate.costBps}.
+   *
+   * Pure and synchronous — a cache lookup plus arithmetic — because phase A sizing calls it and must
+   * not await. A `[]` result, or any entry with `clamped: true`, means the curve cannot be trusted
+   * for selection and the caller must fall back to its pre-curve behaviour.
+   */
+  select: (pair: VenuePair, amountIn: bigint, referenceAmountOut?: bigint) => VenueCostEstimate[]
   /** Per-pair cache ages + current winner per bucket, for periodic / shutdown observability. */
   snapshot: () => { pair: string; ageMs: number; winners: (Venue | null)[] }[]
 }
