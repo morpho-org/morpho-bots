@@ -82,9 +82,13 @@ const DEFAULT_BACKOFF_MAX_BLOCKS = 64n
 const DEFAULT_POSITION_LIQUIDATION_COOLDOWN_MS = 0
 
 // Venue-probing defaults. The probe uses an ISOLATED rps budget (see index.ts) so its bursts never
-// queue ahead of a time-sensitive firm quote; log-scaled ladder sizes are whole collateral tokens
-// (converted per-collateral to base units). `PROBE_STALE_MS` caps probe cadence per pair; a pair is
+// queue ahead of a time-sensitive firm quote. `PROBE_STALE_MS` caps probe cadence per pair; a pair is
 // re-probed only when a liquidatable position touches it after the cache goes stale.
+//
+// This bot wires no USD price source, so the ladder keeps its whole-collateral-token reading and the
+// TTL stays long: it consumes venue ORDERING only, which is drift-immune at any cache age because
+// every venue at a rung shares one refresh (see `createVenueSelector`). Only the absolute route-cost
+// term decays with age, and nothing here reads it.
 const DEFAULT_PROBE_STALE_MS = 600_000
 const DEFAULT_PROBE_HTTP_RPS = 1
 const DEFAULT_PROBE_LADDER = ['0.01', '0.1', '1', '10', '100']
@@ -137,13 +141,14 @@ export type VenueConfig = {
 
 /**
  * Venue-probing knobs. The probe fetches indicative quotes across enabled venues at each log-scaled
- * `ladderWholeTokens` size, caches the best-first ranking per pair for `staleMs`, and runs on its own
- * `httpRps` budget (isolated from firm quotes). Sizes stay as raw strings until converted per-collateral.
+ * `ladderSizes` rung, caches the per-venue rate curve for the pair for `staleMs`, and runs on its own
+ * `httpRps` budget (isolated from firm quotes). Sizes stay as raw strings until converted
+ * per-collateral; with no USD price source wired they are read as whole collateral tokens.
  */
 export type ProbeConfig = {
   staleMs: number
   httpRps: number
-  ladderWholeTokens: string[]
+  ladderSizes: string[]
 }
 
 export type Config = {
@@ -373,7 +378,7 @@ export function loadConfig(
   const probe: ProbeConfig = {
     staleMs: intEnv(env, 'PROBE_STALE_MS', DEFAULT_PROBE_STALE_MS, { min: 1 }),
     httpRps: intEnv(env, 'PROBE_HTTP_RPS', DEFAULT_PROBE_HTTP_RPS, { min: 1 }),
-    ladderWholeTokens: ladderEnv(env, 'PROBE_LADDER', DEFAULT_PROBE_LADDER)
+    ladderSizes: ladderEnv(env, 'PROBE_LADDER', DEFAULT_PROBE_LADDER)
   }
 
   const quoting: QuotingConfig = {

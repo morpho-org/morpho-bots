@@ -130,13 +130,14 @@ async function main() {
     timeoutMs: config.quoting.quoteTimeoutMs
   })
 
-  // Venue selector: caches a best-first venue ranking per pair from log-scaled indicative probes.
+  // Venue selector: caches each venue's rate curve per pair from log-scaled indicative probes.
   // Decimals are read once per collateral (memoized in the selector); the collateral set is bounded
-  // by the discovered markets, so these are a handful of one-off reads over the process lifetime.
+  // by the discovered markets, so these are a handful of one-off reads over the process lifetime. No
+  // `usdPriceOf` is wired here, so the ladder stays denominated in whole collateral tokens.
   const venueSelector = createVenueSelector({
     venues,
     chainId: config.chainId,
-    ladderWholeTokens: config.probe.ladderWholeTokens,
+    ladderSizes: config.probe.ladderSizes,
     getDecimals: token =>
       readContract(client, { address: token, abi: erc20Abi, functionName: 'decimals' }),
     indicativeQuote: (venue, params) => priceByVenue(probeClient, { venue, baseUrls, params }),

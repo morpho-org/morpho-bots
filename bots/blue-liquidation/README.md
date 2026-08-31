@@ -48,7 +48,7 @@ Env vars (fail-loud on a missing required var, an unknown chain, or a malformed 
 | `ALLOW_DETECTION_ONLY`                                              | no       | `false`                          | Opt-in: boot with zero venues (discover + log only, skip every liquidation). Without it, zero venues is a startup error               |
 | `EXCLUDE_COLLATERALS`                                               | no       | —                                | Comma-separated collateral deny-list (skipped with `config.no_swap_path`)                                                             |
 | `ZEROX_BASE_URL` / `ONEINCH_BASE_URL` / `LIFI_BASE_URL`             | no       | —                                | Optional per-venue API host overrides                                                                                                 |
-| `PROBE_STALE_MS` / `PROBE_HTTP_RPS` / `PROBE_LADDER`                | no       | see `config.ts`                  | Venue-probe cache staleness, isolated probe rate, and whole-token ladder sizes                                                        |
+| `PROBE_STALE_MS` / `PROBE_HTTP_RPS` / `PROBE_LADDER`                | no       | see `config.ts`                  | Venue-probe cache staleness, isolated probe rate, and ladder sizes (whole collateral tokens — this bot wires no USD price source)     |
 | `MAX_FEE_GWEI`                                                      | no       | `300`                            | Hard ceiling for fee bumps                                                                                                            |
 | `MAX_ROUTE_IMPACT_BPS`                                              | no       | `500`                            | Reject aggregator routes this far below the oracle ref                                                                                |
 | `PENDLE_SLIPPAGE_BPS`                                               | no       | `50`                             | Slippage for the Pendle PT → underlying unwrap hop (before the downstream venue sells)                                                |
@@ -68,8 +68,9 @@ container the runtime env remains unsuffixed because each service runs exactly o
 There is no per-collateral routing file. Venues are **enabled by key presence** (`ZEROX_API_KEY`,
 `ONEINCH_API_KEY`, `LIFI_API_KEY` — or `ENABLE_LIFI=true` for keyless LiFi), and for each
 liquidatable position a background probe cache ranks the enabled venues best-first for the
-`(collateral, loan)` pair (log-scaled indicative quotes on an isolated rate budget — see
-`PROBE_LADDER`/`PROBE_STALE_MS`/`PROBE_HTTP_RPS`). The firm quote goes to the top venue and falls
+`(collateral, loan)` pair (log-scaled indicative quotes on an isolated rate budget, interpolated at
+the seize size — see `PROBE_LADDER`/`PROBE_STALE_MS`/`PROBE_HTTP_RPS`; ladder sizes are whole
+collateral tokens here, since this bot wires no USD price source). The firm quote goes to the top venue and falls
 through to the next on failure, so a transient venue outage costs coverage, never correctness.
 Collateral that wraps an ERC-4626 vault or a Pendle PT is auto-unwrapped before the venue swap.
 `EXCLUDE_COLLATERALS` is the operator's deny-list for collaterals the bot must never seize/hold.

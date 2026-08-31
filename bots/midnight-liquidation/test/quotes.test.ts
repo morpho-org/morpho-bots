@@ -1,5 +1,5 @@
 import type { Logger } from '@repo/bot-kit'
-import type { RateLimitedClient, VenuePair, VenueQuoteEstimate, VenueSelector } from '@repo/swaps'
+import type { RateLimitedClient, Venue, VenuePair, VenueSelector } from '@repo/swaps'
 
 import { getAddress } from 'viem'
 import { describe, expect, it } from 'vitest'
@@ -86,14 +86,15 @@ const OK_ZEROX_BODY = {
 const httpStub: RateLimitedClient = { getJson: async <T>() => OK_ZEROX_BODY as T }
 
 // A selector stub: records which pairs were refreshed and returns a fixed best-first order.
-function fakeSelector(order: VenueQuoteEstimate[], onRefresh?: () => Promise<void>) {
+function fakeSelector(order: Venue[], onRefresh?: () => Promise<void>) {
   const refreshed: VenuePair[] = []
   const selector: VenueSelector = {
     refresh: async pair => {
       refreshed.push(pair)
       if (onRefresh) await onRefresh()
     },
-    select: () => order,
+    select: () =>
+      order.map(venue => ({ venue, estimatedOut: 1000n, costBps: null, clamped: false })),
     snapshot: () => []
   }
   return { selector, refreshed }
@@ -124,7 +125,7 @@ function compose(
 
 describe('composeQuoting (Midnight lens-projection adapter)', () => {
   it('returns no_config when the plan indexes a missing collateral slot', async () => {
-    const { selector, refreshed } = fakeSelector([{ venue: '0x', expectedOut: 1000n }])
+    const { selector, refreshed } = fakeSelector(['0x'])
     const { quoteFor } = compose(selector)
     expect(await quoteFor({ ...PLAN, collateralIndex: 5 }, OUT, LABEL)).toEqual({
       kind: 'no_config'
@@ -133,14 +134,14 @@ describe('composeQuoting (Midnight lens-projection adapter)', () => {
   })
 
   it('returns no_config (and never probes) for an excluded collateral', async () => {
-    const { selector, refreshed } = fakeSelector([{ venue: '0x', expectedOut: 1000n }])
+    const { selector, refreshed } = fakeSelector(['0x'])
     const { quoteFor } = compose(selector, { excludeCollaterals: [COLLATERAL] })
     expect(await quoteFor(PLAN, OUT, LABEL)).toEqual({ kind: 'no_config' })
     expect(refreshed).toHaveLength(0)
   })
 
   it('refreshes the pair probe, then projects into an executable swap from the ranked venue', async () => {
-    const { selector, refreshed } = fakeSelector([{ venue: '0x', expectedOut: 1000n }])
+    const { selector, refreshed } = fakeSelector(['0x'])
     const { quoteFor } = compose(selector)
     const outcome = await quoteFor(PLAN, OUT, LABEL)
 
@@ -177,7 +178,7 @@ describe('composeQuoting (Midnight lens-projection adapter)', () => {
       warn: () => {},
       error: () => {}
     }
-    const { selector } = fakeSelector([{ venue: '0x', expectedOut: 1000n }])
+    const { selector } = fakeSelector(['0x'])
     const { quoteFor } = compose(selector, { logger: capturing })
     await quoteFor(PLAN, OUT, LABEL)
     const selectOk = events.find(e => e.event === 'select.ok')
@@ -194,7 +195,7 @@ describe('composeQuoting (Midnight lens-projection adapter)', () => {
         return OK_ZEROX_BODY as T
       }
     }
-    const { selector } = fakeSelector([{ venue: '0x', expectedOut: 1000n }])
+    const { selector } = fakeSelector(['0x'])
     return compose(selector, { httpClient: capturing })
       .quoteFor(PLAN, OUT, LABEL)
       .then(() => {

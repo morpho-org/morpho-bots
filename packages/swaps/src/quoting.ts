@@ -17,7 +17,7 @@ import type {
   Venue
 } from './types'
 import type { Unwrapper, UnwrapResolution } from './unwrappers/resolve'
-import type { VenuePair, VenueQuoteEstimate } from './venue-selector'
+import type { VenueCostEstimate, VenuePair } from './venue-selector'
 
 import { BPS } from './constants'
 import { QuoteError } from './types'
@@ -433,8 +433,8 @@ export function composeMultiVenueQuoting(deps: {
    * probes price the tradable underlying. Failures are non-fatal (cold-default venue order).
    */
   refresh: (pair: VenuePair) => Promise<void>
-  /** Best-first venues (with indicative outputs) for a pair+size, from the probe cache; `[]` if cold. */
-  select: (pair: VenuePair, amountIn: bigint) => readonly VenueQuoteEstimate[]
+  /** Best-first venues (with interpolated outputs) for a pair+size, from the probe cache; `[]` if cold. */
+  select: (pair: VenuePair, amountIn: bigint) => readonly VenueCostEstimate[]
   logger: QuoteLogger
 }): { quoteFor: (request: QuoteRequest) => Promise<QuoteOutcome> } {
   const {

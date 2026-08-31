@@ -139,20 +139,6 @@ async function main() {
     timeoutMs: config.quoting.quoteTimeoutMs
   })
 
-  // Venue selector: caches a best-first venue ranking per pair from log-scaled indicative probes.
-  // Decimals are read once per collateral (memoized in the selector); the collateral set is bounded by
-  // the listed markets, so these are a handful of one-off reads over the process lifetime.
-  const venueSelector = createVenueSelector({
-    venues,
-    chainId: config.chainId,
-    ladderWholeTokens: config.probe.ladderWholeTokens,
-    getDecimals: token =>
-      readContract(client, { address: token, abi: erc20Abi, functionName: 'decimals' }),
-    indicativeQuote: (venue, params) => priceByVenue(probeClient, { venue, baseUrls, params }),
-    staleMs: config.probe.staleMs,
-    logger
-  })
-
   // Market whitelist: only listed markets are discovered / probed / liquidated. One filter per
   // configured markets source, unioned — the union applies the max-age rule PER SOURCE, so a source
   // that goes down or goes stale drops out of the whitelist instead of emptying it. Refresh once at
@@ -168,14 +154,36 @@ async function main() {
   })
   await tryCatch(listedMarkets.refresh())
 
-  // Loan-token USD prices, used ONLY to order the tick's candidates by expected profit. Fails open:
-  // an unpriced token sorts last, so a fetch failure degrades ordering to discovery order rather than
-  // suppressing work. Shares the candidates endpoint's base URL, so pointing the bot at a staging host
-  // moves both. The first fetch runs in the refresh loop below rather than being awaited here — see
-  // there for why.
+  // Token USD prices, used to order the tick's candidates by expected profit AND to denominate the
+  // probe ladder. Fails open on both counts: an unpriced token sorts last and its ladder falls back
+  // to whole collateral tokens, so a fetch failure degrades ordering rather than suppressing work.
+  // Shares the candidates endpoint's base URL, so pointing the bot at a staging host moves both. The
+  // first fetch runs in the refresh loop below rather than being awaited here — see there for why, and
+  // note the consequence: a pair probed before it lands gets one whole-token ladder for one TTL.
   const tokenPrices = createTokenPriceSource({
     apiUrl: config.discovery.apiUrl,
     chainId: config.chainId,
+    logger
+  })
+
+  const readTokenDecimals = (token: Address) =>
+    readContract(client, { address: token, abi: erc20Abi, functionName: 'decimals' })
+
+  // Venue selector: caches each venue's rate curve per pair from log-scaled indicative probes, and
+  // interpolates it per candidate. Decimals are read once per collateral (memoized in the selector);
+  // the collateral set is bounded by the listed markets, so these are a handful of one-off reads over
+  // the process lifetime. The ladder is USD-denominated, so a rung means the same notional on an
+  // 8-decimal $80k collateral as on an 18-decimal $1 one — `usdPriceOf` reports the price of one whole
+  // token by asking the price source what one whole token is worth.
+  const venueSelector = createVenueSelector({
+    venues,
+    chainId: config.chainId,
+    ladderSizes: config.probe.ladderSizes,
+    getDecimals: readTokenDecimals,
+    usdPriceOf: async token =>
+      tokenPrices.usdValueOf(token, 10n ** BigInt(await readTokenDecimals(token))),
+    indicativeQuote: (venue, params) => priceByVenue(probeClient, { venue, baseUrls, params }),
+    staleMs: config.probe.staleMs,
     logger
   })
 

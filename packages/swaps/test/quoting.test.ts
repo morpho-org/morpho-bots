@@ -154,7 +154,12 @@ function composeMulti(
     },
     select: (pair, amountIn) => {
       selected.push({ pair, amountIn })
-      return order
+      return order.map(({ venue, expectedOut }) => ({
+        venue,
+        estimatedOut: expectedOut,
+        costBps: null,
+        clamped: false
+      }))
     },
     logger: NOOP_LOGGER
   })

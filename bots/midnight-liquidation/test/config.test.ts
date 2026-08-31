@@ -58,9 +58,18 @@ describe('loadConfig', () => {
     // Market whitelist + probe defaults.
     expect(config.markets.apiUrls).toEqual(['https://api.morpho.org/v0/midnight/markets'])
     expect(config.markets.refreshMs).toBe(60_000)
-    expect(config.probe.staleMs).toBe(600_000)
+    expect(config.probe.staleMs).toBe(45_000)
     expect(config.probe.httpRps).toBe(1)
-    expect(config.probe.ladderWholeTokens).toEqual(['0.01', '0.1', '1', '10', '100'])
+    expect(config.probe.ladderSizes).toEqual([
+      '0.01',
+      '0.1',
+      '1',
+      '10',
+      '100',
+      '1000',
+      '10000',
+      '100000'
+    ])
 
     // Quoting tunables apply their defaults.
     expect(config.quoting.quoteTimeoutMs).toBe(2500)
@@ -330,9 +339,11 @@ describe('loadConfig', () => {
   })
 
   it('parses PROBE_LADDER into raw string sizes and rejects a malformed element', () => {
-    expect(
-      loadConfig(baseEnv({ PROBE_LADDER: '0.5, 5, 50' }), deps).probe.ladderWholeTokens
-    ).toEqual(['0.5', '5', '50'])
+    expect(loadConfig(baseEnv({ PROBE_LADDER: '0.5, 5, 50' }), deps).probe.ladderSizes).toEqual([
+      '0.5',
+      '5',
+      '50'
+    ])
     expect(() => loadConfig(baseEnv({ PROBE_LADDER: '1,0,10' }), deps)).toThrow(
       /PROBE_LADDER must be comma-separated positive numbers/
     )
