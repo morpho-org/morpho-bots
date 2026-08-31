@@ -1019,8 +1019,9 @@ try {
     input.dispatchEvent(new Event('input', { bubbles: true }));
     input.dispatchEvent(new Event('change', { bubbles: true }));
     await new Promise(r => setTimeout(r, 30));
-    const reference = document.querySelector('.ladder-reference-marker');
-    const center = document.querySelector('.ladder-center-marker');
+    const plot = document.querySelector('[data-preview="ladder"]');
+    const reference = plot.querySelector('.ladder-reference-marker');
+    const center = plot.querySelector('.ladder-center-marker');
     return {
       referenceTop: reference?.style.top,
       centerTop: center?.style.top,

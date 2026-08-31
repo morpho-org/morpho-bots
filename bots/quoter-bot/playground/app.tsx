@@ -112,7 +112,7 @@ const rungColumnsFor = (format: AssetFormatter) => [
     cell: info => amountCell(info.getValue(), format(info.getValue()))
   }),
   columnHelper.accessor('offerMaxAssets', {
-    header: 'Offer maxAssets',
+    header: 'Offer cap',
     cell: info => amountCell(info.getValue(), format(info.getValue()))
   })
 ]
@@ -175,40 +175,59 @@ const BootstrapGraphic = ({
   const minimum = BigInt(graphic.minimumRateBps)
   const maximum = BigInt(graphic.maximumRateBps)
   const range = maximum - minimum || 1n
-  const position = (value: string) => Number(((BigInt(value) - minimum) * 10_000n) / range) / 100
+  const y = (value: string) =>
+    clampPlotPercent(Number(((maximum - BigInt(value)) * 10_000n) / range) / 100)
+  const target = BigInt(graphic.creditTarget)
+  const depth = (value: string) =>
+    target <= 0n
+      ? 100
+      : Math.max(1, Math.min(100, Number((BigInt(value) * 10_000n) / target) / 100))
   const quoteText =
     graphic.maximumQuotedRateBps === undefined
       ? `quote ${graphic.quotedRateBps} BPS`
       : `quote range ${graphic.quotedRateBps} to ${graphic.maximumQuotedRateBps} BPS across maturities`
-  const description = `${title}, market ${graphic.marketId}. Configured range ${graphic.minimumRateBps} to ${graphic.maximumRateBps} BPS. Deterministic reference ${graphic.referenceRateBps} BPS produces ${quoteText}. Credit target ${format(graphic.creditTarget)}, completion threshold ${format(graphic.acceptedCredit)}, pending-offer cap ${format(graphic.offerSize)}. ${graphic.callouts.map(item => `${item.label}: ${item.value}.`).join(' ')} Explicitly no live offers or balances.`
+  const description = `${title}, market ${graphic.marketId}. Configured range ${graphic.minimumRateBps} to ${graphic.maximumRateBps} BPS. Deterministic reference ${graphic.referenceRateBps} BPS produces ${quoteText}, offering ${format(graphic.offerSize)} against a ${format(graphic.creditTarget)} credit target completed at ${format(graphic.acceptedCredit)}. ${graphic.callouts.map(item => `${item.label}: ${item.value}.`).join(' ')} Explicitly no live offers or balances.`
   return (
     <article className="preview-card bootstrap-preview" data-preview="bootstrap">
       <h3 id={`bootstrap-title-${index}`}>{title}</h3>
       <code>{graphic.marketId}</code>
       <figure role="img" aria-labelledby={`bootstrap-title-${index}`} aria-label={description}>
-        <div className="rate-track" aria-hidden="true">
-          <span className="range-label range-label--min">{graphic.minimumRateBps} BPS min</span>
-          <span className="range-label range-label--max">{graphic.maximumRateBps} BPS max</span>
-          <i
-            className="reference-marker"
-            style={{ left: `${position(graphic.referenceRateBps)}%` }}
+        <p className="ladder-bound" aria-hidden="true">
+          {graphic.maximumRateBps} BPS max
+        </p>
+        <div className="ladder-plot bootstrap-plot" aria-hidden="true">
+          <b
+            className="ladder-marker ladder-reference-marker"
+            style={{ top: `${y(graphic.referenceRateBps)}%` }}
           >
-            <b>Reference {graphic.referenceRateBps} BPS</b>
-          </i>
-          <i className="quote-marker" style={{ left: `${position(graphic.quotedRateBps)}%` }}>
-            <b>Quote {graphic.quotedRateBps} BPS</b>
+            Reference {graphic.referenceRateBps} BPS
+          </b>
+          <i className="rung rung--quote" style={{ top: `${y(graphic.quotedRateBps)}%` }}>
+            <span className="rung-rate">● {graphic.quotedRateBps}</span>
+            <span className="rung-depth">
+              <b style={{ width: `${depth(graphic.offerSize)}%` }} />
+            </span>
+            <span className="rung-size">{format(graphic.offerSize)}</span>
           </i>
           {graphic.maximumQuotedRateBps === undefined ? null : (
-            <i
-              className="quote-marker quote-marker--maximum"
-              style={{ left: `${position(graphic.maximumQuotedRateBps)}%` }}
+            <b
+              className="ladder-marker bootstrap-far-marker"
+              style={{ top: `${y(graphic.maximumQuotedRateBps)}%` }}
             >
-              <b>Far maturity {graphic.maximumQuotedRateBps} BPS</b>
-            </i>
+              Far maturity {graphic.maximumQuotedRateBps} BPS
+            </b>
           )}
         </div>
-        <figcaption>◆ Reference · ● Quote · values are also in the tiles below</figcaption>
+        <p className="ladder-bound" aria-hidden="true">
+          {graphic.minimumRateBps} BPS min
+        </p>
+        <figcaption>● Quote · bar length is the offer size against the credit target</figcaption>
       </figure>
+      {graphic.notice === undefined ? null : (
+        <p className="preview-notice" role="status">
+          {graphic.notice}
+        </p>
+      )}
       <dl className="callouts">
         {graphic.callouts.map(item => (
           <div key={item.label}>
@@ -221,32 +240,6 @@ const BootstrapGraphic = ({
         ))}
       </dl>
     </article>
-  )
-}
-
-const ReferenceStrip = ({ graphic, index }: { graphic: LadderGraphicModel; index: number }) => {
-  const { band, strip, totalRungs } = graphic.referenceResponse
-  const description = `Reference response for ladder market ${index + 1}. Across references ${graphic.minimumRateBps} to ${graphic.maximumRateBps} BPS, ${
-    band === undefined
-      ? 'every reference pins at least one rung to a hard bound'
-      : `references ${band.lowestRateBps} to ${band.highestRateBps} BPS pin no rung`
-  }. Taller bars pin more of the ${totalRungs} rungs.`
-  return (
-    <figure className="reference-strip" role="img" aria-label={description}>
-      <div className="strip-track" aria-hidden="true">
-        {strip.map(point => (
-          <i
-            key={point.referenceRateBps}
-            className={point.pinnedRungs === 0 ? 'strip-bar strip-bar--clean' : 'strip-bar'}
-            style={{ height: `${Math.max(6, (point.pinnedRungs / totalRungs) * 100)}%` }}
-            title={`Reference ${point.referenceRateBps} BPS: ${point.pinnedRungs}/${totalRungs} rungs pinned`}
-          />
-        ))}
-      </div>
-      <figcaption>
-        Rungs pinned to a bound by reference · {graphic.minimumRateBps}–{graphic.maximumRateBps} BPS
-      </figcaption>
-    </figure>
   )
 }
 
@@ -269,22 +262,29 @@ const LadderGraphic = ({
       <h3 id={`ladder-title-${index}`}>Ladder market {index + 1}</h3>
       <code>{graphic.marketId}</code>
       <figure role="img" aria-labelledby={`ladder-title-${index}`} aria-label={description}>
+        <p className="ladder-bound" aria-hidden="true">
+          {graphic.maximumRateBps} BPS max
+        </p>
         <div className="ladder-plot" aria-hidden="true">
-          <span className="range-label range-label--min">{graphic.minimumRateBps} BPS min</span>
-          <span className="range-label range-label--max">{graphic.maximumRateBps} BPS max</span>
           {graphic.rungs.map((rung, rungIndex) => (
             <i
               key={`${rung.side}-${rung.index}-${rungIndex}`}
               className={`rung rung--${rung.side}`}
               style={{ top: `${rung.y}%` }}
-              title={`${rung.sideLabel}: ${rung.rateBps} BPS, allocation ${format(rung.allocationAssets)}, cap ${format(rung.offerMaxAssets)}`}
+              title={`${rung.sideLabel} rung at ${rung.rateBps} BPS · allocation ${format(rung.allocationAssets)} · offer cap ${format(rung.offerMaxAssets)}`}
             >
-              {rung.side === 'higher' ? '▲' : '●'} {rung.rateBps}
+              <span className="rung-rate">
+                {rung.side === 'higher' ? '▲' : '●'} {rung.rateBps}
+              </span>
+              <span className="rung-depth">
+                <b style={{ width: `${Math.max(1, rung.allocationBarRatio * 100)}%` }} />
+              </span>
+              <span className="rung-size">{format(rung.allocationAssets)}</span>
             </i>
           ))}
           <b
             className="ladder-marker ladder-reference-marker"
-            style={{ top: `${graphic.rateToY(graphic.referenceRateBps)}%` }}
+            style={{ top: `${clampPlotPercent(graphic.rateToY(graphic.referenceRateBps))}%` }}
           >
             Reference {graphic.referenceRateBps} BPS
           </b>
@@ -305,10 +305,17 @@ const LadderGraphic = ({
             </b>
           )}
         </div>
-        <figcaption>▲ Lend · ● Reduce-only · values are also available in the table</figcaption>
+        <p className="ladder-bound" aria-hidden="true">
+          {graphic.minimumRateBps} BPS min
+        </p>
+        <figcaption>▲ Lend · ● Reduce-only · bar length is the allocation at that rate</figcaption>
       </figure>
-      <ReferenceStrip graphic={graphic} index={index} />
       <RungTable format={format} graphic={graphic} index={index} />
+      {graphic.notice === undefined ? null : (
+        <p className="preview-notice" role="status">
+          {graphic.notice}
+        </p>
+      )}
       <dl className="callouts">
         {graphic.callouts.map(item => (
           <div key={item.label}>
@@ -358,15 +365,9 @@ const DisplayUnits = ({
         />
       </label>
       <p id="units-help">
-        One scale covers both collections: a quoter-bot process has a single{' '}
-        <code>LOAN_ASSET_ADDRESS</code>, and every configured amount — credit targets, offer sizes,
-        budgets, and exposure caps — is a raw smallest-unit amount of that one loan asset.
-        Collateral tokens never appear in a market collection, so their decimals are irrelevant
-        here. Display only. It starts at 6 for USDC as a convenience, not because the playground
-        resolved it — no chain data is read, so correct it for any other loan asset, and clear it to
-        return every amount to its exact raw integer. The scale rounds amounts to whole units so
-        magnitudes stay scannable; hover any amount to read its exact raw value. The editors, the
-        four outputs, and the share URL always keep the exact raw integers.
+        Display only: every amount below is shown in whole loan-asset units at this scale, with the
+        exact raw integer on hover. Starts at 6 for USDC — correct it for another loan asset, or
+        clear it to read raw integers.
       </p>
     </div>
   </section>
@@ -380,7 +381,10 @@ const InvalidPreview = ({ kind, errors }: { kind: CollectionKind; errors: string
         <li key={error}>{error}</li>
       ))}
     </ul>
-    <span>No misleading graphic was generated.</span>
+    <span>
+      The shared parser the bot itself uses rejects this entry, so there are no offers to plot. The
+      matching output below is disabled until it is fixed.
+    </span>
   </div>
 )
 

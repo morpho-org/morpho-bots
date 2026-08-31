@@ -2,7 +2,7 @@ import type { BootstrapConfig } from '../src/domain/bootstrap/position-bootstrap
 import type { LadderConfig } from '../src/domain/ladder/ladder'
 import type { MaturityPremiumConfig } from '../src/domain/maturity-premium'
 import type { TargetRateConfigured } from '../src/domain/target-rate'
-import type { LadderReferenceResponse, ReferenceBand } from './reference-response.utils'
+import type { ReferenceBand } from './reference-response.utils'
 
 import {
   BOOTSTRAP_MARKET_FIELDS,
@@ -17,8 +17,7 @@ import { highestReachableMaturityPremiumBps } from '../src/domain/maturity-premi
 import { CollectionImportError } from './collection-import.error'
 import { CollectionValidationError } from './collection-validation.error'
 import { FragmentCodecError } from './fragment-codec.error'
-import { PreviewGenerationError } from './preview-generation.error'
-import { bootstrapReferenceBand, ladderReferenceResponse } from './reference-response.utils'
+import { bootstrapReferenceBand, ladderReferenceBand } from './reference-response.utils'
 import { StrictJsonError } from './strict-json.error'
 
 export type TargetRateInput =
@@ -167,7 +166,7 @@ export const LADDER_FIELDS = [
   [
     'sizeSkewBps',
     'Size skew (BPS)',
-    'Positive sizes outer rungs bigger, negative sizes inner rungs bigger',
+    'Each rung further out is weighted this many BPS more; negative favours inner rungs',
     'number'
   ],
   [
@@ -182,17 +181,17 @@ export const LADDER_FIELDS = [
     'For offers above the centre, which lend new credit',
     'number'
   ],
-  ['targetMarketExposureAssets', 'Market exposure cap', 'Most this market may hold', 'number'],
+  ['targetMarketExposureAssets', 'Market exposure cap', 'Caps lending in this market', 'number'],
   [
     'maximumTotalExposureAssets',
     'Total exposure cap',
-    'Most every configured market may hold together',
+    'Caps lending across every configured market together',
     'number'
   ],
   [
     'minimumOfferAssets',
     'Minimum offer size',
-    'Rungs smaller than this are dropped, funding fewer rungs',
+    'Every funded rung gets at least this; a budget too small drops outermost rungs',
     'number'
   ],
   [
@@ -210,7 +209,7 @@ export const LADDER_FIELDS = [
   [
     'movementToleranceBps',
     'Movement tolerance (BPS)',
-    'Ignore rate moves smaller than this',
+    'Keep the current centre until the target centre moves further than this',
     'number'
   ],
   ['minimumRateBps', 'Minimum rate (BPS)', 'Rungs never go below this', 'number'],
@@ -336,8 +335,45 @@ const validation = (operation: () => unknown): CollectionValidation => {
 }
 export const validateBootstrapCollection = (items: BootstrapInput[]) =>
   validation(() => parseBootstrap(items))
-export const validateLadderCollection = (items: LadderInput[]) =>
-  validation(() => parseLadder(items))
+/**
+ * Explains, in the operator's own units, why a ladder shape cannot fit its hard rate range.
+ * @param items - Ordered ladder inputs as typed, which may not parse.
+ * @returns One sentence per entry whose rungs span more than its configured range, naming the span
+ * it needs and the width it has; empty when a shape fits or its integers are unusable.
+ * @remarks Restates the runtime's own `sideWidth * 2 > maximumRateBps - minimumRateBps` invariant
+ * so the sanitized parser message gains the arithmetic an operator needs to fix it.
+ */
+const ladderShapeDiagnostics = (items: LadderInput[]): string[] =>
+  items.flatMap((item, index) => {
+    const raw = [
+      item.spreadBps,
+      item.stepBps,
+      item.rungCount,
+      item.minimumRateBps,
+      item.maximumRateBps
+    ].map(value => value.trim())
+    if (raw.some(value => !/^\d+$/.test(value))) return []
+    const [spread, step, count, minimum, maximum] = raw.map(BigInt) as [
+      bigint,
+      bigint,
+      bigint,
+      bigint,
+      bigint
+    ]
+    if (count <= 0n || maximum < minimum) return []
+    const span = (spread / 2n + (count - 1n) * step) * 2n
+    const width = maximum - minimum
+    if (span <= width) return []
+    return [
+      `Ladder ${index + 1}: ${count} rungs per side with a ${spread} BPS spread and a ${step} BPS step span ${span} BPS, but ${minimum}–${maximum} BPS is only ${width} BPS wide. Lower the rung count, the step or the spread, or widen the rate bounds.`
+    ]
+  })
+
+export const validateLadderCollection = (items: LadderInput[]) => {
+  const result = validation(() => parseLadder(items))
+  if (result.valid) return result
+  return { valid: false, errors: [...result.errors, ...ladderShapeDiagnostics(items)] }
+}
 
 export type BootstrapGraphicModel = {
   marketId: string
@@ -352,6 +388,8 @@ export type BootstrapGraphicModel = {
   offerSize: string
   /** Reference range over which the quote tracks instead of saturating at a bound. */
   referenceBand?: ReferenceBand
+  /** Present when a derived rate leaves the plotted range, explaining the pinned markers. */
+  notice?: string
   callouts: { label: string; value: string; parameters: string[] }[]
 }
 
@@ -393,16 +431,22 @@ export const deriveBootstrapGraphicModels = (
             minimum,
             maximum
           )
-    if (
-      reference <= 0n ||
-      (item.targetRate.strategy !== 'hardcoded' && (reference < minimum || reference > maximum)) ||
-      quoted < minimum ||
-      quoted > maximum
-    ) {
-      throw new PreviewGenerationError(
-        'Bootstrap derived reference and quoted rates must be positive and remain inside configured bounds'
-      )
+    const issues: string[] = []
+    if (reference <= 0n) issues.push(`the derived reference ${reference} BPS is not positive`)
+    else if (reference < minimum || reference > maximum) {
+      issues.push(`the derived reference ${reference} BPS falls outside the plotted range`)
     }
+    if (quoted < minimum || quoted > maximum) {
+      issues.push(`the quote ${quoted} BPS would saturate at the nearest bound`)
+    }
+    const notice =
+      issues.length === 0
+        ? undefined
+        : `Markers are pinned to the edge of the range: ${issues.join(' and ')}.${
+            item.targetRate.strategy === 'hardcoded'
+              ? ''
+              : ' The preview derives its reference from the bounds and the premium, so this is an artefact of the preview, not an invalid configuration.'
+          }`
     const acceptedCredit = BigInt(item.creditTarget) - BigInt(item.acceptanceAssets)
     const band = bootstrapReferenceBand(premium, minimum, maximum)
     return {
@@ -416,6 +460,7 @@ export const deriveBootstrapGraphicModels = (
       acceptedCredit: String(BigInt(item.creditTarget) - BigInt(item.acceptanceAssets)),
       offerSize: item.offerSize,
       ...(band === undefined ? {} : { referenceBand: band }),
+      ...(notice === undefined ? {} : { notice }),
       callouts: [
         {
           label: 'Credit target',
@@ -518,8 +563,10 @@ export type LadderGraphicModel = {
   plotHeight: number
   rateToY: (rateBps: string) => number
   rungs: LadderGraphicRung[]
-  /** How the shape degrades as the reference moves across the configured range. */
-  referenceResponse: LadderReferenceResponse
+  /** Reference range over which no rung pins to a hard bound. */
+  referenceBand?: ReferenceBand
+  /** Present when the derived reference leaves the plotted range, explaining the pinned marker. */
+  notice?: string
   callouts: { label: string; value: string; parameters: string[] }[]
 }
 
@@ -543,9 +590,9 @@ export const clampPlotPercent = (percent: number): number => Math.min(100, Math.
  * @returns One graphic model per entry: true center values (the at-maturity anchor and, with a
  * maturity premium, the far-maturity center at the highest reachable premium), display-ordered
  * rung rows with allocation and cap ratios, plot geometry, and callouts.
- * @throws `ConfigValidationError` from the shared collection parser when any entry is invalid,
- * and `PreviewGenerationError` when the deterministic derived reference cannot stay positive or,
- * for the variable strategy, inside its own configured bounds.
+ * @throws `ConfigValidationError` from the shared collection parser when any entry is invalid. A
+ * derived reference outside the configured bounds is not a failure: the preview is still generated
+ * and carries a `notice` explaining that its markers are pinned to the edge.
  * @remarks Pure and browser-safe with no provider, logging, or persistence access. Center values
  * stay unclamped because the runtime clamps individual rungs, never the center; markers clamp
  * only their plot coordinate through {@link clampPlotPercent}.
@@ -565,14 +612,14 @@ export const generateLadderGraphicModels = (
       input.targetRate.strategy === 'hardcoded'
         ? BigInt(input.targetRate.hardcodedRateBps)
         : (minimum + maximum) / 2n - config.quotePremiumBps
-    if (
-      reference <= 0n ||
-      (input.targetRate.strategy !== 'hardcoded' && (reference < minimum || reference > maximum))
-    ) {
-      throw new PreviewGenerationError(
-        'Ladder derived reference and center rates must remain inside configured bounds'
-      )
-    }
+    const notice =
+      reference > 0n && reference >= minimum && reference <= maximum
+        ? undefined
+        : `Markers are pinned to the edge of the range: the derived reference ${reference} BPS falls outside it.${
+            input.targetRate.strategy === 'hardcoded'
+              ? ''
+              : ' The preview derives its reference from the bounds and the premium, so this is an artefact of the preview, not an invalid configuration.'
+          }`
     // The deterministic preview anchors the shape at the zero-premium (at-maturity) center. The
     // model carries true center values — the runtime clamps individual rungs, never the center —
     // and the component clamps only marker plot coordinates into the axis.
@@ -586,7 +633,7 @@ export const generateLadderGraphicModels = (
         ? undefined
         : generated.centerRateBps + highestReachableMaturityPremiumBps(config.maturityPremium)
     const amountOf = (rawAmount: bigint) => formatAssets(String(rawAmount))
-    const referenceResponse = ladderReferenceResponse(config)
+    const referenceBand = ladderReferenceBand(config)
     const caps = offerMaxAssetsByRung(generated)
     const paired = (side: 'higher' | 'lower') => {
       const rungs = generated[side]
@@ -632,7 +679,8 @@ export const generateLadderGraphicModels = (
       },
       gapBps: input.spreadBps,
       plotHeight,
-      referenceResponse,
+      ...(referenceBand === undefined ? {} : { referenceBand }),
+      ...(notice === undefined ? {} : { notice }),
       rateToY,
       rungs: rows.map(({ rung, cap, side, sideLabel }) => ({
         index: rung.index,
@@ -677,9 +725,7 @@ export const generateLadderGraphicModels = (
           value:
             config.sizeSkewBps === 0n
               ? 'Every rung on a side gets an equal share of that side’s budget'
-              : config.sizeSkewBps > 0n
-                ? `Outer rungs are sized ${config.sizeSkewBps} BPS bigger than inner ones`
-                : `Inner rungs are sized ${-config.sizeSkewBps} BPS bigger than outer ones`,
+              : `Each step out from the centre adds ${config.sizeSkewBps} BPS of weight, so the outermost rung is ${(BigInt(config.rungCount) - 1n) * (config.sizeSkewBps < 0n ? -config.sizeSkewBps : config.sizeSkewBps)} BPS ${config.sizeSkewBps > 0n ? 'heavier' : 'lighter'} than the innermost`,
           parameters: ['sizeSkewBps']
         },
         {
@@ -689,22 +735,22 @@ export const generateLadderGraphicModels = (
         },
         {
           label: 'Minimum offer size',
-          value: `Rungs smaller than ${amountOf(config.minimumOfferAssets)} are dropped. Your budgets can fund ${config.higherRateBudgetAssets / config.minimumOfferAssets} lending and ${config.lowerRateBudgetAssets / config.minimumOfferAssets} reduce-only rungs, against the ${config.rungCount} configured`,
+          value: `Every funded rung gets at least ${amountOf(config.minimumOfferAssets)}; when a side cannot cover them all its outermost rungs are dropped. Your budgets cover ${config.higherRateBudgetAssets / config.minimumOfferAssets} lending and ${config.lowerRateBudgetAssets / config.minimumOfferAssets} reduce-only rungs, against the ${config.rungCount} configured`,
           parameters: ['minimumOfferAssets', 'higherRateBudgetAssets', 'lowerRateBudgetAssets']
         },
         {
           label: 'Exposure caps',
-          value: `${amountOf(config.targetMarketExposureAssets)} in this market, ${amountOf(config.maximumTotalExposureAssets)} across every configured market`,
+          value: `Cap the lending side only: ${amountOf(config.targetMarketExposureAssets)} in this market and ${amountOf(config.maximumTotalExposureAssets)} across every configured market, whichever binds first. Reduce-only offers are not capped by either`,
           parameters: ['targetMarketExposureAssets', 'maximumTotalExposureAssets']
         },
         {
           label: 'Minimum and maximum rate',
           value:
-            referenceResponse.band === undefined
+            referenceBand === undefined
               ? `Rungs never cross ${input.minimumRateBps} or ${input.maximumRateBps} BPS, and some rung always sits on a limit whatever the market does`
-              : referenceResponse.band.lowestRateBps === referenceResponse.band.highestRateBps
-                ? `Rungs never cross ${input.minimumRateBps} or ${input.maximumRateBps} BPS. The full ladder fits only at a market rate of exactly ${referenceResponse.band.lowestRateBps} BPS; any move squashes rungs onto a limit`
-                : `Rungs never cross ${input.minimumRateBps} or ${input.maximumRateBps} BPS. The full ladder fits while the market rate is ${referenceResponse.band.lowestRateBps}–${referenceResponse.band.highestRateBps} BPS; outside that, rungs squash onto a limit`,
+              : referenceBand.lowestRateBps === referenceBand.highestRateBps
+                ? `Rungs never cross ${input.minimumRateBps} or ${input.maximumRateBps} BPS. The full ladder fits only at a market rate of exactly ${referenceBand.lowestRateBps} BPS; any move squashes rungs onto a limit`
+                : `Rungs never cross ${input.minimumRateBps} or ${input.maximumRateBps} BPS. The full ladder fits while the market rate is ${referenceBand.lowestRateBps}–${referenceBand.highestRateBps} BPS; outside that, rungs squash onto a limit`,
           parameters: ['minimumRateBps', 'maximumRateBps']
         },
         {
@@ -717,7 +763,7 @@ export const generateLadderGraphicModels = (
         },
         {
           label: 'Check interval',
-          value: `Every ${config.loopIntervalSeconds} seconds, and offers are rewritten only once a rate moves more than ${config.movementToleranceBps} BPS`,
+          value: `Every ${config.loopIntervalSeconds} seconds. While the target centre stays within ${config.movementToleranceBps} BPS the ladder holds its current centre and only resizes; a bigger move recentres every rung`,
           parameters: ['loopIntervalSeconds', 'movementToleranceBps']
         },
         {

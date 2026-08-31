@@ -1,9 +1,8 @@
 import { describe, expect, test } from 'vitest'
 
 import {
-  RESPONSE_STRIP_POINTS,
   bootstrapReferenceBand,
-  ladderReferenceResponse
+  ladderReferenceBand
 } from '../../playground/reference-response.utils'
 import { ladderConfigsValue, parseBytes32 } from '../../src/config/market-collections'
 
@@ -32,25 +31,25 @@ const ladder = (overrides: Record<string, string>) => {
   return ladderConfigsValue([entry], [parseBytes32(MARKET, 'marketId')])[0]!
 }
 
-describe('ladderReferenceResponse', () => {
+describe('ladderReferenceBand', () => {
   test('reports the clamp-free band a single deterministic preview cannot show', () => {
     // spread 100 / step 50 / 4 rungs reaches center ± 200 against 200–800 bounds.
     expect(
-      ladderReferenceResponse(ladder({ spreadBps: '100', stepBps: '50', rungCount: '4' })).band
+      ladderReferenceBand(ladder({ spreadBps: '100', stepBps: '50', rungCount: '4' }))
     ).toEqual({ lowestRateBps: '400', highestRateBps: '600', contiguous: true })
   })
 
   test('shifts the band by the quote premium, which offsets the center', () => {
     expect(
-      ladderReferenceResponse(
+      ladderReferenceBand(
         ladder({ spreadBps: '100', stepBps: '50', rungCount: '4', quotePremiumBps: '-50' })
-      ).band
+      )
     ).toEqual({ lowestRateBps: '450', highestRateBps: '650', contiguous: true })
   })
 
   test('collapses to a single clean reference when the rungs exactly span the bounds', () => {
     // spread 200 / step 100 / 3 rungs reaches reference ± 300, the full half-range.
-    expect(ladderReferenceResponse(ladder({})).band).toEqual({
+    expect(ladderReferenceBand(ladder({}))).toEqual({
       lowestRateBps: '500',
       highestRateBps: '500',
       contiguous: true
@@ -63,20 +62,9 @@ describe('ladderReferenceResponse', () => {
     )
   })
 
-  test('counts pinned rungs against the configured total and bounds the strip', () => {
-    const response = ladderReferenceResponse(ladder({}))
-    expect(response.totalRungs).toBe(6)
-    expect(response.strip.length).toBeLessThanOrEqual(RESPONSE_STRIP_POINTS)
-    expect(response.strip.at(0)?.referenceRateBps).toBe('200')
-    expect(response.strip.at(-1)?.referenceRateBps).toBe('800')
-    for (const point of response.strip) expect(point.pinnedRungs).toBeLessThanOrEqual(6)
-  })
-
   test('widens the band as the ladder reaches less far from its center', () => {
-    const narrow = ladderReferenceResponse(
-      ladder({ spreadBps: '100', stepBps: '50', rungCount: '1' })
-    )
-    expect(narrow.band).toEqual({ lowestRateBps: '250', highestRateBps: '750', contiguous: true })
+    const narrow = ladderReferenceBand(ladder({ spreadBps: '100', stepBps: '50', rungCount: '1' }))
+    expect(narrow).toEqual({ lowestRateBps: '250', highestRateBps: '750', contiguous: true })
   })
 })
 

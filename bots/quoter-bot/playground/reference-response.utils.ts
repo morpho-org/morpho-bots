@@ -3,8 +3,6 @@ import type { TargetRateConfigured } from '../src/domain/target-rate'
 
 import { generateLadderWithDiagnostics } from '../src/domain/ladder/ladder'
 
-/** Samples rendered in a response strip; enough to show shape without crowding the axis. */
-export const RESPONSE_STRIP_POINTS = 61
 /** Upper bound on swept references, protecting an extreme configured rate range. */
 const MAXIMUM_REFERENCE_SAMPLES = 20_001
 
@@ -15,15 +13,6 @@ export type ReferenceBand = {
   /** False when the range encloses a degraded reference, so the endpoints alone would mislead. */
   contiguous: boolean
 }
-/** One swept reference and the rung count that saturates at a hard bound there. */
-export type ReferenceResponsePoint = { referenceRateBps: string; pinnedRungs: number }
-/** How one ladder entry responds across every reference its configured rate range admits. */
-export type LadderReferenceResponse = {
-  totalRungs: number
-  strip: ReferenceResponsePoint[]
-  band?: ReferenceBand
-}
-
 /**
  * Enumerates candidate references at one-BPS resolution.
  * @remarks The lowest reference is 1 BPS because the runtime requires a positive reference; the
@@ -59,27 +48,20 @@ const bandOf = (
   }
 }
 
-const downsample = <T>(items: readonly T[], count: number): T[] => {
-  if (items.length <= count) return [...items]
-  return Array.from(
-    { length: count },
-    (_unused, index) => items[Math.round((index * (items.length - 1)) / (count - 1))]!
-  )
-}
-
 /**
- * Measures how a ladder entry degrades as its reference rate moves across the configured range.
+ * Measures the reference range over which a ladder keeps every rung off a hard rate bound.
  * @param config - One validated ladder configuration.
- * @returns The rung total, a downsampled response strip, and the widest reference band that pins
- * no rung to a hard bound; `band` is absent only defensively, because the collection parser
- * already rejects a shape that fits at no reference.
+ * @returns The widest reference band pinning no rung; absent only defensively, because the
+ * collection parser already rejects a shape that fits at no reference.
  * @remarks Derived entirely from the configuration through the runtime's own
  * `generateLadderWithDiagnostics`, so it assumes no live market data. Answers the question a
  * single deterministic preview cannot: how far the market may move before the shape degrades.
+ * The sweep runs past the configured bounds, since a live reference has no reason to stay inside
+ * them.
  */
-export const ladderReferenceResponse = (
+export const ladderReferenceBand = (
   config: TargetRateConfigured<LadderConfig>
-): LadderReferenceResponse => {
+): ReferenceBand | undefined => {
   const pinnedRungs = (referenceRateBps: bigint) => {
     const { diagnostics } = generateLadderWithDiagnostics({
       config,
@@ -93,26 +75,15 @@ export const ladderReferenceResponse = (
       diagnostics.higher.clampedToMaximumRungs
     )
   }
-  // The band is measured past the configured bounds, because the runtime reference is a market rate
-  // that may sit anywhere; the strip stays on the plotted axis it is drawn under.
   const margin = absolute(config.quotePremiumBps) + ladderReach(config) + 1n
-  const wide = sampleReferences(config.minimumRateBps - margin, config.maximumRateBps + margin)
-  const band = bandOf(
-    wide,
-    wide.map(reference => pinnedRungs(reference) === 0)
+  const references = sampleReferences(
+    config.minimumRateBps - margin,
+    config.maximumRateBps + margin
   )
-  const axis = sampleReferences(config.minimumRateBps, config.maximumRateBps)
-  return {
-    totalRungs: config.rungCount * 2,
-    strip: downsample(
-      axis.map(referenceRateBps => ({
-        referenceRateBps: String(referenceRateBps),
-        pinnedRungs: pinnedRungs(referenceRateBps)
-      })),
-      RESPONSE_STRIP_POINTS
-    ),
-    ...(band === undefined ? {} : { band })
-  }
+  return bandOf(
+    references,
+    references.map(reference => pinnedRungs(reference) === 0)
+  )
 }
 
 /**
