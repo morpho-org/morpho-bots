@@ -212,6 +212,7 @@ export const createProductionBootstrapAdapters = (
   })
   const midnight = client.morpho.midnight(config.chainId)
   const ownership = createBootstrapGroupOwnership({
+    chainId: config.chainId,
     maker,
     marketIds: config.setup.marketIds,
     configuredGroupIds: config.v0OfferGroupIds

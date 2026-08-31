@@ -320,6 +320,7 @@ export const createProductionLadderAdapters = (
   })
   const midnight = client.morpho.midnight(config.chainId)
   const bootstrapOwnership = createBootstrapGroupOwnership({
+    chainId: config.chainId,
     maker,
     marketIds: config.setup.marketIds,
     configuredGroupIds: config.v0OfferGroupIds

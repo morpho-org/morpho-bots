@@ -47,6 +47,7 @@ export const createProductionOfferInvalidationPort = (
   }).extend(morphoViemExtension({ supportSignature: true, supportDeployless: true }))
   const midnight = client.morpho.midnight(config.chainId)
   const bootstrapOwnership = createBootstrapGroupOwnership({
+    chainId: config.chainId,
     maker,
     marketIds: config.setup.marketIds,
     configuredGroupIds: config.v0OfferGroupIds

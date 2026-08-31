@@ -14,7 +14,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { encodeFunctionData } from 'viem'
-import { base } from 'viem/chains'
+import { base, mainnet } from 'viem/chains'
 import { describe, expect, test } from 'vitest'
 
 import { ConfigService } from '../../../src/config/config.service'
@@ -1064,17 +1064,38 @@ describe('readBootstrapGroups', () => {
 })
 
 describe('createBootstrapGroupOwnership', () => {
+  test('isolates persisted ownership per chain for the same maker and markets', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'quoter-bot-chain-scope-'))
+    try {
+      const baseOwnership = createBootstrapGroupOwnership(
+        { chainId: base.id, maker, marketIds: [marketId], configuredGroupIds: [] },
+        { stateDirectory: directory }
+      )
+      await baseOwnership.reserve(groupId)
+      expect(await baseOwnership.read()).toEqual([groupId])
+
+      const mainnetOwnership = createBootstrapGroupOwnership(
+        { chainId: mainnet.id, maker, marketIds: [marketId], configuredGroupIds: [] },
+        { stateDirectory: directory }
+      )
+      expect(await mainnetOwnership.read()).toEqual([])
+      expect(await baseOwnership.read()).toEqual([groupId])
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
+
   test('persists reservations across instances and removes unpublished IDs safely', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'quoter-bot-reservation-'))
     const ownership = createBootstrapGroupOwnership(
-      { maker, marketIds: [marketId], configuredGroupIds: [] },
+      { chainId: base.id, maker, marketIds: [marketId], configuredGroupIds: [] },
       { stateDirectory: directory }
     )
     try {
       await ownership.reserve(groupId)
 
       const restarted = createBootstrapGroupOwnership(
-        { maker, marketIds: [marketId], configuredGroupIds: [] },
+        { chainId: base.id, maker, marketIds: [marketId], configuredGroupIds: [] },
         { stateDirectory: directory }
       )
       expect(await restarted.read()).toEqual([groupId])
@@ -1089,7 +1110,7 @@ describe('createBootstrapGroupOwnership', () => {
   test('persists the intended offer metadata used to rehydrate a confirmed group', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'quoter-bot-offer-metadata-'))
     const ownership = createBootstrapGroupOwnership(
-      { maker, marketIds: [marketId], configuredGroupIds: [] },
+      { chainId: base.id, maker, marketIds: [marketId], configuredGroupIds: [] },
       { stateDirectory: directory }
     )
     const offer = {
@@ -1105,7 +1126,7 @@ describe('createBootstrapGroupOwnership', () => {
       await ownership.confirm(groupId)
 
       const restarted = createBootstrapGroupOwnership(
-        { maker, marketIds: [marketId], configuredGroupIds: [] },
+        { chainId: base.id, maker, marketIds: [marketId], configuredGroupIds: [] },
         { stateDirectory: directory }
       )
       expect(await restarted.readOffers()).toEqual([{ groupId, ...offer }])
@@ -1117,7 +1138,7 @@ describe('createBootstrapGroupOwnership', () => {
   test('rejects a negative protocol tick before persisting offer ownership', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'quoter-bot-invalid-tick-'))
     const ownership = createBootstrapGroupOwnership(
-      { maker, marketIds: [marketId], configuredGroupIds: [] },
+      { chainId: base.id, maker, marketIds: [marketId], configuredGroupIds: [] },
       { stateDirectory: directory }
     )
     try {
@@ -1143,7 +1164,7 @@ describe('createBootstrapGroupOwnership', () => {
   test('retains bot-issued IDs across instances without sharing them with another strategy', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'quoter-bot-ownership-'))
     const ownership = createBootstrapGroupOwnership(
-      { maker, marketIds: [marketId], configuredGroupIds: [] },
+      { chainId: base.id, maker, marketIds: [marketId], configuredGroupIds: [] },
       { stateDirectory: directory }
     )
     try {
@@ -1151,11 +1172,11 @@ describe('createBootstrapGroupOwnership', () => {
       await ownership.confirm(groupId)
 
       const restarted = createBootstrapGroupOwnership(
-        { maker, marketIds: [marketId], configuredGroupIds: [] },
+        { chainId: base.id, maker, marketIds: [marketId], configuredGroupIds: [] },
         { stateDirectory: directory }
       )
       const otherStrategy = createBootstrapGroupOwnership(
-        { maker, marketIds: [`0x${'12'.repeat(32)}`], configuredGroupIds: [] },
+        { chainId: base.id, maker, marketIds: [`0x${'12'.repeat(32)}`], configuredGroupIds: [] },
         { stateDirectory: directory }
       )
 
@@ -1170,7 +1191,7 @@ describe('createBootstrapGroupOwnership', () => {
     const directory = await mkdtemp(join(tmpdir(), 'quoter-bot-forget-'))
     const configuredGroupId: Hex = `0x${'34'.repeat(32)}`
     const ownership = createBootstrapGroupOwnership(
-      { maker, marketIds: [marketId], configuredGroupIds: [configuredGroupId] },
+      { chainId: base.id, maker, marketIds: [marketId], configuredGroupIds: [configuredGroupId] },
       { stateDirectory: directory }
     )
     try {

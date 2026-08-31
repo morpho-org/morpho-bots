@@ -121,6 +121,7 @@ const defaultState = async (config: ConfigService, ignoredOfferGroupIds: readonl
         deriveSignerAddress: () => makerAccountAddress(identity)
       }
   const ownership = createBootstrapGroupOwnership({
+    chainId: config.chainId,
     maker: config.setup.maker,
     marketIds: config.setup.marketIds,
     configuredGroupIds: config.v0OfferGroupIds

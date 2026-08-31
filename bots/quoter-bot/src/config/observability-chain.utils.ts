@@ -4,15 +4,17 @@ import { loadConfigurationSources } from './config-source.utils'
 import { BASE_CHAIN_ID, observabilityChainId } from './supported-chains.utils'
 
 /**
- * Reads the `--config` path from raw argv without running full CLI parsing.
+ * Reads the configuration path from raw argv without running full CLI parsing.
  * @param argv - Process arguments following the executable and script.
  * @returns The explicit configuration path, or `undefined` when the flag is absent or has no value.
  * @remarks Argv is inspected directly because observability is created before the CLI parses its
- * options; a malformed flag is ignored here and reported later by real parsing.
+ * options; a malformed flag is ignored here and reported later by real parsing. Both spellings the
+ * CLI declares are accepted (`-c, --config <path>`), so a short-flag invocation is not silently
+ * labelled with the wrong chain.
  */
 const explicitConfigPath = (argv: readonly string[]) => {
-  const index = argv.indexOf('--config')
-  if (index !== -1) return argv[index + 1]
+  const index = argv.findIndex(argument => argument === '--config' || argument === '-c')
+  if (index !== -1 && argv[index + 1] !== undefined) return argv[index + 1]
   const inline = argv.find(argument => argument.startsWith('--config='))
   return inline?.slice('--config='.length) || undefined
 }
