@@ -64,10 +64,8 @@ export function encodeLiquidationExec(params: {
 
   if (
     isBadDebtRealization({
-      collateralIndex: params.collateralIndex,
       seizedAssets: params.seizedAssets,
-      repaidUnits: params.repaidUnits,
-      postMaturityMode: params.postMaturityMode
+      repaidUnits: params.repaidUnits
     })
   ) {
     const liquidateData = encodeFunctionData({

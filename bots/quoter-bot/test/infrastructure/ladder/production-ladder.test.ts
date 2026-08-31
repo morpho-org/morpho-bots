@@ -68,7 +68,37 @@ describe('calculateProductionLadderCapacities', () => {
       lowerRateCapacityAssets: 90n,
       higherRateCapacityAssets: 10n,
       targetMarketCapacityAssets: 100n,
-      maximumTotalCapacityAssets: 1_000n
+      maximumTotalCapacityAssets: 1_000n,
+      cashBalanceAssets: 100n,
+      creditAssets: 90n,
+      otherMarketCreditAssets: 0n,
+      reservedAssets: 0n,
+      marketReservedAssets: 0n
+    })
+  })
+
+  test('reports the wallet balance when the allowance narrows spendable capacity', () => {
+    expect(
+      calculateProductionLadderCapacities({
+        marketId,
+        balance: 40n,
+        walletBalance: 100n,
+        currentCredit: 0n,
+        otherMarketCredit: 0n,
+        targetMarketExposureAssets: 100n,
+        maximumTotalExposureAssets: 1_000n,
+        reservations: []
+      })
+    ).toEqual({
+      lowerRateCapacityAssets: 0n,
+      higherRateCapacityAssets: 40n,
+      targetMarketCapacityAssets: 40n,
+      maximumTotalCapacityAssets: 1_000n,
+      cashBalanceAssets: 100n,
+      creditAssets: 0n,
+      otherMarketCreditAssets: 0n,
+      reservedAssets: 0n,
+      marketReservedAssets: 0n
     })
   })
 })
@@ -241,6 +271,42 @@ describe('createProductionLadderAdapters', () => {
     expect(await adapters.rates.readRate(marketId)).toBe(475n)
   })
 
+  test('omits seconds to maturity from the observation without a configured maturity premium', async () => {
+    const config = ConfigService.from(
+      {
+        ...environment,
+        LADDER_MARKETS: JSON.stringify([
+          {
+            marketId,
+            targetRate: { strategy: 'hardcoded', hardcodedRateBps: '475' },
+            quotePremiumBps: '0',
+            spreadBps: '200',
+            stepBps: '100',
+            rungCount: '1',
+            sizeSkewBps: '0',
+            lowerRateBudgetAssets: '10',
+            higherRateBudgetAssets: '10',
+            targetMarketExposureAssets: '20',
+            maximumTotalExposureAssets: '20',
+            minimumOfferAssets: '1',
+            groupMode: 'shared-rung',
+            loopIntervalSeconds: '60',
+            movementToleranceBps: '10',
+            minimumRateBps: '200',
+            maximumRateBps: '800'
+          }
+        ])
+      },
+      { readOnly: true }
+    )
+
+    const adapters = await createProductionLadderAdapters(config)
+    const observation = await adapters.rates.readObservation?.(marketId)
+
+    expect(observation?.rateBps).toBe(475n)
+    expect(observation !== undefined && 'secondsToMaturity' in observation).toBe(false)
+  })
+
   test('constructs read-only ports without loading a private key or starting provider reads', async () => {
     const config = ConfigService.from(environment, { readOnly: true })
 
@@ -277,6 +343,7 @@ describe('publishLadderPublication', () => {
     const retained = new Set<Hex>()
     const service = new MidnightLadderMakeService({
       readActive: async () => undefined,
+      readActiveState: async () => ({ consumption: [] }),
       listOwnedGroups: async () => [],
       readGroupConsumed: async () => 0n,
       listActiveGroupIds: async () => [],
@@ -320,6 +387,7 @@ describe('publishLadderPublication', () => {
     const retained = new Set<Hex>()
     const service = new MidnightLadderMakeService({
       readActive: async () => undefined,
+      readActiveState: async () => ({ consumption: [] }),
       listOwnedGroups: async () => [],
       readGroupConsumed: async () => 0n,
       listActiveGroupIds: async () => [],

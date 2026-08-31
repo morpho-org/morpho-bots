@@ -164,6 +164,12 @@ main {
   left: -0.35rem;
   color: #ff87a5;
 }
+.quote-marker--maximum {
+  opacity: 0.55;
+}
+.quote-marker--maximum::before {
+  content: '○';
+}
 .range-label {
   position: absolute;
   font-size: 0.72rem;
@@ -210,6 +216,10 @@ main {
 .ladder-center-marker {
   right: 26%;
   color: #ff9bb4;
+}
+.ladder-center-marker--maximum {
+  right: 8%;
+  opacity: 0.55;
 }
 .callouts {
   display: grid;

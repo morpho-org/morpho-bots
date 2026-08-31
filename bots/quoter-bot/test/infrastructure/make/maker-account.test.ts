@@ -16,6 +16,7 @@ import { privateKeyToAccount } from 'viem/accounts'
 import { describe, expect, test, vi } from 'vitest'
 
 import { createMakerAccount } from '../../../src/infrastructure/make/maker-account.utils'
+import { MiddlewareSigningUnsupportedError } from '../../../src/infrastructure/make/middleware-signing-unsupported.error'
 
 const privateKey = `0x${'11'.repeat(32)}` as const
 const maker = privateKeyToAccount(privateKey).address
@@ -29,6 +30,18 @@ describe('maker signer selection', () => {
 
     expect(source).toContain('const kmsClients = new Map<string, KMSClient>()')
     expect(source.match(/new KMSClient/g)).toHaveLength(1)
+  })
+
+  test('fails closed for the middleware identity instead of exposing a generic signer', async () => {
+    await expect(
+      createMakerAccount({
+        readOnly: false,
+        maker,
+        method: 'middleware',
+        functionArn: 'arn:aws:lambda:eu-west-1:123456789012:function:quoter-signer-routine:prod',
+        region: 'eu-west-1'
+      })
+    ).rejects.toBeInstanceOf(MiddlewareSigningUnsupportedError)
   })
 
   test('creates the legacy local private-key signer', async () => {

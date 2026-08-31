@@ -3,8 +3,14 @@ import type { Hex } from 'viem'
 
 import { cycleHasFailure, waitForMonitorInterval } from '@repo/monitoring'
 
-import type { LadderConfig, LadderMarketState, LadderQuoteSet } from '../../domain/ladder/ladder'
 import type {
+  LadderConfig,
+  LadderDiagnostics,
+  LadderMarketState,
+  LadderQuoteSet
+} from '../../domain/ladder/ladder'
+import type {
+  LadderGroupConsumption,
   LadderMakeResult,
   LadderSubmittedTransaction,
   LadderTransactionSubmittedEvent,
@@ -13,7 +19,12 @@ import type {
   LadderVerboseState
 } from './ladder-verbose'
 
-import { generateLadder, shouldRecenter, validateLadderConfig } from '../../domain/ladder/ladder'
+import {
+  effectiveLadderPremiumBps,
+  generateLadderWithDiagnostics,
+  shouldRecenter,
+  validateLadderConfig
+} from '../../domain/ladder/ladder'
 import { LadderConfigurationError } from '../../domain/ladder/ladder-configuration.error'
 import { LadderAdapterError } from '../../infrastructure/ladder/ladder-adapter.error'
 import { operatorErrorName } from '../operator-error-name.utils'
@@ -44,10 +55,15 @@ export interface LadderReferenceRateService {
    * Optionally reads the rate together with a freshness identity used to refresh timestamp-sensitive
    * protocol offers even when the configured APR is unchanged.
    * @param marketId - Canonical market identifier whose reference is required.
-   * @returns Current rate and stable freshness observation identity.
+   * @returns Current rate and stable freshness observation identity, extended with fresh seconds
+   * to maturity when this market's maturity-premium configuration requires that observation.
    * @throws When the rate provider cannot return a fresh valid reference.
+   * @remarks Read-only: implementations may reach providers over the network but must not
+   * publish, replace, invalidate, or persist anything.
    */
-  readObservation?(marketId: Hex): Promise<{ rateBps: bigint; observationId: string }>
+  readObservation?(
+    marketId: Hex
+  ): Promise<{ rateBps: bigint; observationId: string; secondsToMaturity?: bigint }>
 }
 
 /** Consumer-owned blocking make boundary for ladder reconciliation and safety invalidation. */
@@ -67,6 +83,21 @@ export interface LadderMakeService {
    * @throws When active roots cannot be loaded or decoded safely.
    */
   readActive(marketId: Hex): Promise<LadderQuoteSet | undefined>
+  /**
+   * Reads the active quote and its groups' consumption from one snapshot.
+   * @param marketId - Canonical market identifier whose active roots must be reconstructed.
+   * @returns The active quote when roots remain live, and one consumption record per indexed owned
+   * group; groups the indexer has not seen are omitted.
+   * @throws When active roots cannot be loaded or decoded safely.
+   * @remarks Optional; an adapter that cannot report consumption omits it, which only suppresses
+   * fill telemetry. Both values must come from a SINGLE provider read: deriving them from separate
+   * reads would put a monitoring round trip on the quoting path. Consumption is monotonic per group
+   * ID, so cycle-over-cycle growth is taker fills rather than the strategy's own cancel and
+   * republish — and it must be sampled before reconciliation, which forgets replaced groups.
+   */
+  readActiveState?(
+    marketId: Hex
+  ): Promise<{ quote?: LadderQuoteSet; consumption: readonly LadderGroupConsumption[] }>
   /**
    * Reconciles one strategy-owned market quote set against fresh active roots.
    * @param parameters - Market, optional exact desired set, stable reason, and submission observer.
@@ -343,10 +374,15 @@ export class LadderQuoterService {
           'ladder-configuration-failed',
           parameters
         )
+        const submittedTransactions =
+          result.makeResult !== undefined && result.makeResult !== 'logged'
+            ? result.makeResult.submittedTransactions
+            : []
         return [
-          await this.completeResult(config, result, parameters, {
+          await this.completeResult(config, result.result, parameters, {
             config,
-            currentState: { status: 'not-read', reason: 'configuration-invalid' }
+            currentState: { status: 'not-read', reason: 'configuration-invalid' },
+            ...(submittedTransactions.length > 0 ? { submittedTransactions } : {})
           })
         ]
       }
@@ -354,9 +390,19 @@ export class LadderQuoterService {
 
     const results: LadderRunResult[] = []
     for (const config of this.configs) {
+      const startedAt = Date.now()
       let active: LadderQuoteSet | undefined
+      // Sampled here rather than after reconciliation: replacing a quote forgets the old group from
+      // durable ownership, so a fill on it would never be observed on the cycle that replaced it —
+      // which is exactly the cycle a fill causes. Runs with the active read so both share one
+      // deduplicated groups request.
+      let groupConsumption: readonly LadderGroupConsumption[] | undefined
       try {
-        active = await this.make.readActive(config.marketId)
+        const state = this.make.readActiveState
+          ? await this.make.readActiveState(config.marketId)
+          : { quote: await this.make.readActive(config.marketId), consumption: undefined }
+        active = state.quote
+        groupConsumption = state.consumption
       } catch (error) {
         const result = await this.halt(
           config.marketId,
@@ -365,11 +411,22 @@ export class LadderQuoterService {
           'ladder-decision-failed',
           parameters
         )
+        const submittedTransactions =
+          result.makeResult !== undefined && result.makeResult !== 'logged'
+            ? result.makeResult.submittedTransactions
+            : []
         results.push(
-          await this.completeResult(config, result, parameters, {
+          await this.completeResult(
             config,
-            currentState: { status: 'failed', errorName: operatorErrorName(error) }
-          })
+            result.result,
+            parameters,
+            {
+              config,
+              currentState: { status: 'failed', errorName: operatorErrorName(error) },
+              ...(submittedTransactions.length > 0 ? { submittedTransactions } : {})
+            },
+            startedAt
+          )
         )
         return results
       }
@@ -380,15 +437,23 @@ export class LadderQuoterService {
       } catch (error) {
         const { result, invalidation } = await this.failedMarketRead(config, error, parameters)
         const submittedTransactions =
-          invalidation === undefined || invalidation === 'logged'
+          invalidation === undefined ||
+          invalidation === 'logged' ||
+          invalidation.submittedTransactions.length === 0
             ? undefined
             : invalidation.submittedTransactions
         results.push(
-          await this.completeResult(config, result, parameters, {
+          await this.completeResult(
             config,
-            currentState: { status: 'failed', errorName: operatorErrorName(error) },
-            ...(submittedTransactions ? { submittedTransactions } : {})
-          })
+            result,
+            parameters,
+            {
+              config,
+              currentState: { status: 'failed', errorName: operatorErrorName(error) },
+              ...(submittedTransactions ? { submittedTransactions } : {})
+            },
+            startedAt
+          )
         )
         if (result.status === 'halted') return results
         continue
@@ -402,11 +467,13 @@ export class LadderQuoterService {
 
       let referenceRateBps: bigint
       let referenceObservationId: string | undefined
+      let secondsToMaturity: bigint | undefined
       try {
         if (this.rates.readObservation) {
           const observation = await this.rates.readObservation(config.marketId)
           referenceRateBps = observation.rateBps
           referenceObservationId = observation.observationId
+          secondsToMaturity = observation.secondsToMaturity
         } else {
           referenceRateBps = await this.rates.readRate(config.marketId)
         }
@@ -418,28 +485,54 @@ export class LadderQuoterService {
           'reference-read-failed',
           parameters
         )
+        const submittedTransactions =
+          result.makeResult !== undefined && result.makeResult !== 'logged'
+            ? result.makeResult.submittedTransactions
+            : []
         results.push(
-          await this.completeResult(config, result, parameters, { config, currentState })
+          await this.completeResult(
+            config,
+            result.result,
+            parameters,
+            {
+              config,
+              currentState,
+              ...(groupConsumption ? { groupConsumption } : {}),
+              ...(submittedTransactions.length > 0 ? { submittedTransactions } : {})
+            },
+            startedAt
+          )
         )
         return results
       }
 
       let desired: LadderQuoteSet
       let decision: 'publish' | 'recenter' | 'resize' | 'rest'
+      let diagnostics: LadderDiagnostics | undefined
       try {
-        const targetRateBps = referenceRateBps + config.quotePremiumBps
+        const targetRateBps =
+          referenceRateBps + effectiveLadderPremiumBps(config, secondsToMaturity)
         const recenter = active
           ? shouldRecenter(active.centerRateBps, targetRateBps, config.movementToleranceBps)
           : true
-        const generated =
+        const maturity = secondsToMaturity === undefined ? {} : { secondsToMaturity }
+        const generation =
           active && !recenter
-            ? generateLadder({
+            ? generateLadderWithDiagnostics({
                 config,
                 referenceRateBps,
                 capacities: market,
-                retainedCenterRateBps: active.centerRateBps
+                retainedCenterRateBps: active.centerRateBps,
+                ...maturity
               })
-            : generateLadder({ config, referenceRateBps, capacities: market })
+            : generateLadderWithDiagnostics({
+                config,
+                referenceRateBps,
+                capacities: market,
+                ...maturity
+              })
+        diagnostics = generation.diagnostics
+        const generated = generation.quote
         desired = referenceObservationId ? { ...generated, referenceObservationId } : generated
         if (!active) decision = 'publish'
         else if (sameLadderQuoteSet(active, desired)) decision = 'rest'
@@ -452,13 +545,26 @@ export class LadderQuoterService {
           'ladder-decision-failed',
           parameters
         )
+        const submittedTransactions =
+          result.makeResult !== undefined && result.makeResult !== 'logged'
+            ? result.makeResult.submittedTransactions
+            : []
         results.push(
-          await this.completeResult(config, result, parameters, {
+          await this.completeResult(
             config,
-            currentState,
-            referenceRateBps,
-            targetRateBps: referenceRateBps + config.quotePremiumBps
-          })
+            result.result,
+            parameters,
+            {
+              config,
+              currentState,
+              referenceRateBps,
+              ...(secondsToMaturity === undefined ? {} : { secondsToMaturity }),
+              ...this.premiumDiagnostics(config, referenceRateBps, secondsToMaturity),
+              ...(groupConsumption ? { groupConsumption } : {}),
+              ...(submittedTransactions.length > 0 ? { submittedTransactions } : {})
+            },
+            startedAt
+          )
         )
         return results
       }
@@ -471,9 +577,12 @@ export class LadderQuoterService {
         config,
         currentState,
         referenceRateBps,
-        targetRateBps: referenceRateBps + config.quotePremiumBps,
+        ...(secondsToMaturity === undefined ? {} : { secondsToMaturity }),
+        ...this.premiumDiagnostics(config, referenceRateBps, secondsToMaturity),
         ladderOffer: desired,
-        decision
+        decision,
+        ...(diagnostics ? { diagnostics } : {}),
+        ...(groupConsumption ? { groupConsumption } : {})
       }
 
       let reconciliation: LadderMakeResult
@@ -508,7 +617,8 @@ export class LadderQuoterService {
               ...(confirmedTransactions.length > 0
                 ? { submittedTransactions: confirmedTransactions }
                 : {})
-            }
+            },
+            startedAt
           )
         )
         continue
@@ -524,7 +634,8 @@ export class LadderQuoterService {
             config,
             { marketId: config.marketId, status: 'observed', action: 'rest' },
             parameters,
-            { ...verbosePlan, ...(submittedTransactions ? { submittedTransactions } : {}) }
+            { ...verbosePlan, ...(submittedTransactions ? { submittedTransactions } : {}) },
+            startedAt
           )
         )
         continue
@@ -539,7 +650,8 @@ export class LadderQuoterService {
             reason: decision
           },
           parameters,
-          { ...verbosePlan, ...(submittedTransactions ? { submittedTransactions } : {}) }
+          { ...verbosePlan, ...(submittedTransactions ? { submittedTransactions } : {}) },
+          startedAt
         )
       )
     }
@@ -576,15 +688,17 @@ export class LadderQuoterService {
         invalidation
       }
     } catch (invalidationError) {
+      const halt = await this.halt(
+        config.marketId,
+        'market-invalidation',
+        error,
+        'market-invalidation-failed',
+        parameters,
+        invalidationError
+      )
       return {
-        result: await this.halt(
-          config.marketId,
-          'market-invalidation',
-          error,
-          'market-invalidation-failed',
-          parameters,
-          invalidationError
-        )
+        result: halt.result,
+        invalidation: halt.makeResult
       }
     }
   }
@@ -593,14 +707,51 @@ export class LadderQuoterService {
     config: LadderConfig,
     result: LadderRunOutcome,
     parameters: LadderRunParameters,
-    verbose: LadderVerbosePlan
+    verbose: LadderVerbosePlan,
+    startedAt?: number
   ): Promise<LadderRunResult> {
     if (parameters.verbose !== true) return result
     const stateAfterCheck =
       verbose.currentState.status === 'not-read'
         ? verbose.currentState
         : await this.readVerboseState(config.marketId)
-    return { ...result, verbose: { ...verbose, stateAfterCheck } }
+    return {
+      ...result,
+      verbose: {
+        ...verbose,
+        stateAfterCheck,
+        ...(startedAt === undefined ? {} : { durationMs: Date.now() - startedAt })
+      }
+    }
+  }
+
+  /**
+   * Derives the safe premium and target-rate diagnostics for one verbose market result.
+   * @param config - Market configuration whose static and optional maturity premiums apply.
+   * @param referenceRateBps - Reference observation used by the decision for this market check.
+   * @param secondsToMaturity - Fresh maturity observation read beside the reference, when wired.
+   * @returns Resolved premium fields, or an empty object when the premium cannot be resolved
+   * because the required maturity observation is missing; that configuration failure is already
+   * reported by the decision itself, so diagnostics must not throw again inside result assembly.
+   * @throws Rethrows any non-configuration failure instead of silently dropping diagnostics.
+   */
+  private premiumDiagnostics(
+    config: LadderConfig,
+    referenceRateBps: bigint,
+    secondsToMaturity: bigint | undefined
+  ): Pick<LadderVerboseDetails, 'maturityPremiumBps' | 'targetRateBps'> {
+    try {
+      const premiumBps = effectiveLadderPremiumBps(config, secondsToMaturity)
+      return {
+        ...(config.maturityPremium
+          ? { maturityPremiumBps: premiumBps - config.quotePremiumBps }
+          : {}),
+        targetRateBps: referenceRateBps + premiumBps
+      }
+    } catch (error) {
+      if (error instanceof LadderConfigurationError) return {}
+      throw error
+    }
   }
 
   private async readVerboseState(marketId: Hex): Promise<LadderVerboseState> {
@@ -636,7 +787,7 @@ export class LadderQuoterService {
     reason: Parameters<LadderMakeService['hardHalt']>[0]['reason'],
     parameters: LadderRunParameters,
     marketInvalidationError?: unknown
-  ): Promise<LadderRunOutcome> {
+  ): Promise<{ result: LadderRunOutcome; makeResult?: LadderMakeResult }> {
     const marketInvalidationFailure =
       marketInvalidationError === undefined
         ? {}
@@ -653,23 +804,28 @@ export class LadderQuoterService {
           : undefined
       })
       return {
-        marketId,
-        status: 'halted',
-        stage,
-        strategyInvalidated: invalidation !== 'logged',
-        ...(invalidation === 'logged' ? { strategyInvalidationLogged: true } : {}),
-        errorName: operatorErrorName(error),
-        ...marketInvalidationFailure
+        result: {
+          marketId,
+          status: 'halted',
+          stage,
+          strategyInvalidated: invalidation !== 'logged',
+          ...(invalidation === 'logged' ? { strategyInvalidationLogged: true } : {}),
+          errorName: operatorErrorName(error),
+          ...marketInvalidationFailure
+        },
+        makeResult: invalidation
       }
     } catch (invalidationError) {
       return {
-        marketId,
-        status: 'halted',
-        stage,
-        strategyInvalidated: false,
-        errorName: operatorErrorName(error),
-        ...marketInvalidationFailure,
-        invalidationErrorName: operatorErrorName(invalidationError)
+        result: {
+          marketId,
+          status: 'halted',
+          stage,
+          strategyInvalidated: false,
+          errorName: operatorErrorName(error),
+          ...marketInvalidationFailure,
+          invalidationErrorName: operatorErrorName(invalidationError)
+        }
       }
     }
   }

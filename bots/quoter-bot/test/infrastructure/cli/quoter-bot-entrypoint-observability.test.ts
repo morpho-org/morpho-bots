@@ -9,17 +9,19 @@ import {
 import { MakerAccountError } from '../../../src/infrastructure/make/maker-account.error'
 
 describe('runQuoterBotEntrypoint observability', () => {
-  test('mirrors streamed actions and terminal results while preserving stdout', async () => {
+  test('ships only allowlisted monitoring records, not every named one', async () => {
     const stdout: string[] = []
     const stderr: string[] = []
     const record = vi.fn((_value: unknown) => undefined)
-    const cycle = { event: 'ladder.cycle', status: 'resting', activeOffers: [{ assets: 9n }] }
+    const cycle = { event: 'cycle.completed', workflow: 'ladder', status: 'resting' }
+    const unlisted = { event: 'readonly.make', request: { nested: true } }
     const result = { status: 'stopped', cycles: 1 }
 
     const exitCode = await runQuoterBotEntrypoint(
       {
         run: async (_argv, runtime) => {
           await runtime?.writeEvent?.(cycle)
+          await runtime?.writeEvent?.(unlisted)
           return result
         }
       },
@@ -30,12 +32,12 @@ describe('runQuoterBotEntrypoint observability', () => {
     )
 
     expect(exitCode).toBe(0)
-    expect(stdout.map(value => JSON.parse(value))).toEqual([
-      { event: 'ladder.cycle', status: 'resting', activeOffers: [{ assets: '9' }] },
-      result
-    ])
+    expect(stdout.map(value => JSON.parse(value))).toEqual([cycle, unlisted, result])
     expect(stderr).toEqual([])
-    expect(record.mock.calls.map(call => call[0])).toEqual([cycle, result])
+    expect(record.mock.calls.map(call => call[0])).toEqual([cycle])
+    expect(
+      record.mock.calls.every(call => typeof (call[0] as { event?: unknown }).event === 'string')
+    ).toBe(true)
   })
 
   test('observes unknown failures by name without leaking their message', async () => {
@@ -63,6 +65,7 @@ describe('runQuoterBotEntrypoint observability', () => {
 
   test('surfaces sanitized maker-account failures without reporting them as unexpected', async () => {
     const stderr: string[] = []
+    const record = vi.fn((_value: unknown) => undefined)
     const unexpected = vi.fn((_error: unknown, _origin: 'entrypoint') => undefined)
     const error = new MakerAccountError('keystore-decrypt')
 
@@ -71,11 +74,14 @@ describe('runQuoterBotEntrypoint observability', () => {
       ['setup-check'],
       { writeOut: () => undefined, writeError: value => stderr.push(value) },
       {},
-      { record: vi.fn(() => undefined), unexpected }
+      { record, unexpected }
     )
 
     expect(exitCode).toBe(1)
     expect(stderr).toEqual(['Error: Maker account keystore-decrypt failed'])
+    expect(record.mock.calls).toEqual([
+      [{ event: 'bot.failed', reason: 'maker-account', errorName: 'MakerAccountError' }]
+    ])
     expect(unexpected).toHaveBeenCalledTimes(0)
   })
 

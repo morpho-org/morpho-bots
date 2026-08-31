@@ -71,15 +71,15 @@ const expectHumanFailure = (stderr: string[], message: string, details: unknown)
 }
 
 describe('Cli', () => {
-  test('quoter-bot --version returns 0.0.0', async () => {
-    expect(await cli().run(['--version'])).toBe('0.0.0')
+  test('morpho-quoter --version returns the dev placeholder on unbundled runs', async () => {
+    expect(await cli().run(['--version'])).toBe('0.0.0-dev')
   })
 
   test('entrypoint --version succeeds without loading runtime setup environment', async () => {
     const { exitCode, stdout, stderr } = await runEntrypointWith(['--version'])
 
     expect(exitCode).toBe(0)
-    expect(stdout.trim()).toBe('0.0.0')
+    expect(stdout.trim()).toBe('0.0.0-dev')
     expect(stderr).toBe('')
   })
 
@@ -87,7 +87,7 @@ describe('Cli', () => {
     const { exitCode, stdout, stderr } = await runEntrypointWith(['--json', '--version'])
 
     expect(exitCode).toBe(0)
-    expect(JSON.parse(stdout)).toBe('0.0.0')
+    expect(JSON.parse(stdout)).toBe('0.0.0-dev')
     expect(stderr).toBe('')
   })
 
@@ -133,8 +133,8 @@ describe('Cli', () => {
     for (const marker of markers) expect(output).not.toContain(marker)
   })
 
-  test('quoter-bot -v is an alias for --version', async () => {
-    expect(await cli().run(['-v'])).toBe('0.0.0')
+  test('morpho-quoter -v is an alias for --version', async () => {
+    expect(await cli().run(['-v'])).toBe('0.0.0-dev')
   })
 
   test('rejects an unknown command', async () => {
@@ -146,7 +146,7 @@ describe('Cli', () => {
     expect(error).toEqual(
       expect.objectContaining({ name: 'CliUsageError', code: 'INVALID_USAGE', kind: 'usage' })
     )
-    expect((error as Error).message).toBe('Invalid command-line usage')
+    expect((error as Error).message).toBe('Invalid command-line usage; rerun with --help for usage')
     expect(error).not.toHaveProperty('cause')
     expect(error).not.toHaveProperty('command')
   })
@@ -161,7 +161,7 @@ describe('Cli', () => {
       code: 'INVALID_USAGE',
       kind: 'usage'
     })
-    expect((error as Error).message).toBe('Invalid command-line usage')
+    expect((error as Error).message).toBe('Invalid command-line usage; rerun with --help for usage')
     expect(error).not.toHaveProperty('cause')
     expect(error).not.toHaveProperty('command')
   })
@@ -188,7 +188,7 @@ describe('Cli', () => {
     const { exitCode, output } = await runEntrypoint(argv)
 
     expect(exitCode).toBe(1)
-    expect(output.trim()).toBe('Error: Invalid command-line usage')
+    expect(output.trim()).toBe('Error: Invalid command-line usage; rerun with --help for usage')
     for (const marker of markers) expect(output).not.toContain(marker)
   })
 
@@ -243,6 +243,46 @@ describe('Cli', () => {
     expect(assertReady).toHaveBeenCalledWith(controller.signal)
   })
 
+  test('never lets a failing monitoring write stop a monitored cycle', async () => {
+    const report = {
+      status: 'stopped' as const,
+      reason: 'signal' as const,
+      cycles: 1
+    }
+    const runContinuously = vi.fn(
+      async (parameters: {
+        signal: AbortSignal
+        onCycle?: (result: typeof readyReport) => void | Promise<void>
+      }) => {
+        await parameters.onCycle?.(readyReport)
+        return report
+      }
+    )
+    const written: unknown[] = []
+    const application = new Cli(
+      new VersionService(),
+      () => ({ assertReady: async () => readyReport, runContinuously }),
+      () => ({ runOnce: async () => [] }),
+      () => ({ runOnce: async () => [] })
+    )
+
+    expect(
+      await application.run(['setup-check', '--monitor'], {
+        signal: new AbortController().signal,
+        writeEvent: value => {
+          written.push(value)
+          if ((value as { event?: string }).event === 'cycle.completed') {
+            throw new Error('sink unavailable')
+          }
+        }
+      })
+    ).toEqual(report)
+    expect(runContinuously).toHaveBeenCalledTimes(1)
+    expect(written).toContainEqual(
+      expect.objectContaining({ event: 'cycle.completed', workflow: 'setup-check' })
+    )
+  })
+
   test('quoter-bot setup-check --monitor streams readiness reports until shutdown', async () => {
     const report = {
       status: 'stopped' as const,
@@ -276,7 +316,10 @@ describe('Cli', () => {
         }
       })
     ).toEqual(report)
-    expect(streamed).toEqual([readyReport])
+    expect(streamed).toEqual([
+      readyReport,
+      { event: 'cycle.completed', workflow: 'setup-check', status: 'ready' }
+    ])
     expect(runContinuously).toHaveBeenCalledTimes(1)
     expect(assertReady).not.toHaveBeenCalled()
   })
@@ -401,7 +444,16 @@ describe('Cli', () => {
         }
       })
     ).toEqual(report)
-    expect(streamed).toEqual([cycle])
+    expect(streamed).toEqual([
+      cycle,
+      {
+        event: 'cycle.completed',
+        workflow: 'bootstrap',
+        marketId: cycle[0]?.marketId,
+        status: 'observed',
+        action: 'rest'
+      }
+    ])
     expect(runContinuously).toHaveBeenCalledTimes(1)
     expect(runContinuously.mock.calls[0]?.[0]).toMatchObject({ verbose: false })
     expect(runOnce).not.toHaveBeenCalled()
@@ -635,7 +687,14 @@ describe('Cli', () => {
         operation: 'publish',
         txHash
       },
-      cycle
+      cycle,
+      {
+        event: 'cycle.completed',
+        workflow: 'ladder',
+        marketId,
+        status: 'observed',
+        action: 'rest'
+      }
     ])
   })
 
@@ -748,7 +807,10 @@ describe('Cli', () => {
       signal: controller.signal,
       verbose: true
     })
-    expect(streamed).toEqual([event])
+    expect(streamed).toEqual([
+      event,
+      { event: 'cycle.completed', workflow: 'setup-check', status: 'ready' }
+    ])
   })
 
   test('quoter-bot start rejects a halted combined lifecycle report', async () => {
@@ -985,7 +1047,7 @@ describe('Cli', () => {
     const { exitCode, output } = await runEntrypoint(['invalidate', '--', '--json'])
 
     expect(exitCode).toBe(1)
-    expect(output.trim()).toBe('Error: Invalid command-line usage')
+    expect(output.trim()).toBe('Error: Invalid command-line usage; rerun with --help for usage')
   })
 
   test('entrypoint emits a halted report and returns a non-zero exit code', async () => {

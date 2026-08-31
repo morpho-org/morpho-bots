@@ -25,7 +25,6 @@ export function composeQuoting(deps: {
   chainId: number
   executor: Address
   venues: readonly Venue[]
-  slippageBps: number
   baseUrls: Partial<Record<Venue, string>>
   maxRouteImpactBps: number
   unwrappers: readonly Unwrapper[]
@@ -58,6 +57,10 @@ export function composeQuoting(deps: {
         loanToken: out.market.loanToken,
         amountIn: plan.seizedAssets,
         referenceAmountOut: expectedLoanOut(plan, out),
+        // Break-even, straight off the plan: the repay `liquidate` will pull for this seize at the LIF
+        // the plan was sized at. Read rather than recomputed — the matured-and-unhealthy branch picks a
+        // mode by surplus, so the LIF is not recoverable from `postMaturityMode` or from chain time.
+        minAcceptableAmountOut: plan.impliedRepaidUnits,
         // The tick's position label (`${id}:${borrower}`) — the correlation id join across quote logs.
         id: label
       })

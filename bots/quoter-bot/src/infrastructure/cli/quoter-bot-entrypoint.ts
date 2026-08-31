@@ -1,5 +1,6 @@
 import { createCliLogger } from '@repo/logging'
 
+import type { MonitoringEvent } from '../../application/monitoring/monitoring-event'
 import type { CliRuntimeOptions } from './cli'
 
 import { PositionBootstrapHaltedError } from '../../application/bootstrap/position-bootstrap-halted.error'
@@ -7,6 +8,8 @@ import { PositionBootstrapMonitorHaltedError } from '../../application/bootstrap
 import { OfferInvalidationFailedError } from '../../application/invalidation/offer-invalidation-failed.error'
 import { LadderCycleHaltedError } from '../../application/ladder/ladder-cycle-halted.error'
 import { LadderMonitorHaltedError } from '../../application/ladder/ladder-monitor-halted.error'
+import { isShippableRecord } from '../../application/monitoring/monitoring-event'
+import { terminalMonitoringEvents } from '../../application/monitoring/terminal-monitoring.utils'
 import { operatorErrorName } from '../../application/operator-error-name.utils'
 import { QuoterBotMonitorHaltedError } from '../../application/quoter-bot/quoter-bot-monitor-halted.error'
 import { SafeProviderError } from '../../application/setup/safe-provider.error'
@@ -93,11 +96,10 @@ export const runQuoterBotEntrypoint = async (
     const result = await application.run(argv, {
       ...runtime,
       writeEvent: value => {
-        observability?.record(value)
+        if (isShippableRecord(value)) observability?.record(value)
         logger.result(value)
       }
     })
-    observability?.record(result)
     logger.result(result)
     return 0
   } catch (error) {
@@ -105,9 +107,20 @@ export const runQuoterBotEntrypoint = async (
       return 0
     }
     const details = failureDetails(error)
-    if (details === undefined && !(error instanceof MakerAccountError)) {
+    if (details !== undefined) {
+      for (const event of terminalMonitoringEvents(details, operatorErrorName(error))) {
+        observability?.record(event)
+      }
+    } else if (error instanceof MakerAccountError) {
+      const event = {
+        event: 'bot.failed',
+        reason: 'maker-account',
+        errorName: operatorErrorName(error)
+      } satisfies MonitoringEvent
+      observability?.record(event)
+    } else {
       observability?.unexpected(error, 'entrypoint')
-    } else if (details !== undefined) observability?.record(details)
+    }
     logger.error(failureMessage(error), details)
     return 1
   }

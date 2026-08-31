@@ -22,6 +22,7 @@ RUN corepack install
 # All members' package.json are needed for pnpm to resolve the `workspace:*` links.
 COPY --chown=node:node packages ./packages
 COPY --chown=node:node bots ./bots
+COPY --chown=node:node services ./services
 RUN pnpm install --frozen-lockfile
 
 # Bundle at image-build time: workspace dists plus this bot's esbuild bundle, so the container

@@ -1130,7 +1130,7 @@ try {
     const ladder = JSON.parse(document.querySelector('[aria-label="Ladder JSON output"]').value);
     const secondId = '0x' + '6'.repeat(64);
     bootstrap.push({ ...bootstrap[0], marketId: secondId });
-    ladder.push({ ...ladder[0], marketId: secondId });
+    ladder.push({ ...ladder[0], marketId: secondId, maturityPremium: { shape: 'linear', premiumPerYearBps: '120' } });
     set(JSON.stringify({ bootstrap, ladder })); apply.click(); await new Promise(r => setTimeout(r, 50));
     const valid = document.querySelector('#import-status').dataset.status === 'ok' && document.querySelectorAll('[data-preview=bootstrap]').length === 2 && document.querySelectorAll('[data-preview=ladder]').length === 2;
     document.querySelectorAll('[data-market-kind=ladder]')[1].querySelector('button').click();
@@ -1144,7 +1144,8 @@ try {
   const importState = await waitForReadiness(async () => {
     const state = await evaluate(`({
       focus: document.activeElement?.id,
-      reordered: JSON.parse(document.querySelector('[aria-label="Ladder JSON output"]').value).map(x => x.marketId)
+      reordered: JSON.parse(document.querySelector('[aria-label="Ladder JSON output"]').value).map(x => x.marketId),
+      premiums: JSON.parse(document.querySelector('[aria-label="Ladder JSON output"]').value).map(x => 'maturityPremium' in x ? x.maturityPremium.premiumPerYearBps : null)
     })`)
     assert.equal(state.focus, 'ladder-0-marketId')
     assert.equal(state.reordered[0], `0x${'6'.repeat(64)}`)
@@ -1152,6 +1153,9 @@ try {
   }, uiReadiness('import reorder completion'))
   assert.equal(importState.focus, 'ladder-0-marketId')
   assert.equal(importState.reordered[0], `0x${'6'.repeat(64)}`)
+  // Reordering must carry a configured maturityPremium with its item and must not materialize the
+  // optional object onto a premium-free item; a partial object makes the whole collection invalid.
+  assert.deepEqual(importState.premiums, ['120', null])
   await assertDocumentPersistenceClean('import')
 
   const copyTabs = await evaluate(`(async () => {

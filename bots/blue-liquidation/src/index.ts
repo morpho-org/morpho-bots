@@ -165,7 +165,6 @@ async function main() {
     chainId: config.chainId,
     executor: config.executooorAddress,
     venues,
-    slippageBps: config.venues.slippageBps,
     baseUrls,
     maxRouteImpactBps: config.quoting.maxRouteImpactBps,
     unwrappers,
@@ -273,7 +272,7 @@ async function main() {
         }),
       submit: async ({ market, borrower, plan, swapPlan, blockNumber, label }) => {
         const fees = initialFees(await signer.getBaseFee(), config.maxFeeWei)
-        await queue.submit({
+        return queue.submit({
           request: {
             to: config.executooorAddress,
             data: encodeExec(market, borrower, plan, swapPlan)

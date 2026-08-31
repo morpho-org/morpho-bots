@@ -11,6 +11,7 @@ import {
   QUOTER_BOT_VERBOSE_COMMANDS,
   runQuoterBotEntrypoint
 } from './infrastructure/cli/quoter-bot-entrypoint'
+import { createMonitoringLogger } from './infrastructure/observability/monitoring-logger.utils'
 
 // oxlint-disable-next-line eslint/no-extend-native -- CLI root policy requested by maintainers.
 Object.defineProperty(BigInt.prototype, 'toJSON', {
@@ -25,10 +26,15 @@ const requestShutdown = () => shutdown.abort()
 process.once('SIGINT', requestShutdown)
 process.once('SIGTERM', requestShutdown)
 
+// Resolved once so the observability record and its monitoring logger always report the same
+// chain; both used to be pinned to Base.
+const chainId = observabilityChainId(process.env)
+
 const observability = createBotObservability({
   bot: 'quoter-bot',
-  chainId: observabilityChainId(process.env),
-  errorName: operatorErrorName
+  chainId,
+  errorName: operatorErrorName,
+  logger: createMonitoringLogger({ bot: 'quoter-bot', chainId })
 })
 const removeProcessObservers = installProcessObservers(observability)
 await observability.start()

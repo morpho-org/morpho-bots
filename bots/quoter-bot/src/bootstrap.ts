@@ -16,9 +16,13 @@ import type { ConfigService } from './config/config.service'
 import type { TargetRateStrategyConfig } from './domain/target-rate'
 import type { CliRuntimeOptions } from './infrastructure/cli/cli'
 
-import { PositionBootstrapService } from './application/bootstrap/position-bootstrap.service'
+import {
+  BOOTSTRAP_MONITOR_INTERVAL_MS,
+  PositionBootstrapService
+} from './application/bootstrap/position-bootstrap.service'
 import { OfferInvalidationService } from './application/invalidation/offer-invalidation.service'
 import { LadderQuoterService } from './application/ladder/ladder-quoter.service'
+import { botConfiguredEvents } from './application/monitoring/bot-configured.utils'
 import { serializeQuoterBotWrites } from './application/quoter-bot/quoter-bot-mutation.utils'
 import { QuoterBotService } from './application/quoter-bot/quoter-bot.service'
 import { SetupCheckAbortedError } from './application/setup/setup-check-aborted.error'
@@ -205,18 +209,35 @@ export const createApplication = (
         'KEYSTORE_PASSWORD',
         'KEYSTORE_INTERACTIVE',
         'AWS_KMS_KEY_ID',
-        'AWS_REGION'
+        'AWS_REGION',
+        'QUOTER_SIGNER_LAMBDA_ARN'
       ])
         delete effectiveEnvironment[key]
     } else if (method === 'keystore') {
-      for (const key of ['MAKER_PRIVATE_KEY', 'AWS_KMS_KEY_ID', 'AWS_REGION'])
+      for (const key of [
+        'MAKER_PRIVATE_KEY',
+        'AWS_KMS_KEY_ID',
+        'AWS_REGION',
+        'QUOTER_SIGNER_LAMBDA_ARN'
+      ])
         delete effectiveEnvironment[key]
     } else if (method === 'aws') {
       for (const key of [
         'MAKER_PRIVATE_KEY',
         'KEYSTORE_PATH',
         'KEYSTORE_PASSWORD',
-        'KEYSTORE_INTERACTIVE'
+        'KEYSTORE_INTERACTIVE',
+        'QUOTER_SIGNER_LAMBDA_ARN'
+      ])
+        delete effectiveEnvironment[key]
+    } else if (method === 'middleware') {
+      for (const key of [
+        'MAKER_PRIVATE_KEY',
+        'KEYSTORE_PATH',
+        'KEYSTORE_PASSWORD',
+        'KEYSTORE_INTERACTIVE',
+        'AWS_KMS_KEY_ID',
+        'AWS_REGION'
       ])
         delete effectiveEnvironment[key]
     }
@@ -333,6 +354,15 @@ export const createApplication = (
         )
       }
       assertReferenceConfigured(config, [...config.bootstrap, ...config.ladder])
+      for (const event of botConfiguredEvents({
+        loanAsset: config.setup.loanAsset,
+        readOnly: config.readOnly,
+        bootstrap: config.bootstrap,
+        ladder: config.ladder,
+        bootstrapIntervalSeconds: BOOTSTRAP_MONITOR_INTERVAL_MS / 1_000
+      })) {
+        await options.writeEvent?.(event)
+      }
       if (options.signal.aborted) throw new SetupCheckAbortedError()
       const ladderAdapters = await (dependencies.createLadderAdapters?.(config) ??
         createProductionLadderAdapters(config))

@@ -1,6 +1,11 @@
 import type { Hex } from 'viem'
 
-import type { LadderConfig, LadderMarketState, LadderQuoteSet } from '../../domain/ladder/ladder'
+import type {
+  LadderConfig,
+  LadderDiagnostics,
+  LadderMarketState,
+  LadderQuoteSet
+} from '../../domain/ladder/ladder'
 
 /** Ladder transaction identity shared by immediate submission and confirmed-result records. */
 export type LadderSubmittedTransaction = {
@@ -22,6 +27,28 @@ export type LadderTransactionSubmittedEvent = LadderSubmittedTransaction & {
 export type LadderTransactionSubmittedObserver = (
   transaction: LadderSubmittedTransaction
 ) => void | Promise<void>
+
+/**
+ * One owned ladder group's monotonic consumption, joined to the side and rate it was published at.
+ * @remarks `consumed` never decreases for a given `groupId`: replacing a quote reserves fresh group
+ * IDs rather than rewriting an existing group, so growth between cycles is taker fills.
+ */
+export type LadderGroupConsumption = {
+  /** Protocol group whose shared consumption cap this describes. */
+  groupId: Hex
+  /** Market the owning publication was made in. */
+  marketId: Hex
+  /** Rate side the group was published on. */
+  side: 'lower' | 'higher'
+  /** Configured rate of the group's rung nearest the center, before tick alignment. */
+  groupRateBps: bigint
+  /** Protocol consumption cap written onto the group. */
+  maxAssets: bigint
+  /** Monotonic consumed assets reported by the indexer. */
+  consumed: bigint
+  /** Remaining capacity, floored at zero. */
+  remainingAssets: bigint
+}
 
 /** Result returned by a live or read-only ladder make adapter. */
 export type LadderMakeResult =
@@ -63,7 +90,11 @@ export type LadderVerboseDetails = {
   currentState: LadderVerboseState
   /** Fresh reference rate used to derive the effective ladder center, when available. */
   referenceRateBps?: bigint
-  /** Reference rate plus configured quote premium, when derivation was possible. */
+  /** Fresh seconds to maturity read beside the reference, when a maturity premium requires it. */
+  secondsToMaturity?: bigint
+  /** Resolved time-to-maturity premium included in `targetRateBps`, when configured. */
+  maturityPremiumBps?: bigint
+  /** Reference rate plus configured quote and maturity premiums, when derivation was possible. */
   targetRateBps?: bigint
   /** Exact desired lower/higher quote set, when decision derivation succeeded. */
   ladderOffer?: LadderQuoteSet
@@ -73,4 +104,10 @@ export type LadderVerboseDetails = {
   submittedTransactions?: readonly LadderSubmittedTransaction[]
   /** Fresh provider and active-quote state read after the check or mutation completed. */
   stateAfterCheck: LadderVerboseState
+  /** Per-side clamp, clearance, and funding counts from generation, when a quote was derived. */
+  diagnostics?: LadderDiagnostics
+  /** Monotonic per-group consumption observed for this market, when the adapter reports it. */
+  groupConsumption?: readonly LadderGroupConsumption[]
+  /** Wall-clock duration of this market's check, including the post-check verbose re-read. */
+  durationMs?: number
 }

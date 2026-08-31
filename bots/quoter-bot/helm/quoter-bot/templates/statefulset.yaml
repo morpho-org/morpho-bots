@@ -1,0 +1,265 @@
+{{- /*
+Renaming the singleton is rejected: on an installed release a changed nameOverride or
+fullnameOverride would make Helm create the newly named StatefulSet before deleting the old
+one, briefly running two writers against the same maker (and, with existingClaim, the same
+ownership state). The installed name is pinned by the release-fullname ConfigMap (keyed by the
+immutable release name), so this is a name-scoped get — no StatefulSet list permission is
+required, and lookup returns nothing under `helm template`, keeping the guard inert outside a
+real install/upgrade.
+*/}}
+{{- $fullname := include "quoter-bot.fullname" . }}
+{{- $identity := lookup "v1" "ConfigMap" .Release.Namespace (include "quoter-bot.releaseFullnameConfigMapName" .) }}
+{{- $installedFullname := dig "fullname" $fullname (($identity | default dict).data | default dict) }}
+{{- if ne $installedFullname $fullname }}
+{{- fail (printf "quoter-bot: this release was installed as StatefulSet %q; renaming it to %q via nameOverride/fullnameOverride would start a second writer. To rename: run `helm uninstall --wait` with a timeout beyond terminationGracePeriodSeconds, confirm the old pod is fully deleted, then reinstall — keeping your persistence.existingClaim unchanged if you configured one, or setting it to the kept chart-created state claim (its name ends in -state; kubectl get pvc), so durable offer-group ownership is preserved." $installedFullname $fullname) }}
+{{- end }}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  # Quoted: a numeric-looking override must stay a YAML string.
+  name: {{ include "quoter-bot.fullname" . | quote }}
+  labels:
+    {{- include "quoter-bot.labels" . | nindent 4 }}
+spec:
+  # The bot is a singleton writer: its nonce cursor, serialized mutation queue, and durable
+  # offer-group ownership state are per-instance, so two replicas against one maker would race
+  # nonces and fight over the offer book. A StatefulSet enforces at-most-one across rollouts,
+  # graceful pod deletion, and eviction, because it never creates the replacement pod until the
+  # old one is confirmed fully terminated — which matters during the deliberately long SIGTERM
+  # offer-cleanup drain. A Deployment (even with Recreate) only guarantees that for rollouts.
+  # Kubernetes documents one escape hatch that breaks this guarantee: force deletion
+  # (kubectl delete pod --force --grace-period=0, or force-deleting a partitioned Node). The
+  # bot deliberately has no Kubernetes API access or external writer lock, so never force
+  # delete; fence a failed node before letting the controller replace the pod.
+  replicas: 1
+  serviceName: {{ include "quoter-bot.fullname" . | quote }}
+  selector:
+    matchLabels:
+      {{- include "quoter-bot.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- $chartManagedConfig := and .Values.config (not .Values.existingConfigSecret) }}
+      {{- $podAnnotations := omit .Values.podAnnotations "checksum/config" }}
+      {{- $saAnnotations := and .Values.serviceAccount.create .Values.serviceAccount.annotations }}
+      {{- if or $chartManagedConfig $podAnnotations .Values.forceRestartOnUpgrade $saAnnotations }}
+      annotations:
+        {{- with $podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+        {{- if .Values.forceRestartOnUpgrade }}
+        # Changes on every upgrade so a moved image tag (e.g. `latest`) is re-pulled.
+        quoter-bot.morpho.org/restarted-at: {{ now | date "2006-01-02T15:04:05Z07:00" | quote }}
+        {{- end }}
+        {{- if and .Values.serviceAccount.create .Values.serviceAccount.annotations }}
+        # Workload-identity webhooks (IRSA, EKS Pod Identity) act at pod admission, so an
+        # annotation change on the chart-managed ServiceAccount must roll the pod.
+        checksum/serviceaccount: {{ .Values.serviceAccount.annotations | toYaml | sha256sum }}
+        {{- end }}
+        {{- if $chartManagedConfig }}
+        # Configuration is read once at startup and the file is mounted through subPath, so a
+        # config change must roll the pod; the reserved checksum wins over custom annotations.
+        checksum/config: {{ include "quoter-bot.configYaml" . | sha256sum }}
+        {{- end }}
+      {{- end }}
+      labels:
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+        {{- include "quoter-bot.selectorLabels" . | nindent 8 }}
+    spec:
+      # The bot never talks to the Kubernetes API; cloud workload-identity webhooks (IRSA, EKS
+      # Pod Identity) inject their own projected tokens independently of this flag.
+      automountServiceAccountToken: false
+      serviceAccountName: {{ include "quoter-bot.serviceAccountName" . | quote }}
+      # SIGTERM shutdown serializes receipt-bounded waits through the shared operation queue:
+      # an in-flight cycle continues serially through every configured market: each bootstrap
+      # market's replacement can await a cancellation, Setter ratification, and publication,
+      # and each ladder market's replacement can await all of its old-group cancellations plus
+      # its own ratification and publication, before the two shutdown cleanup batches run. For
+      # a chart-managed config the wait count is derived from the configured workload —
+      # three per bootstrap market + two per ladder market (ratify + publish) + the total
+      # ladder group count (in-flight cancellations; shared-rung markets contribute two groups
+      # per rung, per-book markets two groups) + two cleanup batches — and the grace period
+      # is floored to that many receipt timeouts (the declared
+      # setup.transactionReceiptTimeoutMs, or the bot's 180 s default when undeclared) plus a
+      # two-minute drain buffer. Environment-supplied or existingConfigSecret timeouts and
+      # market lists are invisible here — size terminationGracePeriodSeconds explicitly for
+      # those workloads — and so are groups persisted from a PREVIOUS configuration: startup
+      # cleanup cancels each removed-market group serially, so before removing markets or
+      # reducing rung counts, invalidate the affected groups first (morpho-quoter invalidate — a
+      # single maker-wide multicall) or temporarily raise this value for that upgrade.
+      {{- $receiptMs := 0 }}
+      {{- $bootstrapCount := 0 }}
+      {{- $ladderCount := 0 }}
+      {{- $ladderTotalGroups := 0 }}
+      {{- if and .Values.config (not .Values.existingConfigSecret) }}
+      {{- $receiptMs = int (dig "setup" "transactionReceiptTimeoutMs" 180000 .Values.config) }}
+      {{- range (dig "bootstrap" (list) .Values.config) }}
+      {{- $bootstrapCount = add1 $bootstrapCount }}
+      {{- end }}
+      {{- range (dig "ladder" (list) .Values.config) }}
+      {{- $ladderCount = add1 $ladderCount }}
+      {{- $groups := 2 }}
+      {{- if ne (dig "groupMode" "shared-rung" . | toString) "per-book" }}
+      {{- $groups = mul 2 (int (dig "rungCount" 1 .)) }}
+      {{- end }}
+      {{- $ladderTotalGroups = add $ladderTotalGroups $groups }}
+      {{- end }}
+      {{- end }}
+      {{- $waits := add (mul 3 $bootstrapCount) (mul 2 $ladderCount) $ladderTotalGroups 2 }}
+      {{- if lt $waits 5 }}{{- $waits = 5 }}{{- end }}
+      {{- $grace := int .Values.terminationGracePeriodSeconds }}
+      {{- $graceFloor := add (mul (div (add $receiptMs 999) 1000) $waits) 120 }}
+      {{- if and (gt $receiptMs 0) (lt $grace $graceFloor) }}
+      {{- $grace = $graceFloor }}
+      {{- end }}
+      terminationGracePeriodSeconds: {{ $grace }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.priorityClassName }}
+      # Quoted: a numeric-looking name must stay a YAML string.
+      priorityClassName: {{ . | quote }}
+      {{- end }}
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if .Values.volumePermissions.enabled }}
+      initContainers:
+        # Mirrors the image's railway-entrypoint.sh chown without changing state-file modes.
+        # The runtime container itself never runs as root. Root plus CHOWN/DAC_OVERRIDE (to
+        # change ownership and traverse 0700 state directories) is the minimum this needs, so
+        # the default chart fits the Baseline Pod Security Standard, not Restricted — see the
+        # chart README for the Restricted-compatible pre-owned-volume path.
+        - name: volume-permissions
+          image: {{ include "quoter-bot.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            - /usr/bin/chown
+            - -R
+            - '{{ .Values.podSecurityContext.runAsUser | default 1000 }}:{{ .Values.podSecurityContext.runAsGroup | default 1000 }}'
+            - {{ .Values.persistence.mountPath | quote }}
+          securityContext:
+            runAsNonRoot: false
+            runAsUser: 0
+            runAsGroup: 0
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+              add:
+                - CHOWN
+                - DAC_OVERRIDE
+          volumeMounts:
+            - name: state
+              mountPath: {{ .Values.persistence.mountPath | quote }}
+      {{- end }}
+      containers:
+        - name: {{ .Chart.Name }}
+          image: {{ include "quoter-bot.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- with .Values.command }}
+          command:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          args:
+            {{- if include "quoter-bot.hasConfigFile" . }}
+            # Root flags precede the command; the mounted file uses the bot's native schema.
+            - --config
+            - /repo/bots/quoter-bot/quoter-bot.yaml
+            {{- end }}
+            {{- range .Values.args }}
+            - {{ . | quote }}
+            {{- end }}
+          env:
+            # Durable offer-group ownership state lives on the state volume. The variable name
+            # is reserved: custom `env` entries with this name are filtered out so state cannot
+            # be silently detached from the retained PVC.
+            - name: XDG_STATE_HOME
+              value: {{ .Values.persistence.mountPath | quote }}
+            {{- $extraEnv := list }}
+            {{- range .Values.env }}
+            {{- if ne .name "XDG_STATE_HOME" }}
+            {{- $extraEnv = append $extraEnv . }}
+            {{- end }}
+            {{- end }}
+            {{- with $extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with .Values.envFrom }}
+          envFrom:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: state
+              mountPath: {{ .Values.persistence.mountPath | quote }}
+            # The root filesystem is read-only; give Node a writable /tmp.
+            - name: tmp
+              mountPath: /tmp
+            {{- if include "quoter-bot.hasConfigFile" . }}
+            # subPath yields a regular file: the bot opens its config with O_NOFOLLOW and
+            # rejects the symlinks a plain Secret volume mount would expose.
+            - name: config
+              mountPath: /repo/bots/quoter-bot/quoter-bot.yaml
+              subPath: quoter-bot.yaml
+              readOnly: true
+            {{- end }}
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+      volumes:
+        - name: state
+          {{- if and .Values.persistence.enabled .Values.persistence.existingClaim }}
+          persistentVolumeClaim:
+            # Quoted: a numeric-looking name must stay a YAML string.
+            claimName: {{ .Values.persistence.existingClaim | quote }}
+          {{- else if .Values.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "quoter-bot.stateClaimName" . | quote }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        - name: tmp
+          emptyDir: {}
+        {{- if include "quoter-bot.hasConfigFile" . }}
+        - name: config
+          secret:
+            # Quoted: a numeric-looking name must stay a YAML string.
+            secretName: {{ include "quoter-bot.configSecretName" . | quote }}
+        {{- end }}
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- $nodeSelector := .Values.nodeSelector }}
+      {{- if .Values.image.architecture }}
+      {{- $nodeSelector = omit $nodeSelector "kubernetes.io/arch" }}
+      {{- end }}
+      {{- if or $nodeSelector .Values.image.architecture }}
+      nodeSelector:
+        {{- with $nodeSelector }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+        {{- with .Values.image.architecture }}
+        # The published morphoorg/quoter image is amd64-only; clear image.architecture only
+        # once a multi-architecture image exists.
+        kubernetes.io/arch: {{ . | quote }}
+        {{- end }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

@@ -36,6 +36,7 @@
     "src/domain/cross-book.ts",
     "src/domain/ladder/ladder-configuration.error.ts",
     "src/domain/ladder/ladder.ts",
+    "src/domain/maturity-premium.ts",
     "src/infrastructure/bootstrap/bootstrap-hard-halt.error.ts",
     "src/infrastructure/bootstrap/bootstrap-exposure.utils.ts",
     "src/infrastructure/bootstrap/bootstrap-make.service.ts",
@@ -79,6 +80,7 @@
     "src/infrastructure/ladder/ladder-transaction.utils.ts",
     "src/infrastructure/ladder/production-ladder.ts",
     "src/infrastructure/make/managed-maker-account.utils.ts",
+    "src/infrastructure/maturity-read.utils.ts",
     "src/infrastructure/make/read-only-bootstrap-make.service.ts",
     "src/infrastructure/make/read-only-ladder-make.service.ts",
     "src/infrastructure/make/read-only-make.utils.ts",
@@ -95,7 +97,10 @@
     "src/infrastructure/selected-market-items.utils.ts",
     "src/infrastructure/tick-window.utils.ts",
     "scripts/js-doc-validation.error.ts",
-    "scripts/bundle-failed.error.ts"
+    "scripts/bundle-failed.error.ts",
+    "scripts/npm-pack-failed.error.ts",
+    "scripts/npm-package.utils.ts",
+    "scripts/semver-precedence.error.ts"
   ],
   "tsconfig": "tsconfig.json",
   "out": "build/jsdoc",

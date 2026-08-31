@@ -59,7 +59,13 @@ type Captured<T> = { ok: true; value: T } | { ok: false; error: SafeProviderFail
 
 type SafeSignerFailure = {
   kind: 'signer-error'
-  operation: 'maker-address' | 'keystore-read' | 'keystore-decrypt' | 'kms-public-key' | 'kms-sign'
+  operation:
+    | 'maker-address'
+    | 'keystore-read'
+    | 'keystore-decrypt'
+    | 'kms-public-key'
+    | 'kms-sign'
+    | 'middleware-unsupported'
 }
 
 const SAFE_SIGNER_OPERATIONS = new Set<SafeSignerFailure['operation']>([
@@ -157,8 +163,9 @@ export const capture = async <T>(
 /**
  * Captures signer derivation while preserving only an allowlisted signer operation.
  * @param read - Deferred signer-address derivation.
- * @returns A fulfilled capture containing the value, a sanitized signer operation, or a sanitized
- * RPC-shaped fallback for an unexpected rejection.
+ * @returns A fulfilled capture containing the value, a sanitized signer operation — including the
+ * fixed `middleware-unsupported` observation for the fail-closed middleware identity — or a
+ * sanitized RPC-shaped fallback for an unexpected rejection.
  * @throws Never; synchronous throws and promise rejections are converted to failure values.
  */
 export const captureSigner = async <T>(
@@ -183,6 +190,9 @@ export const captureSigner = async <T>(
           operation: candidate.operation as SafeSignerFailure['operation']
         }
       }
+    }
+    if (candidate?.name === 'MiddlewareSigningUnsupportedError') {
+      return { ok: false, error: { kind: 'signer-error', operation: 'middleware-unsupported' } }
     }
     return { ok: false, error: safeProviderFailure(error, 'rpc') }
   }

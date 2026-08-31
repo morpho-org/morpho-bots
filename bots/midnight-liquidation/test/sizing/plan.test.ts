@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest'
 import type { LiquidationPlan, PlanInput } from '../../src/sizing/plan'
 
 import { ORACLE_PRICE_SCALE, WAD } from '../../src/constants'
-import { maxSeizeForCap, plan } from '../../src/sizing/plan'
+import { maxSeizeForCap, plan, planWithReason } from '../../src/sizing/plan'
 
 const MAX_LIF = 1036269430051813471n
 const LLTV = 860000000000000000n
@@ -43,7 +43,7 @@ describe('plan', () => {
   })
 
   it('seizes the whole slot in normal mode when the RCF cap does not bind', () => {
-    expect(plan(baseInput({ bestCollateralAmt: 100n * WAD }))).toEqual({
+    expect(plan(baseInput({ bestCollateralAmt: 100n * WAD }))).toMatchObject({
       collateralIndex: 3,
       seizedAssets: 100n * WAD,
       repaidUnits: 0n,
@@ -55,11 +55,15 @@ describe('plan', () => {
     // The RCF cap is ~919 WAD of repaid units; seize-exact pins the largest seize whose contract-derived
     // repaid stays within it (`maxSeizeForCap`), and lets the contract ceil-derive `repaidUnits`.
     const maxRepaid = 919047619047619043969n
+    // The one full-shape assertion in this file: every field pinned, so an unexpected addition to
+    // LiquidationPlan fails here rather than passing silently through the toMatchObject cases.
     const expected: LiquidationPlan = {
       collateralIndex: 3,
       seizedAssets: maxSeizeForCap(maxRepaid, ORACLE_PRICE_SCALE, MAX_LIF),
       repaidUnits: 0n,
-      postMaturityMode: false
+      postMaturityMode: false,
+      lif: MAX_LIF,
+      impliedRepaidUnits: maxRepaid
     }
     expect(plan(baseInput({ bestCollateralAmt: 2000n * WAD, rcfThreshold: WAD }))).toEqual(expected)
   })
@@ -67,7 +71,9 @@ describe('plan', () => {
   it('seizes the whole slot when rcf-exempt and the slot fits within the debt', () => {
     // Exemption waives the RCF cap, so a slot whose implied repaid units (~965 WAD) still fit within
     // the 1000-WAD debt is seized whole — the cap would otherwise have bound it at ~919 WAD.
-    expect(plan(baseInput({ bestCollateralAmt: 1000n * WAD, rcfThreshold: 2000n * WAD }))).toEqual({
+    expect(
+      plan(baseInput({ bestCollateralAmt: 1000n * WAD, rcfThreshold: 2000n * WAD }))
+    ).toMatchObject({
       collateralIndex: 3,
       seizedAssets: 1000n * WAD,
       repaidUnits: 0n,
@@ -80,7 +86,9 @@ describe('plan', () => {
     // whole makes the contract derive repaidUnits > debt and revert (Panic 0x11 underflow) — a real
     // bot run hit exactly this. Seize-exact instead pins the largest seize whose derived repaid stays
     // within the post-writeoff debt.
-    expect(plan(baseInput({ bestCollateralAmt: 2000n * WAD, rcfThreshold: 2000n * WAD }))).toEqual({
+    expect(
+      plan(baseInput({ bestCollateralAmt: 2000n * WAD, rcfThreshold: 2000n * WAD }))
+    ).toMatchObject({
       collateralIndex: 3,
       seizedAssets: maxSeizeForCap(1000n * WAD, ORACLE_PRICE_SCALE, MAX_LIF),
       repaidUnits: 0n,
@@ -102,7 +110,7 @@ describe('plan', () => {
           bestCollateralAmt: 2000n * WAD
         })
       )
-    ).toEqual({
+    ).toMatchObject({
       collateralIndex: 3,
       seizedAssets: maxSeizeForCap(1000n * WAD, ORACLE_PRICE_SCALE, MAX_LIF), // cap = debt - badDebt
       repaidUnits: 0n,
@@ -121,7 +129,7 @@ describe('plan', () => {
           badDebt: 1000n * WAD
         })
       )
-    ).toEqual({
+    ).toMatchObject({
       collateralIndex: 3,
       seizedAssets: 0n,
       repaidUnits: 0n,
@@ -141,7 +149,7 @@ describe('plan', () => {
           bestCollateralAmt: 500n * WAD
         })
       )
-    ).toEqual({
+    ).toMatchObject({
       collateralIndex: 3,
       seizedAssets: 500n * WAD,
       repaidUnits: 0n,
@@ -157,7 +165,7 @@ describe('plan', () => {
       plan(baseInput({ bestCollateralAmt: 2000n * WAD, rcfThreshold: WAD }), {
         seizeCapMarginBps: 100
       })
-    ).toEqual({
+    ).toMatchObject({
       collateralIndex: 3,
       seizedAssets: maxSeizeForCap(capEff, ORACLE_PRICE_SCALE, MAX_LIF),
       repaidUnits: 0n,
@@ -184,7 +192,7 @@ describe('plan', () => {
           rcfThreshold: 2000n * WAD
         })
       )
-    ).toEqual({
+    ).toMatchObject({
       collateralIndex: 3,
       seizedAssets: maxSeizeForCap(1000n * WAD, ORACLE_PRICE_SCALE, MAX_LIF),
       repaidUnits: 0n,
@@ -197,7 +205,7 @@ describe('plan', () => {
     // derive fewer repaid units for it (~482 vs ~500 WAD) — same seize, higher surplus.
     expect(
       plan(baseInput({ blockTimestamp: 2060n, maturity: 2000n, bestCollateralAmt: 500n * WAD }))
-    ).toEqual({
+    ).toMatchObject({
       collateralIndex: 3,
       seizedAssets: 500n * WAD,
       repaidUnits: 0n,
@@ -218,7 +226,7 @@ describe('plan', () => {
           rcfThreshold: 2000n * WAD
         })
       )
-    ).toEqual({
+    ).toMatchObject({
       collateralIndex: 3,
       seizedAssets: maxSeizeForCap(1000n * WAD, ORACLE_PRICE_SCALE, MAX_LIF),
       repaidUnits: 0n,
@@ -238,7 +246,7 @@ describe('plan', () => {
           rcfThreshold: WAD
         })
       )
-    ).toEqual({
+    ).toMatchObject({
       collateralIndex: 3,
       seizedAssets: maxSeizeForCap(1000n * WAD, ORACLE_PRICE_SCALE, MAX_LIF),
       repaidUnits: 0n,
@@ -308,5 +316,100 @@ describe('maxSeizeForCap', () => {
         }
       }
     }
+  })
+})
+
+describe('derived plan fields', () => {
+  it('carries the full maxLif in normal mode, where the LIF does not ramp', () => {
+    const built = plan(baseInput())
+    expect(built?.lif).toBe(MAX_LIF)
+  })
+
+  it('carries the RAMPED lif past maturity, not maxLif', () => {
+    // 60s into a 3600s ramp on a 0.0362694 incentive: lif - 1 is ~1/60th of the way up.
+    const built = plan(baseInput({ blockTimestamp: 2060n, maturity: 2000n, healthy: true }))
+    expect(built?.postMaturityMode).toBe(true)
+    expect(built?.lif).toBe(WAD + ((MAX_LIF - WAD) * 60n) / 3600n)
+    expect(built!.lif).toBeLessThan(MAX_LIF)
+  })
+
+  it('pins the derived repay to the cap, exactly, for a cap-binding seize', () => {
+    // maxSeizeForCap is exact rather than conservative: the contract-derived repay lands ON the RCF
+    // cap to the unit. Hand-computed literal so a rounding regression fails here rather than silently
+    // shrinking every cap-bound plan.
+    const built = plan(baseInput({ bestCollateralAmt: 2000n * WAD, rcfThreshold: WAD }))
+    expect(built?.impliedRepaidUnits).toBe(919047619047619043969n)
+  })
+
+  it('derives a zero repay for a bad-debt realization, which seizes nothing', () => {
+    const built = plan(
+      baseInput({ blockTimestamp: 3000n, maturity: 2000n, healthy: true, badDebt: 1000n * WAD })
+    )
+    expect(built).toMatchObject({ seizedAssets: 0n, repaidUnits: 0n, impliedRepaidUnits: 0n })
+  })
+})
+
+describe('headroom floor', () => {
+  // Past maturity and HEALTHY, so post-maturity mode is the only open gate and the LIF is still
+  // ramping — 20s in, headroom is ~2bps against a 349bps ceiling.
+  const earlyRamp = { blockTimestamp: 2020n, maturity: 2000n, healthy: true }
+
+  it('skips a plan whose headroom is under the floor, with insufficient_headroom', () => {
+    const outcome = planWithReason(baseInput(earlyRamp), { headroomFloorBps: 3 })
+    expect(outcome.plan).toBeNull()
+    expect(outcome.reason).toBe('insufficient_headroom')
+    // The skip carries the numbers behind it, so a caller can report WHY without re-deriving a LIF it
+    // cannot recover (the chosen mode is not implied by chain time).
+    expect(outcome.headroom).toMatchObject({ postMaturityMode: true })
+    expect(outcome.headroom!.bps).toBeLessThan(3n)
+  })
+
+  it('allows the same position once the ramp clears the floor', () => {
+    const later = planWithReason(baseInput({ ...earlyRamp, blockTimestamp: 2040n }), {
+      headroomFloorBps: 3
+    })
+    expect(later.reason).toBeUndefined()
+    expect(later.plan).not.toBeNull()
+  })
+
+  it('is disabled at a floor of 0, reproducing the ungated plan exactly', () => {
+    const input = baseInput(earlyRamp)
+    expect(planWithReason(input, { headroomFloorBps: 0 })).toEqual(planWithReason(input))
+  })
+
+  it('pins the shipped default: suppressed at t+20s, allowed at t+40s', () => {
+    // The default is a LOWER BOUND on execution cost, not a typical cost — a change to it alters prod
+    // timing, so it breaks a test rather than sliding through.
+    expect(plan(baseInput(earlyRamp), { headroomFloorBps: 3 })).toBeNull()
+    expect(
+      plan(baseInput({ ...earlyRamp, blockTimestamp: 2040n }), { headroomFloorBps: 3 })
+    ).not.toBeNull()
+  })
+
+  it('does NOT skip a matured-and-unhealthy position that normal mode funds at the full maxLif', () => {
+    // Regression: the floor must read the CHOSEN plan's lif. Both gates are open here, and normal mode
+    // wins early in the ramp because it pays maxLif immediately — ~349bps of headroom. A floor derived
+    // from the ramping post-maturity LIF (~2bps at t+20s) would reject a position the chain funds
+    // immediately, which is the opposite of the gate's purpose and, default-ON, a prod regression.
+    const bothGatesOpen = baseInput({ blockTimestamp: 2020n, maturity: 2000n, healthy: false })
+    const outcome = planWithReason(bothGatesOpen, { headroomFloorBps: 100 })
+    expect(outcome.reason).toBeUndefined()
+    expect(outcome.plan).toMatchObject({ postMaturityMode: false, lif: MAX_LIF })
+  })
+
+  it('skips every candidate sharing a (maturity, maxLif, mode) group together', () => {
+    // Headroom is (lif - 1)/lif, so it is scale-invariant: it cannot separate a large position from a
+    // dust one. A per-candidate threshold test would pass vacuously; assert the GROUP property.
+    const sizes = [1n, 1000n, 100n * WAD, 2000n * WAD]
+    const reasons = sizes.map(
+      bestCollateralAmt =>
+        planWithReason(baseInput({ ...earlyRamp, bestCollateralAmt }), { headroomFloorBps: 3 })
+          .reason
+    )
+    expect(reasons).toEqual(sizes.map(() => 'insufficient_headroom'))
+  })
+
+  it('never skips a normal-mode (pre-maturity) plan, whose LIF is maxLif from the start', () => {
+    expect(plan(baseInput(), { headroomFloorBps: 300 })).not.toBeNull()
   })
 })

@@ -27,6 +27,7 @@ RUN corepack install
 # All workspace manifests and sources are needed to resolve links and build the bot bundle.
 COPY --chown=node:node packages ./packages
 COPY --chown=node:node bots ./bots
+COPY --chown=node:node services ./services
 RUN pnpm install --frozen-lockfile
 RUN pnpm -r --if-present run build
 

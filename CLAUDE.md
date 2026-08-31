@@ -158,13 +158,13 @@ This is a **pnpm workspaces monorepo** housing off-chain Morpho curator bots:
   positions, reads fresh on-chain state, sizes/simulates a liquidation, and broadcasts only
   simulation-ok transactions through an in-process pending-tx queue. No bot imports another bot.
   Each bot owns its own operator surface — `README.md`, `Dockerfile`, `docker-compose.yml`, and
-  `scripts/deploy-railway.ts` — so it ships as its own image and
-  deploys independently. `bots/blue-liquidation` and `bots/midnight-liquidation` are the live
-  liquidators; `bots/vault-v1-reallocation` and `bots/vault-v2-reallocation` reallocate liquidity
-  across whitelisted MetaMorpho (Vault V1) and Morpho Vault V2 vaults' markets;
-  `bots/quoter-bot` is the Midnight maker bot (setup checks, position
-  bootstrap, ladder quoting, combined monitoring); `bots/midnight-crossed-books` resolves crossed
-  Midnight books; `bots/kill-switch` is a proposal bot (docs only).
+  `scripts/deploy-railway.ts` (plus, for `quoter-bot`, a Helm chart at `helm/quoter-bot`) — so it
+  ships as its own image and deploys independently. `bots/blue-liquidation` and
+  `bots/midnight-liquidation` are the live liquidators; `bots/vault-v1-reallocation` and
+  `bots/vault-v2-reallocation` reallocate liquidity across whitelisted MetaMorpho (Vault V1) and
+  Morpho Vault V2 vaults' markets; `bots/quoter-bot` is the Midnight maker bot (setup checks,
+  position bootstrap, ladder quoting, combined monitoring); `bots/midnight-crossed-books` resolves
+  crossed Midnight books; `bots/kill-switch` is a proposal bot (docs only).
 - `/packages/` — shared libraries: `@repo/bot-kit` (the shared bot runtime — viem
   clients/transport, loglayer-backed JSON-lines logger (opt-in in-process BetterStack shipping),
   block watcher + runner loop, pending-tx queue with fee
@@ -178,6 +178,14 @@ This is a **pnpm workspaces monorepo** housing off-chain Morpho curator bots:
   batch projection and negative-spread/crossed-book checks),
   `@repo/utils`, and `@repo/typescript-config`. A bot assembles its behavior from `@repo/bot-kit`
   and `@repo/swaps` rather than forking a monolith.
+- `/services/` — deployable non-bot services. `services/quoter-signer` is the quoter-bot KMS
+  signing policy middleware
+  ([TIB-2026-08-12](./docs/decisions/TIB-2026-08-12-quoter-bot-kms-signing-middleware.md)): an AWS
+  Lambda container image published to Docker Hub (`morphoorg/quoter-signer`), currently a
+  fail-closed skeleton enforcing the v1 wire contract and the deterministic deployment-policy
+  checks — every intent is still denied until the TIB's signing surfaces land. Because
+  services are workspace members, every bot `Dockerfile` copies `services/` alongside `packages/`
+  and `bots/` so `pnpm install --frozen-lockfile` sees the full importer set.
 
 Cross-tick state (the pending-tx queue, nonce cursor, cooldowns) is in-process memory only — nothing
 is persisted to disk. Chain truth wins on restart: a redeploy re-derives the nonce cursor from

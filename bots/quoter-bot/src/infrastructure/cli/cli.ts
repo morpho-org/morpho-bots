@@ -11,6 +11,7 @@ import type {
 } from '../../application/invalidation/offer-invalidation.service'
 import type { LadderMonitorReport } from '../../application/ladder/ladder-quoter.service'
 import type { LadderTransactionSubmittedEvent } from '../../application/ladder/ladder-verbose'
+import type { MonitoringProjection } from '../../application/monitoring/monitoring-projection.utils'
 import type {
   QuoterBotEvent,
   QuoterBotMonitorReport
@@ -25,6 +26,7 @@ import { PositionBootstrapHaltedError } from '../../application/bootstrap/positi
 import { PositionBootstrapMonitorHaltedError } from '../../application/bootstrap/position-bootstrap-monitor-halted.error'
 import { LadderCycleHaltedError } from '../../application/ladder/ladder-cycle-halted.error'
 import { LadderMonitorHaltedError } from '../../application/ladder/ladder-monitor-halted.error'
+import { createMonitoringProjection } from '../../application/monitoring/monitoring-projection.utils'
 import { QuoterBotMonitorHaltedError } from '../../application/quoter-bot/quoter-bot-monitor-halted.error'
 import { SetupMonitorHaltedError } from '../../application/setup/setup-monitor-halted.error'
 import { CliUsageError } from './cli-usage.error'
@@ -100,12 +102,32 @@ export type CliRuntimeOptions = {
   writeEvent?: (value: unknown) => void | Promise<void>
 }
 
-/** Infrastructure adapter: wires the `quoter-bot` CLI (commander) to application services. */
+/** Infrastructure adapter: wires the `morpho-quoter` CLI (commander) to application services. */
 export class Cli {
   private readonly program: Command
   private output: unknown
   private hasOutput = false
   private runtime: CliRuntimeOptions = {}
+  private readonly monitoring: MonitoringProjection = createMonitoringProjection()
+
+  // The cycle value keeps its existing shape and ships first; the flat monitoring records derived
+  // from it follow on the same stream.
+  //
+  // Monitor loops await this callback while holding the combined writer queue, so a throwing
+  // projection would surface as a failed cycle and stop the bot. Deriving and writing the extra
+  // records is therefore isolated: telemetry may be lost, but it can never halt quoting. The cycle
+  // value itself keeps its original unguarded write so genuine output failures still surface.
+  private async writeCycle(
+    value: unknown,
+    project: (projection: MonitoringProjection) => readonly unknown[]
+  ) {
+    await this.runtime.writeEvent?.(value)
+    try {
+      for (const event of project(this.monitoring)) await this.runtime.writeEvent?.(event)
+    } catch {
+      return
+    }
+  }
 
   private get signal() {
     return this.runtime.signal ?? new AbortController().signal
@@ -150,7 +172,7 @@ export class Cli {
     ) => QuoterBotMonitorService | Promise<QuoterBotMonitorService>
   ) {
     this.program = new Command()
-      .name('quoter-bot')
+      .name('morpho-quoter')
       .description('Morpho quoter bot CLI')
       .version(version.getVersion(), '-v, --version', 'output the current version')
       .option('-c, --config <path>', 'load configuration from an explicit .yaml or .yml file')
@@ -167,6 +189,10 @@ export class Cli {
       )
       .option('--interactive', 'prompt without echoing for the selected keystore password')
       .option('--aws', 'sign remotely with the configured non-exportable AWS KMS key')
+      .option(
+        '--middleware',
+        'sign structured intents through the configured quoter-signer Lambda (fail-closed until its intent ports ship)'
+      )
       .exitOverride()
       .configureOutput({ writeOut: () => {}, writeErr: () => {} })
 
@@ -186,7 +212,7 @@ export class Cli {
         if (!setupService.runContinuously) throw new CliUsageError()
         const result = await setupService.runContinuously({
           signal: this.signal,
-          onCycle: report => this.runtime.writeEvent?.(report)
+          onCycle: report => this.writeCycle(report, monitoring => monitoring.setup(report))
         })
         if (result.status === 'halted') throw new SetupMonitorHaltedError(result)
         this.capture(result)
@@ -218,7 +244,7 @@ export class Cli {
         if (!bootstrapService.runContinuously) throw new CliUsageError()
         const result = await bootstrapService.runContinuously({
           signal: this.signal,
-          onCycle: cycle => this.runtime.writeEvent?.(cycle),
+          onCycle: cycle => this.writeCycle(cycle, monitoring => monitoring.bootstrap(cycle)),
           verbose,
           onTransactionSubmitted
         })
@@ -258,7 +284,7 @@ export class Cli {
         if (!ladderService.runContinuously) throw new CliUsageError()
         const result = await ladderService.runContinuously({
           signal: this.signal,
-          onCycle: cycle => this.runtime.writeEvent?.(cycle),
+          onCycle: cycle => this.writeCycle(cycle, monitoring => monitoring.ladder(cycle)),
           verbose,
           onTransactionSubmitted
         })
@@ -291,7 +317,7 @@ export class Cli {
       })
       const result = await service.runContinuously({
         signal: this.signal,
-        onEvent: event => this.runtime.writeEvent?.(event),
+        onEvent: event => this.writeCycle(event, monitoring => monitoring.combined(event)),
         verbose: startOptions.verbose === true
       })
       if (result.status === 'halted') throw new QuoterBotMonitorHaltedError(result)
@@ -329,8 +355,10 @@ export class Cli {
       password?: string
       interactive?: boolean
       aws?: boolean
+      middleware?: boolean
     }>()
     const readOnly = options.readonly === true
+    if (options.aws === true && options.middleware === true) throw new CliUsageError()
     if (options.password !== undefined && options.interactive === true) throw new CliUsageError()
     if (
       options.keystore === undefined &&
@@ -342,7 +370,8 @@ export class Cli {
       options.keystore !== undefined ||
       options.password !== undefined ||
       options.interactive === true ||
-      options.aws === true
+      options.aws === true ||
+      options.middleware === true
     if (readOnly && hasExplicitSigner) throw new CliUsageError()
     const signerEnvironment: Record<string, string> = {}
     if (options.privateKey !== undefined) {
@@ -362,6 +391,7 @@ export class Cli {
       signerEnvironment.KEYSTORE_INTERACTIVE = 'true'
     }
     if (options.aws === true) signerEnvironment.KEY_STORAGE_METHOD = 'aws'
+    if (options.middleware === true) signerEnvironment.KEY_STORAGE_METHOD = 'middleware'
     return {
       configPath: options.config,
       readOnly,

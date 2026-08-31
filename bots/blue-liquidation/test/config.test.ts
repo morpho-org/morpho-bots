@@ -34,7 +34,6 @@ describe('loadConfig', () => {
     // Executor address is derived from the deterministic CREATE2 factory when not overridden.
     expect(config.executooorAddress).toMatch(/^0x[0-9a-fA-F]{40}$/)
     expect(config.venues.enabled).toEqual(['0x'])
-    expect(config.venues.slippageBps).toBe(100)
     expect(config.venues.excludeCollaterals).toEqual([])
     expect(config.venues.zeroxBaseUrl).toBeUndefined()
   })
@@ -113,8 +112,10 @@ describe('loadConfig', () => {
     )
   })
 
-  it('parses SLIPPAGE_BPS and EXCLUDE_COLLATERALS, failing loud on a bad address', () => {
-    expect(loadConfig(baseEnv({ SLIPPAGE_BPS: '250' })).venues.slippageBps).toBe(250)
+  it('parses EXCLUDE_COLLATERALS, failing loud on a bad address', () => {
+    // A stale SLIPPAGE_BPS must not fail startup: the knob was removed when the min-out floor became
+    // break-even-derived, and an unknown env var is not a misconfiguration.
+    expect(() => loadConfig(baseEnv({ SLIPPAGE_BPS: '250' }))).not.toThrow()
     const config = loadConfig(baseEnv({ EXCLUDE_COLLATERALS: ` ${COLLATERAL} , ${MORPHO}` }))
     expect(config.venues.excludeCollaterals).toEqual([getAddress(COLLATERAL), MORPHO])
     expect(() => loadConfig(baseEnv({ EXCLUDE_COLLATERALS: '0x123' }))).toThrow(

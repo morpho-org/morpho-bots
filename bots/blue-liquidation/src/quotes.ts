@@ -26,7 +26,6 @@ export function composeQuoting(deps: {
   chainId: number
   executor: Address
   venues: readonly Venue[]
-  slippageBps: number
   baseUrls: Partial<Record<Venue, string>>
   maxRouteImpactBps: number
   unwrappers: readonly Unwrapper[]
@@ -57,6 +56,9 @@ export function composeQuoting(deps: {
         loanToken: out.params.loanToken,
         amountIn: plan.seizedAssets,
         referenceAmountOut: expectedLoanOut(plan, out),
+        // Break-even, straight off the plan: the loan assets `liquidate` will pull for this seize,
+        // including the shares round-trip Blue settles through.
+        minAcceptableAmountOut: plan.impliedRepaidAssets,
         // The tick's position label (`${id}:${borrower}`) — the correlation id join across quote logs.
         id: label
       })

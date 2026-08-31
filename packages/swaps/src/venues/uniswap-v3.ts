@@ -70,6 +70,8 @@ export function quoteUniswapV3(entry: UniswapV3Entry, params: QuoteParameters): 
     callData,
     amountIn: { source: 'balance', offset: SWAP_AMOUNT_IN_OFFSET },
     expectedAmountOut: params.referenceAmountOut,
-    amountOutMinimum
+    amountOutMinimum,
+    // We encode the calldata here, so this IS the on-chain bound.
+    minOutSource: 'venue'
   }
 }

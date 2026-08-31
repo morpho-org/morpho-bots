@@ -1001,6 +1001,12 @@ host itself; it strengthens rather than changes this design.
   middleware-only rung cap that keeps each reservation within one transaction.
 - `@morpho-org/midnight-sdk` offer-tree EIP-712 hashing for canonical encoding inside the Lambda.
 - viem for transaction serialization and signature parsing/verification in the Lambda.
+- The middleware validates the KMS `GetPublicKey` SPKI by exact canonical-DER template comparison
+  plus an on-curve check (`@noble/curves`), unlike the bot's asn1js-based parse: DER is canonical,
+  so the uncompressed-secp256k1 `SubjectPublicKeyInfo` has exactly one 88-byte encoding, and the
+  root-of-trust image deliberately carries no ASN.1 library. Its strict canonical ECDSA-DER
+  signature parser mirrors the bot's proven parser rather than sharing a module, per the
+  middleware's mirror-not-share auditability rule.
 - [TIB-2026-07-27](./TIB-2026-07-27-midnight-quoter-bot.md) for the V1 security gate this TIB
   advances.
 
@@ -1293,6 +1299,112 @@ bot. The bot host holds only invoke-scoped AWS credentials — no `kms:Sign`, no
 - [Repository conventions](../CONVENTIONS.md)
 - [AWS KMS Sign API](https://docs.aws.amazon.com/kms/latest/APIReference/API_Sign.html)
 - [AWS Lambda container images](https://docs.aws.amazon.com/lambda/latest/dg/images-create.html)
+
+## Addendum A (2026-08-25) — delivery skeleton: workspace home and public image
+
+Implementation starts with the deployable skeleton, ahead of any policy surface:
+
+- **Open Question 1 is settled as proposed**: the middleware lives at `services/quoter-signer`
+  under the new top-level `services/` directory, as workspace package
+  `@morpho-org/quoter-signer`. Because the frozen lockfile validates the full workspace importer
+  set, every bot `Dockerfile` now copies `services/` alongside `packages/` and `bots/`.
+- **Image distribution**: the image builds from `services/quoter-signer/Dockerfile` (repo-root
+  context; workspace build stage → AWS Lambda Node.js 24 base runtime stage that receives only the
+  self-contained handler bundle) and publishes publicly to Docker Hub as
+  `morphoorg/quoter-signer`, extending the
+  [TIB-2026-08-14](./TIB-2026-08-14-quoter-bot-dockerhub-publishing.md) third-party
+  reproducibility posture to the middleware. ECR remains the deployment registry — AWS Lambda
+  pulls container images only from a private ECR repository in the function's region (same-account
+  is the simple path; cross-account needs an ECR repository policy) — so operators copy the
+  published image into their own ECR; the package
+  [README](../../services/quoter-signer/README.md) documents the full build → verify → publish →
+  Lambda flow. CI publishing is not wired yet; the README's manual push is the interim channel.
+- **v0 image behavior**: the handler is a fail-closed skeleton — it holds no KMS access,
+  implements no signing surface, and answers every invocation with a typed
+  `SigningNotImplementedError` denial while emitting the `middleware.intent_received` /
+  `middleware.intent_denied` JSON-line events with only allowlist-classified intent kinds. The
+  signing surfaces, policy checks, reservation ledger, IAM topology, and bot-side intent ports
+  land in later increments of this TIB.
+
+## Addendum B (2026-08-25) — v1 wire contract and bot-side middleware identity
+
+The second increment defines the wire contract at the code level and the bot-side selection seam,
+still entirely fail-closed:
+
+- **Request DTO**: the versioned JSON intent union (`quote`, `ratify`, `revoke`,
+  `setup-remediation`) is typed and strictly parsed in
+  [`services/quoter-signer/src/intent.utils.ts`](../../services/quoter-signer/src/intent.utils.ts)
+  — canonical decimal strings for uint256-range values, checksummed addresses, explicit
+  consumption groups, market-by-`marketId` only (market parameters stay middleware-resolved), the
+  80-offer (40 per side)/7-market wire caps, and outright rejection of unknown versions, kinds, and keys via a
+  typed `MalformedIntentError`. Well-formed intents still deny with
+  `SigningNotImplementedError`; both denials now carry `retryable`.
+- **Response DTO**: the approval-or-denial envelope union lives in
+  [`services/quoter-signer/src/response.utils.ts`](../../services/quoter-signer/src/response.utils.ts)
+  — per-kind approval payloads (tree signature + encoded publication for quote; signed
+  transaction artifacts with exact bytes, hash, nonce, and fee fields for ratify, revoke, and
+  setup remediation) that the skeleton never produces.
+- **Bot-side trigger**: `signer-identity.utils.ts` gains the `middleware` identity method
+  alongside `private-key`/`keystore`/`aws`, selected by `QUOTER_SIGNER_LAMBDA_ARN`
+  (`identity.quoterSignerLambdaArn`, CLI `--middleware`). The value must be an alias-qualified
+  Lambda ARN — this TIB's production-alias invocation rule enforced at configuration time, so
+  unqualified ARNs, version qualifiers, and `$LATEST` are rejected — and the AWS region derives
+  from the ARN. As specified in §3, the identity is not a drop-in signer:
+  `createMakerAccount` fails closed with `MiddlewareSigningUnsupportedError`, so write flows halt
+  until the intent ports land; read-only operation is unaffected.
+
+## Addendum C (2026-08-25) — deterministic deployment-policy checks
+
+The third increment lands the policy checks decidable from deployment parameters and the
+middleware clock alone, still entirely fail-closed (no KMS access, no signing surface):
+
+- **Policy document**: the `QUOTER_SIGNER_POLICY` environment variable carries one versioned JSON
+  policy document, strictly parsed in
+  [`services/quoter-signer/src/policy.utils.ts`](../../services/quoter-signer/src/policy.utils.ts)
+  with the wire contract's fail-closed discipline. It pins the signing `surface` (the five-function
+  shape's per-deployment intent-kind and budget-class pin, never read from caller data), the
+  ratifier mode, chain id, maker, and ratifier address, the offer freshness/start windows, a
+  non-empty per-market allowlist (maturity, tick bounds within the protocol `MAX_TICK`,
+  continuous-fee-cap ceiling within `MAX_CONTINUOUS_FEE`, per-market lend-exposure cap), the
+  maker-wide lend-exposure cap, routine and protected fee/gas ceilings, and the manifest-pinned
+  setup-remediation variants with per-variant ceilings. Parse-time deployment validation enforces
+  quote↔Ecrecover and ratify↔Setter coherence and this TIB's emergency-bump reserve: each protected
+  ceiling must cover `max(floor(routine * 1125 / 1000), routine + 1 wei)`, with `protected.gas ≥
+routine.gas`. A missing or invalid document refuses to serve with a typed
+  `PolicyNotConfiguredError` on every intent ("never run a partial or empty policy").
+- **Checks**:
+  [`services/quoter-signer/src/policy-check.utils.ts`](../../services/quoter-signer/src/policy-check.utils.ts)
+  denies out-of-policy intents with a typed `IntentPolicyViolationError` naming the violated check
+  (logged on the `middleware.intent_denied` line, per Observability): surface/intent-kind, chain and
+  maker pins, per-kind fee ceilings (protected only on the break-glass surface, per-variant for
+  remediation), `cancel-root`/`unratify-root` ratifier-mode coherence, the remediation-variant
+  allowlist, and for offer sets: market allowlist, tick price bounds, offer field pins (configured
+  ratifier; no callback surface; zero receiver on buys and the maker on sells, the protocol rule),
+  reduce-only side pins, per-market continuous-fee-cap ceilings, time windows
+  (`start < expiry`, unexpired, `expiry ≤ min(maturity, now + freshness)`,
+  `start ≥ now − maxStartAge`), and static lend-exposure caps charged once per consumption domain
+  `(market, group, side, cap value)` per §6, so per-book rungs sharing a group count once.
+- **Group namespace, resolved**: Midnight consumption groups are content-addressed (the SDK derives
+  singleton and shared group ids from offer contents) and consumption is keyed per maker on chain,
+  so no maker-owned id namespace exists to pattern-match. The "owned group namespace" field check
+  materializes as (a) the static group-coherence rule above — one group id binds one market, side,
+  and cap inside an intent, the identity §6's capacity domains rely on — and (b) canonical group and
+  root re-derivation from full market parameters at the encoding increment, where the middleware
+  injects the pinned maker into every offer it encodes.
+- **Explicitly deferred** to later increments: every independent-read property (crossed books, PnL,
+  snapshot-derived market fees bounding `continuousFeeCap`, position state), the reservation ledger
+  (aggregate signed exposure, signed-gas budgets, nonce leases, occupied-nonce caps,
+  native-balance admission), and the recorded-transaction validation of `self-cancel`. Passing every
+  deterministic check therefore still ends in the typed `SigningNotImplementedError` denial.
+- **Sequencing note**: the freshness ceiling is deliberately ahead of the bot. Today's ladder and
+  bootstrap builders pin `expiry = market maturity`, so enforcing this middleware against them
+  would deny every quote/ratify intent; the §3 builder change to
+  `expiry = min(maturity, signedAt + freshness ceiling)` is a prerequisite of the increment that
+  enables quote/ratify signing, and the middleware clock's skew against the bot's block-timestamp
+  `signedAt` must be absorbed by the builder's margin and the `maxStartAgeSeconds` window. The
+  package README carries the operator guidance for the policy values (tick-band drift with
+  time-to-maturity, `maxContinuousFeeCap` defaulting to the protocol maximum so exit sells are
+  never blocked by a governance fee raise, start-age sizing for Setter ratify retries).
 
 <!--
 TIB conventions:

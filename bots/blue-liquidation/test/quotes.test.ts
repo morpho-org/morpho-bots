@@ -32,8 +32,9 @@ const PARAMS: MarketParams = {
   lltv: (WAD * 86n) / 100n
 }
 
-// price = 1e36 → expectedLoanOut = seizedAssets = 1000 (the route-quality reference).
-const PLAN: LiquidationPlan = { seizedAssets: 1000n }
+// Break-even at 800, under the 0x stub's reported min-out of 995, so these cases exercise the lens
+// projection rather than the economic floor (which is covered in @repo/swaps).
+const PLAN: LiquidationPlan = { seizedAssets: 1000n, impliedRepaidAssets: 800n }
 
 const OUT: LensOut = {
   params: PARAMS,
@@ -81,15 +82,15 @@ function compose(
     venues?: ('0x' | '1inch')[]
     excludeCollaterals?: `0x${string}`[]
     logger?: Logger
+    httpClient?: RateLimitedClient
   } = {}
 ) {
   return composeQuoting({
-    httpClient: httpStub,
+    httpClient: overrides.httpClient ?? httpStub,
     selector,
     chainId: 8453,
     executor: EXECUTOR,
     venues: overrides.venues ?? ['0x'],
-    slippageBps: 100,
     baseUrls: {},
     maxRouteImpactBps: 500,
     unwrappers: [],
@@ -155,5 +156,23 @@ describe('composeQuoting (Blue lens-projection adapter)', () => {
     await quoteFor(PLAN, OUT, LABEL)
     const selectOk = events.find(e => e.event === 'select.ok')
     expect(selectOk?.fields?.id).toBe(LABEL)
+  })
+
+  it('projects the plan break-even into the venue slippage it asks for', () => {
+    // seizedAssets 1000 at price 1e36 -> reference 1000; break-even 800 -> the route may give up
+    // 200/1000 = 2000bps. If the adapter stopped threading `impliedRepaidAssets` this would read 0.
+    const calls: (Record<string, string> | undefined)[] = []
+    const capturing: RateLimitedClient = {
+      getJson: async <T>(args: { searchParams?: Record<string, string> }) => {
+        calls.push(args.searchParams)
+        return OK_ZEROX_BODY as T
+      }
+    }
+    const { selector } = fakeSelector([{ venue: '0x', expectedOut: 1000n }])
+    return compose(selector, { httpClient: capturing })
+      .quoteFor(PLAN, OUT, LABEL)
+      .then(() => {
+        expect(calls[0]?.slippageBps).toBe('2000')
+      })
   })
 })

@@ -16,7 +16,10 @@ import { z } from 'zod'
 // still the shape the venue adapters dispatch on, and `parseSwapConfig` still validates the JSON the
 // operator tooling (midnight's seed script) consumes. API keys NEVER live here — they come from env.
 
-const slippageBps = z.number().int().min(0).max(10_000)
+// Optional: the live quote path derives the min-out allowance from break-even
+// (`QuoteRequest.minAcceptableAmountOut`), so no venue reads this. Retained so existing operator
+// JSON keeps parsing.
+const slippageBps = z.number().int().min(0).max(10_000).optional()
 
 const uniswapV3Venue = z
   .object({

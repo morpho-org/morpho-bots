@@ -1,0 +1,26 @@
+{
+  "name": "@morpho-org/quoter-signer",
+  "version": "0.0.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "type": "module",
+  "scripts": {
+    "build": "tsx scripts/build.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@aws-sdk/client-kms": "catalog:",
+    "@morpho-org/midnight-sdk": "catalog:",
+    "@morpho-org/morpho-ts": "catalog:",
+    "@noble/curves": "catalog:",
+    "viem": "catalog:"
+  },
+  "devDependencies": {
+    "@repo/typescript-config": "workspace:*",
+    "@types/node": "catalog:",
+    "esbuild": "catalog:",
+    "tsx": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

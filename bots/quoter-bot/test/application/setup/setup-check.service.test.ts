@@ -12,6 +12,7 @@ import {
 import { SetupFailedError } from '../../../src/application/setup/setup-failed.error'
 import { SetupMonitorConfigurationError } from '../../../src/application/setup/setup-monitor-configuration.error'
 import { MakerAccountError } from '../../../src/infrastructure/make/maker-account.error'
+import { MiddlewareSigningUnsupportedError } from '../../../src/infrastructure/make/middleware-signing-unsupported.error'
 import { ProviderReadError } from '../../../src/infrastructure/setup-state/provider-read.error'
 import { ProviderResponseError } from '../../../src/infrastructure/setup-state/provider-response.error'
 
@@ -704,6 +705,23 @@ describe('SetupCheckService', () => {
       name: 'maker',
       status: 'failed',
       observed: { kind: 'signer-error', operation: 'kms-public-key' },
+      required: 'private key derives configured maker'
+    })
+  })
+
+  test('reports the fail-closed middleware identity as a sanitized signer observation', async () => {
+    const state = readyState()
+    state.getDerivedMaker = async () => {
+      throw new MiddlewareSigningUnsupportedError()
+    }
+
+    const report = await new SetupCheckService(state, config).check()
+
+    expect(report.ready).toBe(false)
+    expect(report.checks.find(check => check.name === 'maker')).toEqual({
+      name: 'maker',
+      status: 'failed',
+      observed: { kind: 'signer-error', operation: 'middleware-unsupported' },
       required: 'private key derives configured maker'
     })
   })

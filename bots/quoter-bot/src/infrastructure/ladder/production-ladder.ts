@@ -47,10 +47,12 @@ import {
 import { invalidateOffersBatch } from '../invalidation/batch-offer-invalidation.utils'
 import { OfferInvalidationAdapterError } from '../invalidation/offer-invalidation-adapter.error'
 import { createMakerAccount } from '../make/maker-account.utils'
+import { maturityReadsByMarket } from '../maturity-read.utils'
 import { createBlueReferenceReader } from '../reference/blue-reference-reader.utils'
 import { mapSelectedMarketItems } from '../selected-market-items.utils'
 import {
   activeOwnedLadderGroupIds,
+  ownedLadderGroupConsumption,
   reconstructOwnedLadderPublication
 } from './ladder-active-publication.utils'
 import { LadderAdapterError } from './ladder-adapter.error'
@@ -59,6 +61,7 @@ import { calculateLadderCapacities } from './ladder-capacity.utils'
 import { ladderCashReservations } from './ladder-cash-reservation.utils'
 import { createLadderGroupOwnership } from './ladder-group-ownership.utils'
 import { MidnightLadderMakeService, type LadderOfferTransport } from './ladder-make.service'
+import { ladderMarketMaturity } from './ladder-maturity.utils'
 import { buildLadderTree } from './ladder-offer.utils'
 import { configuredRatifierType, prepareLadderRatification } from './ladder-ratification.utils'
 import { assertLadderProspectiveSpread } from './ladder-spread.utils'
@@ -120,6 +123,7 @@ export const highestBootstrapBuyRateBps = (parameters: {
 type ProductionLadderCapacityParameters = {
   marketId: Hex
   balance: bigint
+  walletBalance?: bigint
   currentCredit: bigint
   otherMarketCredit: bigint
   targetMarketExposureAssets: bigint
@@ -129,9 +133,11 @@ type ProductionLadderCapacityParameters = {
 
 /**
  * Derives production ladder capacities using accrued credit for credit-reducing sells.
- * @param parameters - Market balance, current and cross-market credit, exposure limits, and durable
- * reservations. Reservations spanning this market reduce available balance exactly once, while
- * current credit funds reduce-only sell-side capacity without allowing the position to enter debt.
+ * @param parameters - Spendable `balance` (wallet holding narrowed by the protocol allowance), the
+ * unnarrowed `walletBalance` accounting primitive, current and cross-market credit, exposure limits,
+ * and durable reservations. Reservations spanning this market reduce available balance exactly once,
+ * while current credit funds reduce-only sell-side capacity without allowing the position to enter
+ * debt.
  * @returns Capacity limits for the lower and higher sides of the requested market.
  * @throws When the shared capacity calculator rejects inconsistent or invalid sizing inputs.
  * @remarks This pure calculation does not read, write, publish, or mutate reservation state.
@@ -323,13 +329,17 @@ export const createProductionLadderAdapters = (
     strategyMarketIds: config.ladder.map(item => item.marketId)
   })
   const configByMarket = new Map(config.ladder.map(item => [item.marketId, item]))
-  const readGroups = () =>
+  // Concurrent readers within one market check (active-quote reconstruction and consumption
+  // telemetry) must share one request: monitoring may not add a round trip to the quoting path.
+  // Deduplication is concurrent-only, so every fresh call still reads current group state.
+  const readGroups = createRepeatableSingleFlight(() =>
     readBootstrapGroups({
       chainId: config.chainId,
       maker,
       morphoApiBaseUrl: config.morphoApiBaseUrl,
       requestTimeoutMs: config.requestTimeoutMs
     })
+  )
   const readGroupConsumed = (groupId: Hex, blockNumber?: bigint) =>
     client.readContract({
       address: config.setup.midnight,
@@ -423,17 +433,21 @@ export const createProductionLadderAdapters = (
         now: block.timestamp
       })
 
+      const maturityTimestamp = ladderMarketMaturity(groups, marketId)
+
       return {
         ...calculateProductionLadderCapacities({
           marketId,
           balance: minimum(cashBalance, allowance),
+          walletBalance: cashBalance,
           currentCredit: selectedPosition.credit,
           otherMarketCredit,
           targetMarketExposureAssets: selectedConfig.targetMarketExposureAssets,
           maximumTotalExposureAssets: selectedConfig.maximumTotalExposureAssets,
           reservations
         }),
-        ...(bootstrapBuyRateBps === undefined ? {} : { bootstrapBuyRateBps })
+        ...(bootstrapBuyRateBps === undefined ? {} : { bootstrapBuyRateBps }),
+        ...(maturityTimestamp === undefined ? {} : { maturityTimestamp })
       }
     }
   }
@@ -446,13 +460,27 @@ export const createProductionLadderAdapters = (
   )
   const strategyRates = new StrategyBootstrapReferenceRateService(
     new Map(config.ladder.map(item => [item.marketId, item.targetRate] as const)),
-    blueRates
+    blueRates,
+    maturityReadsByMarket({
+      entries: config.ladder,
+      midnight,
+      client,
+      // The ladder monitor runs at the shortest configured cadence; capping block sharing there
+      // guarantees every cycle re-derives the premium from a fresh timestamp.
+      blockShareMs: 1_000 * Math.min(...config.ladder.map(item => item.loopIntervalSeconds))
+    })
   )
   const rates: LadderReferenceRateService = {
     readRate: async marketId => (await strategyRates.readRate(marketId)).rateBps,
     readObservation: async marketId => {
       const observation = await strategyRates.readRate(marketId)
-      return { rateBps: observation.rateBps, observationId: observation.observationId }
+      return {
+        rateBps: observation.rateBps,
+        observationId: observation.observationId,
+        ...(observation.secondsToMaturity === undefined
+          ? {}
+          : { secondsToMaturity: observation.secondsToMaturity })
+      }
     }
   }
 
@@ -531,15 +559,25 @@ export const createProductionLadderAdapters = (
     }
   }
 
-  const readActive = async (marketId: Hex) => {
+  // The quote and its groups' consumption are derived from ONE groups read rather than two
+  // concurrent readers sharing a single-flight slot: that slot is released as soon as the first
+  // request settles, so deduplication there is timing-dependent and monitoring could add a real
+  // round trip to the quoting path.
+  const readActiveState = async (marketId: Hex) => {
     await cleanupRemovedMarkets()
     const [groups, publications] = await Promise.all([readGroups(), ladderOwnership.read()])
-    return publications
+    const quote = publications
       .filter(item => item.marketId === marketId)
       .toReversed()
       .map(publication => reconstructOwnedLadderPublication(publication, groups))
-      .find(quote => quote !== undefined)
+      .find(item => item !== undefined)
+    return {
+      ...(quote === undefined ? {} : { quote }),
+      consumption: ownedLadderGroupConsumption(publications, groups, marketId)
+    }
   }
+
+  const readActive = async (marketId: Hex) => (await readActiveState(marketId)).quote
 
   const prepareUnsignedPublication = async (
     quote: LadderQuoteSet,
@@ -591,6 +629,7 @@ export const createProductionLadderAdapters = (
 
   const readOnlyMake: LadderMakeService = {
     readActive,
+    readActiveState,
     reconcile: async () => {
       throw new LadderAdapterError('readonly-mutation')
     },
@@ -628,6 +667,7 @@ export const createProductionLadderAdapters = (
 
   const transport: LadderOfferTransport = {
     readActive,
+    readActiveState,
     listOwnedGroups: async () => ownedGroups(await ladderOwnership.read()),
     readGroupConsumed,
     listActiveGroupIds: async marketId => {

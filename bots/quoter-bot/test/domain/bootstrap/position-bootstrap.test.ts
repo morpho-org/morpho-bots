@@ -5,8 +5,11 @@ import { describe, expect, test } from 'vitest'
 import { BootstrapConfigurationError } from '../../../src/domain/bootstrap/bootstrap-configuration.error'
 import {
   decidePositionBootstrap,
+  decidePositionBootstrapWithDiagnostics,
+  effectiveBootstrapPremiumBps,
   validateBootstrapConfig
 } from '../../../src/domain/bootstrap/position-bootstrap'
+import { MATURITY_PREMIUM_YEAR_SECONDS } from '../../../src/domain/maturity-premium'
 
 const marketId: Hex = `0x${'11'.repeat(32)}`
 
@@ -89,6 +92,43 @@ describe('validateBootstrapConfig', () => {
   test('rejects a positive bootstrap premium', () => {
     expect(() => validateBootstrapConfig({ ...parameters.config, premiumBps: 1n })).toThrow(
       new BootstrapConfigurationError('premiumBps', 'must be zero or negative')
+    )
+  })
+
+  test('accepts a linear maturity premium with and without a cap', () => {
+    expect(
+      validateBootstrapConfig({
+        ...parameters.config,
+        maturityPremium: { shape: 'linear', premiumPerYearBps: 120n }
+      })
+    ).toBeUndefined()
+    expect(
+      validateBootstrapConfig({
+        ...parameters.config,
+        maturityPremium: { shape: 'linear', premiumPerYearBps: 120n, maximumPremiumBps: 300n }
+      })
+    ).toBeUndefined()
+  })
+
+  test('rejects a non-positive maturity-premium slope', () => {
+    expect(() =>
+      validateBootstrapConfig({
+        ...parameters.config,
+        maturityPremium: { shape: 'linear', premiumPerYearBps: 0n }
+      })
+    ).toThrow(
+      new BootstrapConfigurationError('maturityPremium.premiumPerYearBps', 'must be positive')
+    )
+  })
+
+  test('rejects a non-positive maturity-premium cap', () => {
+    expect(() =>
+      validateBootstrapConfig({
+        ...parameters.config,
+        maturityPremium: { shape: 'linear', premiumPerYearBps: 120n, maximumPremiumBps: 0n }
+      })
+    ).toThrow(
+      new BootstrapConfigurationError('maturityPremium.maximumPremiumBps', 'must be positive')
     )
   })
 
@@ -498,5 +538,192 @@ describe('decidePositionBootstrap', () => {
         config: { ...parameters.config, premiumBps: 1n }
       })
     ).toThrow(new BootstrapConfigurationError('premiumBps', 'must be zero or negative'))
+  })
+
+  test('raises the requested rate by the maturity premium for a further maturity', () => {
+    expect(
+      decidePositionBootstrap({
+        ...parameters,
+        position: { ...parameters.position, credit: 0n },
+        rate: { ...parameters.rate, secondsToMaturity: MATURITY_PREMIUM_YEAR_SECONDS / 2n },
+        config: {
+          ...parameters.config,
+          maturityPremium: { shape: 'linear', premiumPerYearBps: 200n }
+        }
+      })
+    ).toMatchObject({ kind: 'publish', offer: { rateBps: 550n } })
+  })
+
+  test('caps the maturity premium before applying it to the requested rate', () => {
+    expect(
+      decidePositionBootstrap({
+        ...parameters,
+        position: { ...parameters.position, credit: 0n },
+        rate: { ...parameters.rate, secondsToMaturity: MATURITY_PREMIUM_YEAR_SECONDS },
+        config: {
+          ...parameters.config,
+          maturityPremium: { shape: 'linear', premiumPerYearBps: 200n, maximumPremiumBps: 120n }
+        }
+      })
+    ).toMatchObject({ kind: 'publish', offer: { rateBps: 570n } })
+  })
+
+  test('clamps a maturity-premium-adjusted rate onto the configured maximum', () => {
+    expect(
+      decidePositionBootstrap({
+        ...parameters,
+        position: { ...parameters.position, credit: 0n },
+        rate: { ...parameters.rate, secondsToMaturity: MATURITY_PREMIUM_YEAR_SECONDS },
+        config: {
+          ...parameters.config,
+          maturityPremium: { shape: 'linear', premiumPerYearBps: 800n }
+        }
+      })
+    ).toMatchObject({ kind: 'publish', offer: { rateBps: 800n } })
+  })
+
+  test('adds no maturity premium for a market at or past maturity', () => {
+    expect(
+      decidePositionBootstrap({
+        ...parameters,
+        position: { ...parameters.position, credit: 0n },
+        rate: { ...parameters.rate, secondsToMaturity: 0n },
+        config: {
+          ...parameters.config,
+          maturityPremium: { shape: 'linear', premiumPerYearBps: 200n }
+        }
+      })
+    ).toMatchObject({ kind: 'publish', offer: { rateBps: 450n } })
+  })
+
+  test('rejects a configured maturity premium without a maturity observation', () => {
+    expect(() =>
+      decidePositionBootstrap({
+        ...parameters,
+        position: { ...parameters.position, credit: 0n },
+        config: {
+          ...parameters.config,
+          maturityPremium: { shape: 'linear', premiumPerYearBps: 200n }
+        }
+      })
+    ).toThrow(new BootstrapConfigurationError('maturityPremium', 'requires a maturity observation'))
+  })
+})
+
+describe('effectiveBootstrapPremiumBps', () => {
+  test('returns the static premium unchanged without a maturity-premium configuration', () => {
+    expect(effectiveBootstrapPremiumBps(parameters.config, undefined)).toBe(-50n)
+    expect(effectiveBootstrapPremiumBps(parameters.config, MATURITY_PREMIUM_YEAR_SECONDS)).toBe(
+      -50n
+    )
+  })
+
+  test('adds the resolved maturity premium to the static premium', () => {
+    expect(
+      effectiveBootstrapPremiumBps(
+        {
+          ...parameters.config,
+          maturityPremium: { shape: 'linear', premiumPerYearBps: 120n }
+        },
+        MATURITY_PREMIUM_YEAR_SECONDS / 2n
+      )
+    ).toBe(10n)
+  })
+
+  test('fails loud when the required maturity observation is missing', () => {
+    expect(() =>
+      effectiveBootstrapPremiumBps(
+        {
+          ...parameters.config,
+          maturityPremium: { shape: 'linear', premiumPerYearBps: 120n }
+        },
+        undefined
+      )
+    ).toThrow(new BootstrapConfigurationError('maturityPremium', 'requires a maturity observation'))
+  })
+})
+
+describe('decidePositionBootstrapWithDiagnostics', () => {
+  const funding = { ...parameters, position: { ...parameters.position, credit: 0n } }
+
+  test('reports the unclamped rate and no bound while the premium keeps it in range', () => {
+    const { diagnostics } = decidePositionBootstrapWithDiagnostics(funding)
+
+    expect(diagnostics).toEqual({
+      requestedRateBps: 450n,
+      clampedRateBps: 450n,
+      requestedAssets: 500n,
+      cappedAssets: 500n,
+      cap: 'offer-size'
+    })
+    expect(diagnostics && 'clampedBound' in diagnostics).toBe(false)
+  })
+
+  test('reports the bound a saturated premium-adjusted rate settled on', () => {
+    expect(
+      decidePositionBootstrapWithDiagnostics({
+        ...funding,
+        rate: { mode: 'static', rateBps: 900n, observationId: 'static:900' }
+      }).diagnostics
+    ).toMatchObject({
+      requestedRateBps: 850n,
+      clampedRateBps: 800n,
+      clampedBound: 'maximum'
+    })
+
+    expect(
+      decidePositionBootstrapWithDiagnostics({
+        ...funding,
+        rate: { mode: 'static', rateBps: 200n, observationId: 'static:200' }
+      }).diagnostics
+    ).toMatchObject({
+      requestedRateBps: 150n,
+      clampedRateBps: 200n,
+      clampedBound: 'minimum'
+    })
+  })
+
+  test('names the cash balance as the binding size cap', () => {
+    expect(
+      decidePositionBootstrapWithDiagnostics({
+        ...funding,
+        position: { ...funding.position, cashBalance: 300n }
+      }).diagnostics
+    ).toMatchObject({ requestedAssets: 500n, cappedAssets: 300n, cap: 'cash-balance' })
+  })
+
+  test('names the remaining credit target as the binding size cap', () => {
+    expect(
+      decidePositionBootstrapWithDiagnostics({
+        ...funding,
+        position: { ...funding.position, credit: 700n }
+      }).diagnostics
+    ).toMatchObject({ requestedAssets: 500n, cappedAssets: 300n, cap: 'credit-target' })
+  })
+
+  test('floors the reported size at zero while naming the exceeded exposure bound', () => {
+    const { decision, diagnostics } = decidePositionBootstrapWithDiagnostics({
+      ...funding,
+      position: { ...funding.position, marketExposure: 2_500n }
+    })
+
+    expect(diagnostics).toMatchObject({
+      requestedAssets: 500n,
+      cappedAssets: 0n,
+      cap: 'market-exposure'
+    })
+    expect(decision).toEqual({ kind: 'observe', reason: 'no-capacity', assets: 0n })
+  })
+
+  test('omits diagnostics for a transition that never derives a rate', () => {
+    const { decision, diagnostics } = decidePositionBootstrapWithDiagnostics(parameters)
+
+    expect(decision).toEqual({
+      kind: 'target-reached',
+      completesInitialTarget: true,
+      credit: 900n,
+      acceptedCredit: 900n
+    })
+    expect(diagnostics).toBeUndefined()
   })
 })

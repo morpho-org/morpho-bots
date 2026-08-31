@@ -74,7 +74,8 @@ export async function quoteLifi(
     callData: json.transactionRequest.data,
     amountIn: { source: 'fixed', value: params.amountIn },
     expectedAmountOut: BigInt(json.estimate.toAmount ?? '0'),
-    amountOutMinimum: BigInt(json.estimate.toAmountMin ?? '0')
+    amountOutMinimum: BigInt(json.estimate.toAmountMin ?? '0'),
+    minOutSource: 'venue'
   }
 }
 

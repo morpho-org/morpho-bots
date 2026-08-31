@@ -54,6 +54,17 @@ export type SubmitArgs = {
   blockNumber: bigint
 }
 
+/**
+ * Why a {@link PendingQueue.submit} call broadcast nothing.
+ *
+ * Load-bearing, not bookkeeping. `refused` means the queue declined before reaching `send`
+ * (`tx.send_aborted`, `nonce.sync_failed`, `queue.nonce_hole`) — a queue-wide condition that would
+ * have refused any position, so a caller must NOT hold it against this one. `send_failed` means the
+ * node rejected this position's own transaction (`tx.submit_failed`), which is a fact about the
+ * position and should re-arm whatever per-position backoff the caller keeps.
+ */
+export type SubmitOutcome = { sent: true } | { sent: false; reason: 'refused' | 'send_failed' }
+
 /** One tracked tx — the queue's full per-nonce record. */
 type Pending = {
   nonce: number
@@ -68,18 +79,20 @@ type Pending = {
 
 export type PendingQueue = {
   /**
-   * Broadcasts `request` and tracks it in flight. Resolves `true` only when `send` accepted the
-   * transaction and it is now tracked under its nonce; `false` when the queue refused or the send
-   * failed without a nonce (`tx.send_aborted`, `nonce.sync_failed`, `queue.nonce_hole`,
-   * `tx.submit_failed`) — a caller counting real broadcasts must not count those. Still throws
-   * `TxSendError` when a first send claimed a nonce but produced no hash, which surfaces to its
-   * caller.
+   * Broadcasts `request` and tracks it in flight. Resolves `{ sent: true }` only when `send` accepted
+   * the transaction and it is now tracked under its nonce — a caller counting real broadcasts must
+   * count nothing else. Still throws `TxSendError` when a first send claimed a nonce but produced no
+   * hash, which surfaces to its caller.
+   *
+   * On failure the outcome distinguishes {@link SubmitOutcome}'s two reasons, which callers must not
+   * collapse: `refused` is queue-wide and says nothing about this position, while `send_failed` is
+   * this position's own send being rejected.
    *
    * Concurrent calls are serialized end to end (latch checks → `syncNonce` → `send` → tracking), so a
    * pass that submits for several positions at once cannot hand two of them the same nonce and cannot
    * rewind the cursor past an in-flight send.
    */
-  submit(args: SubmitArgs): Promise<boolean>
+  submit(args: SubmitArgs): Promise<SubmitOutcome>
   onBlock(blockNumber: bigint): Promise<void>
   readonly size: number
   snapshot(): { nonce: number; txHash: Hex; attempt: number }[]
@@ -214,12 +227,12 @@ export function createPendingQueue({
   // `pending` snapshot. In particular the `pending.size === 0` test has to sit INSIDE the lock — a
   // slow sync racing a concurrent send would otherwise rewind the cursor onto a nonce already in
   // flight, and the resulting replacement-underpriced send drops one of the two txs.
-  async function submitLocked(args: SubmitArgs): Promise<boolean> {
+  async function submitLocked(args: SubmitArgs): Promise<SubmitOutcome> {
     // Latched by a prior hashless send: skip until the next `onBlock` clears it. The signer has
     // rolled its cursor back, so broadcasting again now would race that rollback.
     if (sendAborted) {
       logger.warn('tx.send_aborted', { label: args.label })
-      return false
+      return { sent: false, reason: 'refused' }
     }
     // Nothing in flight → reconcile the cursor with chain before claiming a nonce. A failed sync
     // would leave a stale (possibly runaway) cursor, so skip the send this tick rather than risk a
@@ -231,7 +244,7 @@ export function createPendingQueue({
       const synced = await tryCatch(syncNonce())
       if (synced.error) {
         logger.warn('nonce.sync_failed', { label: args.label, reason: revertReason(synced.error) })
-        return false
+        return { sent: false, reason: 'refused' }
       }
       if (nonceHoleLow !== null) clearNonceHole('sync')
     }
@@ -241,7 +254,7 @@ export function createPendingQueue({
     // sweep clears it once the chain consumes past the hole.
     if (nonceHoleLow !== null) {
       logger.warn('queue.nonce_hole', { label: args.label, nonce: nonceHoleLow })
-      return false
+      return { sent: false, reason: 'refused' }
     }
     const sent = await tryCatch(
       send({
@@ -265,7 +278,7 @@ export function createPendingQueue({
         sendAborted = true
         throw sent.error
       }
-      return false
+      return { sent: false, reason: 'send_failed' }
     }
     const { nonce, txHash } = sent.data
     pending.set(nonce, {
@@ -285,13 +298,13 @@ export function createPendingQueue({
       maxFee: args.maxFeePerGas,
       priority: args.maxPriorityFeePerGas
     })
-    return true
+    return { sent: true }
   }
 
   // A handler that throws rejects only its own caller and the mutex moves straight to the next queued
   // one, so `TxSendError` still surfaces to the tick that caused it without wedging the lock.
-  const submit = (args: SubmitArgs): Promise<boolean> =>
-    submitMutex.coalesce<SubmitArgs, boolean>(SUBMIT_RESOURCE_KEY, args, async locked => ({
+  const submit = (args: SubmitArgs): Promise<SubmitOutcome> =>
+    submitMutex.coalesce<SubmitArgs, SubmitOutcome>(SUBMIT_RESOURCE_KEY, args, async locked => ({
       leader: { action: 'resolve', result: await submitLocked(locked) }
     }))
 

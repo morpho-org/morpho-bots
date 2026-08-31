@@ -1,5 +1,6 @@
 import type { BootstrapConfig } from '../src/domain/bootstrap/position-bootstrap'
 import type { LadderConfig } from '../src/domain/ladder/ladder'
+import type { MaturityPremiumConfig } from '../src/domain/maturity-premium'
 import type { TargetRateConfigured } from '../src/domain/target-rate'
 
 import {
@@ -9,7 +10,9 @@ import {
   ladderConfigsValue,
   parseBytes32
 } from '../src/config/market-collections'
+import { clampRateBps } from '../src/domain/cross-book'
 import { generateLadder, offerMaxAssetsByRung } from '../src/domain/ladder/ladder'
+import { highestReachableMaturityPremiumBps } from '../src/domain/maturity-premium'
 import { CollectionImportError } from './collection-import.error'
 import { CollectionValidationError } from './collection-validation.error'
 import { FragmentCodecError } from './fragment-codec.error'
@@ -19,14 +22,22 @@ import { StrictJsonError } from './strict-json.error'
 export type TargetRateInput =
   | { strategy: 'variable_rate_avg' }
   | { strategy: 'hardcoded'; hardcodedRateBps: string }
+export type MaturityPremiumInput = {
+  shape: 'linear'
+  premiumPerYearBps: string
+  maximumPremiumBps?: string
+}
 export type BootstrapInput = Record<
-  Exclude<(typeof BOOTSTRAP_MARKET_FIELDS)[number], 'autoRefill' | 'targetRate'>,
+  Exclude<
+    (typeof BOOTSTRAP_MARKET_FIELDS)[number],
+    'autoRefill' | 'targetRate' | 'maturityPremium'
+  >,
   string
-> & { autoRefill: boolean; targetRate: TargetRateInput }
+> & { autoRefill: boolean; targetRate: TargetRateInput; maturityPremium?: MaturityPremiumInput }
 export type LadderInput = Record<
-  Exclude<(typeof LADDER_MARKET_FIELDS)[number], 'targetRate'>,
+  Exclude<(typeof LADDER_MARKET_FIELDS)[number], 'targetRate' | 'maturityPremium'>,
   string
-> & { targetRate: TargetRateInput }
+> & { targetRate: TargetRateInput; maturityPremium?: MaturityPremiumInput }
 
 export type PlaygroundState = {
   bootstrap: BootstrapInput[]
@@ -46,6 +57,24 @@ export const BOOTSTRAP_FIELDS = [
   ['acceptanceAssets', 'Completion threshold', 'Allowed target shortfall', 'number'],
   ['offerSize', 'Pending-offer cap', 'Maximum desired offer assets', 'number'],
   ['premiumBps', 'Quote premium (BPS)', 'Zero or negative reference offset', 'number'],
+  [
+    'maturityPremium',
+    'Maturity premium',
+    'Optional premium function of time to maturity',
+    'maturity-premium-select'
+  ],
+  [
+    'maturityPremium.premiumPerYearBps',
+    'Premium slope (BPS/year)',
+    'Positive premium per year to maturity',
+    'maturity-premium-number'
+  ],
+  [
+    'maturityPremium.maximumPremiumBps',
+    'Premium cap (BPS)',
+    'Optional positive inclusive maturity-premium cap',
+    'maturity-premium-number'
+  ],
   ['maximumMarketExposure', 'Market exposure cap', 'Positive raw assets', 'number'],
   ['maximumTotalExposure', 'Total exposure cap', 'Positive raw assets', 'number'],
   ['minimumRateBps', 'Minimum rate (BPS)', 'Inclusive quote floor', 'number'],
@@ -62,6 +91,24 @@ export const LADDER_FIELDS = [
     'target-rate-number'
   ],
   ['quotePremiumBps', 'Quote premium (BPS)', 'Signed center offset', 'number'],
+  [
+    'maturityPremium',
+    'Maturity premium',
+    'Optional premium function of time to maturity',
+    'maturity-premium-select'
+  ],
+  [
+    'maturityPremium.premiumPerYearBps',
+    'Premium slope (BPS/year)',
+    'Positive premium per year to maturity',
+    'maturity-premium-number'
+  ],
+  [
+    'maturityPremium.maximumPremiumBps',
+    'Premium cap (BPS)',
+    'Optional positive inclusive maturity-premium cap',
+    'maturity-premium-number'
+  ],
   ['spreadBps', 'Full spread (BPS)', 'Positive even nearest-rung distance', 'number'],
   ['stepBps', 'Step (BPS)', 'Positive same-side rung distance', 'number'],
   ['rungCount', 'Rungs per side', '1–512', 'number'],
@@ -124,6 +171,14 @@ const targetRateInput = (config: TargetRateConfigured<unknown>['targetRate']): T
     ? { strategy: 'hardcoded', hardcodedRateBps: String(config.hardcodedRateBps) }
     : { strategy: 'variable_rate_avg' }
 
+const maturityPremiumInput = (config: MaturityPremiumConfig): MaturityPremiumInput => ({
+  shape: config.shape,
+  premiumPerYearBps: String(config.premiumPerYearBps),
+  ...(config.maximumPremiumBps === undefined
+    ? {}
+    : { maximumPremiumBps: String(config.maximumPremiumBps) })
+})
+
 const bootstrapInput = (config: TargetRateConfigured<BootstrapConfig>): BootstrapInput => ({
   marketId: config.marketId,
   targetRate: targetRateInput(config.targetRate),
@@ -131,6 +186,9 @@ const bootstrapInput = (config: TargetRateConfigured<BootstrapConfig>): Bootstra
   acceptanceAssets: String(config.acceptanceAssets),
   offerSize: String(config.offerSize),
   premiumBps: String(config.premiumBps),
+  ...(config.maturityPremium === undefined
+    ? {}
+    : { maturityPremium: maturityPremiumInput(config.maturityPremium) }),
   maximumMarketExposure: String(config.maximumMarketExposure),
   maximumTotalExposure: String(config.maximumTotalExposure),
   minimumRateBps: String(config.minimumRateBps),
@@ -142,6 +200,9 @@ const ladderInput = (config: TargetRateConfigured<LadderConfig>): LadderInput =>
   marketId: config.marketId,
   targetRate: targetRateInput(config.targetRate),
   quotePremiumBps: String(config.quotePremiumBps),
+  ...(config.maturityPremium === undefined
+    ? {}
+    : { maturityPremium: maturityPremiumInput(config.maturityPremium) }),
   spreadBps: String(config.spreadBps),
   stepBps: String(config.stepBps),
   rungCount: String(config.rungCount),
@@ -190,6 +251,8 @@ export type BootstrapGraphicModel = {
   marketId: string
   referenceRateBps: string
   quotedRateBps: string
+  /** Far-maturity end of the clamped quote range, present only with a maturity premium. */
+  maximumQuotedRateBps?: string
   minimumRateBps: string
   maximumRateBps: string
   creditTarget: string
@@ -198,7 +261,10 @@ export type BootstrapGraphicModel = {
   callouts: { label: string; value: string }[]
 }
 
-/** Derives a synthetic reference whose premium-adjusted quote is the integer midpoint of the bounds. */
+/**
+ * Derives a synthetic reference whose premium-adjusted quote is the integer midpoint of the bounds;
+ * a maturity premium additionally renders the clamped quote range reachable across maturities.
+ */
 export const deriveBootstrapGraphicModels = (items: BootstrapInput[]): BootstrapGraphicModel[] =>
   parseBootstrap(items).map(item => {
     const minimum = BigInt(item.minimumRateBps)
@@ -208,7 +274,28 @@ export const deriveBootstrapGraphicModels = (items: BootstrapInput[]): Bootstrap
       item.targetRate.strategy === 'hardcoded'
         ? BigInt(item.targetRate.hardcodedRateBps)
         : (minimum + maximum) / 2n - premium
-    const quoted = reference + premium
+    const baseQuoted = reference + premium
+    // With a maturity premium the runtime quote spans the reachable envelope (bounded by the cap
+    // and the protocol's 100-year maturity horizon) before clamping, and the collection parser
+    // already rejected rates pinned outside the bounds at every protocol-permitted maturity, so
+    // the preview renders the clamped reachable range instead of validating the premium-free base.
+    const quoted =
+      item.maturityPremium === undefined ? baseQuoted : clampRateBps(baseQuoted, minimum, maximum)
+    const maximumQuoted =
+      item.maturityPremium === undefined
+        ? undefined
+        : clampRateBps(
+            baseQuoted +
+              highestReachableMaturityPremiumBps({
+                shape: 'linear',
+                premiumPerYearBps: BigInt(item.maturityPremium.premiumPerYearBps),
+                ...(item.maturityPremium.maximumPremiumBps === undefined
+                  ? {}
+                  : { maximumPremiumBps: BigInt(item.maturityPremium.maximumPremiumBps) })
+              }),
+            minimum,
+            maximum
+          )
     if (
       reference <= 0n ||
       (item.targetRate.strategy !== 'hardcoded' && (reference < minimum || reference > maximum)) ||
@@ -223,6 +310,7 @@ export const deriveBootstrapGraphicModels = (items: BootstrapInput[]): Bootstrap
       marketId: item.marketId,
       referenceRateBps: String(reference),
       quotedRateBps: String(quoted),
+      ...(maximumQuoted === undefined ? {} : { maximumQuotedRateBps: String(maximumQuoted) }),
       minimumRateBps: item.minimumRateBps,
       maximumRateBps: item.maximumRateBps,
       creditTarget: item.creditTarget,
@@ -239,6 +327,18 @@ export const deriveBootstrapGraphicModels = (items: BootstrapInput[]): Bootstrap
             ? 'Auto-refill enabled after completion'
             : 'One-shot; observe after completion'
         },
+        ...(item.maturityPremium
+          ? [
+              {
+                label: 'Maturity premium',
+                value: `Linear +${item.maturityPremium.premiumPerYearBps} BPS per year to maturity${
+                  item.maturityPremium.maximumPremiumBps === undefined
+                    ? ''
+                    : `, capped at ${item.maturityPremium.maximumPremiumBps} BPS`
+                }; the preview quote range spans the clamped rates reachable from live time to maturity`
+              }
+            ]
+          : []),
         { label: 'Cadence', value: '60 seconds (fixed bootstrap monitor cadence)' },
         { label: 'Movement tolerance', value: '0 BPS; changed valid terms are reconciled' },
         { label: 'Pending-offer cap', value: `${item.offerSize} assets before live capacity caps` },
@@ -272,6 +372,8 @@ export type LadderGraphicModel = {
   maximumRateBps: string
   referenceRateBps: string
   centerRateBps: string
+  /** True far-maturity center at the highest reachable premium, only with a maturity premium. */
+  maximumCenterRateBps?: string
   axis: {
     minimumRateBps: string
     maximumRateBps: string
@@ -288,7 +390,30 @@ export type LadderGraphicModel = {
 const collectionFromArgument = (value: LadderInput[] | PlaygroundState) =>
   Array.isArray(value) ? value : value.ladder
 
-/** Generates each ladder around the bounded midpoint, preserving rung/cap pairing when displayed high-to-low. */
+/**
+ * Clamps a marker's plot coordinate into the rendered axis.
+ * @param percent - Raw `rateToY` output for a marker whose true value may leave the axis range.
+ * @returns The percentage bounded to the inclusive `[0, 100]` plot range.
+ * @remarks Pure display geometry: model values stay true to runtime semantics (the ladder center
+ * is never clamped at runtime), so only the rendered coordinate saturates at the plot edge.
+ */
+export const clampPlotPercent = (percent: number): number => Math.min(100, Math.max(0, percent))
+
+/**
+ * Generates each ladder preview around its deterministic reference, preserving rung/cap pairing
+ * when displayed high-to-low.
+ * @param value - Ordered ladder collection inputs, or a complete playground state whose ladder
+ * list is previewed.
+ * @returns One graphic model per entry: true center values (the at-maturity anchor and, with a
+ * maturity premium, the far-maturity center at the highest reachable premium), display-ordered
+ * rung rows with allocation and cap ratios, plot geometry, and callouts.
+ * @throws `ConfigValidationError` from the shared collection parser when any entry is invalid,
+ * and `PreviewGenerationError` when the deterministic derived reference cannot stay positive or,
+ * for the variable strategy, inside its own configured bounds.
+ * @remarks Pure and browser-safe with no provider, logging, or persistence access. Center values
+ * stay unclamped because the runtime clamps individual rungs, never the center; markers clamp
+ * only their plot coordinate through {@link clampPlotPercent}.
+ */
 export const generateLadderGraphicModels = (
   value: LadderInput[] | PlaygroundState
 ): LadderGraphicModel[] =>
@@ -311,7 +436,18 @@ export const generateLadderGraphicModels = (
         'Ladder derived reference and center rates must remain inside configured bounds'
       )
     }
-    const generated = generateLadder({ config, referenceRateBps: reference })
+    // The deterministic preview anchors the shape at the zero-premium (at-maturity) center. The
+    // model carries true center values — the runtime clamps individual rungs, never the center —
+    // and the component clamps only marker plot coordinates into the axis.
+    const generated = generateLadder({
+      config,
+      referenceRateBps: reference,
+      ...(config.maturityPremium === undefined ? {} : { secondsToMaturity: 0n })
+    })
+    const maximumCenter =
+      config.maturityPremium === undefined
+        ? undefined
+        : generated.centerRateBps + highestReachableMaturityPremiumBps(config.maturityPremium)
     const caps = offerMaxAssetsByRung(generated)
     const paired = (side: 'higher' | 'lower') => {
       const rungs = generated[side]
@@ -348,6 +484,7 @@ export const generateLadderGraphicModels = (
       maximumRateBps: input.maximumRateBps,
       referenceRateBps: String(reference),
       centerRateBps: String(generated.centerRateBps),
+      ...(maximumCenter === undefined ? {} : { maximumCenterRateBps: String(maximumCenter) }),
       axis: {
         minimumRateBps: input.minimumRateBps,
         maximumRateBps: input.maximumRateBps,
@@ -374,6 +511,22 @@ export const generateLadderGraphicModels = (
           value: `${reference} + ${config.quotePremiumBps} = ${generated.centerRateBps} BPS`,
           parameters: ['quotePremiumBps']
         },
+        ...(config.maturityPremium
+          ? [
+              {
+                label: 'Maturity premium',
+                value: `Linear +${config.maturityPremium.premiumPerYearBps} BPS per year to maturity${
+                  config.maturityPremium.maximumPremiumBps === undefined
+                    ? ''
+                    : `, capped at ${config.maturityPremium.maximumPremiumBps} BPS`
+                }; the preview anchors the at-maturity center and marks the far-maturity center at the highest reachable premium`,
+                parameters: [
+                  'maturityPremium.premiumPerYearBps',
+                  'maturityPremium.maximumPremiumBps'
+                ]
+              }
+            ]
+          : []),
         {
           label: 'Spacing & sizing',
           value: `${config.spreadBps} BPS spread · ${config.stepBps} BPS step · ${config.rungCount} rungs/side · ${config.sizeSkewBps} BPS skew · ${config.minimumOfferAssets} asset floor`,
