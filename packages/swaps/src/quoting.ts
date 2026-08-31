@@ -173,10 +173,17 @@ type FirmQuoteOutcome =
  * in bps — see {@link predictedVenueOut} for why the bias must point down.
  *
  * Absorbs the probe-versus-firm-quote gap (a probe has no taker and asks for no slippage) plus the
- * price drift a cached rate carries. Undersized, it merely costs the second pass back; oversized, it
- * tightens the encoded floor above break-even, where a fill the repay would have covered reverts.
+ * price drift a cached rate carries.
+ *
+ * The two failure directions are NOT symmetric, and that is what sets the value. Undersized only
+ * costs the second pass back — the floor still lands exactly on break-even. Oversized tightens the
+ * encoded floor ABOVE break-even, so a fill the repay would have covered reverts at send instead;
+ * on the 2026-08-28 maturity a min-out shortfall already rejected 153 of 167 simulated sends, and
+ * the whole post-maturity incentive is only ~20 bps, so there is very little room to spend here.
+ * Provisional at this value and deliberately biased toward the cheap failure: `curveCostBps` beside
+ * `firmQuoteCostBps` on `select.ok` measures the real gap, and that is what should set it.
  */
-const CURVE_PREDICTION_MARGIN_BPS = 25n
+const CURVE_PREDICTION_MARGIN_BPS = 10n
 
 /**
  * A curve estimate turned into a first-pass min-out denominator, or `undefined` when the curve has
@@ -595,10 +602,14 @@ export function composeMultiVenueQuoting(deps: {
         referenceAmountOut,
         id
       })
-      // A trusted curve already ranked every enabled venue, so the walk stops at the winner and one
-      // candidate costs one venue's worth of calls. Anything else fails OPEN to the full fall-through:
-      // the pre-curve guarantee is that a mis-ranked probe costs a fall-through, never a lost route.
-      const candidates = trusted ? order.slice(0, 1) : order
+      // A trusted curve ranked every enabled venue on exactly the axis `bad_route` and `floor_unmet`
+      // measure, so once the winner has been quoted those two say nothing a runner-up would change and
+      // the walk stops there — one candidate costs one venue's worth of calls. `quote_failed` is NOT
+      // on that axis: the curve ranked output, not reachability, so a timeout or a rate limit still
+      // falls through. Anything the curve cannot vouch for fails OPEN to the full pre-curve walk,
+      // because the guarantee it replaces is that a mis-ranked probe costs a fall-through, never a
+      // lost route.
+      const stopAfterWinner = trusted
 
       // Try the candidate venues in order; a quote or route-quality failure falls through to the next
       // (coverage-first). Only the CHOSEN venue is firm-quoted per step — never all venues at once.
@@ -606,7 +617,7 @@ export function composeMultiVenueQuoting(deps: {
       // and the caller still backs off — the conservative direction of the two.
       const { counted, calls } = countingClient(httpClient)
       let lastReason: QuoteFailureReason = 'no_route'
-      for (const venue of candidates) {
+      for (const venue of order) {
         const outcome = await firmQuoteVenue({
           httpClient: counted,
           chainId,
@@ -644,6 +655,7 @@ export function composeMultiVenueQuoting(deps: {
             minOutSource: outcome.swap.minOutSource,
             floor: outcome.floor
           })
+          if (stopAfterWinner) break
           continue
         }
         if (outcome.kind === 'bad_route') {
@@ -655,6 +667,7 @@ export function composeMultiVenueQuoting(deps: {
             expected: outcome.swap.expectedAmountOut,
             oracle: referenceAmountOut
           })
+          if (stopAfterWinner) break
           continue
         }
         logger.info('select.ok', {

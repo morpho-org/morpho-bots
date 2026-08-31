@@ -680,39 +680,39 @@ describe('curve-predicted min-out denominator', () => {
   }
 
   it('spends ONE call, floor cleared, when the curve predicts the venue output', async () => {
-    // Curve 9700 → prediction 9675 (25bps under), venue really quotes 9700: 98bps against 9675 lands
-    // the encoded minimum at 9604, above the 9580 break-even, so the second pass is never needed.
+    // Curve 9700 → prediction 9690 (10bps under), venue really quotes 9700: 113bps against 9690 lands
+    // the encoded minimum at 9590, above the 9580 break-even, so the second pass is never needed.
     const { outcome, sent } = await quoteWithCurve(9_700n, ['9700'])
 
     expect(sent).toHaveLength(1)
-    expect(sent[0]?.slippageBps).toBe('98')
+    expect(sent[0]?.slippageBps).toBe('113')
     expect(outcome.kind).toBe('swap')
     if (outcome.kind !== 'swap') return
-    expect(outcome.plan.amountOutMinimum).toBe(9_604n)
+    expect(outcome.plan.amountOutMinimum).toBe(9_590n)
     expect(outcome.plan.amountOutMinimum).toBeGreaterThanOrEqual(FLOOR)
     expect(outcome.firmCalls).toBe(1)
   })
 
   it('is safe on an UNDER-estimate: the floor lands above break-even, still one call', async () => {
-    // Curve 9650 → prediction 9625, venue quotes 9700. A denominator under the real quote asks for
+    // Curve 9650 → prediction 9640, venue quotes 9700. A denominator under the real quote asks for
     // LESS slippage than break-even needs, so the encoded minimum overshoots the floor — never under.
     const { outcome, sent } = await quoteWithCurve(9_650n, ['9700'])
 
     expect(sent).toHaveLength(1)
     expect(outcome.kind).toBe('swap')
     if (outcome.kind !== 'swap') return
-    expect(outcome.plan.amountOutMinimum).toBe(9_655n)
+    expect(outcome.plan.amountOutMinimum).toBe(9_639n)
     expect(outcome.plan.amountOutMinimum).toBeGreaterThan(FLOOR)
     expect(outcome.firmCalls).toBe(1)
   })
 
   it('falls back to the second pass on an OVER-estimate, and still clears the floor', async () => {
-    // Curve 9900 → prediction 9875, above the venue's real 9700: 298bps lands the minimum at 9410,
-    // 170 units UNDER break-even. The postcondition refuses it and pass 2 re-derives against 9700.
+    // Curve 9900 → prediction 9890, above the venue's real 9700: 313bps lands the minimum at 9396,
+    // 184 units UNDER break-even. The postcondition refuses it and pass 2 re-derives against 9700.
     const { outcome, sent } = await quoteWithCurve(9_900n, ['9700', '9700'])
 
     expect(sent).toHaveLength(2)
-    expect(sent[0]?.slippageBps).toBe('298')
+    expect(sent[0]?.slippageBps).toBe('313')
     expect(sent[1]?.slippageBps).toBe('123')
     expect(outcome.kind).toBe('swap')
     if (outcome.kind !== 'swap') return
@@ -747,6 +747,25 @@ describe('venue fall-through cap', () => {
       multiHttp({ '0x': zeroxBody('900'), lifi: lifiBody('990') })
     )
     expect(await quoteFor(REQUEST)).toEqual({ kind: 'failed', reason: 'bad_route', firmCalls: 1 })
+  })
+
+  it('still falls through when the WINNER is unreachable: the curve ranked output, not uptime', async () => {
+    // A complete unclamped curve, so the walk would normally stop at 0x. But 0x has no stub and throws
+    // `no_route` — a transport-class failure the ranking says nothing about, unlike `bad_route` or
+    // `floor_unmet`. Capping here would lose a liquidation lifi could have filled, so the walk goes on.
+    const { quoteFor } = composeMulti(
+      ['0x', 'lifi'],
+      [
+        { venue: '0x', expectedOut: 1000n },
+        { venue: 'lifi', expectedOut: 990n }
+      ],
+      multiHttp({ lifi: lifiBody('990') })
+    )
+    const outcome = await quoteFor(REQUEST)
+    expect(outcome.kind).toBe('swap')
+    expect(finalSpender(outcome)).toBe(LIFI_SPENDER)
+    // Both requests were issued: the winner's throw plus the runner-up's success.
+    expect(outcome.firmCalls).toBe(2)
   })
 
   it('counts every call of a multi-venue walk that ends in failure', async () => {
