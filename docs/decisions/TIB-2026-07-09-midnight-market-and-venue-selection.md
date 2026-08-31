@@ -195,3 +195,20 @@ depth. A genuinely rankable Uniswap venue needs a real quote source (the deferre
 - 0x Swap API v2 (`/price` indicative): `https://0x.org/docs/api`
 - 1inch Classic Swap v6 (`/quote` indicative):
   `https://portal.1inch.dev/documentation/apis/swap/classic-swap/introduction`
+
+### 2026-08-31 — probe ladder, gross ranking, and the probe-proxy assumption superseded
+
+[TIB-2026-08-31 (venue cost-curve selection)](./TIB-2026-08-31-venue-cost-curve-selection.md)
+supersedes three of this TIB's decisions, on evidence from the 2026-08-28 15:00 UTC maturity (see
+[TIB-2026-08-28](./TIB-2026-08-28-midnight-send-shortfall-classification.md)). The log-scaled
+`PROBE_LADDER` in whole collateral tokens becomes fixed decades in USD ($0.01 → $100k, 8 rungs)
+converted per pair — the whole-token ladder spanned $800–$8M for cbBTC while 832 of 926 (90%) real
+seizes fell below its bottom rung. The **"Net-of-gas / profitability ranking"** non-goal is reversed
+for its route-cost half: the probe now stores a per-rung venue **rate** (no oracle, so the cache
+stays keyed by pair and shared across every market on it) and ranking is net of interpolated route
+cost, applied above the candidate cap; gas stays out of the curve. And the assumption that
+"indicative probes are a good-enough proxy for firm-quote ranking" is replaced by an explicit
+fail-open rule — a cold, incomplete, or clamped curve reverts to gross-surplus ordering with full
+venue fall-through, which is what preserves this TIB's "costs at most a fall-through" guarantee.
+The markets-API whitelist, key-presence venue enablement, isolated probe client, and
+liquidatable-only probe gating are unchanged.
