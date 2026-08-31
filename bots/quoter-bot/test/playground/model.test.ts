@@ -120,7 +120,8 @@ describe('bootstrap + ladder only playground follow-up', () => {
     expect(graphic?.callouts).toContainEqual({
       label: 'Maturity premium',
       value:
-        'Linear +120 BPS per year to maturity, capped at 300 BPS; the preview quote range spans the clamped rates reachable from live time to maturity'
+        'Adds 120 BPS per year left to maturity, up to 300 BPS, shrinking as maturity approaches',
+      parameters: ['maturityPremium.premiumPerYearBps', 'maturityPremium.maximumPremiumBps']
     })
     expect(graphic).toMatchObject({
       referenceRateBps: '550',
@@ -215,7 +216,7 @@ describe('bootstrap + ladder only playground follow-up', () => {
     expect(graphic?.callouts).toContainEqual({
       label: 'Maturity premium',
       value:
-        'Linear +120 BPS per year to maturity, capped at 300 BPS; the preview anchors the at-maturity center and marks the far-maturity center at the highest reachable premium',
+        'Adds 120 BPS per year left to maturity, up to 300 BPS, shrinking as maturity approaches. The plot marks both ends of that travel',
       parameters: ['maturityPremium.premiumPerYearBps', 'maturityPremium.maximumPremiumBps']
     })
 
@@ -294,8 +295,8 @@ describe('bootstrap + ladder only playground follow-up', () => {
     })
     expect(graphic.axis.centerRateBps).toBe('100')
     expect(graphic.callouts).toContainEqual({
-      label: 'Center',
-      value: '400 + -300 = 100 BPS',
+      label: 'Quote premium',
+      value: 'Ladder centred on 100 BPS: market rate 400 minus 300 BPS',
       parameters: ['quotePremiumBps']
     })
     expect(graphic.rateToY('100')).toBeGreaterThan(100)
@@ -377,14 +378,16 @@ describe('bootstrap + ladder only playground follow-up', () => {
     ])
     expect(shared.rungs.every(rung => rung.y >= 0 && rung.y <= 100)).toBe(true)
     expect(shared.callouts.map(callout => callout.label)).toEqual([
-      'Center',
-      'Spacing & sizing',
+      'Quote premium',
+      'Full spread and step',
+      'Size skew',
       'Budgets',
+      'Minimum offer size',
       'Exposure caps',
-      'Grouping',
-      'Cadence & tolerance',
-      'Hard bounds',
-      'Live state'
+      'Minimum and maximum rate',
+      'Fill sharing',
+      'Check interval',
+      'Not shown here'
     ])
 
     ladder.groupMode = 'per-book'

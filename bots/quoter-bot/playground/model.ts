@@ -2,6 +2,7 @@ import type { BootstrapConfig } from '../src/domain/bootstrap/position-bootstrap
 import type { LadderConfig } from '../src/domain/ladder/ladder'
 import type { MaturityPremiumConfig } from '../src/domain/maturity-premium'
 import type { TargetRateConfigured } from '../src/domain/target-rate'
+import type { LadderReferenceResponse, ReferenceBand } from './reference-response.utils'
 
 import {
   BOOTSTRAP_MARKET_FIELDS,
@@ -17,6 +18,7 @@ import { CollectionImportError } from './collection-import.error'
 import { CollectionValidationError } from './collection-validation.error'
 import { FragmentCodecError } from './fragment-codec.error'
 import { PreviewGenerationError } from './preview-generation.error'
+import { bootstrapReferenceBand, ladderReferenceResponse } from './reference-response.utils'
 import { StrictJsonError } from './strict-json.error'
 
 export type TargetRateInput =
@@ -44,85 +46,175 @@ export type PlaygroundState = {
   ladder: LadderInput[]
 }
 
+/**
+ * Formats one raw asset or credit amount for display.
+ * @param rawAmount - Exact raw integer amount as configured and exported.
+ * @returns The display amount; the identity formatter keeps the exact raw integer.
+ * @remarks One formatter serves every entry in both collections: each amount is a raw
+ * smallest-unit amount of the single configured `loanAsset` shared by all configured markets.
+ */
+export type AssetFormatter = (rawAmount: string) => string
+const rawAssetFormatter: AssetFormatter = rawAmount => rawAmount
+
 export const BOOTSTRAP_FIELDS = [
-  ['marketId', 'Market ID', '0x-prefixed bytes32 market', 'text'],
-  ['targetRate.strategy', 'Target rate', 'Reference-rate strategy', 'target-rate-select'],
+  ['marketId', 'Market ID', '0x-prefixed 32-byte Midnight market id', 'text'],
+  [
+    'targetRate.strategy',
+    'Target rate source',
+    '6-hour average supply APY on the reference Blue market, or a fixed rate you set',
+    'target-rate-select'
+  ],
   [
     'targetRate.hardcodedRateBps',
-    'Hardcoded target rate (BPS)',
-    'Positive reference rate used by the hardcoded strategy',
+    'Fixed target rate (BPS)',
+    'Used instead of the market rate when the source is hardcoded',
     'target-rate-number'
   ],
-  ['creditTarget', 'Credit target', 'Positive raw credit units', 'number'],
-  ['acceptanceAssets', 'Completion threshold', 'Allowed target shortfall', 'number'],
-  ['offerSize', 'Pending-offer cap', 'Maximum desired offer assets', 'number'],
-  ['premiumBps', 'Quote premium (BPS)', 'Zero or negative reference offset', 'number'],
+  ['creditTarget', 'Credit target', 'How much credit to build in this market', 'number'],
+  [
+    'acceptanceAssets',
+    'Allowed shortfall',
+    'Stop this far below the target; completion is target minus this',
+    'number'
+  ],
+  [
+    'offerSize',
+    'Maximum offer size',
+    'Largest single offer; also capped by remaining target, cash and exposure',
+    'number'
+  ],
+  [
+    'premiumBps',
+    'Quote premium (BPS)',
+    'Added to the market rate to get your quote; zero or negative',
+    'number'
+  ],
   [
     'maturityPremium',
     'Maturity premium',
-    'Optional premium function of time to maturity',
+    'Optional extra rate that grows with time left to maturity',
     'maturity-premium-select'
   ],
   [
     'maturityPremium.premiumPerYearBps',
-    'Premium slope (BPS/year)',
-    'Positive premium per year to maturity',
+    'Premium per year (BPS)',
+    'Extra rate added per year left to maturity',
     'maturity-premium-number'
   ],
   [
     'maturityPremium.maximumPremiumBps',
     'Premium cap (BPS)',
-    'Optional positive inclusive maturity-premium cap',
+    'Optional ceiling on that extra rate',
     'maturity-premium-number'
   ],
-  ['maximumMarketExposure', 'Market exposure cap', 'Positive raw assets', 'number'],
-  ['maximumTotalExposure', 'Total exposure cap', 'Positive raw assets', 'number'],
-  ['minimumRateBps', 'Minimum rate (BPS)', 'Inclusive quote floor', 'number'],
-  ['maximumRateBps', 'Maximum rate (BPS)', 'Inclusive quote ceiling', 'number'],
-  ['autoRefill', 'Auto-refill', 'Resume after observed completion', 'checkbox']
+  ['maximumMarketExposure', 'Market exposure cap', 'Most this market may hold', 'number'],
+  [
+    'maximumTotalExposure',
+    'Total exposure cap',
+    'Most every configured market may hold together',
+    'number'
+  ],
+  ['minimumRateBps', 'Minimum rate (BPS)', 'Quotes never go below this', 'number'],
+  ['maximumRateBps', 'Maximum rate (BPS)', 'Quotes never go above this', 'number'],
+  ['autoRefill', 'Auto-refill', 'Lend again if the position later falls below target', 'checkbox']
 ] as const
 export const LADDER_FIELDS = [
-  ['marketId', 'Market ID', '0x-prefixed bytes32 market', 'text'],
-  ['targetRate.strategy', 'Target rate', 'Reference-rate strategy', 'target-rate-select'],
+  ['marketId', 'Market ID', '0x-prefixed 32-byte Midnight market id', 'text'],
+  [
+    'targetRate.strategy',
+    'Target rate source',
+    '6-hour average supply APY on the reference Blue market, or a fixed rate you set',
+    'target-rate-select'
+  ],
   [
     'targetRate.hardcodedRateBps',
-    'Hardcoded target rate (BPS)',
-    'Positive reference rate used by the hardcoded strategy',
+    'Fixed target rate (BPS)',
+    'Used instead of the market rate when the source is hardcoded',
     'target-rate-number'
   ],
-  ['quotePremiumBps', 'Quote premium (BPS)', 'Signed center offset', 'number'],
+  [
+    'quotePremiumBps',
+    'Quote premium (BPS)',
+    'Shifts the ladder centre off the market rate; may be negative',
+    'number'
+  ],
   [
     'maturityPremium',
     'Maturity premium',
-    'Optional premium function of time to maturity',
+    'Optional extra rate that grows with time left to maturity',
     'maturity-premium-select'
   ],
   [
     'maturityPremium.premiumPerYearBps',
-    'Premium slope (BPS/year)',
-    'Positive premium per year to maturity',
+    'Premium per year (BPS)',
+    'Extra rate added per year left to maturity',
     'maturity-premium-number'
   ],
   [
     'maturityPremium.maximumPremiumBps',
     'Premium cap (BPS)',
-    'Optional positive inclusive maturity-premium cap',
+    'Optional ceiling on that extra rate',
     'maturity-premium-number'
   ],
-  ['spreadBps', 'Full spread (BPS)', 'Positive even nearest-rung distance', 'number'],
-  ['stepBps', 'Step (BPS)', 'Positive same-side rung distance', 'number'],
-  ['rungCount', 'Rungs per side', '1–512', 'number'],
-  ['sizeSkewBps', 'Size skew (BPS)', 'Signed outer-rung weight change', 'number'],
-  ['lowerRateBudgetAssets', 'Lower-rate budget', 'Positive reduce-only budget', 'number'],
-  ['higherRateBudgetAssets', 'Higher-rate budget', 'Positive lend budget', 'number'],
-  ['targetMarketExposureAssets', 'Target market exposure', 'Positive market cap', 'number'],
-  ['maximumTotalExposureAssets', 'Maximum total exposure', 'Positive strategy cap', 'number'],
-  ['minimumOfferAssets', 'Minimum offer assets', 'Positive emitted-rung floor', 'number'],
-  ['groupMode', 'Group mode', 'shared-rung or per-book', 'select'],
-  ['loopIntervalSeconds', 'Cadence (seconds)', '1–2147483', 'number'],
-  ['movementToleranceBps', 'Movement tolerance (BPS)', 'Non-negative deadband', 'number'],
-  ['minimumRateBps', 'Minimum rate (BPS)', 'Inclusive hard floor', 'number'],
-  ['maximumRateBps', 'Maximum rate (BPS)', 'Inclusive hard ceiling', 'number']
+  [
+    'spreadBps',
+    'Full spread (BPS)',
+    'Gap between the two rungs closest to the centre; must be even',
+    'number'
+  ],
+  ['stepBps', 'Step (BPS)', 'Gap between neighbouring rungs on the same side', 'number'],
+  ['rungCount', 'Rungs per side', 'Rungs above and below the centre; 1 to 512', 'number'],
+  [
+    'sizeSkewBps',
+    'Size skew (BPS)',
+    'Positive sizes outer rungs bigger, negative sizes inner rungs bigger',
+    'number'
+  ],
+  [
+    'lowerRateBudgetAssets',
+    'Reduce-only budget',
+    'For offers below the centre, which reduce an existing position',
+    'number'
+  ],
+  [
+    'higherRateBudgetAssets',
+    'Lending budget',
+    'For offers above the centre, which lend new credit',
+    'number'
+  ],
+  ['targetMarketExposureAssets', 'Market exposure cap', 'Most this market may hold', 'number'],
+  [
+    'maximumTotalExposureAssets',
+    'Total exposure cap',
+    'Most every configured market may hold together',
+    'number'
+  ],
+  [
+    'minimumOfferAssets',
+    'Minimum offer size',
+    'Rungs smaller than this are dropped, funding fewer rungs',
+    'number'
+  ],
+  [
+    'groupMode',
+    'Fill sharing',
+    'shared-rung: capacity per rung. per-book: one capacity per side',
+    'select'
+  ],
+  [
+    'loopIntervalSeconds',
+    'Check interval (seconds)',
+    'How often to re-evaluate the ladder; 1 to 2147483',
+    'number'
+  ],
+  [
+    'movementToleranceBps',
+    'Movement tolerance (BPS)',
+    'Ignore rate moves smaller than this',
+    'number'
+  ],
+  ['minimumRateBps', 'Minimum rate (BPS)', 'Rungs never go below this', 'number'],
+  ['maximumRateBps', 'Maximum rate (BPS)', 'Rungs never go above this', 'number']
 ] as const
 
 const DEFAULT_MARKET_ID = `0x${'5'.repeat(64)}`
@@ -138,7 +230,7 @@ export const createDefaultBootstrap = (marketId = DEFAULT_MARKET_ID): BootstrapI
   maximumTotalExposure: '30000000000',
   minimumRateBps: '200',
   maximumRateBps: '800',
-  autoRefill: false
+  autoRefill: true
 })
 
 export const createDefaultLadder = (marketId = DEFAULT_MARKET_ID): LadderInput => ({
@@ -258,14 +350,19 @@ export type BootstrapGraphicModel = {
   creditTarget: string
   acceptedCredit: string
   offerSize: string
-  callouts: { label: string; value: string }[]
+  /** Reference range over which the quote tracks instead of saturating at a bound. */
+  referenceBand?: ReferenceBand
+  callouts: { label: string; value: string; parameters: string[] }[]
 }
 
 /**
  * Derives a synthetic reference whose premium-adjusted quote is the integer midpoint of the bounds;
  * a maturity premium additionally renders the clamped quote range reachable across maturities.
  */
-export const deriveBootstrapGraphicModels = (items: BootstrapInput[]): BootstrapGraphicModel[] =>
+export const deriveBootstrapGraphicModels = (
+  items: BootstrapInput[],
+  formatAssets: AssetFormatter = rawAssetFormatter
+): BootstrapGraphicModel[] =>
   parseBootstrap(items).map(item => {
     const minimum = BigInt(item.minimumRateBps)
     const maximum = BigInt(item.maximumRateBps)
@@ -306,6 +403,8 @@ export const deriveBootstrapGraphicModels = (items: BootstrapInput[]): Bootstrap
         'Bootstrap derived reference and quoted rates must be positive and remain inside configured bounds'
       )
     }
+    const acceptedCredit = BigInt(item.creditTarget) - BigInt(item.acceptanceAssets)
+    const band = bootstrapReferenceBand(premium, minimum, maximum)
     return {
       marketId: item.marketId,
       referenceRateBps: String(reference),
@@ -316,41 +415,76 @@ export const deriveBootstrapGraphicModels = (items: BootstrapInput[]): Bootstrap
       creditTarget: item.creditTarget,
       acceptedCredit: String(BigInt(item.creditTarget) - BigInt(item.acceptanceAssets)),
       offerSize: item.offerSize,
+      ...(band === undefined ? {} : { referenceBand: band }),
       callouts: [
         {
           label: 'Credit target',
-          value: `${item.creditTarget} target; complete at ${BigInt(item.creditTarget) - BigInt(item.acceptanceAssets)}`
+          value: `Builds up to ${formatAssets(item.creditTarget)} of credit here, stopping once ${formatAssets(String(acceptedCredit))} is in place`,
+          parameters: ['creditTarget', 'acceptanceAssets']
         },
         {
-          label: 'Refill behavior',
-          value: item.autoRefill
-            ? 'Auto-refill enabled after completion'
-            : 'One-shot; observe after completion'
+          label: 'Maximum offer size',
+          value: `${formatAssets(item.offerSize)} per offer, also capped by the remaining target, the cash on hand and the two exposure caps. ${
+            BigInt(item.offerSize) >= acceptedCredit
+              ? 'One offer can fill the target'
+              : `About ${(acceptedCredit + BigInt(item.offerSize) - 1n) / BigInt(item.offerSize)} offers to fill the target`
+          }`,
+          parameters: ['offerSize']
+        },
+        {
+          label: 'Quote premium',
+          value:
+            band === undefined
+              ? `Your quote is the market rate ${premium < 0n ? `minus ${-premium}` : `plus ${premium}`} BPS, which never lands inside ${item.minimumRateBps}–${item.maximumRateBps} BPS, so it always sticks at a limit`
+              : `Your quote is the market rate ${premium < 0n ? `minus ${-premium}` : `plus ${premium}`} BPS, so it follows the market while that rate is ${band.lowestRateBps}–${band.highestRateBps} BPS and sticks at ${item.minimumRateBps} or ${item.maximumRateBps} BPS outside it`,
+          parameters: ['premiumBps', 'minimumRateBps', 'maximumRateBps']
         },
         ...(item.maturityPremium
           ? [
               {
                 label: 'Maturity premium',
-                value: `Linear +${item.maturityPremium.premiumPerYearBps} BPS per year to maturity${
+                value: `Adds ${item.maturityPremium.premiumPerYearBps} BPS per year left to maturity${
                   item.maturityPremium.maximumPremiumBps === undefined
                     ? ''
-                    : `, capped at ${item.maturityPremium.maximumPremiumBps} BPS`
-                }; the preview quote range spans the clamped rates reachable from live time to maturity`
+                    : `, up to ${item.maturityPremium.maximumPremiumBps} BPS`
+                }, shrinking as maturity approaches`,
+                parameters: [
+                  'maturityPremium.premiumPerYearBps',
+                  'maturityPremium.maximumPremiumBps'
+                ]
               }
             ]
           : []),
-        { label: 'Cadence', value: '60 seconds (fixed bootstrap monitor cadence)' },
-        { label: 'Movement tolerance', value: '0 BPS; changed valid terms are reconciled' },
-        { label: 'Pending-offer cap', value: `${item.offerSize} assets before live capacity caps` },
-        {
-          label: 'Failure threshold',
-          value: '1 failed cycle halts monitoring and triggers owned-group cleanup'
-        },
         {
           label: 'Exposure caps',
-          value: `${item.maximumMarketExposure} market · ${item.maximumTotalExposure} total`
+          value: `${formatAssets(item.maximumMarketExposure)} in this market, ${formatAssets(item.maximumTotalExposure)} across every configured market`,
+          parameters: ['maximumMarketExposure', 'maximumTotalExposure']
         },
-        { label: 'Live state', value: 'No live offers, balances, positions, book, or network data' }
+        {
+          label: 'Auto-refill',
+          value: item.autoRefill
+            ? 'Lends again if the position later falls below target'
+            : 'Stops for good once complete, even if the position later falls',
+          parameters: ['autoRefill']
+        },
+        {
+          label: 'Check interval',
+          value:
+            'Every 60 seconds, fixed for bootstrap. A resting offer is reposted on any size or rate change, and at least hourly even when nothing moves',
+          parameters: []
+        },
+        {
+          label: 'Failure handling',
+          value:
+            'One failed check stops monitoring, cancels this bot’s own offers, and exits. It does not retry',
+          parameters: []
+        },
+        {
+          label: 'Not shown here',
+          value:
+            'Live offers, balances, positions and the order book. This page reads no chain data, so nothing above reflects the current market',
+          parameters: []
+        }
       ]
     }
   })
@@ -384,6 +518,8 @@ export type LadderGraphicModel = {
   plotHeight: number
   rateToY: (rateBps: string) => number
   rungs: LadderGraphicRung[]
+  /** How the shape degrades as the reference moves across the configured range. */
+  referenceResponse: LadderReferenceResponse
   callouts: { label: string; value: string; parameters: string[] }[]
 }
 
@@ -415,7 +551,8 @@ export const clampPlotPercent = (percent: number): number => Math.min(100, Math.
  * only their plot coordinate through {@link clampPlotPercent}.
  */
 export const generateLadderGraphicModels = (
-  value: LadderInput[] | PlaygroundState
+  value: LadderInput[] | PlaygroundState,
+  formatAssets: AssetFormatter = rawAssetFormatter
 ): LadderGraphicModel[] =>
   parseLadder(collectionFromArgument(value)).map(input => {
     const config = ladderConfigsValue(
@@ -448,6 +585,8 @@ export const generateLadderGraphicModels = (
       config.maturityPremium === undefined
         ? undefined
         : generated.centerRateBps + highestReachableMaturityPremiumBps(config.maturityPremium)
+    const amountOf = (rawAmount: bigint) => formatAssets(String(rawAmount))
+    const referenceResponse = ladderReferenceResponse(config)
     const caps = offerMaxAssetsByRung(generated)
     const paired = (side: 'higher' | 'lower') => {
       const rungs = generated[side]
@@ -493,6 +632,7 @@ export const generateLadderGraphicModels = (
       },
       gapBps: input.spreadBps,
       plotHeight,
+      referenceResponse,
       rateToY,
       rungs: rows.map(({ rung, cap, side, sideLabel }) => ({
         index: rung.index,
@@ -507,19 +647,19 @@ export const generateLadderGraphicModels = (
       })),
       callouts: [
         {
-          label: 'Center',
-          value: `${reference} + ${config.quotePremiumBps} = ${generated.centerRateBps} BPS`,
+          label: 'Quote premium',
+          value: `Ladder centred on ${generated.centerRateBps} BPS: market rate ${reference} ${config.quotePremiumBps < 0n ? `minus ${-config.quotePremiumBps}` : `plus ${config.quotePremiumBps}`} BPS`,
           parameters: ['quotePremiumBps']
         },
         ...(config.maturityPremium
           ? [
               {
                 label: 'Maturity premium',
-                value: `Linear +${config.maturityPremium.premiumPerYearBps} BPS per year to maturity${
+                value: `Adds ${config.maturityPremium.premiumPerYearBps} BPS per year left to maturity${
                   config.maturityPremium.maximumPremiumBps === undefined
                     ? ''
-                    : `, capped at ${config.maturityPremium.maximumPremiumBps} BPS`
-                }; the preview anchors the at-maturity center and marks the far-maturity center at the highest reachable premium`,
+                    : `, up to ${config.maturityPremium.maximumPremiumBps} BPS`
+                }, shrinking as maturity approaches. The plot marks both ends of that travel`,
                 parameters: [
                   'maturityPremium.premiumPerYearBps',
                   'maturityPremium.maximumPremiumBps'
@@ -528,39 +668,62 @@ export const generateLadderGraphicModels = (
             ]
           : []),
         {
-          label: 'Spacing & sizing',
-          value: `${config.spreadBps} BPS spread · ${config.stepBps} BPS step · ${config.rungCount} rungs/side · ${config.sizeSkewBps} BPS skew · ${config.minimumOfferAssets} asset floor`,
-          parameters: ['spreadBps', 'stepBps', 'rungCount', 'sizeSkewBps', 'minimumOfferAssets']
+          label: 'Full spread and step',
+          value: `${config.rungCount} rungs per side. The two rungs closest to the centre sit ${config.spreadBps} BPS apart, then each further rung steps out ${config.stepBps} BPS`,
+          parameters: ['spreadBps', 'stepBps', 'rungCount']
+        },
+        {
+          label: 'Size skew',
+          value:
+            config.sizeSkewBps === 0n
+              ? 'Every rung on a side gets an equal share of that side’s budget'
+              : config.sizeSkewBps > 0n
+                ? `Outer rungs are sized ${config.sizeSkewBps} BPS bigger than inner ones`
+                : `Inner rungs are sized ${-config.sizeSkewBps} BPS bigger than outer ones`,
+          parameters: ['sizeSkewBps']
         },
         {
           label: 'Budgets',
-          value: `${config.lowerRateBudgetAssets} reduce-only · ${config.higherRateBudgetAssets} lend`,
-          parameters: ['lowerRateBudgetAssets', 'higherRateBudgetAssets']
+          value: `Lends up to ${amountOf(config.higherRateBudgetAssets)} above the centre, and offers up to ${amountOf(config.lowerRateBudgetAssets)} below it to reduce an existing position`,
+          parameters: ['higherRateBudgetAssets', 'lowerRateBudgetAssets']
+        },
+        {
+          label: 'Minimum offer size',
+          value: `Rungs smaller than ${amountOf(config.minimumOfferAssets)} are dropped. Your budgets can fund ${config.higherRateBudgetAssets / config.minimumOfferAssets} lending and ${config.lowerRateBudgetAssets / config.minimumOfferAssets} reduce-only rungs, against the ${config.rungCount} configured`,
+          parameters: ['minimumOfferAssets', 'higherRateBudgetAssets', 'lowerRateBudgetAssets']
         },
         {
           label: 'Exposure caps',
-          value: `${config.targetMarketExposureAssets} target · ${config.maximumTotalExposureAssets} total`,
+          value: `${amountOf(config.targetMarketExposureAssets)} in this market, ${amountOf(config.maximumTotalExposureAssets)} across every configured market`,
           parameters: ['targetMarketExposureAssets', 'maximumTotalExposureAssets']
         },
         {
-          label: 'Grouping',
-          value: config.groupMode,
-          parameters: ['groupMode']
-        },
-        {
-          label: 'Cadence & tolerance',
-          value: `${config.loopIntervalSeconds}s cadence · ${config.movementToleranceBps} BPS movement tolerance`,
-          parameters: ['loopIntervalSeconds', 'movementToleranceBps']
-        },
-        {
-          label: 'Hard bounds',
-          value: `${config.minimumRateBps}–${config.maximumRateBps} BPS`,
+          label: 'Minimum and maximum rate',
+          value:
+            referenceResponse.band === undefined
+              ? `Rungs never cross ${input.minimumRateBps} or ${input.maximumRateBps} BPS, and some rung always sits on a limit whatever the market does`
+              : referenceResponse.band.lowestRateBps === referenceResponse.band.highestRateBps
+                ? `Rungs never cross ${input.minimumRateBps} or ${input.maximumRateBps} BPS. The full ladder fits only at a market rate of exactly ${referenceResponse.band.lowestRateBps} BPS; any move squashes rungs onto a limit`
+                : `Rungs never cross ${input.minimumRateBps} or ${input.maximumRateBps} BPS. The full ladder fits while the market rate is ${referenceResponse.band.lowestRateBps}–${referenceResponse.band.highestRateBps} BPS; outside that, rungs squash onto a limit`,
           parameters: ['minimumRateBps', 'maximumRateBps']
         },
         {
-          label: 'Live state',
+          label: 'Fill sharing',
           value:
-            'No live offers, balances, positions, book, capacity, persistence, or network data',
+            config.groupMode === 'shared-rung'
+              ? 'Each rung has its own capacity, so a fill at one rate leaves every other rate untouched'
+              : 'All rungs on a side share one capacity, so a fill at any rate reduces what every other rate on that side can take',
+          parameters: ['groupMode']
+        },
+        {
+          label: 'Check interval',
+          value: `Every ${config.loopIntervalSeconds} seconds, and offers are rewritten only once a rate moves more than ${config.movementToleranceBps} BPS`,
+          parameters: ['loopIntervalSeconds', 'movementToleranceBps']
+        },
+        {
+          label: 'Not shown here',
+          value:
+            'Live offers, balances, positions and the order book. This page reads no chain data, so nothing above reflects the current market',
           parameters: []
         }
       ]

@@ -1032,7 +1032,7 @@ try {
     referenceTop: '66.66%',
     centerTop: '50%',
     referenceLabel: 'Reference 400 BPS',
-    centerLabel: 'Center 500 BPS'
+    centerLabel: 'Quote 500 BPS'
   })
   await assertDocumentPersistenceClean('preview edit')
 

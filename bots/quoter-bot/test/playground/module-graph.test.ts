@@ -28,6 +28,7 @@ describe('playground browser module graph', () => {
     )
     expect(local.toSorted()).toEqual([
       'playground/app.tsx',
+      'playground/asset-format.utils.ts',
       'playground/collection-import.error.ts',
       'playground/collection-validation.error.ts',
       'playground/field-visibility.utils.ts',
@@ -36,6 +37,7 @@ describe('playground browser module graph', () => {
       'playground/playground-error.utils.ts',
       'playground/playground-initialization.error.ts',
       'playground/preview-generation.error.ts',
+      'playground/reference-response.utils.ts',
       'playground/strict-json.error.ts',
       'src/config/config-validation.error.ts',
       'src/config/market-collections.ts',

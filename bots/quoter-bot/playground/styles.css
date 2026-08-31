@@ -87,6 +87,7 @@ main {
   display: grid;
   gap: 1rem;
 }
+.units-card,
 .share-card,
 .import-card,
 .editor-section,
@@ -95,6 +96,44 @@ main {
   border-radius: 0.9rem;
   background: #0d1f18;
   padding: 1rem;
+}
+.units-card {
+  grid-column: 1 / -1;
+}
+.units-row {
+  display: flex;
+  gap: 1.25rem;
+  align-items: start;
+  flex-wrap: wrap;
+}
+.units-row .field {
+  flex: 0 0 9rem;
+}
+.units-row .field small {
+  min-height: 1.4em;
+}
+.units-row > p {
+  flex: 1 1 24rem;
+  max-width: 60rem;
+  margin: 0;
+  color: #b7ccbf;
+}
+.units-row code {
+  color: #b8dbc9;
+}
+.units-row input {
+  width: 100%;
+  border: 1px solid #46725f;
+  border-radius: 0.45rem;
+  padding: 0.55rem;
+  background: #07130f;
+  color: #f1fbf5;
+}
+.units-row input[aria-invalid='true'] {
+  border-color: #f0a58b;
+}
+.semantic-table [data-raw-amount] {
+  cursor: help;
 }
 .section-heading {
   display: flex;
@@ -164,6 +203,29 @@ main {
   left: -0.35rem;
   color: #ff87a5;
 }
+.reference-marker b,
+.quote-marker b {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  white-space: nowrap;
+  font-size: 0.72rem;
+  font-weight: 700;
+  padding: 0.05rem 0.35rem;
+  border-radius: 0.3rem;
+  background: #0b1c16;
+}
+.reference-marker b {
+  top: 0.6rem;
+  color: #f8d477;
+}
+.quote-marker b {
+  bottom: 0.6rem;
+  color: #ff87a5;
+}
+.quote-marker--maximum b {
+  bottom: 2.2rem;
+}
 .quote-marker--maximum {
   opacity: 0.55;
 }
@@ -221,6 +283,32 @@ main {
   right: 8%;
   opacity: 0.55;
 }
+.reference-strip {
+  margin: 0 0 1rem;
+}
+.strip-track {
+  display: flex;
+  align-items: flex-end;
+  gap: 1px;
+  height: 2.6rem;
+  padding: 0.15rem;
+  border: 1px solid #2c5747;
+  border-radius: 0.4rem;
+  background: #0b1c16;
+}
+.strip-bar {
+  flex: 1 1 0;
+  background: #f0a58b;
+  border-radius: 1px;
+}
+.strip-bar--clean {
+  background: #2f6f57;
+}
+.reference-strip figcaption {
+  margin-top: 0.3rem;
+  font-size: 0.78rem;
+  color: #a9c1b4;
+}
 .callouts {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr));
@@ -235,6 +323,14 @@ main {
 .callouts dt {
   color: #8bf0c1;
   font-weight: 800;
+}
+.callouts dt code {
+  display: block;
+  margin-top: 0.15rem;
+  font-size: 0.72rem;
+  font-weight: 400;
+  color: #8fae9e;
+  overflow-wrap: anywhere;
 }
 .callouts dd {
   margin: 0.2rem 0 0;
