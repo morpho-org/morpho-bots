@@ -34,16 +34,30 @@ const ladderReach = (config: TargetRateConfigured<LadderConfig>) =>
 
 const absolute = (value: bigint) => (value < 0n ? -value : value)
 
+/**
+ * Locates the band from a sampled sweep, then recovers exact endpoints.
+ * @remarks A stride above one BPS — reachable once the swept interval exceeds the sample cap —
+ * would otherwise report the first and last *sampled* clean rates as if they were the true
+ * boundaries, understating the band. Walking outward one BPS at a time from each sampled edge
+ * costs at most one stride per side and makes the reported endpoints exact at any range.
+ */
 const bandOf = (
   references: readonly bigint[],
-  clean: readonly boolean[]
+  clean: readonly boolean[],
+  isClean: (reference: bigint) => boolean
 ): ReferenceBand | undefined => {
   const first = clean.indexOf(true)
   if (first === -1) return undefined
   const last = clean.lastIndexOf(true)
+  const floor = references[0]!
+  const ceiling = references.at(-1)!
+  let lowest = references[first]!
+  while (lowest > floor && isClean(lowest - 1n)) lowest -= 1n
+  let highest = references[last]!
+  while (highest < ceiling && isClean(highest + 1n)) highest += 1n
   return {
-    lowestRateBps: String(references[first]),
-    highestRateBps: String(references[last]),
+    lowestRateBps: String(lowest),
+    highestRateBps: String(highest),
     contiguous: clean.slice(first, last + 1).every(Boolean)
   }
 }
@@ -80,10 +94,8 @@ export const ladderReferenceBand = (
     config.minimumRateBps - margin,
     config.maximumRateBps + margin
   )
-  return bandOf(
-    references,
-    references.map(reference => pinnedRungs(reference) === 0)
-  )
+  const isClean = (reference: bigint) => reference > 0n && pinnedRungs(reference) === 0
+  return bandOf(references, references.map(isClean), isClean)
 }
 
 /**
@@ -103,11 +115,9 @@ export const bootstrapReferenceBand = (
 ): ReferenceBand | undefined => {
   const margin = absolute(premiumBps) + 1n
   const references = sampleReferences(minimum - margin, maximum + margin)
-  return bandOf(
-    references,
-    references.map(reference => {
-      const quote = reference + premiumBps
-      return quote >= minimum && quote <= maximum
-    })
-  )
+  const isClean = (reference: bigint) => {
+    const quote = reference + premiumBps
+    return quote >= minimum && quote <= maximum
+  }
+  return bandOf(references, references.map(isClean), isClean)
 }

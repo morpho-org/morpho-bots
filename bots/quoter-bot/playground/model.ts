@@ -464,24 +464,35 @@ export const deriveBootstrapGraphicModels = (
       callouts: [
         {
           label: 'Credit target',
-          value: `Builds up to ${formatAssets(item.creditTarget)} of credit here, stopping once ${formatAssets(String(acceptedCredit))} is in place`,
+          value:
+            acceptedCredit <= 0n
+              ? `The allowed shortfall equals the ${formatAssets(item.creditTarget)} target, so completion is already satisfied at zero credit and no offer is ever published`
+              : `Builds up to ${formatAssets(item.creditTarget)} of credit here, stopping once ${formatAssets(String(acceptedCredit))} is in place`,
           parameters: ['creditTarget', 'acceptanceAssets']
         },
         {
           label: 'Maximum offer size',
           value: `${formatAssets(item.offerSize)} per offer, also capped by the remaining target, the cash on hand and the two exposure caps. ${
-            BigInt(item.offerSize) >= acceptedCredit
-              ? 'One offer can fill the target'
-              : `About ${(acceptedCredit + BigInt(item.offerSize) - 1n) / BigInt(item.offerSize)} offers to fill the target`
+            acceptedCredit <= 0n
+              ? 'No offer is published while completion is already satisfied'
+              : BigInt(item.offerSize) >= acceptedCredit
+                ? 'One offer can fill the target'
+                : `About ${(acceptedCredit + BigInt(item.offerSize) - 1n) / BigInt(item.offerSize)} offers to fill the target`
           }`,
           parameters: ['offerSize']
         },
         {
           label: 'Quote premium',
           value:
-            band === undefined
-              ? `Your quote is the market rate ${premium < 0n ? `minus ${-premium}` : `plus ${premium}`} BPS, which never lands inside ${item.minimumRateBps}–${item.maximumRateBps} BPS, so it always sticks at a limit`
-              : `Your quote is the market rate ${premium < 0n ? `minus ${-premium}` : `plus ${premium}`} BPS, so it follows the market while that rate is ${band.lowestRateBps}–${band.highestRateBps} BPS and sticks at ${item.minimumRateBps} or ${item.maximumRateBps} BPS outside it`,
+            item.targetRate.strategy === 'hardcoded'
+              ? `Your quote is a fixed ${clampRateBps(reference + premium, minimum, maximum)} BPS — the ${reference} BPS target ${premium < 0n ? `minus ${-premium}` : `plus ${premium}`} BPS, clamped into ${item.minimumRateBps}–${item.maximumRateBps} BPS. It does not follow the market`
+              : band === undefined
+                ? `Your quote is the market rate ${premium < 0n ? `minus ${-premium}` : `plus ${premium}`} BPS, which never lands inside ${item.minimumRateBps}–${item.maximumRateBps} BPS, so it always sticks at a limit`
+                : `Your quote is the market rate ${premium < 0n ? `minus ${-premium}` : `plus ${premium}`} BPS, so it follows the market while that rate is ${band.lowestRateBps}–${band.highestRateBps} BPS and sticks at ${item.minimumRateBps} or ${item.maximumRateBps} BPS outside it${
+                    item.maturityPremium === undefined
+                      ? ''
+                      : '. That band is measured at maturity; the maturity premium shifts it as time to maturity grows'
+                  }`,
           parameters: ['premiumBps', 'minimumRateBps', 'maximumRateBps']
         },
         ...(item.maturityPremium
@@ -509,7 +520,7 @@ export const deriveBootstrapGraphicModels = (
           label: 'Auto-refill',
           value: item.autoRefill
             ? 'Lends again if the position later falls below target'
-            : 'Stops for good once complete, even if the position later falls',
+            : 'Stops once complete for this service instance only; completion is remembered in memory, so a restart forgets it and can lend again',
           parameters: ['autoRefill']
         },
         {
@@ -612,14 +623,6 @@ export const generateLadderGraphicModels = (
       input.targetRate.strategy === 'hardcoded'
         ? BigInt(input.targetRate.hardcodedRateBps)
         : (minimum + maximum) / 2n - config.quotePremiumBps
-    const notice =
-      reference > 0n && reference >= minimum && reference <= maximum
-        ? undefined
-        : `Markers are pinned to the edge of the range: the derived reference ${reference} BPS falls outside it.${
-            input.targetRate.strategy === 'hardcoded'
-              ? ''
-              : ' The preview derives its reference from the bounds and the premium, so this is an artefact of the preview, not an invalid configuration.'
-          }`
     // The deterministic preview anchors the shape at the zero-premium (at-maturity) center. The
     // model carries true center values — the runtime clamps individual rungs, never the center —
     // and the component clamps only marker plot coordinates into the axis.
@@ -634,6 +637,27 @@ export const generateLadderGraphicModels = (
         : generated.centerRateBps + highestReachableMaturityPremiumBps(config.maturityPremium)
     const amountOf = (rawAmount: bigint) => formatAssets(String(rawAmount))
     const referenceBand = ladderReferenceBand(config)
+    // Every marker the component can clamp needs to say so, not just the reference: a premium can
+    // push the center outside the plotted range while the reference itself sits inside it.
+    const pinned: string[] = []
+    if (reference <= 0n) pinned.push(`the derived reference ${reference} BPS is not positive`)
+    else if (reference < minimum || reference > maximum) {
+      pinned.push(`the derived reference ${reference} BPS falls outside it`)
+    }
+    if (generated.centerRateBps < minimum || generated.centerRateBps > maximum) {
+      pinned.push(`the center ${generated.centerRateBps} BPS falls outside it`)
+    }
+    if (maximumCenter !== undefined && (maximumCenter < minimum || maximumCenter > maximum)) {
+      pinned.push(`the far-maturity center ${maximumCenter} BPS falls outside it`)
+    }
+    const notice =
+      pinned.length === 0
+        ? undefined
+        : `Markers are pinned to the edge of the range: ${pinned.join(' and ')}.${
+            input.targetRate.strategy === 'hardcoded'
+              ? ''
+              : ' The preview derives its reference from the bounds and the premium, so this is an artefact of the preview, not an invalid configuration.'
+          }`
     const caps = offerMaxAssetsByRung(generated)
     const paired = (side: 'higher' | 'lower') => {
       const rungs = generated[side]
@@ -696,7 +720,7 @@ export const generateLadderGraphicModels = (
       callouts: [
         {
           label: 'Quote premium',
-          value: `Ladder centred on ${generated.centerRateBps} BPS: market rate ${reference} ${config.quotePremiumBps < 0n ? `minus ${-config.quotePremiumBps}` : `plus ${config.quotePremiumBps}`} BPS`,
+          value: `Ladder centred on ${generated.centerRateBps} BPS: ${input.targetRate.strategy === 'hardcoded' ? 'fixed target' : 'market rate'} ${reference} ${config.quotePremiumBps < 0n ? `minus ${-config.quotePremiumBps}` : `plus ${config.quotePremiumBps}`} BPS${input.targetRate.strategy === 'hardcoded' ? ', which does not follow the market' : ''}`,
           parameters: ['quotePremiumBps']
         },
         ...(config.maturityPremium
@@ -748,9 +772,15 @@ export const generateLadderGraphicModels = (
           value:
             referenceBand === undefined
               ? `Rungs never cross ${input.minimumRateBps} or ${input.maximumRateBps} BPS, and some rung always sits on a limit whatever the market does`
-              : referenceBand.lowestRateBps === referenceBand.highestRateBps
-                ? `Rungs never cross ${input.minimumRateBps} or ${input.maximumRateBps} BPS. The full ladder fits only at a market rate of exactly ${referenceBand.lowestRateBps} BPS; any move squashes rungs onto a limit`
-                : `Rungs never cross ${input.minimumRateBps} or ${input.maximumRateBps} BPS. The full ladder fits while the market rate is ${referenceBand.lowestRateBps}–${referenceBand.highestRateBps} BPS; outside that, rungs squash onto a limit`,
+              : `Rungs never cross ${input.minimumRateBps} or ${input.maximumRateBps} BPS. The full ladder fits ${
+                  referenceBand.lowestRateBps === referenceBand.highestRateBps
+                    ? `only at a ${input.targetRate.strategy === 'hardcoded' ? 'target' : 'market'} rate of exactly ${referenceBand.lowestRateBps} BPS; any move squashes`
+                    : `while the ${input.targetRate.strategy === 'hardcoded' ? 'target' : 'market'} rate is ${referenceBand.lowestRateBps}–${referenceBand.highestRateBps} BPS; outside that, rungs squash`
+                } onto a limit${
+                  config.maturityPremium === undefined
+                    ? ''
+                    : '. Measured at maturity; the maturity premium shifts the band as time to maturity grows'
+                }`,
           parameters: ['minimumRateBps', 'maximumRateBps']
         },
         {

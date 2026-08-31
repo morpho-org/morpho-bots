@@ -1,12 +1,7 @@
 import type { ErrorInfo, ReactNode } from 'react'
 
 import { useForm } from '@tanstack/react-form'
-import {
-  createColumnHelper,
-  flexRender,
-  getCoreRowModel,
-  useReactTable
-} from '@tanstack/react-table'
+import { flexRender, getCoreRowModel, useReactTable } from '@tanstack/react-table'
 import React, { Component, useEffect, useMemo, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 
@@ -55,6 +50,7 @@ import {
 } from './model'
 import { playgroundErrorMessage } from './playground-error.utils'
 import { PlaygroundInitializationError } from './playground-initialization.error'
+import { amountCell, rungColumnsFor } from './rung-rendering.utils'
 
 type CollectionKind = keyof PlaygroundState
 type ExportFormat = 'bootstrap-json' | 'bootstrap-string' | 'ladder-json' | 'ladder-string'
@@ -96,26 +92,6 @@ const initial = () => {
     }
   }
 }
-
-const columnHelper = createColumnHelper<LadderGraphicModel['rungs'][number]>()
-/** Renders one display amount while keeping its exact raw integer reachable on hover. */
-const amountCell = (rawAmount: string, display: string) => (
-  <span title={rawAmount} data-raw-amount={rawAmount}>
-    {display}
-  </span>
-)
-const rungColumnsFor = (format: AssetFormatter) => [
-  columnHelper.accessor('sideLabel', { header: 'Side', cell: info => info.getValue() }),
-  columnHelper.accessor('rateBps', { header: 'Rate (BPS)', cell: info => info.getValue() }),
-  columnHelper.accessor('allocationAssets', {
-    header: 'Allocation',
-    cell: info => amountCell(info.getValue(), format(info.getValue()))
-  }),
-  columnHelper.accessor('offerMaxAssets', {
-    header: 'Offer cap',
-    cell: info => amountCell(info.getValue(), format(info.getValue()))
-  })
-]
 
 const RungTable = ({
   format,
@@ -207,7 +183,9 @@ const BootstrapGraphic = ({
             <span className="rung-depth">
               <b style={{ width: `${depth(graphic.offerSize)}%` }} />
             </span>
-            <span className="rung-size">{format(graphic.offerSize)}</span>
+            <span className="rung-size">
+              {amountCell(graphic.offerSize, format(graphic.offerSize))}
+            </span>
           </i>
           {graphic.maximumQuotedRateBps === undefined ? null : (
             <b

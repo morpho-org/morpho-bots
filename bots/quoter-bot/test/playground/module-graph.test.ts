@@ -38,6 +38,7 @@ describe('playground browser module graph', () => {
       'playground/playground-initialization.error.ts',
       'playground/preview-generation.error.ts',
       'playground/reference-response.utils.ts',
+      'playground/rung-rendering.utils.tsx',
       'playground/strict-json.error.ts',
       'src/config/config-validation.error.ts',
       'src/config/market-collections.ts',

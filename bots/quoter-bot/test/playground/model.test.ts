@@ -316,11 +316,15 @@ describe('bootstrap + ladder only playground follow-up', () => {
     expect(graphic.axis.centerRateBps).toBe('100')
     expect(graphic.callouts).toContainEqual({
       label: 'Quote premium',
-      value: 'Ladder centred on 100 BPS: market rate 400 minus 300 BPS',
+      value:
+        'Ladder centred on 100 BPS: fixed target 400 minus 300 BPS, which does not follow the market',
       parameters: ['quotePremiumBps']
     })
     expect(graphic.rateToY('100')).toBeGreaterThan(100)
     expect(clampPlotPercent(graphic.rateToY('100'))).toBe(100)
+    // The reference itself is in range, so only a marker-aware notice catches this.
+    expect(graphic.notice).toContain('the center 100 BPS falls outside it')
+    expect(graphic.notice).toContain('far-maturity center 20100 BPS falls outside it')
   })
 
   test('renders a hardcoded bootstrap reference outside bounds when its premium-adjusted quote is valid', () => {
@@ -352,6 +356,50 @@ describe('bootstrap + ladder only playground follow-up', () => {
       referenceRateBps: '500',
       centerRateBps: '550'
     })
+  })
+
+  test('reports a bootstrap target already satisfied by its allowed shortfall', () => {
+    const state = createDefaultPlaygroundState()
+    state.bootstrap[0]!.acceptanceAssets = state.bootstrap[0]!.creditTarget
+    expect(validateBootstrapCollection(state.bootstrap).valid).toBe(true)
+    const callouts = deriveBootstrapGraphicModels(state.bootstrap)[0]!.callouts
+    expect(callouts.find(item => item.label === 'Credit target')?.value).toContain(
+      'no offer is ever published'
+    )
+    expect(callouts.find(item => item.label === 'Maximum offer size')?.value).toContain(
+      'No offer is published'
+    )
+  })
+
+  test('describes a hardcoded bootstrap target as fixed rather than market-following', () => {
+    const state = createDefaultPlaygroundState()
+    state.bootstrap[0]!.targetRate = { strategy: 'hardcoded', hardcodedRateBps: '500' }
+    const value = deriveBootstrapGraphicModels(state.bootstrap)[0]!.callouts.find(
+      item => item.label === 'Quote premium'
+    )?.value
+    expect(value).toContain('fixed 450 BPS')
+    expect(value).toContain('does not follow the market')
+    expect(value).not.toContain('follows the market while')
+  })
+
+  test('qualifies a reference band as at-maturity when a maturity premium is configured', () => {
+    const state = createDefaultPlaygroundState()
+    state.bootstrap[0]!.maturityPremium = { shape: 'linear', premiumPerYearBps: '120' }
+    expect(
+      deriveBootstrapGraphicModels(state.bootstrap)[0]!.callouts.find(
+        item => item.label === 'Quote premium'
+      )?.value
+    ).toContain('measured at maturity')
+  })
+
+  test('limits the auto-refill promise to the running service instance', () => {
+    const state = createDefaultPlaygroundState()
+    state.bootstrap[0]!.autoRefill = false
+    const value = deriveBootstrapGraphicModels(state.bootstrap)[0]!.callouts.find(
+      item => item.label === 'Auto-refill'
+    )?.value
+    expect(value).toContain('this service instance only')
+    expect(value).not.toContain('for good')
   })
 
   test('explains a ladder shape that cannot fit its hard range, with the arithmetic', () => {
