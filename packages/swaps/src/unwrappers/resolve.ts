@@ -24,6 +24,15 @@ export type Unwrapper = {
      */
     correlation?: Readonly<Record<string, unknown>>
   }) => Promise<{ step: SwapStep; expectedAmountOut: bigint; amountOutMinimum: bigint } | null>
+  /**
+   * The token this unwrapper would convert `token` into, WITHOUT building calldata — `null` when it
+   * does not apply, matching {@link Unwrapper.resolve}'s negative.
+   *
+   * Must not perform amount-dependent I/O. It exists so a caller needing only the post-unwrap PAIR
+   * (to warm a venue probe) does not pay `resolve`'s cost, which for a hosted-API unwrapper is a
+   * rate-limited request whose calldata would then be discarded and re-fetched at quote time.
+   */
+  previewTokenOut?: (token: Address) => Promise<Address | null>
 }
 
 /**
@@ -86,4 +95,37 @@ export async function resolveUnwraps(
   }
 
   return { steps, token, amountIn }
+}
+
+/**
+ * Where {@link resolveUnwraps} would leave off, resolved through {@link Unwrapper.previewTokenOut}
+ * alone — so it costs no calldata construction and no amount-dependent call.
+ *
+ * `null` when ANY unwrapper in the list lacks the seam: a partial walk would silently report the
+ * wrong terminal token, and the wrong token is a probe of the wrong pair. Callers fall back to
+ * `resolveUnwraps` on `null`, which is what makes the seam safe to adopt one unwrapper at a time.
+ */
+export const previewUnwrapChain = async (
+  unwrappers: readonly Unwrapper[],
+  args: { token: Address; stopToken: Address }
+): Promise<Address | null> => {
+  if (unwrappers.some(unwrapper => !unwrapper.previewTokenOut)) return null
+
+  let token = args.token
+  for (let depth = 0; depth < MAX_UNWRAP_DEPTH; depth++) {
+    if (isAddressEqual(token, args.stopToken)) break
+
+    let advanced = false
+    for (const unwrapper of unwrappers) {
+      const next = await unwrapper.previewTokenOut?.(token)
+      // Same termination rule as the resolving walk: a hop that doesn't change the token can never
+      // terminate, so it counts as "does not apply".
+      if (!next || isAddressEqual(next, token)) continue
+      token = next
+      advanced = true
+      break
+    }
+    if (!advanced) break
+  }
+  return token
 }

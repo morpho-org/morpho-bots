@@ -94,6 +94,11 @@ rides onto `LiquidationPlan`. It has two consequences:
   can still clear these positions. It is **opt-in, defaulting to off**: the ordering was briefly
   unconditional, which let a venue-less `blue-liquidation` — whose `ALLOW_DETECTION_ONLY` posture
   promises it never acts — return a broadcastable plan. Midnight sets it; Blue deliberately does not.
+  The exception is also narrowed to the **zero-step** shape. `swapFreePlan` serves two (see
+  `swapFreePath`), and the other — an unwrap chain that merely _lands_ on the loan token, PT-USDC in a
+  USDC market — still moves assets and carries per-hop execution risk. Letting it through venue-less
+  was the same class of mistake as the ordering, one layer down: the flag names loan-as-collateral
+  slots, not every plan that happens to need no venue. Venue-enabled callers keep both shapes.
 - `gateOnHeadroom` does not apply. The floor bounds a route cost this path does not pay; charging it
   would forfeit the contested early seconds of every loan-as-collateral maturity, which is where an
   ascending-price auction is won (see `rankByUsdSurplus`). Break-even still binds via

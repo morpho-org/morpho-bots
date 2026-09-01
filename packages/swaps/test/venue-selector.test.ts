@@ -5,10 +5,15 @@ import { describe, expect, it } from 'vitest'
 
 import type { QuoteLogger } from '../src/quoting'
 import type { PriceParameters, Venue } from '../src/types'
-import type { VenuePair } from '../src/venue-selector'
+import type { VenueCostEstimate, VenuePair } from '../src/venue-selector'
 
 import { QuoteError } from '../src/types'
-import { createVenueSelector, USD_LADDER_PRICE_DECIMALS } from '../src/venue-selector'
+import {
+  createVenueSelector,
+  curveIsTrusted,
+  MAX_COST_LEVEL_AGE_MS,
+  USD_LADDER_PRICE_DECIMALS
+} from '../src/venue-selector'
 
 const NOOP_LOGGER: QuoteLogger = { info: () => {}, warn: () => {} }
 
@@ -415,5 +420,46 @@ describe('createVenueSelector', () => {
       await first
       expect(selector.select(PAIR, SMALL)).not.toEqual([])
     })
+  })
+})
+
+describe('curveIsTrusted', () => {
+  // The predicate both the firm-quote fall-through bound and a bot's candidate ranking read, so that
+  // a cutoff can never trust a curve the quoting layer refuses.
+  const estimate = (overrides: Partial<VenueCostEstimate> = {}): VenueCostEstimate => ({
+    venue: '0x',
+    estimatedOut: 1000n,
+    costBps: 10,
+    costBpsRaw: 10,
+    clamped: false,
+    ageMs: 0,
+    ...overrides
+  })
+
+  it('accepts a complete, fresh, unclamped curve', () => {
+    expect(curveIsTrusted([estimate(), estimate({ venue: '1inch' })], ['0x', '1inch'])).toBe(true)
+  })
+
+  it('refuses a cold curve', () => {
+    expect(curveIsTrusted([], ['0x'])).toBe(false)
+  })
+
+  it('refuses an INCOMPLETE curve, because the missing venue could be the better one', () => {
+    expect(curveIsTrusted([estimate()], ['0x', '1inch'])).toBe(false)
+  })
+
+  it('refuses a clamped estimate', () => {
+    expect(curveIsTrusted([estimate({ clamped: true })], ['0x'])).toBe(false)
+  })
+
+  it('refuses an estimate past the level age bound, and accepts one exactly at it', () => {
+    // `estimatedOut` is the one term cache age decays (venue ORDERING is drift-immune at any age),
+    // so this bound is what separates a usable level from a usable ranking.
+    expect(curveIsTrusted([estimate({ ageMs: MAX_COST_LEVEL_AGE_MS + 1 })], ['0x'])).toBe(false)
+    expect(curveIsTrusted([estimate({ ageMs: MAX_COST_LEVEL_AGE_MS })], ['0x'])).toBe(true)
+  })
+
+  it('refuses a non-positive level, which prices the route at 100% cost', () => {
+    expect(curveIsTrusted([estimate({ estimatedOut: 0n })], ['0x'])).toBe(false)
   })
 })

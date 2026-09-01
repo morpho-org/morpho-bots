@@ -369,6 +369,13 @@ async function main() {
             data: encodeExec(market, borrower, plan, swapPlan)
           },
           label,
+          // One position submits several `(slot, mode)` alternatives under one label, so without this
+          // their `tx.submit_failed` rows are indistinguishable — the same discriminator every other
+          // stage already emits.
+          correlation: {
+            collateralIndex: plan.collateralIndex,
+            postMaturityMode: plan.postMaturityMode
+          },
           maxFeePerGas: fees.maxFeePerGas,
           maxPriorityFeePerGas: fees.maxPriorityFeePerGas,
           blockNumber
@@ -385,7 +392,8 @@ async function main() {
       routing: {
         resolveRoute,
         warmRoute: venueSelector.refresh,
-        routeCost: venueSelector.select
+        routeCost: venueSelector.select,
+        venues
       },
       logger
     })

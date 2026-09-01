@@ -80,6 +80,10 @@ export function createErc4626Unwrapper(deps: { client: Client; logger: QuoteLogg
 
   return {
     kind: 'erc4626',
+    // `underlyingFor` alone: the `previewRedeem` gate `resolve` also applies is amount-dependent, and
+    // a token that passes `asset()` but fails it routes to a venue as itself — which is the pair a
+    // probe would want anyway.
+    previewTokenOut: underlyingFor,
     async resolve({ token, amountIn, executor, correlation }) {
       const underlying = await underlyingFor(token)
       if (underlying === null) return null

@@ -61,6 +61,14 @@ export type SubmitArgs = {
    * and let a second nonce-consuming send go out for a position already in flight.
    */
   label: string
+  /**
+   * What separates two sends sharing one {@link SubmitArgs.label} — Midnight's `(collateralIndex,
+   * postMaturityMode)` alternatives, say — spread onto this send's log events beside `id`.
+   *
+   * Correlation only: never parsed, never behavioral, and NOT part of the dedup key (that is `label`,
+   * for the reason its own doc gives). Omit it when a label already identifies a send uniquely.
+   */
+  correlation?: Readonly<Record<string, string | number | boolean>>
   maxFeePerGas: bigint
   maxPriorityFeePerGas: bigint
   blockNumber: bigint
@@ -293,6 +301,7 @@ export function createPendingQueue({
       const selector = revertSelector(sent.error)
       logger.warn('tx.submit_failed', {
         id: args.label,
+        ...args.correlation,
         reason: revertReason(sent.error),
         executionRevert,
         ...(selector ? { selector } : {}),

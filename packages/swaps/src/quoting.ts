@@ -23,6 +23,7 @@ import { BPS } from './constants'
 import { routeCostBps } from './cost-bps.utils'
 import { QuoteError } from './types'
 import { resolveUnwraps } from './unwrappers/resolve'
+import { curveIsTrusted, MAX_COST_LEVEL_AGE_MS } from './venue-selector'
 import { priceLifi, quoteLifi } from './venues/lifi'
 import { priceLiquidSwap, quoteLiquidSwap } from './venues/liquidswap'
 import { priceOneInch, quoteOneInch } from './venues/oneinch'
@@ -233,22 +234,9 @@ const CURVE_PREDICTION_MARGIN_BPS = 10n
 const MAX_FLOOR_OVERSHOOT_BPS = 2n * CURVE_PREDICTION_MARGIN_BPS
 
 /**
- * How stale a curve may be and still be trusted to predict a venue's absolute output.
- *
- * Venue ORDERING is drift-immune at any cache age, but a min-out denominator consumes the absolute
- * LEVEL, which decays as the pair's price leaves the cached rate behind (see `createVenueSelector`).
- * A prediction older than this falls back to the oracle reference and the ordinary second pass, which
- * costs one HTTP call — so this can be set against the cost level's own half-life without regard to
- * the probe cadence. It is deliberately NOT a bot-tunable: a bot whose `PROBE_STALE_MS` is long
- * because it only consumes ordering (blue's is 10 minutes) must not thereby inherit a 10-minute-old
- * denominator.
- */
-const MAX_PREDICTION_AGE_MS = 60_000
-
-/**
  * A curve estimate turned into a first-pass min-out denominator, or `undefined` when the curve has
  * nothing trustworthy to say (an unranked venue, an estimate clamped off the probed ladder, or one
- * older than {@link MAX_PREDICTION_AGE_MS}).
+ * older than {@link MAX_COST_LEVEL_AGE_MS}).
  *
  * **This block's subject is the DIRECTION of the bias relative to the venue's real quote**, which is
  * what makes the prediction safe to encode against; how far down it is taken is
@@ -266,7 +254,7 @@ const predictedVenueOut = (
   referenceAmountOut: bigint
 ): bigint | undefined => {
   if (!estimate || estimate.clamped || estimate.estimatedOut <= 0n) return undefined
-  if (estimate.ageMs > MAX_PREDICTION_AGE_MS) return undefined
+  if (estimate.ageMs > MAX_COST_LEVEL_AGE_MS) return undefined
   const capped =
     estimate.estimatedOut < referenceAmountOut ? estimate.estimatedOut : referenceAmountOut
   return (capped * (BPS - CURVE_PREDICTION_MARGIN_BPS)) / BPS
@@ -496,8 +484,10 @@ const swapFreePath = (resolution: UnwrapResolution): 'no-swap' | 'unwrap-only' =
  * Still oracle-sanity-checked and floor-checked: `resolution.amountIn` is the chain's threaded
  * worst-case output — an on-chain bound, not an estimate — and stands in for a venue's quoted output.
  * With zero steps it is exactly `request.amountIn`, so both checks reduce to statements about the
- * oracle: route quality passes iff the price is within `maxRouteImpactBps` of 1:1, and the floor
- * passes iff the seize covers its own break-even repay (it does, by construction, for `lif >= WAD`).
+ * oracle: route quality passes unless the oracle prices the collateral more than `maxRouteImpactBps`
+ * ABOVE 1:1 — {@link passesRouteQuality} is a floor, not a band, so an underpricing oracle passes at
+ * any margin — and the floor passes iff the seize covers its own break-even repay (it does, by
+ * construction, for `lif >= WAD`).
  */
 const swapFreePlan = (args: {
   resolution: UnwrapResolution
@@ -581,7 +571,7 @@ export type QuoteLogger = {
  * so API + probe usage is bounded by the (small) liquidatable set, never the full candidate universe.
  *
  * No enabled venues → `no_config`, preserving the caller's no-swap posture; `swapFreeWithoutVenues`
- * decides whether that refusal precedes or follows the unwrap chain.
+ * carves out the one exception, a resolution needing neither a venue nor a call.
  */
 export function composeMultiVenueQuoting(deps: {
   httpClient: RateLimitedClient
@@ -595,9 +585,10 @@ export function composeMultiVenueQuoting(deps: {
   /** Pre-swap converters, tried in order each hop. Pass `[]` for venue-only quoting. */
   unwrappers: readonly Unwrapper[]
   /**
-   * Whether a venue-less deployment may still act on a plan needing no venue — the unwrap chain is
-   * then resolved first, since it is what decides whether a venue is needed at all. Only for callers
-   * whose protocol has such a mode (Midnight's loan-as-collateral slots under `ALLOW_BAD_DEBT_ONLY`).
+   * Whether a venue-less deployment may still act on a plan needing no venue AND NO CALLS — the
+   * unwrap chain is resolved first, since it is what decides whether a venue is needed at all, but
+   * only a zero-step resolution is then acted on. Only for callers whose protocol has such a mode
+   * (Midnight's loan-as-collateral slots under `ALLOW_BAD_DEBT_ONLY`).
    *
    * Defaults to `false`, which is what keeps a deliberately unarmed deployment unarmed: it refuses
    * before any unwrap RPC, so it can neither broadcast nor arm backoff off a transient read failure.
@@ -690,11 +681,7 @@ export function composeMultiVenueQuoting(deps: {
         order
       })
     }
-    const trusted =
-      ranked.length > 0 &&
-      venues.every(venue => estimates.has(venue)) &&
-      ranked.every(estimate => !estimate.clamped)
-    return { order, estimates, trusted }
+    return { order, estimates, trusted: curveIsTrusted(ranked, venues) }
   }
 
   return {
@@ -713,6 +700,13 @@ export function composeMultiVenueQuoting(deps: {
       // a caller that opted into `swapFreeWithoutVenues` must still be able to liquidate it; gating
       // on `venues` first would refuse the one case that provably does not need one.
       if (isAddressEqual(resolution.token, loanToken)) {
+        // ...but only the `'no-swap'` shape (see {@link swapFreePath}). An unwrap chain that merely
+        // LANDS on the loan token still moves assets and carries per-hop execution risk, which is
+        // more than a venue-less posture promises — `ALLOW_BAD_DEBT_ONLY` names loan-as-collateral
+        // slots, not PT-USDC. Venue-enabled callers keep both shapes, exactly as before.
+        if (venues.length === 0 && resolution.steps.length > 0) {
+          return { kind: 'no_config', firmCalls: 0 }
+        }
         return { ...swapFreePlan({ resolution, request, maxRouteImpactBps, logger }), firmCalls: 0 }
       }
 

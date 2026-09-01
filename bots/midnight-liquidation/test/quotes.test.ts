@@ -1,7 +1,7 @@
 import type { Logger } from '@repo/bot-kit'
-import type { RateLimitedClient, Venue, VenuePair, VenueSelector } from '@repo/swaps'
+import type { RateLimitedClient, Unwrapper, Venue, VenuePair, VenueSelector } from '@repo/swaps'
 
-import { getAddress } from 'viem'
+import { getAddress, isAddressEqual } from 'viem'
 import { describe, expect, it } from 'vitest'
 
 import type { Market } from '../src/execution/encode-call'
@@ -112,6 +112,33 @@ function fakeSelector(
   return { selector, refreshed }
 }
 
+// A collateral that unwraps straight to the loan token (a vault share or PT in a USDC market), with
+// the pair-only seam answered separately from the calldata-building half.
+const unwrapsToLoan = (): Unwrapper & { resolved: () => number } => {
+  let resolved = 0
+  return {
+    kind: 'fake-erc4626',
+    resolved: () => resolved,
+    previewTokenOut: async token => (isAddressEqual(token, COLLATERAL) ? LOAN : null),
+    async resolve({ token }) {
+      resolved += 1
+      if (!isAddressEqual(token, COLLATERAL)) return null
+      return {
+        step: {
+          tokenIn: COLLATERAL,
+          tokenOut: LOAN,
+          target: TARGET,
+          value: 0n,
+          callData: '0x12345678',
+          amountIn: { source: 'balance', offset: 4n }
+        },
+        expectedAmountOut: 1000n,
+        amountOutMinimum: 1000n
+      }
+    }
+  }
+}
+
 function compose(
   selector: VenueSelector,
   overrides: {
@@ -119,6 +146,7 @@ function compose(
     excludeCollaterals?: `0x${string}`[]
     logger?: Logger
     httpClient?: RateLimitedClient
+    unwrappers?: readonly Unwrapper[]
   } = {}
 ) {
   return composeQuoting({
@@ -129,7 +157,7 @@ function compose(
     venues: overrides.venues ?? ['0x'],
     baseUrls: {},
     maxRouteImpactBps: 500,
-    unwrappers: [],
+    unwrappers: overrides.unwrappers ?? [],
     excludeCollaterals: overrides.excludeCollaterals ?? [],
     logger: overrides.logger ?? NOOP_LOGGER
   })
@@ -203,6 +231,35 @@ describe('composeQuoting (Midnight lens-projection adapter)', () => {
     )
     expect(outcome.kind).toBe('swap')
     if (outcome.kind === 'swap') expect(outcome.plan.steps).toHaveLength(0)
+  })
+
+  it('refuses an unwrap-only collateral with no venues, despite the swap-free opt-in', async () => {
+    // `swapFreeWithoutVenues` arms the zero-step shape only. A chain that merely LANDS on the loan
+    // token still moves assets, which is broader than `ALLOW_BAD_DEBT_ONLY` promises.
+    const unwrapper = unwrapsToLoan()
+    const { selector } = fakeSelector([])
+    const { quoteFor } = compose(selector, { venues: [], unwrappers: [unwrapper] })
+    expect(await quoteFor(PLAN, OUT, LABEL)).toEqual({ kind: 'no_config', firmCalls: 0 })
+  })
+
+  it('still takes that unwrap-only collateral when a venue is enabled', async () => {
+    const unwrapper = unwrapsToLoan()
+    const { selector } = fakeSelector(['0x'])
+    const { quoteFor } = compose(selector, { unwrappers: [unwrapper] })
+    const outcome = await quoteFor(PLAN, OUT, LABEL)
+    expect(outcome.kind).toBe('swap')
+    if (outcome.kind === 'swap') expect(outcome.plan.steps).toHaveLength(1)
+  })
+
+  it('resolveRoute previews the pair without building calldata', async () => {
+    // The seam's whole point: for a Pendle PT, `resolve` is a rate-limited hosted request whose
+    // calldata phase A.5 discards and the firm quote then re-fetches.
+    const unwrapper = unwrapsToLoan()
+    const { selector } = fakeSelector(['0x'])
+    const { resolveRoute } = compose(selector, { unwrappers: [unwrapper] })
+    // Ends on the loan token, so there is no pair left to probe.
+    expect(await resolveRoute(PLAN, OUT, LABEL)).toBeNull()
+    expect(unwrapper.resolved()).toBe(0)
   })
 
   it('threads the position label into quote log events as the correlation id', async () => {

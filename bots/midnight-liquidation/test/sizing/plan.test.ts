@@ -16,17 +16,15 @@ const MAX_LIF = 1036269430051813471n
 const LLTV = 860000000000000000n
 
 // The cbBTC-shaped slot these cases were originally written against: lltv 86%, so maxLif ~1.0363.
-function slot(overrides: Partial<CollateralSlot> = {}): CollateralSlot {
-  return {
-    index: 3,
-    amt: 100n * WAD,
-    price: ORACLE_PRICE_SCALE,
-    maxLif: MAX_LIF,
-    lltv: LLTV,
-    swapFree: false,
-    ...overrides
-  }
-}
+const slot = (overrides: Partial<CollateralSlot> = {}): CollateralSlot => ({
+  index: 3,
+  amt: 100n * WAD,
+  price: ORACLE_PRICE_SCALE,
+  maxLif: MAX_LIF,
+  lltv: LLTV,
+  swapFree: false,
+  ...overrides
+})
 
 // Pre-maturity (now < maturity), unhealthy borrower with one activated slot — the normal-mode base.
 function baseInput(overrides: Partial<PlanInput> = {}): PlanInput {
@@ -47,12 +45,10 @@ function baseInput(overrides: Partial<PlanInput> = {}): PlanInput {
 
 // `baseInput` with a single slot carrying `slotOverrides` — the shape most cases want, since they
 // vary one slot field and leave the position alone.
-function inputWithSlot(
+const inputWithSlot = (
   slotOverrides: Partial<CollateralSlot>,
   overrides: Partial<PlanInput> = {}
-): PlanInput {
-  return baseInput({ collaterals: [slot(slotOverrides)], ...overrides })
-}
+): PlanInput => baseInput({ collaterals: [slot(slotOverrides)], ...overrides })
 
 describe('plan', () => {
   it('skips a position with no debt', () => {

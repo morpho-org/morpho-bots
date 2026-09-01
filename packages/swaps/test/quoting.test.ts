@@ -468,6 +468,28 @@ describe('composeMultiVenueQuoting', () => {
     expect(unwrapper.probed.length).toBeGreaterThan(0)
   })
 
+  it('refuses an unwrap-only chain with no venues, even opted into a swap-free path', async () => {
+    // The venue-less exception covers `'no-swap'` only. A chain that merely LANDS on the loan token
+    // (a PT-USDC or vault-share collateral in a USDC market) still moves assets, which is more than
+    // an ALLOW_BAD_DEBT_ONLY posture promises — and `kind: 'swap'` goes straight to simulate+submit.
+    const unwrapper = fakeUnwrapper({ from: COLLATERAL, to: LOAN, out: 1000n })
+    const { quoteFor } = composeMulti([], [], throwingHttp, {
+      unwrappers: [unwrapper],
+      swapFreeWithoutVenues: true
+    })
+    expect(await quoteFor(REQUEST)).toEqual({ kind: 'no_config', firmCalls: 0 })
+  })
+
+  it('still takes that same unwrap-only chain when a venue IS enabled', async () => {
+    // The other half of the pin: only the venue-less case narrowed. An armed deployment keeps the
+    // unwrap-only plan it always built, without spending a venue call on a path with nothing to sell.
+    const unwrapper = fakeUnwrapper({ from: COLLATERAL, to: LOAN, out: 1000n })
+    const { quoteFor } = composeMulti(['0x'], [], throwingHttp, { unwrappers: [unwrapper] })
+    const outcome = await quoteFor(REQUEST)
+    expect(outcome.kind).toBe('swap')
+    if (outcome.kind === 'swap') expect(outcome.plan.steps).toHaveLength(1)
+  })
+
   describe('collateral token IS the loan token (loan-as-collateral)', () => {
     // referenceAmountOut === amountIn === 1000 in REQUEST, which is what an identity oracle at
     // price 1e36 produces, so these cases are the live loan-as-collateral shape.

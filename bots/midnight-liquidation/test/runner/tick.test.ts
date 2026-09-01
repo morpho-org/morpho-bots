@@ -1,9 +1,10 @@
 import type { Logger, SimulateResult, SubmitOutcome } from '@repo/bot-kit'
 import type { CooldownStore } from '@repo/bot-kit'
-import type { QuoteOutcome, SwapPlan, VenuePair } from '@repo/swaps'
+import type { QuoteOutcome, SwapPlan, Venue, VenuePair } from '@repo/swaps'
 import type { Address, Hex } from 'viem'
 
 import { createBackoff, createCooldownStore, createPendingQueue, TxSendError } from '@repo/bot-kit'
+import { MAX_COST_LEVEL_AGE_MS } from '@repo/swaps'
 import { lensKey } from '@repo/utils'
 import { getAddress } from 'viem'
 import { describe, expect, it } from 'vitest'
@@ -102,16 +103,14 @@ const SWAP_PLAN: SwapPlan = {
 // A liquidatable reading: valid, gate open, has debt, unlocked, unhealthy, pre-maturity.
 // One activated collateral slot. The default addresses `collateralParams[1]` (COLLATERAL), so it needs
 // a swap; `index: 0` addresses the market's loan token and is therefore swap-free.
-function slot(overrides: Partial<LensCollateral> = {}): LensCollateral {
-  return {
-    index: 1,
-    amt: 5000n,
-    price: 10n ** 36n,
-    maxLif: 1100000000000000000n,
-    lltv: 860000000000000000n,
-    ...overrides
-  }
-}
+const slot = (overrides: Partial<LensCollateral> = {}): LensCollateral => ({
+  index: 1,
+  amt: 5000n,
+  price: 10n ** 36n,
+  maxLif: 1100000000000000000n,
+  lltv: 860000000000000000n,
+  ...overrides
+})
 
 function lensOut(overrides: Partial<LensOut> = {}): LensOut {
   return {
@@ -225,6 +224,10 @@ function runWith(opts: {
   routeCostBps?: Map<Address, number>
   /** Models an estimate taken from a ladder end: present in the curve, but not trustworthy. */
   clampedRoutes?: boolean
+  /** Ages every estimate, to exercise the level bound `curveIsTrusted` applies. */
+  routeCostAgeMs?: number
+  /** Enabled venues; the stub curve only ever ranks `0x`, so a longer list models an INCOMPLETE one. */
+  venues?: readonly Venue[]
   /** Shared spy, so a caller can observe the tick's and the queue's events in ONE stream. */
   spy?: ReturnType<typeof spyLogger>
   /** Replaces the stub `submit` — used to broadcast through a real pending queue. */
@@ -292,10 +295,11 @@ function runWith(opts: {
           costBps: bps,
           costBpsRaw: bps,
           clamped: opts.clampedRoutes ?? false,
-          ageMs: 0
+          ageMs: opts.routeCostAgeMs ?? 0
         }
       ]
-    }
+    },
+    venues: opts.venues ?? (['0x'] as const)
   }
   const result = runTick({
     discover: async () => {
@@ -532,6 +536,24 @@ describe('runTick', () => {
       expect(events.some(e => e.event === 'cooldown.skip')).toBe(true)
     })
 
+    it('holds one verdict for the whole tick, even as the wall-clock window expires', async () => {
+      // `CooldownStore.shouldSkip` is wall clock, unlike block-keyed backoff, so a window expiring
+      // mid-tick would have phase A.5 skip the route warm and phase B quote anyway — leaving the
+      // candidate ranked on gross surplus with a route it never priced. The verdict is snapshotted.
+      let asked = 0
+      const expiring: CooldownStore = {
+        shouldSkip: () => {
+          asked += 1
+          return asked === 1 // cooled when A.5 looks, expired by the time B would
+        },
+        mark: () => {}
+      }
+      const { counters, quoteCalls, simulateCalls } = await runWith({ cooldown: expiring })
+      expect(counters).toMatchObject({ liquidatable: 1, cooledDown: 1, submitted: 0 })
+      expect(quoteCalls()).toBe(0)
+      expect(simulateCalls()).toBe(0)
+    })
+
     it('marks the position on a failed quote so the next tick cools it down', async () => {
       const cooldown = createCooldownStore({ cooldownMs: 60_000 })
       const { counters } = await runWith({
@@ -764,7 +786,8 @@ describe('runTick', () => {
           routing: {
             resolveRoute: async () => null,
             warmRoute: async () => {},
-            routeCost: () => []
+            routeCost: () => [],
+            venues: ['0x']
           },
           logger
         })
@@ -806,6 +829,54 @@ describe('runTick', () => {
         })
         expect(counters).toMatchObject({ candidates: 2, quoteFailed: 1, ok: 1, sendReverted: 1 })
         expect(backoff.shouldSkip(LABEL, 101n)).toBe(false)
+        expectCounterIdentities(counters)
+      })
+
+      it('a no-route quote then a floor_unmet sibling leaves the position unsuppressed', async () => {
+        // Every suppression set is keyed by POSITION while candidates are per `(slot, mode)`, so
+        // without the retry-worthy latch the first candidate's `no_route` backs off the position and
+        // the second — an economic refusal the ramping LIF is expected to clear next block — never
+        // gets its contested block.
+        const { counters, backoff, cooldown } = await runWith({
+          out: twoSlots(),
+          cooldown: createCooldownStore({ cooldownMs: 60_000 }),
+          quoteOutcomes: [
+            { kind: 'failed', reason: 'no_route' },
+            { kind: 'failed', reason: 'floor_unmet' }
+          ]
+        })
+        expect(counters).toMatchObject({ candidates: 2, quoteFailed: 1, quoteUnprofitable: 1 })
+        expect(backoff.shouldSkip(LABEL, 101n)).toBe(false)
+        expect(cooldown.shouldSkip(LABEL)).toBe(false)
+        expectCounterIdentities(counters)
+      })
+
+      it('still suppresses when NO sibling is retry-worthy', async () => {
+        // The other half: the latch must not become a blanket exemption.
+        const { counters, backoff, cooldown } = await runWith({
+          out: twoSlots(),
+          cooldown: createCooldownStore({ cooldownMs: 60_000 }),
+          quoteOutcome: { kind: 'failed', reason: 'no_route' }
+        })
+        expect(counters).toMatchObject({ candidates: 2, quoteFailed: 2 })
+        expect(backoff.shouldSkip(LABEL, 101n)).toBe(true)
+        expect(cooldown.shouldSkip(LABEL)).toBe(true)
+        expectCounterIdentities(counters)
+      })
+
+      it('a broken send still arms backoff over a retry-worthy sibling', async () => {
+        // `backoffForced` outranks the latch: a nonce/funds/RPC rejection is a fact about the
+        // position, not about one candidate's economics.
+        const { counters, backoff } = await runWith({
+          out: twoSlots(),
+          quoteOutcomes: [
+            { kind: 'failed', reason: 'floor_unmet' },
+            { kind: 'swap', plan: SWAP_PLAN }
+          ],
+          submitOutcome: { sent: false, reason: 'send_failed', executionRevert: false }
+        })
+        expect(counters).toMatchObject({ quoteUnprofitable: 1, sendRejected: 1 })
+        expect(backoff.shouldSkip(LABEL, 101n)).toBe(true)
         expectCounterIdentities(counters)
       })
 
@@ -1479,6 +1550,38 @@ describe('runTick', () => {
       })
       expect(builtIndexes(trusted.events)).toEqual([2, 3])
       expect(trusted.counters).toMatchObject({ preselectSkipped: 1, quoteFailed: 2 })
+    })
+
+    it('falls open the same way when the curve is STALE', async () => {
+      // `estimatedOut` is consumed here as an absolute LEVEL against a current oracle, and the level
+      // is the one term cache age decays. Past the bound it must read as unknown, not as costed —
+      // otherwise an arbitrarily old price drives the cutoff and permanently skips a candidate.
+      const out = multiSlot({ surpluses: [100, 80, 60] })
+      const map = costs([SWAP_TOKENS[0]!, 1000], [SWAP_TOKENS[1]!, 0], [SWAP_TOKENS[2]!, 0])
+      const stale = await runWith({
+        out,
+        routeCostBps: map,
+        routeCostAgeMs: MAX_COST_LEVEL_AGE_MS + 1,
+        quoteOutcome: { kind: 'failed', reason: 'no_route' }
+      })
+      expect(builtIndexes(stale.events)).toEqual([1, 2, 3])
+      expect(stale.counters).toMatchObject({ preselectSkipped: 0, quoteFailed: 3 })
+    })
+
+    it('falls open the same way when the curve ranked only SOME enabled venues', async () => {
+      // The quoting layer keeps its full fall-through unless every enabled venue is ranked, because a
+      // missing venue could be the better one. A cutoff scored on that same partial curve must not be
+      // stricter than the quoting it is preselecting for.
+      const out = multiSlot({ surpluses: [100, 80, 60] })
+      const map = costs([SWAP_TOKENS[0]!, 1000], [SWAP_TOKENS[1]!, 0], [SWAP_TOKENS[2]!, 0])
+      const partial = await runWith({
+        out,
+        routeCostBps: map,
+        venues: ['0x', '1inch'], // the stub curve only ever ranks `0x`
+        quoteOutcome: { kind: 'failed', reason: 'no_route' }
+      })
+      expect(builtIndexes(partial.events)).toEqual([1, 2, 3])
+      expect(partial.counters).toMatchObject({ preselectSkipped: 0, quoteFailed: 3 })
     })
 
     it('leaves a position whose loan token is unpriced on gross ordering', async () => {

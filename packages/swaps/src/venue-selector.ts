@@ -66,6 +66,38 @@ export type VenueCostEstimate = {
   ageMs: number
 }
 
+/**
+ * How old a cached curve may be before its absolute LEVEL stops being usable.
+ *
+ * Bounds every consumer of {@link VenueCostEstimate.estimatedOut} as a level — a first-pass min-out
+ * denominator and a cross-candidate route-cost ranking alike — because that is the single term
+ * staleness decays (see {@link createVenueSelector} for the asymmetry). Venue ORDERING is deliberately
+ * unbounded, which is why this is not a second `PROBE_STALE_MS`: a bot whose probe cadence is long
+ * because it only consumes ordering (blue's is 10 minutes) must not thereby inherit a 10-minute-old
+ * denominator.
+ */
+export const MAX_COST_LEVEL_AGE_MS = 60_000
+
+/**
+ * Whether a pair's curve may be consumed as an absolute cost level: every enabled venue ranked, none
+ * clamped off the probed ladder, none past {@link MAX_COST_LEVEL_AGE_MS}, and every level positive.
+ *
+ * One predicate for both consumers — the firm-quote fall-through bound here, and a bot's
+ * cross-candidate ranking — because a curve either supports level comparisons or it does not. Two
+ * hand-rolled subsets of these clauses is how a candidate cutoff comes to trust a curve that quoting
+ * itself refuses. `false` is always the fail-open answer: score gross, walk every venue.
+ */
+export const curveIsTrusted = (
+  estimates: readonly VenueCostEstimate[],
+  venues: readonly Venue[]
+): boolean =>
+  estimates.length > 0 &&
+  venues.every(venue => estimates.some(estimate => estimate.venue === venue)) &&
+  estimates.every(
+    estimate =>
+      !estimate.clamped && estimate.estimatedOut > 0n && estimate.ageMs <= MAX_COST_LEVEL_AGE_MS
+  )
+
 /** One venue's indicative execution at one ladder rung — pure market data, no oracle. */
 type RungQuote = { amountIn: bigint; expectedOut: bigint }
 

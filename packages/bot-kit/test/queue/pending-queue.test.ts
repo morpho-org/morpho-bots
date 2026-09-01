@@ -173,6 +173,29 @@ describe('createPendingQueue', () => {
     expect(events.find(e => e.event === 'tx.submit_failed')?.level).toBe('warn')
   })
 
+  it('spreads the caller correlation onto tx.submit_failed, beside the shared id', async () => {
+    // A liquidator can submit several alternatives of ONE position under one label, so the label
+    // alone cannot tell their failures apart in a structured query.
+    const { logger, events } = captureLogger()
+    const send: SendTx = async () => {
+      throw new Error('rpc down')
+    }
+    const { queue } = setup({ send, logger })
+    await queue.submit({
+      request: REQUEST,
+      label: 'market:borrower',
+      correlation: { collateralIndex: 2, postMaturityMode: true },
+      maxFeePerGas: 1000n,
+      maxPriorityFeePerGas: 1000n,
+      blockNumber: 0n
+    })
+    expect(events.find(e => e.event === 'tx.submit_failed')?.fields).toMatchObject({
+      id: 'market:borrower',
+      collateralIndex: 2,
+      postMaturityMode: true
+    })
+  })
+
   it('rethrows a first-send failure after a nonce was claimed but no hash was returned', async () => {
     const { logger, events } = captureLogger()
     const send: SendTx = async () => {

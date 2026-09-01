@@ -1,8 +1,8 @@
 import type { Backoff, CooldownStore, Logger, SimulateResult, SubmitOutcome } from '@repo/bot-kit'
-import type { QuoteOutcome, SwapPlan, VenueCostEstimate, VenuePair } from '@repo/swaps'
+import type { QuoteOutcome, SwapPlan, Venue, VenueCostEstimate, VenuePair } from '@repo/swaps'
 import type { Address } from 'viem'
 
-import { venuePairKey } from '@repo/swaps'
+import { curveIsTrusted, venuePairKey } from '@repo/swaps'
 import { assertNever, lensKey, tryCatch } from '@repo/utils'
 import { formatUnits } from 'viem'
 
@@ -350,6 +350,11 @@ type TickRouting = {
     amountIn: bigint,
     referenceAmountOut: bigint
   ) => readonly VenueCostEstimate[]
+  /**
+   * The enabled venues, so {@link curveIsTrusted} can tell a complete curve from one that ranked a
+   * subset. Ordering is irrelevant here — the quoting layer owns the fall-through order.
+   */
+  venues: readonly Venue[]
 }
 
 /**
@@ -395,6 +400,8 @@ const prepareRoutes = async (deps: {
   const pairs = new Map<string, VenuePair>()
   let resolvedCount = 0
 
+  // Classify synchronously first, so the I/O below is the only thing that waits.
+  const resolvable: SizedCandidate[] = []
   for (const candidate of sized) {
     // `unknown`, not `no_route`: claiming it needs none would price it at zero and let it outrank a
     // costed sibling. The fail-open ordering that triggers is moot — this position never executes.
@@ -411,11 +418,23 @@ const prepareRoutes = async (deps: {
       states.set(candidate, { kind: 'no_route' })
       continue
     }
-    resolvedCount += 1
-    const resolved = await tryCatch(
-      routing.resolveRoute(candidate.plan, candidate.out, candidate.label)
+    resolvable.push(candidate)
+  }
+  resolvedCount = resolvable.length
+
+  // Concurrently: these are independent, and awaiting them in discovery order put every candidate
+  // behind the slowest unrelated one — on the critical path of the maturity burst this phase exists
+  // to speed up. Bounded by the probe cap upstream, and the underlying clients are rate-limited, so
+  // the fan-out is throttled rather than unbounded. `states` is keyed by candidate identity and
+  // `pairs` is a dedupe map, so neither depends on completion order.
+  const resolutions = await Promise.all(
+    resolvable.map(candidate =>
+      tryCatch(routing.resolveRoute(candidate.plan, candidate.out, candidate.label))
     )
-    if (resolved.error) {
+  )
+  for (const [index, candidate] of resolvable.entries()) {
+    const resolved = resolutions[index]
+    if (resolved?.error) {
       logger.warn('route.unresolved', {
         id: candidate.label,
         marketId: candidate.pair.id,
@@ -425,7 +444,7 @@ const prepareRoutes = async (deps: {
         detail: resolved.error.message
       })
     }
-    const route = resolved.data ?? null
+    const route = resolved?.data ?? null
     states.set(candidate, route ? { kind: 'route', route } : { kind: 'unknown' })
     if (route) pairs.set(venuePairKey(route.pair), route.pair)
   }
@@ -461,13 +480,16 @@ type CostedCandidate = SizedCandidate & {
  * subtractable. A candidate that sells nothing costs zero by construction — a `swapFree` slot, or a
  * bad-debt write-off, which trades no assets at all.
  *
- * Everything else fails open to `null` (see {@link RouteState}) — a cold pair (`[]`), a `clamped`
- * estimate taken from a ladder end rather than between two rungs, no oracle reference, or an unpriced
- * loan token. Cost is floored at zero: a venue quoting above the oracle is a stale oracle, never a
- * bonus to score (see {@link VenueCostEstimate.costBps}).
+ * Everything else fails open to `null` (see {@link RouteState}) — a cold pair (`[]`), a curve
+ * {@link curveIsTrusted} refuses, no oracle reference, or an unpriced loan token. Cost is floored at
+ * zero: a venue quoting above the oracle is a stale oracle, never a bonus to score (see
+ * {@link VenueCostEstimate.costBps}).
  *
- * Reads only the LEADING venue's estimate, because that is the venue the quoting layer will try first.
- * Pure: {@link TickRouting.routeCost} is a cache lookup, cheap enough for the protocol's ceiling of 16
+ * That predicate is shared with the quoting layer ON PURPOSE, and it is the reason this reads an
+ * absolute LEVEL at all: `estimatedOut` is the one term cache age decays, and a cutoff scored on a
+ * level the quoting layer would not trust can preselect away the only executable liquidation. Reads
+ * only the LEADING venue's estimate, because that is the venue quoting will try first. Pure:
+ * {@link TickRouting.routeCost} is a cache lookup, cheap enough for the protocol's ceiling of 16
  * collateral slots in two modes.
  */
 const costRoutes = (deps: {
@@ -483,8 +505,10 @@ const costRoutes = (deps: {
     if (state.kind === 'unknown') return uncosted
 
     const reference = expectedLoanOut(candidate.plan)
-    const best = deps.routing.routeCost(state.route.pair, state.route.amountIn, reference)[0]
-    if (!best || best.clamped || best.costBps === null) return uncosted
+    const estimates = deps.routing.routeCost(state.route.pair, state.route.amountIn, reference)
+    if (!curveIsTrusted(estimates, deps.routing.venues)) return uncosted
+    const best = estimates[0]
+    if (!best || best.costBps === null) return uncosted
     const shortfall = reference > best.estimatedOut ? reference - best.estimatedOut : 0n
     return {
       ...candidate,
@@ -719,8 +743,13 @@ export async function runTick(deps: {
   // The two suppression gates, defined once because phase A.5 and phase B must agree: A.5 skips the
   // route RPC for whatever B will skip outright, which is what keeps backoff's promise to bound API
   // and RPC usage under a backlog. Both stores are position-keyed and unwritten until the tick's
-  // `finally`, so their verdict is constant across a position's candidates within one tick.
-  const isCooled = (label: string) => cooldown.shouldSkip(label)
+  // `finally` — but that only makes BACKOFF's verdict constant across the tick, because it is keyed
+  // on the tick-constant `chainHead`. `CooldownStore.shouldSkip` is wall-clock, so a window expiring
+  // between the two phases would leave a candidate quoted with its route never warmed; since
+  // `scoreNetOfRouteCost` fails open per POSITION, that one candidate drops its whole alternative set
+  // back to gross ordering. Snapshot it so the two phases cannot disagree.
+  const cooled = new Set(sized.filter(entry => cooldown.shouldSkip(entry.label)).map(e => e.label))
+  const isCooled = (label: string) => cooled.has(label)
   // A write-off sells nothing, so backoff — which suppresses quote/simulate churn — never applies.
   const isBackedOff = (label: string, plan: LiquidationPlan) =>
     !isBadDebtRealization(plan) && backoff.shouldSkip(label, chainHead)
@@ -784,6 +813,12 @@ export async function runTick(deps: {
   // by position, so without this a sibling's execution revert would cancel the backoff a broken
   // nonce/funds/RPC send earned — see the `sendRejected` arm.
   const backoffForced = new Set<string>()
+  // Positions at least one candidate of which ended in an outcome the next block is expected to fix on
+  // its own — a floor the ramping LIF has not reached yet. Every set here is keyed by POSITION while
+  // candidates are per `(slot, mode)`, so without this a sibling's `no_route` or sim revert suppresses
+  // the very position the economic arms below refuse to suppress. `backoffForced` still wins: a broken
+  // send is a fact about the position, not about one candidate's economics.
+  const retryWorthy = new Set<string>()
   const pendingCooldown = new Set<string>()
   let complete = false
   // Firm venue calls this tick, `null` while no quote reported any: an absent `firmCalls` is unknown,
@@ -897,6 +932,7 @@ export async function runTick(deps: {
           // quoting layer already logged `quote.floor_unmet` per venue with the numbers.
           if (quote.reason === 'floor_unmet') {
             counters.quoteUnprofitable += 1
+            retryWorthy.add(label)
             continue
           }
           counters.quoteFailed += 1
@@ -918,6 +954,7 @@ export async function runTick(deps: {
           // by the pre-quote headroom gate in sizing, not by suppressing a position that may be one
           // block of LIF ramp away from being fundable.
           counters.quoteUnprofitable += 1
+          retryWorthy.add(label)
           // `requiredThreshold` and `minSurplusBps` are both here on purpose: with a nonzero buffer
           // the route can clear `requiredRepay` and still be rejected, and an operator cannot tell
           // which rule fired without seeing the bar that was applied.
@@ -1048,9 +1085,13 @@ export async function runTick(deps: {
   } finally {
     // Suppression applied once per position, after every candidate has had its turn (see the phase B
     // preamble). In the `finally` so an aborting `submit` still records what the tick learned.
-    for (const label of pendingCooldown) cooldown.mark(label)
+    for (const label of pendingCooldown) {
+      if (!retryWorthy.has(label)) cooldown.mark(label)
+    }
     for (const label of pendingBackoff) {
-      if (backoffForced.has(label) || !backoffExempt.has(label)) backoff.record(label, chainHead)
+      if (backoffForced.has(label) || (!backoffExempt.has(label) && !retryWorthy.has(label))) {
+        backoff.record(label, chainHead)
+      }
     }
     logger.info('tick.end', {
       ...counters,

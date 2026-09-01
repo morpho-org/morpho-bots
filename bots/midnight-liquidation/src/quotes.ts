@@ -9,7 +9,7 @@ import type {
 } from '@repo/swaps'
 import type { Address } from 'viem'
 
-import { composeMultiVenueQuoting, resolveUnwraps } from '@repo/swaps'
+import { composeMultiVenueQuoting, previewUnwrapChain, resolveUnwraps } from '@repo/swaps'
 import { isAddressEqual } from 'viem'
 
 import type { LiquidationPlan } from './sizing/plan'
@@ -37,9 +37,11 @@ const candidateOf = (plan: LiquidationPlan) => ({
  *
  * `resolveRoute` exposes just the pair half of that pipeline, for the tick's phase A.5, so the expensive
  * half is not duplicated: the probe refresh the composer then drives for the same pair is absorbed by
- * the selector's staleness gate, phase A.5 having already warmed it. Resolving twice is free for plain
- * collateral (the unwrappers memoize their negatives per token) but does cost one extra amount-dependent
- * read per candidate for a genuinely exotic one — an `eth_call`, never a venue call.
+ * the selector's staleness gate, phase A.5 having already warmed it. It walks
+ * {@link previewUnwrapChain} rather than resolving, so an exotic collateral costs NO amount-dependent
+ * work here — a PT's pair comes off the TTL-cached markets list and a vault share's off the memoized
+ * `asset()`, where resolving would have spent a hosted Pendle request whose calldata is then discarded
+ * and re-fetched at quote time. Falls back to a full resolve only if some unwrapper lacks the seam.
  */
 export function composeQuoting(deps: {
   httpClient: RateLimitedClient
@@ -89,18 +91,25 @@ export function composeQuoting(deps: {
     async resolveRoute(plan, out, label) {
       const collateral = out.market.collateralParams[plan.collateralIndex]
       if (!collateral || excluded(collateral.token)) return null
-      const resolution = await resolveUnwraps(unwrappers, {
+      const previewed = await previewUnwrapChain(unwrappers, {
         token: collateral.token,
-        amountIn: plan.seizedAssets,
-        executor,
-        stopToken: out.market.loanToken,
-        correlation: { id: label, ...candidateOf(plan) }
+        stopToken: out.market.loanToken
       })
-      if (isAddressEqual(resolution.token, out.market.loanToken)) return null
-      return {
-        pair: { collateral: resolution.token, loan: out.market.loanToken },
-        amountIn: resolution.amountIn
-      }
+      // `amountIn` is a probe-interpolation input, so the seize is close enough: it feeds a cost
+      // estimate, never an encoded min-out. The full resolve is the fallback, and only it threads the
+      // chain's worst-case output.
+      const { token, amountIn } =
+        previewed !== null
+          ? { token: previewed, amountIn: plan.seizedAssets }
+          : await resolveUnwraps(unwrappers, {
+              token: collateral.token,
+              amountIn: plan.seizedAssets,
+              executor,
+              stopToken: out.market.loanToken,
+              correlation: { id: label, ...candidateOf(plan) }
+            })
+      if (isAddressEqual(token, out.market.loanToken)) return null
+      return { pair: { collateral: token, loan: out.market.loanToken }, amountIn }
     },
 
     async quoteFor(plan, out, label) {

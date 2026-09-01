@@ -180,7 +180,6 @@ export function testClient(rpcUrl: string) {
   )
 }
 
-/** Funds `address` with 100 ETH for gas. */
 // Runtime that returns 1e36 for any calldata: PUSH32 1e36, MSTORE at 0, RETURN 32 bytes from 0.
 const IDENTITY_ORACLE_RUNTIME =
   '0x7f0000000000000000000000000000000000c097ce7bc90715b34b9f100000000060005260206000f3' as const
@@ -194,11 +193,12 @@ const IDENTITY_ORACLE_RUNTIME =
  * lens and the seeder use is `price() returns (uint256)`, and returning that constant is the identity
  * oracle's entire behavior.
  */
-export async function deployIdentityOracle(test: TestClient): Promise<Address> {
+export const deployIdentityOracle = async (test: TestClient): Promise<Address> => {
   await test.setCode({ address: IDENTITY_ORACLE, bytecode: IDENTITY_ORACLE_RUNTIME })
   return IDENTITY_ORACLE
 }
 
+/** Funds `address` with 100 ETH for gas. */
 export async function fundEth(test: TestClient, address: Address): Promise<void> {
   await test.setBalance({ address, value: parseEther('100') })
 }

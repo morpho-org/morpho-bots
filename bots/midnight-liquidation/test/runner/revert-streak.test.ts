@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest'
 
-import { createRevertStreakStore, REVERT_STREAK_ESCALATE_MS } from '../../src/runner/revert-streak'
+import {
+  createRevertStreakStore,
+  REVERT_STREAK_EPISODE_GAP_MS,
+  REVERT_STREAK_ESCALATE_MS
+} from '../../src/runner/revert-streak'
 
 const LABEL = 'market:borrower'
 const OTHER = 'market:other'
@@ -70,10 +74,70 @@ describe('createRevertStreakStore', () => {
     const time = clock()
     const store = createRevertStreakStore({ now: time.now })
     store.record(LABEL)
-    time.advance(REVERT_STREAK_ESCALATE_MS)
-    expect(store.record(LABEL).escalate).toBe('below')
+    // Swept throughout, which is what a genuinely stuck position looks like — the bot re-attempts it
+    // every block. Covering the threshold in ONE jump would instead be silence, i.e. a new episode.
+    for (
+      let elapsed = 0;
+      elapsed < REVERT_STREAK_ESCALATE_MS;
+      elapsed += REVERT_STREAK_EPISODE_GAP_MS
+    ) {
+      time.advance(REVERT_STREAK_EPISODE_GAP_MS)
+      expect(store.record(LABEL).escalate).toBe('below')
+    }
     time.advance(1)
     expect(store.record(LABEL).escalate).toBe('crossed')
+  })
+
+  it('starts a fresh streak after a gap with no recorded revert', () => {
+    // `market:borrower` labels are reused across borrow episodes, and a position can stop being
+    // attempted without this bot broadcasting — a competitor clears it. Carrying `startedAt` across
+    // that silence makes the FIRST revert of the next episode report a crossing it did not earn.
+    const time = clock()
+    const store = createRevertStreakStore({
+      escalateAfterMs: 10_000,
+      episodeGapMs: 1000,
+      now: time.now
+    })
+    expect(store.record(LABEL).escalate).toBe('below')
+    time.advance(60_000)
+    const fresh = store.record(LABEL)
+    expect(fresh).toMatchObject({ count: 1, durationMs: 0, escalate: 'below' })
+  })
+
+  it('does not resurrect an escalation across that gap, which would silence the next episode', () => {
+    // The other direction, and the worse one: an entry left `escalated` yields only `ongoing`, and a
+    // reporter that fires on `crossed` alone would then never warn about the new stuck episode.
+    const time = clock()
+    const store = createRevertStreakStore({
+      escalateAfterMs: 1000,
+      episodeGapMs: 5000,
+      now: time.now
+    })
+    store.record(LABEL)
+    time.advance(1001)
+    expect(store.record(LABEL).escalate).toBe('crossed')
+    time.advance(60_000)
+    expect(store.record(LABEL).escalate).toBe('below')
+    time.advance(1001)
+    expect(store.record(LABEL).escalate).toBe('crossed')
+  })
+
+  it('keeps one streak alive while the position is swept inside the episode gap', () => {
+    // The gap is about SILENCE, not about how long the streak has run — a stuck position re-attempted
+    // every block must still accumulate toward its escalation.
+    const time = clock()
+    const store = createRevertStreakStore({
+      escalateAfterMs: 10_000,
+      episodeGapMs: 5000,
+      now: time.now
+    })
+    store.record(LABEL)
+    let last = store.record(LABEL)
+    for (let i = 0; i < 3; i++) {
+      time.advance(4000)
+      last = store.record(LABEL)
+    }
+    expect(last).toMatchObject({ count: 5, durationMs: 12_000, escalate: 'crossed' })
   })
 
   it('starts a fresh streak after a reset', () => {

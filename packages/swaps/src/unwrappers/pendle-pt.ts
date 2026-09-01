@@ -139,6 +139,13 @@ export function createPendlePtUnwrapper(deps: {
 
   return {
     kind: 'pendle-pt',
+    // The markets list already carries every PT's underlying, and it is TTL-cached, so previewing the
+    // pair costs no request at all — where `resolve` spends a rate-limited `/redeem` or `/swap` call
+    // to build amount-bound calldata that a pair-only caller would discard.
+    async previewTokenOut(token) {
+      const markets = await marketsFor()
+      return markets.find(entry => isAddressEqual(entry.pt, token))?.underlying ?? null
+    },
     async resolve({ token, amountIn, executor }) {
       const markets = await marketsFor()
       const market = markets.find(entry => isAddressEqual(entry.pt, token))
