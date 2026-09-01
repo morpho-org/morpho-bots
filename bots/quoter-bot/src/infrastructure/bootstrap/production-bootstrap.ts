@@ -45,6 +45,7 @@ import { bootstrapExposureMarketIds } from './bootstrap-exposure.utils'
 import { createBootstrapGroupOwnership } from './bootstrap-group-ownership.utils'
 import {
   bootstrapBookOffers,
+  bootstrapGroupRateBps,
   bootstrapReservedLoanAssets,
   readBootstrapGroups,
   strategyBootstrapGroups
@@ -322,11 +323,11 @@ export const createProductionBootstrapAdapters = (
             continuousFeeCap: group.continuousFeeCap,
             rateBps:
               persisted?.rateBps ??
-              TickLib.tickToApr(
-                group.tick as bigint,
-                (group.maturity as bigint) - block.timestamp
-              ) /
-                (WAD / 10_000n),
+              bootstrapGroupRateBps({
+                tick: group.tick as bigint,
+                maturity: group.maturity as bigint,
+                observedTimestamp: block.timestamp
+              }),
             ...(persisted ? { referenceObservationId: persisted.referenceObservationId } : {})
           }
         }),
@@ -372,11 +373,11 @@ export const createProductionBootstrapAdapters = (
             continuousFeeCap: group.continuousFeeCap,
             rateBps:
               persisted?.rateBps ??
-              TickLib.tickToApr(
-                group.tick as bigint,
-                (group.maturity as bigint) - block.timestamp
-              ) /
-                (WAD / 10_000n),
+              bootstrapGroupRateBps({
+                tick: group.tick as bigint,
+                maturity: group.maturity as bigint,
+                observedTimestamp: block.timestamp
+              }),
             ...(persisted ? { referenceObservationId: persisted.referenceObservationId } : {})
           }
         })
@@ -437,6 +438,16 @@ export const createProductionBootstrapAdapters = (
       }),
     readMarketContinuousFeeCap: async marketId =>
       bootstrapContinuousFeeCap(await midnight.getMarketData(marketId)),
+    readMarketMaturity: async marketId => {
+      const [market, block] = await Promise.all([
+        midnight.getMarketData(marketId),
+        client.getBlock({ blockTag: 'latest' })
+      ])
+      return {
+        maturityTimestamp: market.params.maturity,
+        observedTimestamp: block.timestamp
+      }
+    },
     readGroupInventory
   }
 

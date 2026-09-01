@@ -1,5 +1,7 @@
 import type { Address, Hex } from 'viem'
 
+import { TickLib } from '@morpho-org/midnight-sdk'
+import { MathLib } from '@morpho-org/morpho-ts'
 import { bytesToHex, hexToBytes, isAddressEqual, isHex, size } from 'viem'
 
 import type { JsonRequest } from '../setup-state/http-json.utils'
@@ -7,6 +9,7 @@ import type { JsonRequest } from '../setup-state/http-json.utils'
 import { requestJson } from '../setup-state/http-json.utils'
 import { BootstrapAdapterError } from './bootstrap-adapter.error'
 
+const BPS_WAD = MathLib.WAD / 10_000n
 const PAGE_SIZE = 100
 const MAX_OFFER_PAGES = 100
 const MAX_OFFER_ITEMS = 100_000
@@ -242,6 +245,25 @@ export const strategyBootstrapGroups = (
       group.offers.length > 0
   )
 }
+
+/**
+ * Annualizes one indexed group's resting tick over the term it still has left.
+ * @param parameters - Group tick, group maturity, and the timestamp that maturity is compared
+ *   against.
+ * @returns Simple APR in basis points, or `0n` once the group's market has matured.
+ * @remarks A matured group has no remaining term to annualize over, and `TickLib.tickToApr` rejects
+ * a zero or negative term. Projecting it as a zero rate keeps the group visible as ownership and
+ * cleanup evidence instead of failing the whole inventory read for every configured market.
+ */
+export const bootstrapGroupRateBps = (parameters: {
+  tick: bigint
+  maturity: bigint
+  observedTimestamp: bigint
+}) =>
+  parameters.maturity > parameters.observedTimestamp
+    ? TickLib.tickToApr(parameters.tick, parameters.maturity - parameters.observedTimestamp) /
+      BPS_WAD
+    : 0n
 
 /**
  * Totals the unfilled cash reserve of every distinct explicitly owned buy group.

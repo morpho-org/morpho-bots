@@ -185,7 +185,15 @@ export const startRouterApi = async (rpcUrl: string): Promise<RouterApiHandle> =
     if (pathname === '/v0/midnight/markets') {
       return json({
         cursor: null,
-        data: [{ chain_id: MARKET.chainId, market_id: MARKET_ID, listed: true }]
+        data: [
+          {
+            chain_id: MARKET.chainId,
+            market_id: MARKET_ID,
+            listed: true,
+            loan_token: MARKET.loanToken,
+            maturity: MARKET.maturity
+          }
+        ]
       })
     }
 

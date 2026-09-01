@@ -12,32 +12,18 @@ let mode: SetupApiMode = 'ready'
 const route = (request: Request) => {
   const { pathname } = new URL(request.url)
 
-  if (pathname === '/v0/midnight/books') {
+  if (pathname === '/v0/midnight/markets') {
     return json({
       cursor: null,
       data: [
         {
-          market_id: MARKET_ID,
-          id: MARKET_ID,
           chain_id: MARKET.chainId,
-          midnight: MARKET.midnight,
+          market_id: MARKET_ID,
+          listed: mode !== 'books-failed',
           loan_token: MARKET.loanToken,
-          collaterals: MARKET.collaterals,
-          maturity: MARKET.maturity,
-          rcf_threshold: MARKET.rcfThreshold,
-          enter_gate: MARKET.enterGate,
-          liquidator_gate: MARKET.liquidatorGate,
-          asks: [],
-          bids: []
+          maturity: MARKET.maturity
         }
       ]
-    })
-  }
-
-  if (pathname === '/v0/midnight/markets') {
-    return json({
-      cursor: null,
-      data: [{ chain_id: MARKET.chainId, market_id: MARKET_ID, listed: mode !== 'books-failed' }]
     })
   }
 

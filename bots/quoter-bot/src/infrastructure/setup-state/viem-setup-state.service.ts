@@ -1,7 +1,6 @@
 import type { Address, Hex } from 'viem'
 
 import { ecrecoverRatifierAbi, midnightAbi, setterRatifierAbi } from '@morpho-org/midnight-sdk'
-import { MidnightApi } from '@morpho-org/midnight-sdk/api'
 import { blueAbi } from '@morpho-org/morpho-sdk/abis'
 import { restructure } from '@morpho-org/morpho-sdk/utils'
 import { getChainAddress } from '@morpho-org/morpho-ts'
@@ -13,16 +12,14 @@ import type { SupportedChainId } from '../../config/supported-chains.utils'
 import type { JsonRequest } from './http-json.utils'
 
 import { ratifierRuntimeHash, referenceLookbackBlocks } from '../../config/supported-chains.utils'
-import { booksJsonRequestFetch } from './http-json.utils'
 import { ProviderPaginationError } from './provider-pagination.error'
 import { executeProviderRead } from './provider-read.utils'
 import { ProviderResponseError } from './provider-response.error'
 import {
   addressValue,
+  apiMarkets,
   DEFAULT_REQUEST_TIMEOUT_MS,
   invertedMarketIds,
-  listedMarketIds,
-  marketFromApi,
   marketFromContract,
   MAX_OFFER_ITEMS,
   MAX_OFFER_PAGES,
@@ -311,12 +308,14 @@ export class ViemSetupStateService implements SetupStateService {
   /**
    * Cross-checks one Midnight market between the Morpho API and on-chain state.
    * @param id - Configured market ID.
-   * @returns Validated listing, activity, loan asset, tick spacing, and maturity.
-   * @throws `ProviderReadError` on a sanitized API/RPC rejection, or `ProviderResponseError` for
-   * missing/extra rows, malformed values, identity disagreement, or invalid chain data.
-   * @remarks Book API, explicit listing, market, and tick-spacing reads run concurrently through
-   * `Promise.all`; no writes. Listing is proven only by the canonical ID in the documented
-   * `listed=true` markets result set, never inferred from book availability.
+   * @returns Validated listing, activity, loan asset, and tick spacing.
+   * @throws `ProviderReadError` on a sanitized API/RPC rejection, or `ProviderResponseError` when
+   * the market registry omits the configured market, or for malformed values, identity
+   * disagreement, or invalid chain data.
+   * @remarks Market registry, market, and tick-spacing reads run concurrently through
+   * `Promise.all`; no writes. Facts come from the documented markets endpoint rather than the books
+   * endpoint, which excludes past maturities even when specific IDs are requested, so a configured
+   * market that reached maturity is still observable here.
    */
   async getBook(id: Hex): Promise<BookSetup> {
     const requestTimeoutMs = this.options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS
@@ -324,19 +323,9 @@ export class ViemSetupStateService implements SetupStateService {
     const listingQuery = new URLSearchParams({
       chain_ids: String(chainId),
       market_ids: id,
-      listed: 'true',
       limit: String(PAGE_SIZE)
     })
-    const [apiResponse, listingResponse, contractResponse, tickSpacing] = await Promise.all([
-      executeProviderRead('morpho-api', 'book-api', () =>
-        MidnightApi.fetchBooks({
-          baseUrl: `${this.options.morphoApiBaseUrl}/v0/midnight`,
-          chainIds: [chainId],
-          marketIds: [id],
-          limit: 1,
-          fetch: booksJsonRequestFetch(this.request, requestTimeoutMs)
-        })
-      ),
+    const [listingResponse, contractResponse, tickSpacing] = await Promise.all([
       executeProviderRead('morpho-api', 'market-listing', () =>
         this.request(
           `${this.options.morphoApiBaseUrl}/v0/midnight/markets?${listingQuery.toString()}`,
@@ -361,37 +350,15 @@ export class ViemSetupStateService implements SetupStateService {
         })
       )
     ])
-    if (apiResponse.data.length !== 1) {
+    const apiMarket = apiMarkets(listingResponse, chainId).find(market => market.id === id)
+    if (apiMarket === undefined) {
       throw new ProviderResponseError(
         'morpho-api',
-        'book-count',
-        `Morpho API returned ${apiResponse.data.length} books for ${id}`
+        'market-count',
+        `Morpho API returned no market for ${id}`
       )
     }
-    const apiMarket = marketFromApi(apiResponse.data[0])
-    const allowlisted = listedMarketIds(listingResponse, chainId).includes(id)
     const contractMarket = marketFromContract(contractResponse)
-    if (apiMarket.id !== id) {
-      throw new ProviderResponseError(
-        'morpho-api',
-        'book-identity',
-        `Morpho API returned ${apiMarket.id} for ${id}`
-      )
-    }
-    if (apiMarket.chainId !== chainId) {
-      throw new ProviderResponseError(
-        'morpho-api',
-        'book-chain',
-        'API market chain id is not the configured chain'
-      )
-    }
-    if (!isAddressEqual(apiMarket.midnight, this.options.midnight)) {
-      throw new ProviderResponseError(
-        'morpho-api',
-        'book-midnight',
-        'API market points at an unexpected Midnight contract'
-      )
-    }
     if (contractMarket.chainId !== BigInt(chainId)) {
       throw new ProviderResponseError(
         'rpc',
@@ -429,26 +396,11 @@ export class ViemSetupStateService implements SetupStateService {
     }
     return {
       id,
-      allowlisted,
+      allowlisted: apiMarket.listed,
       active: true,
       loanAsset: contractMarket.loanToken,
-      tickSpacing,
-      maturity: contractMarket.maturity
+      tickSpacing
     }
-  }
-
-  /**
-   * Reads the latest timestamp through the current-state provider.
-   * @returns Latest current-state block timestamp from a read-only RPC call.
-   * @throws `ProviderReadError` on a sanitized RPC rejection.
-   * @remarks Read-only; performs no writes.
-   */
-  async getLatestTimestamp() {
-    return (
-      await executeProviderRead('rpc', 'latest-timestamp', () =>
-        this.chain.getBlock({ blockTag: 'latest' })
-      )
-    ).timestamp
   }
 
   /**

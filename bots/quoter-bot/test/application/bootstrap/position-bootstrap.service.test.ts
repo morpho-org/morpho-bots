@@ -1497,4 +1497,60 @@ describe('PositionBootstrapService', () => {
     expect(await service.runOnce()).toEqual([{ marketId, status: 'applied', action: 'publish' }])
     expect(reconcile).toHaveBeenCalledTimes(1)
   })
+  test('observes a matured market as matured and keeps bootstrapping every other market', async () => {
+    const { service, positions, readRate, reconcile } = setup({
+      configs: [config(), config(secondMarketId)]
+    })
+    positions.readPosition = vi.fn(async id => ({
+      credit: 0n,
+      debt: 0n,
+      cashBalance: 2_000n,
+      marketExposure: 0n,
+      totalExposure: 0n,
+      activeOffer: undefined,
+      ...(id === marketId
+        ? { maturityTimestamp: 1_000n, observedTimestamp: 1_000n }
+        : { maturityTimestamp: 2_000n, observedTimestamp: 1_000n })
+    }))
+
+    expect(await service.runOnce()).toEqual([
+      { marketId, status: 'observed', action: 'matured' },
+      { marketId: secondMarketId, status: 'applied', action: 'publish' }
+    ])
+    expect(readRate).toHaveBeenCalledTimes(1)
+    expect(readRate).toHaveBeenCalledWith(secondMarketId)
+    expect(reconcile).toHaveBeenCalledTimes(1)
+    expect(reconcile).toHaveBeenCalledWith(expect.objectContaining({ marketId: secondMarketId }))
+  })
+
+  test('keeps monitoring later cycles when a configured market has matured', async () => {
+    const controller = new AbortController()
+    const { service, positions } = setup()
+    positions.readPosition = vi.fn(async () => ({
+      credit: 0n,
+      debt: 0n,
+      cashBalance: 2_000n,
+      marketExposure: 0n,
+      totalExposure: 0n,
+      activeOffer: undefined,
+      maturityTimestamp: 1_000n,
+      observedTimestamp: 1_500n
+    }))
+    const cycles: Record<string, unknown>[][] = []
+
+    const report = await service.runContinuously({
+      signal: controller.signal,
+      intervalMs: 1,
+      onCycle: results => {
+        cycles.push([...results])
+        if (cycles.length === 2) controller.abort()
+      }
+    })
+
+    expect(report).toMatchObject({ status: 'stopped', reason: 'signal', cycles: 2 })
+    expect(cycles).toEqual([
+      [{ marketId, status: 'observed', action: 'matured' }],
+      [{ marketId, status: 'observed', action: 'matured' }]
+    ])
+  })
 })

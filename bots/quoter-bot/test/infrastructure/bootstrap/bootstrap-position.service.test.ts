@@ -16,6 +16,7 @@ describe('MidnightBootstrapPositionService', () => {
         readPositions: async () => [{ marketId, credit: 0n, debt: 0n }],
         readCashBalance: async () => 100n,
         readMarketContinuousFeeCap: async () => 17n,
+        readMarketMaturity: async () => ({ maturityTimestamp: 2_000n, observedTimestamp: 1_000n }),
         readGroupInventory: async () => ({
           activeGroups: [{ id: firstGroup, marketId, assets: 100n, rateBps: 500n }],
           cashReservations: []
@@ -40,6 +41,7 @@ describe('MidnightBootstrapPositionService', () => {
         ],
         readCashBalance: async () => 100n,
         readMarketContinuousFeeCap: async () => 17n,
+        readMarketMaturity: async () => ({ maturityTimestamp: 2_000n, observedTimestamp: 1_000n }),
         readGroupInventory: async () => ({
           activeGroups: [
             { id: firstGroup, marketId, assets: 20n, rateBps: 500n },
@@ -68,6 +70,7 @@ describe('MidnightBootstrapPositionService', () => {
         ],
         readCashBalance: async () => 100n,
         readMarketContinuousFeeCap: async () => 17n,
+        readMarketMaturity: async () => ({ maturityTimestamp: 2_000n, observedTimestamp: 1_000n }),
         readGroupInventory: async () => ({
           activeGroups: [
             { id: firstGroup, marketId, assets: 20n, rateBps: 500n },
@@ -96,6 +99,7 @@ describe('MidnightBootstrapPositionService', () => {
         ],
         readCashBalance: async () => 100n,
         readMarketContinuousFeeCap: async () => 17n,
+        readMarketMaturity: async () => ({ maturityTimestamp: 2_000n, observedTimestamp: 1_000n }),
         readGroupInventory: async () => ({
           activeGroups: [
             { id: firstGroup, marketId, assets: 100n, rateBps: 500n },
@@ -122,6 +126,7 @@ describe('MidnightBootstrapPositionService', () => {
         readPositions: async () => [{ marketId, credit: 0n, debt: 0n }],
         readCashBalance: async () => 100n,
         readMarketContinuousFeeCap: async () => 17n,
+        readMarketMaturity: async () => ({ maturityTimestamp: 2_000n, observedTimestamp: 1_000n }),
         readGroupInventory: async () => ({
           activeGroups: [
             {
@@ -152,6 +157,7 @@ describe('MidnightBootstrapPositionService', () => {
         readPositions: async () => [{ marketId, credit: 10n, debt: 0n }],
         readCashBalance: async () => 100n,
         readMarketContinuousFeeCap: async () => 17n,
+        readMarketMaturity: async () => ({ maturityTimestamp: 2_000n, observedTimestamp: 1_000n }),
         readGroupInventory: async () => ({
           activeGroups: [
             { id: firstGroup, marketId, assets: 20n, rateBps: 500n },
@@ -181,6 +187,7 @@ describe('MidnightBootstrapPositionService', () => {
         readPositions: async () => [{ marketId, credit: 10n, debt: 0n }],
         readCashBalance: async () => 100n,
         readMarketContinuousFeeCap: async () => 17n,
+        readMarketMaturity: async () => ({ maturityTimestamp: 2_000n, observedTimestamp: 1_000n }),
         readGroupInventory: async () => ({
           activeGroups: [{ id: firstGroup, marketId, assets: 20n, rateBps: 500n, offerCount: 2 }],
           cashReservations: []
@@ -198,6 +205,7 @@ describe('MidnightBootstrapPositionService', () => {
         readPositions: async () => [{ marketId, credit: 10n, debt: 0n }],
         readCashBalance: async () => 100n,
         readMarketContinuousFeeCap: async () => 17n,
+        readMarketMaturity: async () => ({ maturityTimestamp: 2_000n, observedTimestamp: 1_000n }),
         readGroupInventory: async () => ({
           activeGroups: [{ id: firstGroup, marketId, assets: 20n, rateBps: 500n, offerCount: 1 }],
           cashReservations: []
@@ -215,6 +223,7 @@ describe('MidnightBootstrapPositionService', () => {
         readPositions: async () => [{ marketId, credit: 10n, debt: 0n }],
         readCashBalance: async () => 100n,
         readMarketContinuousFeeCap: async () => 17n,
+        readMarketMaturity: async () => ({ maturityTimestamp: 2_000n, observedTimestamp: 1_000n }),
         readGroupInventory: async () => ({
           activeGroups: [
             {
@@ -241,6 +250,7 @@ describe('MidnightBootstrapPositionService', () => {
         readPositions: async () => [{ marketId, credit: 10n, debt: 0n }],
         readCashBalance: async () => 100n,
         readMarketContinuousFeeCap: async () => 17n,
+        readMarketMaturity: async () => ({ maturityTimestamp: 2_000n, observedTimestamp: 1_000n }),
         readGroupInventory: async () => ({
           activeGroups: [
             {
@@ -271,6 +281,7 @@ describe('MidnightBootstrapPositionService', () => {
         ],
         readCashBalance: async () => 200n,
         readMarketContinuousFeeCap: async () => 17n,
+        readMarketMaturity: async () => ({ maturityTimestamp: 2_000n, observedTimestamp: 1_000n }),
         readGroupInventory: async () => ({
           activeGroups: [],
           cashReservations: [
@@ -288,5 +299,22 @@ describe('MidnightBootstrapPositionService', () => {
     expect(position.cashBalance).toBe(90n)
     expect(position.marketExposure).toBe(80n)
     expect(position.totalExposure).toBe(125n)
+  })
+  test('propagates market maturity beside the timestamp it was observed against', async () => {
+    const service = new MidnightBootstrapPositionService(
+      {
+        readPositions: async () => [{ marketId, credit: 0n, debt: 0n }],
+        readCashBalance: async () => 100n,
+        readMarketContinuousFeeCap: async () => 17n,
+        readMarketMaturity: async () => ({ maturityTimestamp: 1_000n, observedTimestamp: 1_200n }),
+        readGroupInventory: async () => ({ activeGroups: [], cashReservations: [] })
+      },
+      maker
+    )
+
+    const position = await service.readPosition(marketId)
+
+    expect(position.maturityTimestamp).toBe(1_000n)
+    expect(position.observedTimestamp).toBe(1_200n)
   })
 })

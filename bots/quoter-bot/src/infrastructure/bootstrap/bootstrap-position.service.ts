@@ -41,6 +41,10 @@ export interface BootstrapInventoryReader {
   readMarketContinuousFeeCap(marketId: Hex): Promise<bigint>
   /** Reads bootstrap offers and independently owned buy-side reservations in one snapshot. @returns Current grouped inventory without treating reservations as replaceable bootstrap offers. */
   readGroupInventory(): Promise<BootstrapGroupInventory>
+  /** Reads one market's immutable maturity beside the timestamp it is compared against. @param marketId - Market whose lifecycle state is required. @returns Market maturity and the observation timestamp, so callers recognize a matured market without a clock. */
+  readMarketMaturity(
+    marketId: Hex
+  ): Promise<{ maturityTimestamp: bigint; observedTimestamp: bigint }>
 }
 
 /** Concrete position adapter deriving exposure from accrued credit and active lend reserves. */
@@ -54,19 +58,22 @@ export class MidnightBootstrapPositionService implements BootstrapPositionServic
   /**
    * Reads one market position and aggregate strategy exposure.
    * @param marketId - Configured Midnight market identifier.
-   * @returns Fresh credit, debt, wallet capacity, exposure, representative active offer, and whether
-   *   duplicate groups require reconciliation.
+   * @returns Fresh credit, debt, wallet capacity, exposure, market maturity beside the timestamp it
+   *   is observed against, representative active offer, and whether duplicate groups require
+   *   reconciliation.
    * @throws When chain/API inventory reads fail or the market is absent.
    * @remarks The maker address is retained only to bind this adapter instance to one operator.
    */
   async readPosition(marketId: Hex) {
     void this.maker
-    const [positions, cashBalance, marketContinuousFeeCap, groupInventory] = await Promise.all([
-      this.reader.readPositions(),
-      this.reader.readCashBalance(),
-      this.reader.readMarketContinuousFeeCap(marketId),
-      this.reader.readGroupInventory()
-    ])
+    const [positions, cashBalance, marketContinuousFeeCap, groupInventory, maturity] =
+      await Promise.all([
+        this.reader.readPositions(),
+        this.reader.readCashBalance(),
+        this.reader.readMarketContinuousFeeCap(marketId),
+        this.reader.readGroupInventory(),
+        this.reader.readMarketMaturity(marketId)
+      ])
     const position = positions.find(item => item.marketId === marketId)
     if (!position) throw new BootstrapAdapterError('position-unavailable')
     const groups = groupInventory.activeGroups
@@ -114,6 +121,7 @@ export class MidnightBootstrapPositionService implements BootstrapPositionServic
       : undefined
 
     return {
+      ...maturity,
       credit: position.credit,
       debt: position.debt,
       cashBalance: availableCash,

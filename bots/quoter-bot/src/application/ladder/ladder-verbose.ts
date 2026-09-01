@@ -99,7 +99,7 @@ export type LadderVerboseDetails = {
   /** Exact desired lower/higher quote set, when decision derivation succeeded. */
   ladderOffer?: LadderQuoteSet
   /** Stable reconciliation reason selected by the application workflow. */
-  decision?: 'publish' | 'recenter' | 'resize' | 'rest'
+  decision?: 'publish' | 'recenter' | 'resize' | 'rest' | 'matured'
   /** Confirmed transactions submitted for this market check, in submission order. */
   submittedTransactions?: readonly LadderSubmittedTransaction[]
   /** Fresh provider and active-quote state read after the check or mutation completed. */

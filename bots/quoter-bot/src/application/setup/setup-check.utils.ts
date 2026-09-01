@@ -297,28 +297,14 @@ const isTransientFailedCheck = (check: SetupCheck) => {
     )
   }
 
-  if (check.name === 'books') {
-    return (
-      Array.isArray(check.observed) &&
-      check.observed.length > 0 &&
-      check.observed.every(
-        book =>
-          isRecord(book) &&
-          Array.isArray(book.reasons) &&
-          book.reasons.length > 0 &&
-          book.reasons.every(
-            reason =>
-              isRecord(reason) &&
-              Object.keys(reason).length === 1 &&
-              isTransientProviderFailure(reason.timestampProviderError)
-          )
-      )
-    )
-  }
-
   // Compound checks can mask a successful peer read that already proved invariant drift, so they
   // fail closed instead of retrying based only on their provider error.
-  if (check.name === 'ratifier' || check.name === 'reference' || check.name === 'offers') {
+  if (
+    check.name === 'ratifier' ||
+    check.name === 'reference' ||
+    check.name === 'offers' ||
+    check.name === 'books'
+  ) {
     return false
   }
 
@@ -334,12 +320,7 @@ const isTransientFailedCheck = (check: SetupCheck) => {
 export const hasOnlyTransientProviderFailures = (report: SetupCheckReport) =>
   !report.ready && report.checks.every(isTransientFailedCheck)
 
-const bookProblems = (
-  requestedId: `0x${string}`,
-  book: BookSetup,
-  config: SetupCheckConfig,
-  latestTimestamp?: bigint
-) => {
+const bookProblems = (requestedId: `0x${string}`, book: BookSetup, config: SetupCheckConfig) => {
   const reasons: unknown[] = []
   if (book.id !== requestedId) reasons.push(`provider returned ${book.id}`)
   if (!book.allowlisted) reasons.push('not allowlisted')
@@ -348,9 +329,6 @@ const bookProblems = (
     reasons.push(`unexpected loan asset ${book.loanAsset}`)
   }
   if (book.tickSpacing <= 0) reasons.push('tick spacing is inaccessible')
-  if (latestTimestamp !== undefined && book.maturity <= latestTimestamp) {
-    reasons.push(`matured at ${book.maturity}`)
-  }
   return { id: requestedId, reasons }
 }
 
@@ -402,13 +380,11 @@ export const chainCheck = (
 /**
  * Evaluates all configured books from already-concurrent captured reads without writes.
  * @param config - Validated market requirements.
- * @param timestamp - Captured latest block timestamp.
  * @param books - Captured per-market API/chain observations.
  * @returns The normalized aggregate books check.
  */
 export const booksCheck = (
   config: SetupCheckConfig,
-  timestamp: Captured<bigint>,
   books: readonly { requestedId: `0x${string}`; response: Captured<BookSetup> }[]
 ) => {
   const required = 'all configured books valid'
@@ -423,13 +399,7 @@ export const booksCheck = (
   const invalidBooks = books.flatMap(({ requestedId, response }) => {
     const problem = !response.ok
       ? { id: requestedId, reasons: [{ providerError: response.error }] as unknown[] }
-      : bookProblems(
-          requestedId,
-          response.value,
-          config,
-          timestamp.ok ? timestamp.value : undefined
-        )
-    if (!timestamp.ok) problem.reasons.push({ timestampProviderError: timestamp.error })
+      : bookProblems(requestedId, response.value, config)
 
     return problem.reasons.length === 0 ? [] : [problem]
   })
