@@ -6,6 +6,7 @@ import {
   Offer,
   Payload,
   SetterRatifierUtils,
+  TickLib,
   Tree,
   type IMarketParams,
   setterRatifierAbi
@@ -23,6 +24,7 @@ import { bootstrapExposureMarketIds } from '../../../src/infrastructure/bootstra
 import { createBootstrapGroupOwnership } from '../../../src/infrastructure/bootstrap/bootstrap-group-ownership.utils'
 import {
   bootstrapBookOffers,
+  bootstrapGroupRateBps,
   bootstrapReservedLoanAssets,
   readBootstrapGroups,
   strategyBootstrapGroups
@@ -587,6 +589,22 @@ describe('assertBootstrapTransaction', () => {
     await expect(
       assertBootstrapTransaction({ to: maker, value: 0n, data }, publicationPolicy(offer))
     ).rejects.toMatchObject({ operation: 'transaction-policy' })
+  })
+})
+
+describe('bootstrapGroupRateBps', () => {
+  test('annualizes the resting tick of a group whose market still has a remaining term', () => {
+    expect(bootstrapGroupRateBps({ tick: 100n, maturity: 2_000n, observedTimestamp: 1_000n })).toBe(
+      TickLib.tickToApr(100n, 1_000n) / (10n ** 18n / 10_000n)
+    )
+  })
+
+  test.each([
+    ['matured', 1_000n],
+    ['maturing exactly at the observed block', 2_000n]
+  ])('projects a %s indexed group without persisted intent as a zero rate', (_label, maturity) => {
+    expect(() => TickLib.tickToApr(100n, maturity - 2_000n)).toThrow()
+    expect(bootstrapGroupRateBps({ tick: 100n, maturity, observedTimestamp: 2_000n })).toBe(0n)
   })
 })
 
