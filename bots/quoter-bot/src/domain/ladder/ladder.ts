@@ -56,7 +56,8 @@ export type LadderConfig = {
  *
  * The trailing fields are observation-only accounting primitives. Generation ignores them entirely;
  * they exist because the capacities above are saturating minima from which no position value can be
- * reconstructed downstream.
+ * reconstructed downstream. `maturityTimestamp` and `observedTimestamp` come from the same read, so
+ * the workflow can recognize a matured market without owning a clock.
  */
 export type LadderMarketState = {
   lowerRateCapacityAssets?: bigint
@@ -70,6 +71,7 @@ export type LadderMarketState = {
   reservedAssets?: bigint
   marketReservedAssets?: bigint
   maturityTimestamp?: bigint
+  observedTimestamp?: bigint
 }
 
 /** One exact domain rung before protocol-specific tick and buy/sell conversion. */

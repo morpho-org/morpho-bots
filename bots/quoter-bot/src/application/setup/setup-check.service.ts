@@ -129,8 +129,6 @@ export type BookSetup = {
   loanAsset: Address
   /** On-chain tick spacing; must be positive. */
   tickSpacing: number
-  /** On-chain maturity timestamp. */
-  maturity: bigint
 }
 
 /**
@@ -179,8 +177,6 @@ export interface SetupStateService {
   }>
   /** Cross-checks one Midnight market. @param id - Midnight market identifier. @returns Cross-checked API and on-chain market facts. */
   getBook(id: Hex): Promise<BookSetup>
-  /** Reads the latest connected-chain block timestamp. @returns Timestamp of the latest connected-chain block. */
-  getLatestTimestamp(): Promise<bigint>
   /** Checks historical reference-market readability. @returns Archive-readability and exact reference-market identity facts. */
   checkReference(): Promise<{ marketId: Hex; referenceReadable: boolean; archiveReadable: boolean }>
   /**
@@ -316,7 +312,6 @@ export class SetupCheckService {
       capture(() => this.state.getNativeBalance(this.config.maker)),
       capture(() => this.state.getLoanAllowance(this.config.maker, this.config.loanAsset)),
       capture(() => this.state.getRatifier(this.config.maker, this.config.ratifier)),
-      capture(() => this.state.getLatestTimestamp()),
       Promise.all(bookReads.map(async book => ({ ...book, response: await book.response }))),
       referenceRead,
       capture(() => this.state.inspectOffers(this.config.maker), 'morpho-api'),
@@ -330,7 +325,6 @@ export class SetupCheckService {
       nativeBalance,
       allowance,
       ratifier,
-      latestTimestamp,
       books,
       reference,
       offers,
@@ -463,7 +457,7 @@ export class SetupCheckService {
       nativeCheck,
       allowanceCheck,
       ratifierCheck,
-      booksCheck(this.config, latestTimestamp, books),
+      booksCheck(this.config, books),
       referenceCheck,
       offersCheck,
       positionCheck

@@ -181,7 +181,15 @@ const createState = (
     if (url.includes('/v0/midnight/markets')) {
       return {
         cursor: null,
-        data: [{ market_id: marketId, chain_id: 8453, listed: true }]
+        data: [
+          {
+            market_id: marketId,
+            chain_id: 8453,
+            listed: true,
+            loan_token: loanAsset,
+            maturity: 2_000
+          }
+        ]
       }
     }
     throw new Error(`unexpected URL ${url}`)
@@ -251,25 +259,11 @@ describe('ViemSetupStateService', () => {
       (state: ViemSetupStateService) => state.getLoanAllowance(maker, loanAsset)
     ],
     [
-      'getLatestTimestamp',
-      'latest',
-      'rpc',
-      'latest-timestamp',
-      (state: ViemSetupStateService) => state.getLatestTimestamp()
-    ],
-    [
       'getRatifier compound reads',
       'other-contract',
       'rpc',
       'ratifier-authorization',
       (state: ViemSetupStateService) => state.getRatifier(maker, ratifier)
-    ],
-    [
-      'getBook compound reads',
-      'request',
-      'morpho-api',
-      'book-api',
-      (state: ViemSetupStateService) => state.getBook(marketId)
     ],
     [
       'getBook listing read',
@@ -503,27 +497,40 @@ describe('ViemSetupStateService', () => {
     }
   })
 
-  test('reads a configured book from API allowlist and on-chain state concurrently', async () => {
+  test('reads a configured book from the market registry and on-chain state concurrently', async () => {
+    const { state, calls } = createState({})
+
+    expect(await state.getBook(marketId)).toEqual({
+      id: marketId,
+      allowlisted: true,
+      active: true,
+      loanAsset,
+      tickSpacing: 4
+    })
+    expect(calls).toContain(
+      `https://api.example/v0/midnight/markets?chain_ids=8453&market_ids=${marketId}&limit=100`
+    )
+    expect(calls.some(call => call.includes('/v0/midnight/books'))).toBe(false)
+  })
+
+  test('reads a configured market that has already reached maturity', async () => {
+    // Regression: setup facts came from the books endpoint, which documents that it excludes past
+    // maturities even when specific IDs are requested, so every read of a matured configured
+    // market failed the whole readiness gate.
     const { state } = createState({
-      '/v0/midnight/books': {
+      '/v0/midnight/markets': {
         cursor: null,
         data: [
           {
             market_id: marketId,
             chain_id: 8453,
-            midnight,
-            loan_token: loanAsset,
-            maturity: 2_000,
-            collaterals: [],
-            rcf_threshold: '0',
-            enter_gate: maker,
-            liquidator_gate: maker,
             listed: true,
-            asks: [],
-            bids: []
+            loan_token: loanAsset,
+            maturity: 2_000
           }
         ]
-      }
+      },
+      '/v0/midnight/books': { cursor: null, data: [] }
     })
 
     expect(await state.getBook(marketId)).toEqual({
@@ -531,65 +538,21 @@ describe('ViemSetupStateService', () => {
       allowlisted: true,
       active: true,
       loanAsset,
-      tickSpacing: 4,
-      maturity: 2_000n
+      tickSpacing: 4
     })
-  })
-
-  test('verifies the canonical market in the documented listed market result set', async () => {
-    const { state, calls } = createState({
-      '/v0/midnight/books': {
-        cursor: null,
-        data: [
-          {
-            market_id: marketId,
-            chain_id: 8453,
-            midnight,
-            loan_token: loanAsset,
-            maturity: 2_000,
-            collaterals: [],
-            rcf_threshold: '0',
-            enter_gate: maker,
-            liquidator_gate: maker,
-            asks: [],
-            bids: []
-          }
-        ]
-      }
-    })
-
-    await expect(state.getBook(marketId)).resolves.toMatchObject({ allowlisted: true })
-    expect(calls).toContain(
-      `https://api.example/v0/midnight/markets?chain_ids=8453&market_ids=${marketId}&listed=true&limit=100`
-    )
-    expect(
-      calls
-        .filter(call => call.includes('/v0/midnight/books'))
-        .every(call => !call.includes('listed='))
-    ).toBe(true)
   })
 
   test('reports an explicitly unlisted canonical market as not allowlisted', async () => {
     const { state } = createState({
       '/v0/midnight/markets': {
         cursor: null,
-        data: [{ market_id: marketId, chain_id: 8453, listed: false }]
-      },
-      '/v0/midnight/books': {
-        cursor: null,
         data: [
           {
             market_id: marketId,
             chain_id: 8453,
-            midnight,
+            listed: false,
             loan_token: loanAsset,
-            maturity: 2_000,
-            collaterals: [],
-            rcf_threshold: '0',
-            enter_gate: maker,
-            liquidator_gate: maker,
-            asks: [],
-            bids: []
+            maturity: 2_000
           }
         ]
       }
@@ -598,33 +561,26 @@ describe('ViemSetupStateService', () => {
     await expect(state.getBook(marketId)).resolves.toMatchObject({ allowlisted: false })
   })
 
-  test('does not trust a listed filter when the result omits the requested canonical market', async () => {
+  test('rejects a registry result that omits the requested canonical market', async () => {
     const { state } = createState({
       '/v0/midnight/markets': {
         cursor: null,
-        data: [{ market_id: removedMarketId, chain_id: 8453, listed: true }]
-      },
-      '/v0/midnight/books': {
-        cursor: null,
         data: [
           {
-            market_id: marketId,
+            market_id: removedMarketId,
             chain_id: 8453,
-            midnight,
+            listed: true,
             loan_token: loanAsset,
-            maturity: 2_000,
-            collaterals: [],
-            rcf_threshold: '0',
-            enter_gate: maker,
-            liquidator_gate: maker,
-            asks: [],
-            bids: []
+            maturity: 2_000
           }
         ]
       }
     })
 
-    await expect(state.getBook(marketId)).resolves.toMatchObject({ allowlisted: false })
+    await expect(state.getBook(marketId)).rejects.toMatchObject({
+      name: 'ProviderResponseError',
+      operation: 'market-count'
+    })
   })
 
   test('accepts only the SDK-canonical Ecrecover ratifier without calling a registry endpoint', async () => {

@@ -27,6 +27,7 @@ import {
 } from '../../domain/ladder/ladder'
 import { LadderConfigurationError } from '../../domain/ladder/ladder-configuration.error'
 import { LadderAdapterError } from '../../infrastructure/ladder/ladder-adapter.error'
+import { marketObservationMatured } from '../market-maturity.utils'
 import { operatorErrorName } from '../operator-error-name.utils'
 import { LadderOwnershipCleanupError } from './ladder-ownership-cleanup.error'
 import { sameLadderQuoteSet } from './ladder-quoter.utils'
@@ -107,7 +108,7 @@ export interface LadderMakeService {
   reconcile(parameters: {
     marketId: Hex
     desired?: LadderQuoteSet
-    reason: 'publish' | 'recenter' | 'resize' | 'rest' | 'market-read-failed'
+    reason: 'publish' | 'recenter' | 'resize' | 'rest' | 'market-matured' | 'market-read-failed'
     onTransactionSubmitted?: LadderTransactionSubmittedObserver
   }): Promise<LadderMakeResult>
   /**
@@ -138,6 +139,7 @@ export interface LadderMakeService {
 
 type LadderRunOutcome =
   | { marketId: Hex; status: 'observed'; action: 'rest' }
+  | { marketId: Hex; status: 'observed' | 'applied' | 'logged'; action: 'matured' }
   | {
       marketId: Hex
       status: 'applied' | 'logged'
@@ -229,7 +231,9 @@ export class LadderQuoterService {
    * @param parameters - Shutdown signal, optional cycle writer, test interval, and verbose hooks.
    * @returns A terminal report after cleanup has been attempted.
    * @throws `LadderConfigurationError` before cleanup when no market or interval is usable.
-   * @remarks Cycles never overlap. Production cadence uses the shortest configured market interval;
+   * @remarks Configured markets that have reached maturity are rested rather than quoted, which is
+   * not a cycle failure, so monitoring survives a normal market lifecycle end.
+   * Cycles never overlap. Production cadence uses the shortest configured market interval;
    * a test-only `intervalMs` override applies to the complete configured set. Cleanup is serialized
    * through the make port after the final in-flight cycle. Verbose cycles perform a fresh
    * market/active-quote read after every check and emit submitted transaction hashes immediately.
@@ -356,7 +360,10 @@ export class LadderQuoterService {
    * provider, decision, and invalidation failures are returned as sanitized outcomes.
    * @remarks Retains an active center inside the inclusive movement tolerance while still deriving
    * fresh sizes. Verbose mode adds a fresh post-check read without exposing signer or provider
-   * details. All publication and invalidation side effects pass exclusively through `make`.
+   * details. All publication and invalidation side effects pass exclusively through `make`. A market
+   * whose fresh read shows maturity already reached is not quoted: its owned groups are invalidated
+   * and it reports the non-failing `matured` action, so the remaining configured markets keep
+   * quoting and monitoring continues into later cycles.
    */
   async runOnce(parameters: LadderRunParameters = {}) {
     if (this.configs.length === 0) {
@@ -463,6 +470,11 @@ export class LadderQuoterService {
         status: 'observed',
         market,
         ...(active ? { activeQuote: active } : {})
+      }
+
+      if (marketObservationMatured(market)) {
+        results.push(await this.settleMaturedMarket(config, currentState, parameters, startedAt))
+        continue
       }
 
       let referenceRateBps: bigint
@@ -661,6 +673,70 @@ export class LadderQuoterService {
   private monitorIntervalMs() {
     const seconds = Math.min(...this.configs.map(config => config.loopIntervalSeconds))
     return seconds * 1_000
+  }
+
+  private async settleMaturedMarket(
+    config: LadderConfig,
+    currentState: LadderVerboseState,
+    parameters: LadderRunParameters,
+    startedAt: number
+  ): Promise<LadderRunResult> {
+    const verbosePlan: LadderVerbosePlan = { config, currentState, decision: 'matured' }
+    let invalidation: LadderMakeResult
+    try {
+      invalidation = await this.make.reconcile({
+        marketId: config.marketId,
+        desired: undefined,
+        reason: 'market-matured',
+        onTransactionSubmitted: this.marketObserver(config.marketId, parameters)
+      })
+    } catch (error) {
+      const ownershipCleanup = error instanceof LadderOwnershipCleanupError ? error : undefined
+      const confirmedTransactions =
+        ownershipCleanup?.submittedTransactions ??
+        (error instanceof LadderAdapterError ? error.confirmedTransactions : [])
+      return this.completeResult(
+        config,
+        {
+          marketId: config.marketId,
+          status: 'failed',
+          stage: 'reconcile',
+          invalidated: ownershipCleanup !== undefined,
+          errorName: operatorErrorName(error),
+          ...(ownershipCleanup
+            ? { ownershipCleanupErrorName: ownershipCleanup.cleanupErrorName }
+            : {})
+        },
+        parameters,
+        {
+          ...verbosePlan,
+          ...(confirmedTransactions.length > 0
+            ? { submittedTransactions: confirmedTransactions }
+            : {})
+        },
+        startedAt
+      )
+    }
+    const submittedTransactions =
+      invalidation === undefined || invalidation === 'logged'
+        ? undefined
+        : invalidation.submittedTransactions
+    return this.completeResult(
+      config,
+      {
+        marketId: config.marketId,
+        status:
+          invalidation === 'logged'
+            ? 'logged'
+            : submittedTransactions && submittedTransactions.length > 0
+              ? 'applied'
+              : 'observed',
+        action: 'matured'
+      },
+      parameters,
+      { ...verbosePlan, ...(submittedTransactions ? { submittedTransactions } : {}) },
+      startedAt
+    )
   }
 
   private async failedMarketRead(

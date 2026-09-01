@@ -297,28 +297,14 @@ const isTransientFailedCheck = (check: SetupCheck) => {
     )
   }
 
-  if (check.name === 'books') {
-    return (
-      Array.isArray(check.observed) &&
-      check.observed.length > 0 &&
-      check.observed.every(
-        book =>
-          isRecord(book) &&
-          Array.isArray(book.reasons) &&
-          book.reasons.length > 0 &&
-          book.reasons.every(
-            reason =>
-              isRecord(reason) &&
-              Object.keys(reason).length === 1 &&
-              isTransientProviderFailure(reason.timestampProviderError)
-          )
-      )
-    )
-  }
-
   // Compound checks can mask a successful peer read that already proved invariant drift, so they
   // fail closed instead of retrying based only on their provider error.
-  if (check.name === 'ratifier' || check.name === 'reference' || check.name === 'offers') {
+  if (
+    check.name === 'ratifier' ||
+    check.name === 'reference' ||
+    check.name === 'offers' ||
+    check.name === 'books'
+  ) {
     return false
   }
 
@@ -394,13 +380,11 @@ export const chainCheck = (
 /**
  * Evaluates all configured books from already-concurrent captured reads without writes.
  * @param config - Validated market requirements.
- * @param timestamp - Captured latest block timestamp.
  * @param books - Captured per-market API/chain observations.
  * @returns The normalized aggregate books check.
  */
 export const booksCheck = (
   config: SetupCheckConfig,
-  timestamp: Captured<bigint>,
   books: readonly { requestedId: `0x${string}`; response: Captured<BookSetup> }[]
 ) => {
   const required = 'all configured books valid'
@@ -416,7 +400,6 @@ export const booksCheck = (
     const problem = !response.ok
       ? { id: requestedId, reasons: [{ providerError: response.error }] as unknown[] }
       : bookProblems(requestedId, response.value, config)
-    if (!timestamp.ok) problem.reasons.push({ timestampProviderError: timestamp.error })
 
     return problem.reasons.length === 0 ? [] : [problem]
   })

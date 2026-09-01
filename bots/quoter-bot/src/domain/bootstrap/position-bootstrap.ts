@@ -25,12 +25,18 @@ export type BootstrapConfig = {
   autoRefill: boolean
 }
 
-/** Fresh balance, credit, and exposure inputs used to cap a bootstrap offer. */
+/**
+ * Fresh balance, credit, and exposure inputs used to cap a bootstrap offer.
+ * @remarks `maturityTimestamp` and `observedTimestamp` come from the same read, so a workflow can
+ * recognize a market whose lifecycle has ended without consulting a wall clock. Sizing ignores both.
+ */
 export type BootstrapPosition = {
   credit: bigint
   cashBalance: bigint
   marketExposure: bigint
   totalExposure: bigint
+  maturityTimestamp?: bigint
+  observedTimestamp?: bigint
 }
 
 /** Reference-rate observation and replacement semantics used for offer derivation. */

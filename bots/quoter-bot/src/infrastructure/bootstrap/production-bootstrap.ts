@@ -437,6 +437,16 @@ export const createProductionBootstrapAdapters = (
       }),
     readMarketContinuousFeeCap: async marketId =>
       bootstrapContinuousFeeCap(await midnight.getMarketData(marketId)),
+    readMarketMaturity: async marketId => {
+      const [market, block] = await Promise.all([
+        midnight.getMarketData(marketId),
+        client.getBlock({ blockTag: 'latest' })
+      ])
+      return {
+        maturityTimestamp: market.params.maturity,
+        observedTimestamp: block.timestamp
+      }
+    },
     readGroupInventory
   }
 

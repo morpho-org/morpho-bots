@@ -30,6 +30,7 @@ import {
   validateBootstrapConfig
 } from '../../domain/bootstrap/position-bootstrap'
 import { BootstrapAdapterError } from '../../infrastructure/bootstrap/bootstrap-adapter.error'
+import { marketObservationMatured } from '../market-maturity.utils'
 import {
   adapterOperationField,
   operatorErrorDetails,
@@ -152,7 +153,7 @@ type BootstrapRunOutcome =
   | {
       marketId: Hex
       status: 'observed'
-      action: 'target-reached' | 'auto-refill-disabled' | 'no-capacity' | 'rest'
+      action: 'target-reached' | 'auto-refill-disabled' | 'no-capacity' | 'rest' | 'matured'
     }
   | {
       marketId: Hex
@@ -392,6 +393,10 @@ export class PositionBootstrapService {
    *   cleanup evidence are returned in the structured result.
    * @remarks Invalid configuration hard-halts before any position/reference read or publication.
    * Verbose mode adds a fresh post-check read without exposing signer identity or provider details.
+   * A market whose fresh read shows maturity already reached reports the non-failing `matured`
+   * action before any reference read or offer arithmetic, so a normal lifecycle end neither
+   * computes a negative time to maturity nor stops the remaining configured markets; its owned
+   * groups can no longer be filled and are cancelled by the monitor's shutdown cleanup.
    */
   async runOnce(
     parameters: {
@@ -476,6 +481,23 @@ export class PositionBootstrapService {
         continue
       }
       const currentState = this.verbosePosition(config.marketId, observedPosition)
+      if (marketObservationMatured(observedPosition)) {
+        plans.push({
+          result: await this.withVerboseDetails(
+            {
+              marketId: config.marketId,
+              status: 'observed' as const,
+              action: 'matured' as const
+            },
+            verbose,
+            { config, currentState: { status: 'observed', position: currentState } },
+            false,
+            undefined,
+            Date.now() - plannedAt
+          )
+        })
+        continue
+      }
       const marketReservationDelta = reservedAssetsDeltaByMarket.get(config.marketId) ?? 0n
       const position = {
         ...observedPosition,

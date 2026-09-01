@@ -51,6 +51,7 @@ const harness = (configs: readonly LadderConfig[] = [config()]) => {
   let maturitySeconds: bigint | undefined
   let marketState = state()
   let readFailure: Hex | undefined
+  const maturedMarkets = new Set<Hex>()
   let reconcileFailure: Hex | undefined
   const reads: string[] = []
   const reconciliations: Array<{
@@ -64,7 +65,9 @@ const harness = (configs: readonly LadderConfig[] = [config()]) => {
     async readMarket(id) {
       reads.push(`market:${id}`)
       if (id === readFailure) throw new TypeError('private provider detail')
-      return marketState
+      return maturedMarkets.has(id)
+        ? { ...marketState, maturityTimestamp: 1_000n, observedTimestamp: 1_000n }
+        : marketState
     }
   }
   const rates = {
@@ -123,6 +126,7 @@ const harness = (configs: readonly LadderConfig[] = [config()]) => {
     setMaturity: (value: bigint | undefined) => (maturitySeconds = value),
     setCapacity: (value: bigint) => (marketState = state(value)),
     failMarket: (id: Hex) => (readFailure = id),
+    matureMarket: (id: Hex) => maturedMarkets.add(id),
     failReconcile: (id: Hex) => (reconcileFailure = id),
     expireRoots: (id: Hex) => liveDesired.delete(id),
     recreateService: () => (service = new LadderQuoterService(positions, rates, make, configs))
@@ -479,6 +483,59 @@ describe('LadderQuoterService', () => {
       { marketId: secondMarketId, action: 'publish' }
     ])
     expect(subject.halts).toEqual([])
+  })
+
+  test('invalidates a matured market and keeps quoting every other configured market', async () => {
+    const subject = harness([config(), config(secondMarketId)])
+    expect(await subject.service.runOnce()).toMatchObject([
+      { marketId, action: 'publish' },
+      { marketId: secondMarketId, action: 'publish' }
+    ])
+
+    subject.matureMarket(marketId)
+
+    expect(await subject.service.runOnce()).toMatchObject([
+      { marketId, status: 'observed', action: 'matured' },
+      { marketId: secondMarketId, status: 'observed', action: 'rest' }
+    ])
+    expect(subject.reconciliations.at(-2)).toMatchObject({
+      marketId,
+      desired: undefined,
+      reason: 'market-matured'
+    })
+    expect(subject.reads).not.toContain(`rate:${marketId}`)
+    expect(subject.liveDesired.has(marketId)).toBe(false)
+    expect(subject.liveDesired.has(secondMarketId)).toBe(true)
+    expect(subject.halts).toEqual([])
+  })
+
+  test('keeps monitoring later cycles when a configured market has matured', async () => {
+    const subject = harness([{ ...config(), loopIntervalSeconds: 1 }])
+    subject.matureMarket(marketId)
+    const controller = new AbortController()
+    const cycles: unknown[] = []
+
+    const report = await subject.service.runContinuously({
+      signal: controller.signal,
+      intervalMs: 1,
+      onCycle: results => {
+        cycles.push(results)
+        if (cycles.length === 2) controller.abort()
+      }
+    })
+
+    expect(report).toMatchObject({ status: 'stopped', reason: 'signal', cycles: 2 })
+    expect(cycles).toMatchObject([[{ action: 'matured' }], [{ action: 'matured' }]])
+  })
+
+  test('reports a failed reconciliation while invalidating a matured market', async () => {
+    const subject = harness()
+    subject.matureMarket(marketId)
+    subject.failReconcile(marketId)
+
+    expect(await subject.service.runOnce()).toMatchObject([
+      { marketId, status: 'failed', stage: 'reconcile', invalidated: false }
+    ])
   })
 
   test('retains a confirmed ratification hash when publication later fails', async () => {

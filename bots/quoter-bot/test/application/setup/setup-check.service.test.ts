@@ -56,10 +56,8 @@ const readyState = (): SetupStateService => {
       allowlisted: true,
       active: true,
       loanAsset,
-      tickSpacing: 1,
-      maturity: 2_000n
+      tickSpacing: 1
     }),
-    getLatestTimestamp: async () => 1_000n,
     checkReference: async () => ({
       marketId: referenceMarketId,
       referenceReadable: true,
@@ -163,40 +161,22 @@ describe('SetupCheckService', () => {
     expect(terminal).toEqual({ status: 'stopped', reason: 'signal', cycles: 1 })
   })
 
-  test('retries a transient latest-timestamp failure when every book invariant passes', async () => {
-    const state = readyState()
-    let bookReads = 0
-    let timestampReads = 0
-    state.getBook = async id => {
-      bookReads += 1
-      return {
-        id,
-        allowlisted: true,
-        active: true,
-        loanAsset,
-        tickSpacing: 4,
-        maturity: 2_000n
+  test('reports readiness for configured markets without reading a block timestamp', async () => {
+    // Regression: readiness derived maturity from a latest-block timestamp read, so an unrelated
+    // RPC timestamp outage failed every configured market even though maturity is no longer a
+    // readiness invariant.
+    const reads: string[] = []
+    const state = new Proxy(readyState(), {
+      get: (target, key) => {
+        reads.push(String(key))
+        return Reflect.get(target, key)
       }
-    }
-    state.getLatestTimestamp = async () => {
-      timestampReads += 1
-      if (timestampReads === 1) {
-        throw new SafeProviderError({
-          kind: 'provider-error',
-          provider: 'rpc',
-          name: 'TimeoutError',
-          code: 'REQUEST_TIMEOUT',
-          context: 'request'
-        })
-      }
-      return 1_000n
-    }
-
-    await expect(new SetupCheckService(state, config).assertReady()).resolves.toMatchObject({
-      ready: true
     })
-    expect(timestampReads).toBe(2)
-    expect(bookReads).toBe(2)
+
+    const report = await new SetupCheckService(state, config).check()
+
+    expect(report.ready).toBe(true)
+    expect(reads).not.toContain('getLatestTimestamp')
   })
 
   test('fails closed without retrying a transient compound book read', async () => {
@@ -232,7 +212,7 @@ describe('SetupCheckService', () => {
     let bookReads = 0
     state.getBook = async () => {
       bookReads += 1
-      throw new ProviderReadError('morpho-api', 'book-api')
+      throw new ProviderReadError('morpho-api', 'market-listing')
     }
 
     const terminal = await new SetupCheckService(state, config).runContinuously({
@@ -349,67 +329,9 @@ describe('SetupCheckService', () => {
     expect(error).toBeInstanceOf(SetupFailedError)
   })
 
-  test('does not retry a timestamp timeout that accompanies a book invariant failure', async () => {
+  test('reports only the sanitized book provider failure when a market read fails', async () => {
     const state = readyState()
-    let bookReads = 0
-    let timestampReads = 0
-    state.getBook = async id => {
-      bookReads += 1
-      return {
-        id,
-        allowlisted: true,
-        active: false,
-        loanAsset,
-        tickSpacing: 1,
-        maturity: 2_000n
-      }
-    }
-    state.getLatestTimestamp = async () => {
-      timestampReads += 1
-      throw new SafeProviderError({
-        kind: 'provider-error',
-        provider: 'rpc',
-        name: 'TimeoutError',
-        code: 'REQUEST_TIMEOUT',
-        context: 'request'
-      })
-    }
-
-    const terminal = await new SetupCheckService(state, config).runContinuously({
-      signal: new AbortController().signal,
-      intervalMs: 1
-    })
-
-    expect(bookReads).toBe(1)
-    expect(timestampReads).toBe(1)
-    expect(terminal).toMatchObject({ status: 'halted', reason: 'setup-failed', cycles: 1 })
-    if (terminal.reason === 'setup-failed') {
-      expect(terminal.lastReport.checks.find(check => check.name === 'books')?.observed).toEqual([
-        {
-          id: marketId,
-          reasons: [
-            'inactive',
-            {
-              timestampProviderError: {
-                kind: 'provider-error',
-                provider: 'rpc',
-                name: 'TimeoutError',
-                code: 'REQUEST_TIMEOUT',
-                context: 'request'
-              }
-            }
-          ]
-        }
-      ])
-    }
-  })
-
-  test('does not retry transient book outages when the timestamp failure is unknown', async () => {
-    const state = readyState()
-    let bookReads = 0
-    let timestampReads = 0
     state.getBook = async () => {
-      bookReads += 1
       throw new SafeProviderError({
         kind: 'provider-error',
         provider: 'morpho-api',
@@ -418,18 +340,12 @@ describe('SetupCheckService', () => {
         context: 'request'
       })
     }
-    state.getLatestTimestamp = async () => {
-      timestampReads += 1
-      throw new ProviderReadError('rpc', 'latest-timestamp')
-    }
 
     const terminal = await new SetupCheckService(state, config).runContinuously({
       signal: new AbortController().signal,
       intervalMs: 1
     })
 
-    expect(bookReads).toBe(1)
-    expect(timestampReads).toBe(1)
     expect(terminal).toMatchObject({ status: 'halted', reason: 'setup-failed', cycles: 1 })
     if (terminal.reason === 'setup-failed') {
       expect(terminal.lastReport.checks.find(check => check.name === 'books')?.observed).toEqual([
@@ -440,12 +356,6 @@ describe('SetupCheckService', () => {
               providerError: expect.objectContaining({
                 provider: 'morpho-api',
                 name: 'TimeoutError'
-              })
-            },
-            {
-              timestampProviderError: expect.objectContaining({
-                provider: 'rpc',
-                name: 'ProviderError'
               })
             }
           ]
@@ -766,7 +676,7 @@ describe('SetupCheckService', () => {
   test('preserves a typed provider id when a compound setup read fails', async () => {
     const state = readyState()
     state.getBook = async () => {
-      throw new ProviderReadError('morpho-api', 'book-api')
+      throw new ProviderReadError('morpho-api', 'market-listing')
     }
 
     const report = await new SetupCheckService(state, config).check()
@@ -790,7 +700,7 @@ describe('SetupCheckService', () => {
   test('preserves a typed response-error provider id in the setup report', async () => {
     const state = readyState()
     state.getBook = async () => {
-      throw new ProviderResponseError('morpho-api', 'book-count', 'invalid count')
+      throw new ProviderResponseError('morpho-api', 'market-count', 'invalid count')
     }
 
     const report = await new SetupCheckService(state, config).check()
@@ -949,15 +859,13 @@ describe('SetupCheckService', () => {
         surfaceMatches: true,
         authorized: true
       })
-    state.getLatestTimestamp = () => wait('timestamp', 1_000n)
     state.getBook = id =>
       wait(`book:${id}`, {
         id,
         allowlisted: true,
         active: true,
         loanAsset,
-        tickSpacing: 1,
-        maturity: 2_000n
+        tickSpacing: 1
       })
     state.checkReference = async () => {
       started.push('reference')
@@ -980,7 +888,6 @@ describe('SetupCheckService', () => {
         'balance',
         'allowance',
         'ratifier',
-        'timestamp',
         `book:${marketId}`,
         'reference',
         'offers',
@@ -1005,7 +912,6 @@ describe('SetupCheckService', () => {
     state.getNativeBalance = unavailable
     state.getLoanAllowance = unavailable
     state.getRatifier = unavailable
-    state.getLatestTimestamp = unavailable
     state.getBook = unavailable
     state.checkReference = unavailable
     state.inspectOffers = unavailable
@@ -1040,8 +946,7 @@ describe('SetupCheckService', () => {
       allowlisted: true,
       active: true,
       loanAsset,
-      tickSpacing: 1,
-      maturity: 2_000n
+      tickSpacing: 1
     })
 
     const report = await new SetupCheckService(state, config).check()
@@ -1080,7 +985,7 @@ describe('SetupCheckService', () => {
     })
   })
 
-  test('accepts exact funding thresholds and continues when a configured market has matured', async () => {
+  test('accepts exact funding thresholds', async () => {
     const exactThresholds = await new SetupCheckService(readyState(), config).check()
     expect(exactThresholds.checks.find(check => check.name === 'native-balance')?.status).toBe(
       'passed'
@@ -1088,23 +993,6 @@ describe('SetupCheckService', () => {
     expect(exactThresholds.checks.find(check => check.name === 'loan-allowance')?.status).toBe(
       'passed'
     )
-
-    const state = readyState()
-    state.getBook = async id => ({
-      id,
-      allowlisted: true,
-      active: true,
-      loanAsset,
-      tickSpacing: 1,
-      maturity: 1_000n
-    })
-    const maturityBoundary = await new SetupCheckService(state, config).check()
-
-    expect(maturityBoundary.checks.find(check => check.name === 'books')).toMatchObject({
-      status: 'passed',
-      observed: []
-    })
-    expect(maturityBoundary.ready).toBe(true)
   })
 
   test('reports every unsafe book property so the operator can remediate it', async () => {
@@ -1114,8 +1002,7 @@ describe('SetupCheckService', () => {
       allowlisted: false,
       active: false,
       loanAsset: ratifier,
-      tickSpacing: 0,
-      maturity: 1_000n
+      tickSpacing: 0
     })
 
     const report = await new SetupCheckService(state, config).check()
@@ -1180,8 +1067,7 @@ describe('SetupCheckService', () => {
       allowlisted: false,
       active: false,
       loanAsset: ratifier,
-      tickSpacing: 0,
-      maturity: 1_000n
+      tickSpacing: 0
     })
     state.checkReference = async () => ({
       marketId: referenceMarketId,

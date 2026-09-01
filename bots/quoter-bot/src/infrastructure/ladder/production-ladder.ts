@@ -61,7 +61,6 @@ import { calculateLadderCapacities } from './ladder-capacity.utils'
 import { ladderCashReservations } from './ladder-cash-reservation.utils'
 import { createLadderGroupOwnership } from './ladder-group-ownership.utils'
 import { MidnightLadderMakeService, type LadderOfferTransport } from './ladder-make.service'
-import { ladderMarketMaturity } from './ladder-maturity.utils'
 import { buildLadderTree } from './ladder-offer.utils'
 import { configuredRatifierType, prepareLadderRatification } from './ladder-ratification.utils'
 import { assertLadderProspectiveSpread } from './ladder-spread.utils'
@@ -366,7 +365,8 @@ export const createProductionLadderAdapters = (
         persistedBootstrapOffers,
         cashBalance,
         allowance,
-        positionSnapshots
+        positionSnapshots,
+        marketData
       ] = await Promise.all([
         readGroups(),
         ladderOwnership.read(),
@@ -398,7 +398,8 @@ export const createProductionLadderAdapters = (
               credit: position.credit
             }
           })
-        )
+        ),
+        midnight.getMarketData(marketId)
       ])
       const selectedPosition = positionSnapshots.find(item => item.marketId === marketId)
       if (!selectedPosition) throw new LadderAdapterError('position-unavailable')
@@ -435,8 +436,6 @@ export const createProductionLadderAdapters = (
         now: block.timestamp
       })
 
-      const maturityTimestamp = ladderMarketMaturity(groups, marketId)
-
       return {
         ...calculateProductionLadderCapacities({
           marketId,
@@ -449,7 +448,8 @@ export const createProductionLadderAdapters = (
           reservations
         }),
         ...(bootstrapBuyRateBps === undefined ? {} : { bootstrapBuyRateBps }),
-        ...(maturityTimestamp === undefined ? {} : { maturityTimestamp })
+        maturityTimestamp: marketData.params.maturity,
+        observedTimestamp: block.timestamp
       }
     }
   }

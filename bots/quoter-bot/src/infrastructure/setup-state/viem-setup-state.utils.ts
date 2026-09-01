@@ -113,39 +113,31 @@ export const marketFromContract = (value: unknown) => {
 }
 
 /**
- * Validates the SDK-mapped Midnight book projection used by setup checking.
- * @param value - One `MidnightApi.fetchBooks` result item.
- * @returns Canonical identity, chain, singleton, asset, and maturity fields.
- * @throws When the SDK-trusted response contains malformed runtime values.
- */
-export const marketFromApi = (value: unknown) => {
-  const market = objectValue(value, 'Midnight SDK book')
-  return {
-    id: bytes32Value(market.marketId, 'marketId'),
-    chainId: integerValue(market.chainId, 'chainId'),
-    midnight: addressValue(market.midnight, 'midnight'),
-    loanToken: addressValue(market.loanToken, 'loanToken'),
-    maturity: BigInt(integerValue(market.maturity, 'maturity'))
-  }
-}
-
-/**
- * Extracts canonical market IDs proven listed by the documented markets endpoint.
- * @param value - Untrusted `listed=true` markets response.
+ * Extracts canonical market rows from the documented markets endpoint.
+ * @param value - Untrusted markets response.
  * @param chainId - Configured chain every accepted row must identify.
- * @returns Canonical IDs whose rows explicitly identify the configured chain and `listed: true`.
- * @throws When the response envelope or any listing identity field is malformed.
+ * @returns Identity, curated listing, loan asset, and maturity for every row identifying the
+ * configured chain.
+ * @throws When the response envelope or any market identity field is malformed.
  * @remarks Rows naming any other chain are dropped rather than rejected, so a provider that widens
  * its response to further chains cannot promote a foreign market into the configured chain's set.
+ * This endpoint is the market registry used instead of the books endpoint, which documents that it
+ * excludes past maturities even when specific IDs are requested.
  */
-export const listedMarketIds = (value: unknown, chainId: number) => {
+export const apiMarkets = (value: unknown, chainId: number) => {
   const response = objectValue(value, 'Morpho API markets response')
   return arrayValue(response.data, 'Morpho API markets data').flatMap(item => {
-    const market = objectValue(item, 'Morpho API listed market')
-    const id = bytes32Value(market.market_id, 'listed market_id')
-    const rowChainId = integerValue(market.chain_id, 'listed market chain_id')
-    const listed = booleanValue(market.listed, 'listed market flag')
-    return rowChainId === chainId && listed ? [id] : []
+    const market = objectValue(item, 'Morpho API market')
+    const rowChainId = integerValue(market.chain_id, 'market chain_id')
+    if (rowChainId !== chainId) return []
+    return [
+      {
+        id: bytes32Value(market.market_id, 'market_id'),
+        listed: booleanValue(market.listed, 'market listed flag'),
+        loanToken: addressValue(market.loan_token, 'market loan_token'),
+        maturity: BigInt(integerValue(market.maturity, 'market maturity'))
+      }
+    ]
   })
 }
 

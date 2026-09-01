@@ -88,10 +88,8 @@ const readyState = (): SetupStateService => {
       allowlisted: true,
       active: true,
       loanAsset,
-      tickSpacing: 4,
-      maturity: 2_000n
+      tickSpacing: 4
     }),
-    getLatestTimestamp: async () => 1_000n,
     checkReference: async () => ({
       marketId: referenceMarketId,
       referenceReadable: true,

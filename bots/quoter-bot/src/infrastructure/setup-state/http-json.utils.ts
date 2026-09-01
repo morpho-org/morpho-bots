@@ -44,24 +44,3 @@ export const requestJson = async (url: string, provider: ProviderId, timeoutMs =
     })
   }
 }
-
-/**
- * Adapts the JSON transport for the legacy SDK books endpoint.
- * @param request - Existing provider-safe JSON transport.
- * @param timeoutMs - Explicit per-request timeout passed to the transport.
- * @returns A fetch-compatible function backed by the provider-safe JSON transport.
- * @throws The transport's sanitized provider error when the book request fails.
- * @remarks The Midnight SDK continues to own endpoint construction and book mapping; this adapter
- * only bridges the SDK fetch surface to the injected transport. Listing is verified separately
- * against the documented markets endpoint because the books endpoint does not prove listing.
- */
-export const booksJsonRequestFetch = (request: JsonRequest, timeoutMs: number): typeof fetch => {
-  const adapter = async (input: Parameters<typeof fetch>[0]) => {
-    const inputUrl = input instanceof Request ? input.url : String(input)
-    const value = await request(inputUrl, 'morpho-api', timeoutMs)
-    return Response.json(value)
-  }
-  // bun's `fetch` carried a `preconnect` property that had to be copied to satisfy `typeof fetch`;
-  // Node's `fetch` type has no such member, so the adapter alone is assignable.
-  return adapter
-}

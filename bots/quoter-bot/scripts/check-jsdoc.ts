@@ -31,7 +31,6 @@ const providerMethods = new Set([
   'ViemSetupStateService.getLoanAllowance',
   'ViemSetupStateService.getRatifier',
   'ViemSetupStateService.getBook',
-  'ViemSetupStateService.getLatestTimestamp',
   'ViemSetupStateService.checkReference',
   'ViemSetupStateService.inspectOffers'
 ])
