@@ -956,6 +956,20 @@ imports secret, provider, logging, or observability modules. It does not read cu
 positions, or a live market book; use storage, cookies, a backend, or network requests; or model runtime
 capacity.
 
+A display-units panel at the top of the page carries one token-decimals entry for the configured
+loan asset. One entry is sufficient and correct: a process has a single `LOAN_ASSET_ADDRESS` shared
+by every configured market, and every configured amount — credit targets, offer sizes, budgets, and
+exposure caps in both collections — is a raw smallest-unit amount of that one asset, so collateral
+decimals never apply. The entry starts at 6 as a convenience for USDC, the loan asset in practice; it is not
+resolved from chain data, so it must be corrected for any other loan asset, and clearing it returns
+every amount to its exact raw integer. A supplied entry renders raw asset and credit amounts as whole token units across the previews,
+callouts, rung tables, and accessible descriptions, rounding the fractional units away so magnitudes
+stay scannable; a non-zero amount below one unit renders as `<1` rather than zero, and hovering an
+amount in the plots or tables reveals its exact raw integer. The entry is display state only: it is never exported, never enters the URL
+fragment, and leaves the editors and the four collection outputs on exact raw integers. An entry
+that is not a whole number of at most 36 decimals is marked invalid and leaves amounts raw rather
+than showing a misleading amount.
+
 The URL fragment is a strict, bounded, versioned JSON payload containing only `version`, `bootstrap`,
 and `ladder`. Valid edits synchronize with `history.replaceState`; invalid edits leave the last valid
 URL untouched. The copied URL reproduces collection order, configuration, and graphics on a fresh page,

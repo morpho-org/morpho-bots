@@ -87,6 +87,7 @@ main {
   display: grid;
   gap: 1rem;
 }
+.units-card,
 .share-card,
 .import-card,
 .editor-section,
@@ -95,6 +96,44 @@ main {
   border-radius: 0.9rem;
   background: #0d1f18;
   padding: 1rem;
+}
+.units-card {
+  grid-column: 1 / -1;
+}
+.units-row {
+  display: flex;
+  gap: 1.25rem;
+  align-items: start;
+  flex-wrap: wrap;
+}
+.units-row .field {
+  flex: 0 0 9rem;
+}
+.units-row .field small {
+  min-height: 1.4em;
+}
+.units-row > p {
+  flex: 1 1 24rem;
+  max-width: 60rem;
+  margin: 0;
+  color: #b7ccbf;
+}
+.units-row code {
+  color: #b8dbc9;
+}
+.units-row input {
+  width: 100%;
+  border: 1px solid #46725f;
+  border-radius: 0.45rem;
+  padding: 0.55rem;
+  background: #07130f;
+  color: #f1fbf5;
+}
+.units-row input[aria-invalid='true'] {
+  border-color: #f0a58b;
+}
+.semantic-table [data-raw-amount] {
+  cursor: help;
 }
 .section-heading {
   display: flex;
@@ -127,74 +166,78 @@ main {
 .preview-card figure {
   margin: 0.5rem 0 1rem;
 }
-.rate-track,
 .ladder-plot {
   position: relative;
-  min-height: 9rem;
   border-left: 2px solid #bce8d2;
   border-right: 2px solid #bce8d2;
   background: repeating-linear-gradient(90deg, #17372b, #17372b 10%, #132d24 10%, #132d24 20%);
-  margin: 1.5rem 1rem;
 }
-.reference-marker,
-.quote-marker {
-  position: absolute;
-  top: 1.8rem;
-  bottom: 1.8rem;
-  width: 0.25rem;
-  transform: translateX(-50%);
+/* Two classes so the single-row bootstrap height beats the taller .ladder-plot rule below. */
+.bootstrap-preview .bootstrap-plot {
+  min-height: 7rem;
 }
-.reference-marker {
-  background: #f8d477;
+.bootstrap-plot .ladder-reference-marker {
+  left: auto;
+  right: 0.5rem;
 }
-.quote-marker {
-  background: #ff87a5;
+/* The reference chip owns the right lane, so it can never sit on a quote row's text. */
+.bootstrap-preview .rung {
+  right: 10rem;
 }
-.reference-marker::before {
-  content: '◆';
-  position: absolute;
-  top: -0.9rem;
-  left: -0.45rem;
-  color: #f8d477;
-}
-.quote-marker::before {
-  content: '●';
-  position: absolute;
-  bottom: -0.9rem;
-  left: -0.35rem;
+.rung--quote {
   color: #ff87a5;
 }
-.quote-marker--maximum {
-  opacity: 0.55;
-}
-.quote-marker--maximum::before {
-  content: '○';
-}
-.range-label {
-  position: absolute;
-  font-size: 0.72rem;
-  color: #d8eadf;
-}
-.range-label--min {
-  left: 0.3rem;
-  bottom: 0.2rem;
-}
-.range-label--max {
-  right: 0.3rem;
-  top: 0.2rem;
+/* The far-maturity quote is one rate the single offer can travel to, not a second offer. */
+.bootstrap-far-marker {
+  left: auto;
+  right: 0.5rem;
+  color: #ff87a5;
+  opacity: 0.65;
 }
 .ladder-plot {
   min-height: 24rem;
+  /* Clears the half-height overhang of a rung row clamped onto a bound. */
+  margin: 0.75rem 1rem;
+}
+.ladder-bound {
+  /* Sits above and below the plot, aligned with the rate column it annotates. */
+  margin: 0 1rem;
+  padding-left: 1rem;
+  font-size: 0.72rem;
+  color: #d8eadf;
 }
 .rung {
   position: absolute;
   left: 1rem;
   right: 1rem;
+  transform: translateY(-50%);
   display: flex;
-  gap: 0.4rem;
-  border-top: 2px solid currentColor;
+  align-items: center;
+  gap: 0.5rem;
   font-style: normal;
   font-size: 0.72rem;
+}
+.rung-rate {
+  flex: 0 0 3.6rem;
+  font-weight: 700;
+}
+.rung-depth {
+  flex: 1 1 auto;
+  height: 0.75rem;
+  border-radius: 0.2rem;
+  background: #ffffff0f;
+  overflow: hidden;
+}
+.rung-depth b {
+  display: block;
+  height: 100%;
+  background: currentColor;
+  opacity: 0.6;
+}
+.rung-size {
+  flex: 0 0 5.5rem;
+  text-align: right;
+  color: #d8eadf;
 }
 .rung--higher {
   color: #f8d477;
@@ -204,9 +247,12 @@ main {
 }
 .ladder-marker {
   position: absolute;
+  z-index: 1;
   padding: 0.25rem 0.45rem;
+  border-radius: 0.3rem;
   background: #06100c;
   font-size: 0.72rem;
+  white-space: nowrap;
   transform: translateY(-50%);
 }
 .ladder-reference-marker {
@@ -220,6 +266,16 @@ main {
 .ladder-center-marker--maximum {
   right: 8%;
   opacity: 0.55;
+}
+.preview-notice {
+  margin: 0 0 0.8rem;
+  padding: 0.5rem 0.7rem;
+  border: 1px solid #7d6438;
+  border-left-width: 3px;
+  border-radius: 0.4rem;
+  background: #221c0e;
+  color: #f6e2b8;
+  font-size: 0.78rem;
 }
 .callouts {
   display: grid;
@@ -235,6 +291,14 @@ main {
 .callouts dt {
   color: #8bf0c1;
   font-weight: 800;
+}
+.callouts dt code {
+  display: block;
+  margin-top: 0.15rem;
+  font-size: 0.72rem;
+  font-weight: 400;
+  color: #8fae9e;
+  overflow-wrap: anywhere;
 }
 .callouts dd {
   margin: 0.2rem 0 0;

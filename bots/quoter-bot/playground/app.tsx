@@ -1,17 +1,13 @@
 import type { ErrorInfo, ReactNode } from 'react'
 
 import { useForm } from '@tanstack/react-form'
-import {
-  createColumnHelper,
-  flexRender,
-  getCoreRowModel,
-  useReactTable
-} from '@tanstack/react-table'
-import React, { Component, useEffect, useRef, useState } from 'react'
+import { flexRender, getCoreRowModel, useReactTable } from '@tanstack/react-table'
+import React, { Component, useEffect, useMemo, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 
 import type { FieldDefinition } from './field-visibility.utils'
 import type {
+  AssetFormatter,
   BootstrapGraphicModel,
   BootstrapInput,
   LadderGraphicModel,
@@ -19,6 +15,12 @@ import type {
   PlaygroundState
 } from './model'
 
+import {
+  DEFAULT_ASSET_DECIMALS,
+  MAXIMUM_ASSET_DECIMALS,
+  assetFormatter,
+  resolveDecimals
+} from './asset-format.utils'
 import { CollectionImportError } from './collection-import.error'
 import {
   maturityPremiumSelection,
@@ -48,6 +50,7 @@ import {
 } from './model'
 import { playgroundErrorMessage } from './playground-error.utils'
 import { PlaygroundInitializationError } from './playground-initialization.error'
+import { amountCell, rungColumnsFor } from './rung-rendering.utils'
 
 type CollectionKind = keyof PlaygroundState
 type ExportFormat = 'bootstrap-json' | 'bootstrap-string' | 'ladder-json' | 'ladder-string'
@@ -90,29 +93,27 @@ const initial = () => {
   }
 }
 
-const columnHelper = createColumnHelper<LadderGraphicModel['rungs'][number]>()
-const rungColumns = [
-  columnHelper.accessor('sideLabel', { header: 'Side', cell: info => info.getValue() }),
-  columnHelper.accessor('rateBps', { header: 'Rate (BPS)', cell: info => info.getValue() }),
-  columnHelper.accessor('allocationAssets', {
-    header: 'Allocation (assets)',
-    cell: info => info.getValue()
-  }),
-  columnHelper.accessor('offerMaxAssets', {
-    header: 'Offer maxAssets (assets)',
-    cell: info => info.getValue()
-  })
-]
-
-const RungTable = ({ graphic, index }: { graphic: LadderGraphicModel; index: number }) => {
+const RungTable = ({
+  format,
+  graphic,
+  index
+}: {
+  format: AssetFormatter
+  graphic: LadderGraphicModel
+  index: number
+}) => {
+  const columns = useMemo(() => rungColumnsFor(format), [format])
   const table = useReactTable({
     data: graphic.rungs,
-    columns: rungColumns,
+    columns,
     getCoreRowModel: getCoreRowModel()
   })
   return (
     <table className="semantic-table" aria-labelledby={`ladder-title-${index}`}>
-      <caption>Exact ladder rate, allocation, and offer cap correspondence</caption>
+      <caption>
+        Ladder rate, allocation, and offer cap correspondence; hover an amount for its exact raw
+        value
+      </caption>
       <thead>
         {table.getHeaderGroups().map(group => (
           <tr key={group.id}>
@@ -138,9 +139,11 @@ const RungTable = ({ graphic, index }: { graphic: LadderGraphicModel; index: num
 }
 
 const BootstrapGraphic = ({
+  format,
   graphic,
   index
 }: {
+  format: AssetFormatter
   graphic: BootstrapGraphicModel
   index: number
 }) => {
@@ -148,44 +151,68 @@ const BootstrapGraphic = ({
   const minimum = BigInt(graphic.minimumRateBps)
   const maximum = BigInt(graphic.maximumRateBps)
   const range = maximum - minimum || 1n
-  const position = (value: string) => Number(((BigInt(value) - minimum) * 10_000n) / range) / 100
+  const y = (value: string) =>
+    clampPlotPercent(Number(((maximum - BigInt(value)) * 10_000n) / range) / 100)
+  const target = BigInt(graphic.creditTarget)
+  const depth = (value: string) =>
+    target <= 0n
+      ? 100
+      : Math.max(1, Math.min(100, Number((BigInt(value) * 10_000n) / target) / 100))
   const quoteText =
     graphic.maximumQuotedRateBps === undefined
       ? `quote ${graphic.quotedRateBps} BPS`
       : `quote range ${graphic.quotedRateBps} to ${graphic.maximumQuotedRateBps} BPS across maturities`
-  const description = `${title}, market ${graphic.marketId}. Configured range ${graphic.minimumRateBps} to ${graphic.maximumRateBps} BPS. Deterministic reference ${graphic.referenceRateBps} BPS produces ${quoteText}. Credit target ${graphic.creditTarget}, completion threshold ${graphic.acceptedCredit}, pending-offer cap ${graphic.offerSize}. ${graphic.callouts.map(item => `${item.label}: ${item.value}.`).join(' ')} Explicitly no live offers or balances.`
+  const description = `${title}, market ${graphic.marketId}. Configured range ${graphic.minimumRateBps} to ${graphic.maximumRateBps} BPS. Deterministic reference ${graphic.referenceRateBps} BPS produces ${quoteText}, offering ${format(graphic.offerSize)} against a ${format(graphic.creditTarget)} credit target completed at ${format(graphic.acceptedCredit)}. ${graphic.callouts.map(item => `${item.label}: ${item.value}.`).join(' ')} Explicitly no live offers or balances.`
   return (
     <article className="preview-card bootstrap-preview" data-preview="bootstrap">
       <h3 id={`bootstrap-title-${index}`}>{title}</h3>
       <code>{graphic.marketId}</code>
       <figure role="img" aria-labelledby={`bootstrap-title-${index}`} aria-label={description}>
-        <div className="rate-track" aria-hidden="true">
-          <span className="range-label range-label--min">{graphic.minimumRateBps} BPS min</span>
-          <span className="range-label range-label--max">{graphic.maximumRateBps} BPS max</span>
-          <i
-            className="reference-marker"
-            style={{ left: `${position(graphic.referenceRateBps)}%` }}
-          />
-          <i className="quote-marker" style={{ left: `${position(graphic.quotedRateBps)}%` }} />
+        <p className="ladder-bound" aria-hidden="true">
+          {graphic.maximumRateBps} BPS max
+        </p>
+        <div className="ladder-plot bootstrap-plot" aria-hidden="true">
+          <b
+            className="ladder-marker ladder-reference-marker"
+            style={{ top: `${y(graphic.referenceRateBps)}%` }}
+          >
+            Reference {graphic.referenceRateBps} BPS
+          </b>
+          <i className="rung rung--quote" style={{ top: `${y(graphic.quotedRateBps)}%` }}>
+            <span className="rung-rate">● {graphic.quotedRateBps}</span>
+            <span className="rung-depth">
+              <b style={{ width: `${depth(graphic.offerSize)}%` }} />
+            </span>
+            <span className="rung-size">
+              {amountCell(graphic.offerSize, format(graphic.offerSize))}
+            </span>
+          </i>
           {graphic.maximumQuotedRateBps === undefined ? null : (
-            <i
-              className="quote-marker quote-marker--maximum"
-              style={{ left: `${position(graphic.maximumQuotedRateBps)}%` }}
-            />
+            <b
+              className="ladder-marker bootstrap-far-marker"
+              style={{ top: `${y(graphic.maximumQuotedRateBps)}%` }}
+            >
+              Far maturity {graphic.maximumQuotedRateBps} BPS
+            </b>
           )}
         </div>
-        <figcaption>
-          Reference {graphic.referenceRateBps} BPS ◆ Quote {graphic.quotedRateBps}
-          {graphic.maximumQuotedRateBps === undefined
-            ? ''
-            : `–${graphic.maximumQuotedRateBps}`} BPS
-          ●
-        </figcaption>
+        <p className="ladder-bound" aria-hidden="true">
+          {graphic.minimumRateBps} BPS min
+        </p>
+        <figcaption>● Quote · bar length is the offer size against the credit target</figcaption>
       </figure>
+      {graphic.notice === undefined ? null : (
+        <p className="preview-notice" role="status">
+          {graphic.notice}
+        </p>
+      )}
       <dl className="callouts">
         {graphic.callouts.map(item => (
           <div key={item.label}>
-            <dt>{item.label}</dt>
+            <dt>
+              {item.label}
+              {item.parameters.length === 0 ? null : <code>{item.parameters.join(' · ')}</code>}
+            </dt>
             <dd>{item.value}</dd>
           </div>
         ))}
@@ -194,33 +221,50 @@ const BootstrapGraphic = ({
   )
 }
 
-const LadderGraphic = ({ graphic, index }: { graphic: LadderGraphicModel; index: number }) => {
+const LadderGraphic = ({
+  format,
+  graphic,
+  index
+}: {
+  format: AssetFormatter
+  graphic: LadderGraphicModel
+  index: number
+}) => {
   const maturityText =
     graphic.maximumCenterRateBps === undefined
       ? ''
-      : ` The maturity premium raises the center to ${graphic.maximumCenterRateBps} BPS at far maturities.`
-  const description = `Ladder market ${index + 1}, ${graphic.marketId}. Range ${graphic.minimumRateBps} to ${graphic.maximumRateBps} BPS. Deterministic reference ${graphic.referenceRateBps} BPS and center ${graphic.centerRateBps} BPS.${maturityText} Triangle markers are lend rungs and circle markers are reduce-only rungs. Exact allocations and caps are in the semantic table. No live offers, balances, positions, or book.`
+      : ` The maturity premium raises the quote to ${graphic.maximumCenterRateBps} BPS at far maturities.`
+  const description = `Ladder market ${index + 1}, ${graphic.marketId}. Range ${graphic.minimumRateBps} to ${graphic.maximumRateBps} BPS. Deterministic reference ${graphic.referenceRateBps} BPS and quote ${graphic.centerRateBps} BPS.${maturityText} Triangle markers are lend rungs and circle markers are reduce-only rungs. Exact allocations and caps are in the semantic table. No live offers, balances, positions, or book.`
   return (
     <article className="preview-card ladder-preview" data-preview="ladder">
       <h3 id={`ladder-title-${index}`}>Ladder market {index + 1}</h3>
       <code>{graphic.marketId}</code>
       <figure role="img" aria-labelledby={`ladder-title-${index}`} aria-label={description}>
+        <p className="ladder-bound" aria-hidden="true">
+          {graphic.maximumRateBps} BPS max
+        </p>
         <div className="ladder-plot" aria-hidden="true">
-          <span className="range-label range-label--min">{graphic.minimumRateBps} BPS min</span>
-          <span className="range-label range-label--max">{graphic.maximumRateBps} BPS max</span>
           {graphic.rungs.map((rung, rungIndex) => (
             <i
               key={`${rung.side}-${rung.index}-${rungIndex}`}
               className={`rung rung--${rung.side}`}
               style={{ top: `${rung.y}%` }}
-              title={`${rung.sideLabel}: ${rung.rateBps} BPS, allocation ${rung.allocationAssets}, cap ${rung.offerMaxAssets}`}
+              title={`${rung.sideLabel} rung at ${rung.rateBps} BPS · allocation ${format(rung.allocationAssets)} (${rung.allocationAssets}) · offer cap ${format(rung.offerMaxAssets)} (${rung.offerMaxAssets})`}
             >
-              {rung.side === 'higher' ? '▲' : '●'} {rung.rateBps}
+              <span className="rung-rate">
+                {rung.side === 'higher' ? '▲' : '●'} {rung.rateBps}
+              </span>
+              <span className="rung-depth">
+                <b style={{ width: `${Math.max(1, rung.allocationBarRatio * 100)}%` }} />
+              </span>
+              <span className="rung-size">
+                {amountCell(rung.allocationAssets, format(rung.allocationAssets))}
+              </span>
             </i>
           ))}
           <b
             className="ladder-marker ladder-reference-marker"
-            style={{ top: `${graphic.rateToY(graphic.referenceRateBps)}%` }}
+            style={{ top: `${clampPlotPercent(graphic.rateToY(graphic.referenceRateBps))}%` }}
           >
             Reference {graphic.referenceRateBps} BPS
           </b>
@@ -228,7 +272,7 @@ const LadderGraphic = ({ graphic, index }: { graphic: LadderGraphicModel; index:
             className="ladder-marker ladder-center-marker"
             style={{ top: `${clampPlotPercent(graphic.rateToY(graphic.centerRateBps))}%` }}
           >
-            Center {graphic.centerRateBps} BPS
+            Quote {graphic.centerRateBps} BPS
           </b>
           {graphic.maximumCenterRateBps === undefined ? null : (
             <b
@@ -237,17 +281,28 @@ const LadderGraphic = ({ graphic, index }: { graphic: LadderGraphicModel; index:
                 top: `${clampPlotPercent(graphic.rateToY(graphic.maximumCenterRateBps))}%`
               }}
             >
-              Far-maturity center {graphic.maximumCenterRateBps} BPS
+              Far-maturity quote {graphic.maximumCenterRateBps} BPS
             </b>
           )}
         </div>
-        <figcaption>▲ Lend · ● Reduce-only · values are also available in the table</figcaption>
+        <p className="ladder-bound" aria-hidden="true">
+          {graphic.minimumRateBps} BPS min
+        </p>
+        <figcaption>▲ Lend · ● Reduce-only · bar length is the allocation at that rate</figcaption>
       </figure>
-      <RungTable graphic={graphic} index={index} />
+      <RungTable format={format} graphic={graphic} index={index} />
+      {graphic.notice === undefined ? null : (
+        <p className="preview-notice" role="status">
+          {graphic.notice}
+        </p>
+      )}
       <dl className="callouts">
         {graphic.callouts.map(item => (
           <div key={item.label}>
-            <dt>{item.label}</dt>
+            <dt>
+              {item.label}
+              {item.parameters.length === 0 ? null : <code>{item.parameters.join(' · ')}</code>}
+            </dt>
             <dd>{item.value}</dd>
           </div>
         ))}
@@ -255,6 +310,48 @@ const LadderGraphic = ({ graphic, index }: { graphic: LadderGraphicModel; index:
     </article>
   )
 }
+
+const DisplayUnits = ({
+  decimals,
+  onChange
+}: {
+  decimals: string
+  onChange: (value: string) => void
+}) => (
+  <section className="units-card" aria-labelledby="units-title">
+    <div className="section-heading">
+      <div>
+        <span>Display units</span>
+        <h2 id="units-title">Loan asset decimals</h2>
+      </div>
+    </div>
+    <div className="units-row">
+      <label className="field" htmlFor="loan-asset-decimals">
+        <span>Decimals</span>
+        <small>LOAN_ASSET_ADDRESS · 6 assumes USDC</small>
+        <input
+          id="loan-asset-decimals"
+          inputMode="numeric"
+          type="number"
+          min={0}
+          max={MAXIMUM_ASSET_DECIMALS}
+          step={1}
+          value={decimals}
+          placeholder="raw"
+          aria-invalid={decimals !== '' && resolveDecimals(decimals) === undefined}
+          aria-label="Loan asset decimals; empty renders raw amounts"
+          aria-describedby="units-help"
+          onChange={event => onChange(event.target.value)}
+        />
+      </label>
+      <p id="units-help">
+        Display only: amounts below are shown in whole loan-asset units at this scale, with the
+        exact raw integer on hover in the plots and tables. Starts at 6 for USDC — correct it for
+        another loan asset, or clear it to read raw integers everywhere.
+      </p>
+    </div>
+  </section>
+)
 
 const InvalidPreview = ({ kind, errors }: { kind: CollectionKind; errors: string[] }) => (
   <div className="invalid-preview" role="alert" data-preview-error={kind}>
@@ -264,7 +361,10 @@ const InvalidPreview = ({ kind, errors }: { kind: CollectionKind; errors: string
         <li key={error}>{error}</li>
       ))}
     </ul>
-    <span>No misleading graphic was generated.</span>
+    <span>
+      The shared parser the bot itself uses rejects this entry, so there are no offers to plot. The
+      matching output below is disabled until it is fixed.
+    </span>
   </div>
 )
 
@@ -362,6 +462,8 @@ const Playground = () => {
     status: initialValue.error ? 'error' : undefined
   })
   const [copyStatus, setCopyStatus] = useState<Status>({ message: '' })
+  const [decimals, setDecimals] = useState(DEFAULT_ASSET_DECIMALS)
+  const format = useMemo(() => assetFormatter(decimals), [decimals])
   const [unexpectedFailure, setUnexpectedFailure] = useState<{ error: unknown }>()
   const [activeExport, setActiveExport] = useState<ExportFormat>('bootstrap-json')
   const outputRefs = useRef<Record<ExportFormat, HTMLTextAreaElement | null>>({
@@ -419,14 +521,14 @@ const Playground = () => {
         let ladderErrors = [...ladderValidation.errors]
         if (bootstrapValidation.valid) {
           try {
-            bootstrapGraphics = deriveBootstrapGraphicModels(state.bootstrap)
+            bootstrapGraphics = deriveBootstrapGraphicModels(state.bootstrap, format)
           } catch (error) {
             bootstrapErrors = [playgroundErrorMessage(error)]
           }
         }
         if (ladderValidation.valid) {
           try {
-            ladderGraphics = generateLadderGraphicModels(state.ladder)
+            ladderGraphics = generateLadderGraphicModels(state.ladder, format)
           } catch (error) {
             ladderErrors = [playgroundErrorMessage(error)]
           }
@@ -675,6 +777,7 @@ const Playground = () => {
               </p>
             </header>
             <main>
+              <DisplayUnits decimals={decimals} onChange={setDecimals} />
               <section className="monitor" aria-labelledby="monitor-title">
                 <div className="section-heading">
                   <div>
@@ -689,6 +792,7 @@ const Playground = () => {
                     bootstrapGraphics.map((graphic, index) => (
                       <BootstrapGraphic
                         key={`${graphic.marketId}-${index}`}
+                        format={format}
                         graphic={graphic}
                         index={index}
                       />
@@ -704,6 +808,7 @@ const Playground = () => {
                     ladderGraphics.map((graphic, index) => (
                       <LadderGraphic
                         key={`${graphic.marketId}-${index}`}
+                        format={format}
                         graphic={graphic}
                         index={index}
                       />

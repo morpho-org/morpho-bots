@@ -1019,8 +1019,9 @@ try {
     input.dispatchEvent(new Event('input', { bubbles: true }));
     input.dispatchEvent(new Event('change', { bubbles: true }));
     await new Promise(r => setTimeout(r, 30));
-    const reference = document.querySelector('.ladder-reference-marker');
-    const center = document.querySelector('.ladder-center-marker');
+    const plot = document.querySelector('[data-preview="ladder"]');
+    const reference = plot.querySelector('.ladder-reference-marker');
+    const center = plot.querySelector('.ladder-center-marker');
     return {
       referenceTop: reference?.style.top,
       centerTop: center?.style.top,
@@ -1032,7 +1033,7 @@ try {
     referenceTop: '66.66%',
     centerTop: '50%',
     referenceLabel: 'Reference 400 BPS',
-    centerLabel: 'Center 500 BPS'
+    centerLabel: 'Quote 500 BPS'
   })
   await assertDocumentPersistenceClean('preview edit')
 
@@ -1097,6 +1098,8 @@ try {
     await new Promise(r => setTimeout(r, 30));
     const invalid = [...document.querySelectorAll('.exports textarea')].map(x => x.dataset.invalid);
     const previewErrors = document.querySelectorAll('[data-preview-error]').length;
+    const previewNotices = document.querySelectorAll('.preview-notice').length;
+    const plots = document.querySelectorAll('.ladder-plot').length;
     const shareDisabled = document.querySelector('#copy-share-url').disabled;
     document.querySelector('#copy-share-url').click();
     await new Promise(r => setTimeout(r, 0));
@@ -1105,11 +1108,22 @@ try {
     set('#bootstrap-0-premiumBps', '-50');
     set('#ladder-0-quotePremiumBps', '100');
     await new Promise(r => setTimeout(r, 30));
-    return { invalid, previewErrors, shareDisabled, copiedMatchesDisplayed: copied === displayed };
+    return {
+      invalid,
+      previewErrors,
+      previewNotices,
+      plots,
+      shareDisabled,
+      copiedMatchesDisplayed: copied === displayed
+    };
   })()`)
+  // A runtime-valid collection whose synthetic reference leaves the plotted range still previews:
+  // both plots render and each carries a notice, instead of the previews refusing to draw.
   assert.deepEqual(runtimePreviewParity, {
     invalid: ['false', 'false', 'false', 'false'],
-    previewErrors: 2,
+    previewErrors: 0,
+    previewNotices: 2,
+    plots: 2,
     shareDisabled: false,
     copiedMatchesDisplayed: true
   })

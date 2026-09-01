@@ -22,10 +22,30 @@ import {
   validateBootstrapCollection,
   validateLadderCollection
 } from '../../playground/model'
-import { PreviewGenerationError } from '../../playground/preview-generation.error'
 import { StrictJsonError } from '../../playground/strict-json.error'
 
 describe('bootstrap + ladder only playground follow-up', () => {
+  test('still previews a config whose derived reference leaves the plotted range', () => {
+    const state = createDefaultPlaygroundState()
+    state.bootstrap[0]!.premiumBps = '-1000'
+    state.ladder[0]!.quotePremiumBps = '-400'
+
+    const bootstrap = deriveBootstrapGraphicModels(state.bootstrap)[0]
+    expect(bootstrap?.referenceRateBps).toBe('1500')
+    expect(bootstrap?.notice).toContain('falls outside the plotted range')
+    expect(bootstrap?.notice).toContain('artefact of the preview')
+
+    const ladder = generateLadderGraphicModels(state.ladder)[0]
+    expect(ladder?.rungs.length).toBeGreaterThan(0)
+    expect(ladder?.notice).toContain('falls outside it')
+  })
+
+  test('leaves an in-range preview free of a notice', () => {
+    const state = createDefaultPlaygroundState()
+    expect(deriveBootstrapGraphicModels(state.bootstrap)[0]?.notice).toBeUndefined()
+    expect(generateLadderGraphicModels(state.ladder)[0]?.notice).toBeUndefined()
+  })
+
   test('canonical state contains exactly the two ordered collections', () => {
     const state = createDefaultPlaygroundState()
     expect(Object.keys(state)).toEqual(['bootstrap', 'ladder'])
@@ -80,13 +100,13 @@ describe('bootstrap + ladder only playground follow-up', () => {
     state.bootstrap[0]!.premiumBps = '0'
     expect(deriveBootstrapGraphicModels(state.bootstrap)[0]?.referenceRateBps).toBe('1')
     state.bootstrap[0]!.maximumRateBps = '0'
-    expect(() => deriveBootstrapGraphicModels(state.bootstrap)).toThrow(
-      'derived reference and quoted rates'
-    )
+    expect(deriveBootstrapGraphicModels(state.bootstrap)[0]?.notice).toContain('is not positive')
 
     state.bootstrap[0] = createDefaultBootstrap()
     state.bootstrap[0].premiumBps = '-1000'
-    expect(() => deriveBootstrapGraphicModels(state.bootstrap)).toThrow('configured bounds')
+    expect(deriveBootstrapGraphicModels(state.bootstrap)[0]?.notice).toContain(
+      'falls outside the plotted range'
+    )
   })
 
   test('round-trips, validates, and annotates a bootstrap maturity premium', () => {
@@ -120,7 +140,8 @@ describe('bootstrap + ladder only playground follow-up', () => {
     expect(graphic?.callouts).toContainEqual({
       label: 'Maturity premium',
       value:
-        'Linear +120 BPS per year to maturity, capped at 300 BPS; the preview quote range spans the clamped rates reachable from live time to maturity'
+        'Adds 120 BPS per year left to maturity, up to 300 BPS, shrinking as maturity approaches',
+      parameters: ['maturityPremium.premiumPerYearBps', 'maturityPremium.maximumPremiumBps']
     })
     expect(graphic).toMatchObject({
       referenceRateBps: '550',
@@ -215,7 +236,7 @@ describe('bootstrap + ladder only playground follow-up', () => {
     expect(graphic?.callouts).toContainEqual({
       label: 'Maturity premium',
       value:
-        'Linear +120 BPS per year to maturity, capped at 300 BPS; the preview anchors the at-maturity center and marks the far-maturity center at the highest reachable premium',
+        'Adds 120 BPS per year left to maturity, up to 300 BPS, shrinking as maturity approaches. The plot marks both ends of that travel',
       parameters: ['maturityPremium.premiumPerYearBps', 'maturityPremium.maximumPremiumBps']
     })
 
@@ -294,12 +315,16 @@ describe('bootstrap + ladder only playground follow-up', () => {
     })
     expect(graphic.axis.centerRateBps).toBe('100')
     expect(graphic.callouts).toContainEqual({
-      label: 'Center',
-      value: '400 + -300 = 100 BPS',
+      label: 'Quote premium',
+      value:
+        'Ladder centred on 100 BPS: fixed target 400 minus 300 BPS, which does not follow the market',
       parameters: ['quotePremiumBps']
     })
     expect(graphic.rateToY('100')).toBeGreaterThan(100)
     expect(clampPlotPercent(graphic.rateToY('100'))).toBe(100)
+    // The reference itself is in range, so only a marker-aware notice catches this.
+    expect(graphic.notice).toContain('the center 100 BPS falls outside it')
+    expect(graphic.notice).toContain('far-maturity center 20100 BPS falls outside it')
   })
 
   test('renders a hardcoded bootstrap reference outside bounds when its premium-adjusted quote is valid', () => {
@@ -333,10 +358,77 @@ describe('bootstrap + ladder only playground follow-up', () => {
     })
   })
 
-  test('rejects a deterministic ladder reference outside its own configured bounds', () => {
+  test('reports a bootstrap target already satisfied by its allowed shortfall', () => {
+    const state = createDefaultPlaygroundState()
+    state.bootstrap[0]!.acceptanceAssets = state.bootstrap[0]!.creditTarget
+    expect(validateBootstrapCollection(state.bootstrap).valid).toBe(true)
+    const callouts = deriveBootstrapGraphicModels(state.bootstrap)[0]!.callouts
+    expect(callouts.find(item => item.label === 'Credit target')?.value).toContain(
+      'no offer is ever published'
+    )
+    expect(callouts.find(item => item.label === 'Maximum offer size')?.value).toContain(
+      'No offer is published'
+    )
+  })
+
+  test('describes a hardcoded bootstrap target as fixed rather than market-following', () => {
+    const state = createDefaultPlaygroundState()
+    state.bootstrap[0]!.targetRate = { strategy: 'hardcoded', hardcodedRateBps: '500' }
+    const value = deriveBootstrapGraphicModels(state.bootstrap)[0]!.callouts.find(
+      item => item.label === 'Quote premium'
+    )?.value
+    expect(value).toContain('fixed 450 BPS')
+    expect(value).toContain('does not follow the market')
+    expect(value).not.toContain('follows the market while')
+  })
+
+  test('qualifies a reference band as at-maturity when a maturity premium is configured', () => {
+    const state = createDefaultPlaygroundState()
+    state.bootstrap[0]!.maturityPremium = { shape: 'linear', premiumPerYearBps: '120' }
+    expect(
+      deriveBootstrapGraphicModels(state.bootstrap)[0]!.callouts.find(
+        item => item.label === 'Quote premium'
+      )?.value
+    ).toContain('measured at maturity')
+  })
+
+  test('limits the auto-refill promise to the running service instance', () => {
+    const state = createDefaultPlaygroundState()
+    state.bootstrap[0]!.autoRefill = false
+    const value = deriveBootstrapGraphicModels(state.bootstrap)[0]!.callouts.find(
+      item => item.label === 'Auto-refill'
+    )?.value
+    expect(value).toContain('this service instance only')
+    expect(value).not.toContain('for good')
+  })
+
+  test('explains a ladder shape that cannot fit its hard range, with the arithmetic', () => {
+    const state = createDefaultPlaygroundState()
+    state.ladder[0]!.spreadBps = '200'
+    state.ladder[0]!.stepBps = '100'
+    state.ladder[0]!.rungCount = '4'
+
+    const result = validateLadderCollection(state.ladder)
+    expect(result.valid).toBe(false)
+    expect(result.errors[0]).toContain('full ladder shape cannot fit in the hard range')
+    expect(result.errors[1]).toBe(
+      'Ladder 1: 4 rungs per side with a 200 BPS spread and a 100 BPS step span 800 BPS, but 200–800 BPS is only 600 BPS wide. Lower the rung count, the step or the spread, or widen the rate bounds.'
+    )
+  })
+
+  test('adds no shape diagnostic when the entry is valid or its integers are unusable', () => {
+    const state = createDefaultPlaygroundState()
+    expect(validateLadderCollection(state.ladder)).toEqual({ valid: true, errors: [] })
+    state.ladder[0]!.stepBps = 'abc'
+    expect(validateLadderCollection(state.ladder).errors).toHaveLength(1)
+  })
+
+  test('previews a deterministic ladder reference outside its own configured bounds', () => {
     const state = createDefaultPlaygroundState()
     state.ladder[0]!.quotePremiumBps = '-1000'
-    expect(() => generateLadderGraphicModels(state.ladder)).toThrow('configured bounds')
+    const graphic = generateLadderGraphicModels(state.ladder)[0]
+    expect(graphic?.notice).toContain('falls outside it')
+    expect(graphic?.rungs.length).toBeGreaterThan(0)
     expect(validateLadderCollection(state.ladder).valid).toBe(true)
   })
 
@@ -377,14 +469,16 @@ describe('bootstrap + ladder only playground follow-up', () => {
     ])
     expect(shared.rungs.every(rung => rung.y >= 0 && rung.y <= 100)).toBe(true)
     expect(shared.callouts.map(callout => callout.label)).toEqual([
-      'Center',
-      'Spacing & sizing',
+      'Quote premium',
+      'Full spread and step',
+      'Size skew',
       'Budgets',
+      'Minimum offer size',
       'Exposure caps',
-      'Grouping',
-      'Cadence & tolerance',
-      'Hard bounds',
-      'Live state'
+      'Minimum and maximum rate',
+      'Fill sharing',
+      'Check interval',
+      'Not shown here'
     ])
 
     ladder.groupMode = 'per-book'
@@ -488,8 +582,6 @@ describe('bootstrap + ladder only playground follow-up', () => {
 
   test('classifies expected playground failures by concern without echoing rejected payloads', () => {
     const state = createDefaultPlaygroundState()
-    state.bootstrap[0]!.premiumBps = '-1000'
-    expect(() => deriveBootstrapGraphicModels(state.bootstrap)).toThrow(PreviewGenerationError)
 
     expect(() => parseCollectionsImport('{"bootstrap":')).toThrow(StrictJsonError)
     expect(() => parseCollectionsImport('42')).toThrow(CollectionImportError)
@@ -571,7 +663,7 @@ describe('bootstrap + ladder only playground follow-up', () => {
     ).toThrow('unsupported key')
   })
 
-  test('keeps runtime-valid collections exportable when only synthetic previews cannot derive', () => {
+  test('keeps runtime-valid collections exportable when the synthetic reference leaves the range', () => {
     const state = createDefaultPlaygroundState()
     state.bootstrap[0]!.premiumBps = '-1000'
     state.ladder[0]!.quotePremiumBps = '-1000'
@@ -584,8 +676,8 @@ describe('bootstrap + ladder only playground follow-up', () => {
     expect(exportBootstrapMarketsEnvValue(state.bootstrap)).toBe(JSON.stringify(state.bootstrap))
     expect(exportLadderJson(state.ladder)).toBe(`${JSON.stringify(state.ladder, null, 2)}\n`)
     expect(exportLadderMarketsEnvValue(state.ladder)).toBe(JSON.stringify(state.ladder))
-    expect(() => deriveBootstrapGraphicModels(state.bootstrap)).toThrow('configured bounds')
-    expect(() => generateLadderGraphicModels(state.ladder)).toThrow('configured bounds')
+    expect(deriveBootstrapGraphicModels(state.bootstrap)[0]?.notice).toBeDefined()
+    expect(generateLadderGraphicModels(state.ladder)[0]?.notice).toBeDefined()
   })
 
   test('exports exactly four independently validated collection values', () => {
