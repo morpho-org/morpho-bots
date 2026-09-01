@@ -372,7 +372,7 @@ type TickRouting = {
  * **Pairs are deduplicated before anything is warmed**, keyed exactly as the probe cache keys them, so
  * several slots on one pair — or several positions in one market — trigger one sweep; and no pair
  * without a sized candidate is ever probed. A candidate that needs no route at all (a swap-free slot, a
- * bad-debt write-off) resolves nothing and warms nothing.
+ * bad-debt write-off) — or one phase B will suppress anyway — resolves nothing and warms nothing.
  *
  * Failure is non-fatal in both stages: an unresolved candidate is left `unknown` and a failed warm
  * simply leaves the curve cold, which fails the affected positions open to gross-surplus ordering.
@@ -383,13 +383,26 @@ type TickRouting = {
 const prepareRoutes = async (deps: {
   sized: readonly SizedCandidate[]
   routing: TickRouting
+  /**
+   * Whether phase B will skip this candidate outright. Suppression is position-keyed and constant
+   * within a tick, so consulting it here is safe and keeps backoff's contract — a suppressed position
+   * costs no RPC and no venue traffic — which resolving routes ahead of the gate would have broken.
+   */
+  suppressed: (candidate: SizedCandidate) => boolean
   logger: Logger
 }): Promise<Map<SizedCandidate, RouteState>> => {
-  const { sized, routing, logger } = deps
+  const { sized, routing, suppressed, logger } = deps
   const states = new Map<SizedCandidate, RouteState>()
   const pairs = new Map<string, VenuePair>()
 
   for (const candidate of sized) {
+    // `unknown` rather than `no_route`: this route's cost is genuinely unmeasured, and claiming it
+    // needs none would price it at zero and let it outrank a costed sibling. Every candidate of a
+    // suppressed position is suppressed, so the fail-open ordering this triggers is moot for it.
+    if (suppressed(candidate)) {
+      states.set(candidate, { kind: 'unknown' })
+      continue
+    }
     // Two shapes need no route, and they must not be costed as `unknown`: that is a per-POSITION
     // fail-open signal (see {@link RouteState}), so reporting it here would drop a whole write-off
     // position back to gross ordering. A write-off also never reaches `quoteFor` at all — phase B
@@ -713,7 +726,16 @@ export async function runTick(deps: {
   // 5. Phase A.5 — the async step between sizing and the expensive work: resolve each candidate's
   // route and start warming the (deduplicated) probe curves for those pairs only. The warm is NOT
   // awaited; this tick reads whatever the cache already holds (see {@link prepareRoutes}).
-  const states = await prepareRoutes({ sized: probeable, routing, logger })
+  const states = await prepareRoutes({
+    sized: probeable,
+    routing,
+    // The same two gates phase B applies at its cooldown/backoff checks, read here so a suppressed
+    // position spends nothing. `needsSwap` mirrors phase B exactly: a write-off is never backed off.
+    suppressed: candidate =>
+      cooldown.shouldSkip(candidate.label) ||
+      (!isBadDebtRealization(candidate.plan) && backoff.shouldSkip(candidate.label, chainHead)),
+    logger
+  })
 
   // 6. Rank net of route cost, THEN truncate. Both halves matter: charging the route makes a swap-free
   // slot beat a nominally larger swap slot the incentive cannot fund, and capping afterwards means the
@@ -750,6 +772,10 @@ export async function runTick(deps: {
   // Positions an execution-reverted send exempts from `pendingBackoff` — see the `executionRevert`
   // arm for why the exemption has to be a latch.
   const backoffExempt = new Set<string>()
+  // Positions a send REJECTION arms unconditionally, overriding that exemption. Both sets are keyed
+  // by position, so without this a sibling's execution revert would cancel the backoff a broken
+  // nonce/funds/RPC send earned — see the `sendRejected` arm.
+  const backoffForced = new Set<string>()
   const pendingCooldown = new Set<string>()
   let complete = false
   // Firm venue calls this tick, `null` while no quote reported any: an absent `firmCalls` is unknown,
@@ -1003,8 +1029,11 @@ export async function runTick(deps: {
           } else {
             counters.sendRejected += 1
             // The send machinery failed (nonce, funds, RPC): a fact about this position that says nothing
-            // about the chain's view of the plan, so it arms backoff and ends the streak.
+            // about the chain's view of the plan, so it arms backoff and ends the streak. FORCED, because
+            // a sibling's execution revert is a verdict on that sibling's plan and refutes nothing about
+            // broken send machinery — without the override the position would re-send every block.
             pendingBackoff.add(label)
+            backoffForced.add(label)
             revertStreaks.reset(label)
           }
         }
@@ -1016,7 +1045,7 @@ export async function runTick(deps: {
     // preamble). In the `finally` so an aborting `submit` still records what the tick learned.
     for (const label of pendingCooldown) cooldown.mark(label)
     for (const label of pendingBackoff) {
-      if (!backoffExempt.has(label)) backoff.record(label, chainHead)
+      if (backoffForced.has(label) || !backoffExempt.has(label)) backoff.record(label, chainHead)
     }
     logger.info('tick.end', {
       ...counters,

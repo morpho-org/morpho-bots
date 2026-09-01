@@ -580,11 +580,11 @@ export type QuoteLogger = {
  * cost is reported as {@link QuoteOutcome.firmCalls}. Quotes are made ONLY for liquidatable positions,
  * so API + probe usage is bounded by the (small) liquidatable set, never the full candidate universe.
  *
- * No enabled venues → `no_config` (no API call, no probe), preserving the caller's no-swap posture —
- * but the {@link swapFreePlan} short-circuit is evaluated FIRST, so a sell path already ending in the
- * loan token still resolves. The unwrap chain therefore runs even with no venues enabled, since that
- * is what determines whether a venue is needed at all; unwrappers memoize their negatives, so a plain
- * ERC-20 collateral costs one read per token for the process lifetime.
+ * No enabled venues → `no_config`, preserving the caller's no-swap posture. Whether that refusal is
+ * immediate depends on {@link composeMultiVenueQuoting}'s `swapFreeWithoutVenues`: a caller with a
+ * swap-free liquidation path resolves the unwrap chain first, because that chain is what decides
+ * whether a venue is needed at all; a caller without one refuses before spending any RPC, since
+ * nothing downstream could succeed.
  */
 export function composeMultiVenueQuoting(deps: {
   httpClient: RateLimitedClient
@@ -597,6 +597,16 @@ export function composeMultiVenueQuoting(deps: {
   maxRouteImpactBps: number
   /** Pre-swap converters, tried in order each hop. Pass `[]` for venue-only quoting. */
   unwrappers: readonly Unwrapper[]
+  /**
+   * Whether a venue-less deployment may still act on a plan that needs no venue (the sell path
+   * already ends in the loan token). Only for callers whose protocol has such a mode — Midnight's
+   * loan-as-collateral slots, which must stay liquidatable in `ALLOW_BAD_DEBT_ONLY` mode.
+   *
+   * Defaults to `false`, which is what keeps a deliberately unarmed deployment unarmed: with no
+   * venues the quote refuses immediately, before any unwrap RPC, so the bot can neither broadcast
+   * nor arm per-position backoff off a transient read failure.
+   */
+  swapFreeWithoutVenues?: boolean
   /**
    * Probe-cache refresh for the (post-unwrap) pair — runs here, after unwrap resolution, so the
    * probes price the tradable underlying. Failures are non-fatal (cold-default venue order).
@@ -621,6 +631,7 @@ export function composeMultiVenueQuoting(deps: {
     baseUrls,
     maxRouteImpactBps,
     unwrappers,
+    swapFreeWithoutVenues = false,
     refresh,
     select,
     logger
@@ -695,14 +706,20 @@ export function composeMultiVenueQuoting(deps: {
       const { collateralToken, loanToken, referenceAmountOut } = request
       const correlation = correlationOf(request)
 
+      // A caller with no swap-free path cannot act on ANY outcome once the venues are gone, so the
+      // refusal comes before the unwrap chain rather than after it. Resolving first would both spend
+      // reads that provably cannot lead to a broadcast and downgrade a transient read failure from
+      // `no_config` (skip) to `failed` (arms backoff) — see `swapFreeWithoutVenues`.
+      if (venues.length === 0 && !swapFreeWithoutVenues) return { kind: 'no_config', firmCalls: 0 }
+
       const unwrapped = await tryResolveUnwraps(unwrappers, request, executor, logger)
       if ('outcome' in unwrapped) return { ...unwrapped.outcome, firmCalls: 0 }
       const { resolution } = unwrapped
 
       // Nothing left to sell, so this resolves WITHOUT a venue — deliberately ahead of the
-      // no-venues gate below. A collateral token that is already the loan token needs no route at
-      // all, so a keyless / bad-debt-only deployment must still be able to liquidate it; gating on
-      // `venues` first would refuse the one case that provably does not need one.
+      // no-venues gate below. A sell path already ending in the loan token needs no route at all, so
+      // a caller that opted into `swapFreeWithoutVenues` must still be able to liquidate it; gating
+      // on `venues` first would refuse the one case that provably does not need one.
       if (isAddressEqual(resolution.token, loanToken)) {
         return { ...swapFreePlan({ resolution, request, maxRouteImpactBps, logger }), firmCalls: 0 }
       }

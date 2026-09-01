@@ -65,6 +65,20 @@ function fakeUnwrapper(args: { from: Address; to: Address; out: bigint }): Unwra
   }
 }
 
+// An unwrapper whose detection read fails, standing in for a transient RPC failure inside erc4626 /
+// Pendle resolution. Records whether it was reached at all.
+function throwingUnwrapper(): Unwrapper & { probed: Address[] } {
+  const probed: Address[] = []
+  return {
+    kind: 'throwing',
+    probed,
+    async resolve({ token }) {
+      probed.push(token)
+      throw new QuoteError('api_error', 'detection read failed')
+    }
+  }
+}
+
 const throwingHttp: RateLimitedClient = {
   getJson: async () => {
     throw new QuoteError('rate_limited', 'boom')
@@ -157,7 +171,12 @@ function composeMulti(
   venues: Venue[],
   order: { venue: Venue; expectedOut: bigint }[],
   httpClient: RateLimitedClient,
-  options: { unwrappers?: readonly Unwrapper[]; clamped?: boolean; ageMs?: number } = {}
+  options: {
+    unwrappers?: readonly Unwrapper[]
+    clamped?: boolean
+    ageMs?: number
+    swapFreeWithoutVenues?: boolean
+  } = {}
 ) {
   const refreshed: { collateral: Address; loan: Address }[] = []
   const selected: {
@@ -178,6 +197,7 @@ function composeMulti(
     baseUrls: {},
     maxRouteImpactBps: 500, // floor = 950
     unwrappers: options.unwrappers ?? [],
+    swapFreeWithoutVenues: options.swapFreeWithoutVenues ?? false,
     refresh: async pair => {
       refreshed.push(pair)
     },
@@ -416,12 +436,32 @@ describe('composeMultiVenueQuoting', () => {
     expect(refreshed).toHaveLength(0)
   })
 
-  it('still resolves unwraps with no venues, then reports no_config for a chain needing one', async () => {
-    // The no-venues gate now sits AFTER the swap-free short-circuit, so the unwrap chain runs first —
-    // it is what decides whether a venue is needed at all. A chain ending somewhere other than the
-    // loan token still needs one, so the outcome is unchanged; only the probing is.
+  it('skips unwrap resolution entirely with no venues and no swap-free path', async () => {
+    // The refusal must come BEFORE the unwrap chain: a caller with no swap-free path cannot act on
+    // any outcome, so resolving first would spend reads that provably cannot lead to a broadcast.
     const unwrapper = fakeUnwrapper({ from: COLLATERAL, to: UNDERLYING, out: 970n })
     const { quoteFor } = composeMulti([], [], multiHttp({}), { unwrappers: [unwrapper] })
+    expect(await quoteFor(REQUEST)).toEqual({ kind: 'no_config', firmCalls: 0 })
+    expect(unwrapper.probed).toHaveLength(0)
+  })
+
+  it('reports no_config, never failed, when an unwrapper throws with no venues', async () => {
+    // `failed` arms per-position backoff where `no_config` does not, so a transient read failure must
+    // not push a deliberately unarmed deployment into a suppression state machine it never enters.
+    const unwrapper = throwingUnwrapper()
+    const { quoteFor } = composeMulti([], [], multiHttp({}), { unwrappers: [unwrapper] })
+    expect(await quoteFor(REQUEST)).toEqual({ kind: 'no_config', firmCalls: 0 })
+  })
+
+  it('still resolves unwraps with no venues when the caller has a swap-free path', async () => {
+    // Midnight's posture: the unwrap chain is what decides whether a venue is needed at all, so a
+    // bad-debt-only deployment resolves it. A chain ending elsewhere than the loan token still needs
+    // a venue, so the outcome is unchanged; only the probing is.
+    const unwrapper = fakeUnwrapper({ from: COLLATERAL, to: UNDERLYING, out: 970n })
+    const { quoteFor } = composeMulti([], [], multiHttp({}), {
+      unwrappers: [unwrapper],
+      swapFreeWithoutVenues: true
+    })
     expect(await quoteFor(REQUEST)).toEqual({ kind: 'no_config', firmCalls: 0 })
     expect(unwrapper.probed.length).toBeGreaterThan(0)
   })
@@ -447,12 +487,20 @@ describe('composeMultiVenueQuoting', () => {
       expect(selected).toHaveLength(0)
     })
 
-    it('resolves even with NO venues enabled — no route is needed, so none is required', async () => {
+    it('resolves with NO venues enabled when the caller opted into a swap-free path', async () => {
       // The point of moving the gate: a keyless / bad-debt-only deployment must still clear these.
-      const { quoteFor } = composeMulti([], [], throwingHttp)
+      const { quoteFor } = composeMulti([], [], throwingHttp, { swapFreeWithoutVenues: true })
       const outcome = await quoteFor(SELF)
       expect(outcome.kind).toBe('swap')
       if (outcome.kind === 'swap') expect(outcome.plan.steps).toHaveLength(0)
+    })
+
+    it('refuses with NO venues enabled when the caller has no swap-free path', async () => {
+      // The safety invariant behind a detection-only deployment: with the venues gone it must hand
+      // back nothing actionable, because its caller takes `kind: 'swap'` straight to simulate+submit.
+      // Opting in is what arms this path, so the default must never produce a broadcastable plan.
+      const { quoteFor } = composeMulti([], [], throwingHttp)
+      expect(await quoteFor(SELF)).toEqual({ kind: 'no_config', firmCalls: 0 })
     })
 
     it('does not consult the unwrappers — the sell path is already over', async () => {

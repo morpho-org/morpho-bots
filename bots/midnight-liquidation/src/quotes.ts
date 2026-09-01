@@ -76,6 +76,10 @@ export function composeQuoting(deps: {
     ...rest,
     executor,
     unwrappers,
+    // Midnight liquidates loan-as-collateral slots with no route at all, and `ALLOW_BAD_DEBT_ONLY`
+    // is a supported posture, so a venue-less deployment must still resolve the unwrap chain to find
+    // those. Blue leaves this off: it has no such mode, and staying unarmed is the point there.
+    swapFreeWithoutVenues: true,
     // The composer owns the probe refresh now: it runs after unwrap resolution so probes price the
     // tradable underlying, not an exotic collateral the venues can't quote.
     refresh: selector.refresh,

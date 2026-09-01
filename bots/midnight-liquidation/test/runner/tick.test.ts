@@ -246,6 +246,8 @@ function runWith(opts: {
   // Collateral tokens phase A.5 asked to be warmed, in call order — one entry per refresh actually
   // issued, so a duplicate here is a duplicated probe burst.
   const warmed: Address[] = []
+  // Candidate slots phase A.5 resolved a route for — the RPC a suppressed position must not spend.
+  const resolved: number[] = []
   // Every streak call in order, so a test can pin that the tick records the chain's declines and ends
   // the streak on everything else — the store's own arithmetic is covered in revert-streak.test.ts.
   const streakCalls: { kind: 'record' | 'reset'; label: string; selector?: Hex }[] = []
@@ -268,6 +270,7 @@ function runWith(opts: {
   }
   const routing = {
     resolveRoute: async (plan: LiquidationPlan, out: LensOut) => {
+      resolved.push(plan.collateralIndex)
       const collateral = out.market.collateralParams[plan.collateralIndex]
       if (!collateral || collateral.token === out.market.loanToken) return null
       return {
@@ -343,6 +346,7 @@ function runWith(opts: {
     quoteCalls: () => quoteCalls,
     order,
     warmed,
+    resolved,
     streakCalls,
     events
   }))
@@ -427,6 +431,28 @@ describe('runTick', () => {
     expect(counters).toMatchObject({ liquidatable: 1, backoffSkipped: 1, submitted: 0 })
     expect(quoteCalls()).toBe(0)
     expect(simulateCalls()).toBe(0)
+  })
+
+  it('spends no route RPC or probe warm on a suppressed position', async () => {
+    // Backoff exists to bound API + RPC usage under a backlog, so the suppression gate has to be read
+    // in phase A.5 too: resolving routes there would spend an uncached read per candidate per tick on
+    // exactly the positions the gate exists to stop, and put that latency ahead of the first send.
+    const { counters, resolved, warmed } = await runWith({
+      chainHead: 101n,
+      seedBackoffAt: 100n
+    })
+    expect(counters).toMatchObject({ backoffSkipped: 1 })
+    expect(resolved).toHaveLength(0)
+    expect(warmed).toHaveLength(0)
+  })
+
+  it('spends no route RPC on a cooled-down position', async () => {
+    const cooldown = createCooldownStore({ cooldownMs: 60_000 })
+    cooldown.mark(LABEL)
+    const { counters, resolved, warmed } = await runWith({ cooldown })
+    expect(counters).toMatchObject({ cooledDown: 1 })
+    expect(resolved).toHaveLength(0)
+    expect(warmed).toHaveLength(0)
   })
 
   it('clears backoff on a successful submit', async () => {
@@ -805,6 +831,41 @@ describe('runTick', () => {
         })
         expect(counters).toMatchObject({ candidates: 2, reverted: 1, ok: 1, sendReverted: 1 })
         expect(backoff.shouldSkip(LABEL, 101n)).toBe(false)
+        expectCounterIdentities(counters)
+      })
+
+      it('a send REJECTION still suppresses, even when a sibling execution-reverted', async () => {
+        // The exemption is an economic verdict on ONE candidate's plan; it refutes nothing about
+        // broken send machinery, which is a fact about the position. Without the override the
+        // position would re-send into a broken nonce/funds/RPC path every block.
+        let calls = 0
+        const { counters, backoff } = await runWith({
+          out: twoSlots(),
+          submitWith: async () => {
+            calls += 1
+            return calls === 1
+              ? { sent: false, reason: 'send_failed', executionRevert: false }
+              : declined
+          }
+        })
+        expect(counters).toMatchObject({ candidates: 2, sendRejected: 1, sendReverted: 1 })
+        expect(backoff.shouldSkip(LABEL, 101n)).toBe(true)
+        expectCounterIdentities(counters)
+      })
+
+      it('suppresses on a rejection that lands AFTER the sibling execution revert', async () => {
+        let calls = 0
+        const { counters, backoff } = await runWith({
+          out: twoSlots(),
+          submitWith: async () => {
+            calls += 1
+            return calls === 1
+              ? declined
+              : { sent: false, reason: 'send_failed', executionRevert: false }
+          }
+        })
+        expect(counters).toMatchObject({ candidates: 2, sendRejected: 1, sendReverted: 1 })
+        expect(backoff.shouldSkip(LABEL, 101n)).toBe(true)
         expectCounterIdentities(counters)
       })
 
