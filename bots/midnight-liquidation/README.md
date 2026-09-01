@@ -1,6 +1,6 @@
 # Midnight Liquidation Bot
 
-Off-chain liquidator for Morpho Midnight markets on Base.
+Off-chain liquidator for Morpho Midnight markets, running on Base and Ethereum mainnet.
 
 The bot watches candidate borrowers, reads their live Midnight state, builds a liquidation plan,
 simulates the exact transaction it would send, and only broadcasts when the full Executor path
@@ -10,7 +10,11 @@ succeeds.
 
 This package is operational code, but it is still intentionally narrow:
 
-- Supported chain: Base (`CHAIN_ID=8453`).
+- Supported chains: Base (`CHAIN_ID=8453`) and Ethereum mainnet (`CHAIN_ID=1`). **One process per
+  chain** — the bot is single-chain by design; horizontal scale is one deployment per chain.
+- Each chain carries its own calibration (`TuningConfig` in `src/config.ts`): block-denominated
+  values are derived from a shared wall-clock intent through the chain's block time, and the fee /
+  economics values are set per chain. Every one of them is still overridable by its env var.
 - The markets the bot may touch come from the Midnight markets API (`listed=true`) as a **whitelist**:
   only listed markets are discovered, probed, and liquidated (fail-closed). There is no hand-maintained
   collateral list.
@@ -66,8 +70,8 @@ Environment variables:
 
 | Var                                                       | Required | Default                               | Purpose                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | --------------------------------------------------------- | -------- | ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `CHAIN_ID`                                                | yes      | —                                     | Must be `8453` for Base.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| `RPC_URL`                                                 | yes      | —                                     | Base RPC used for reads, simulation, and sends. Must be a full RPC that relays `eth_sendRawTransaction` — a read-only relay that acks sends without forwarding them to the sequencer would leave every tx unmined.                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `CHAIN_ID`                                                | yes      | —                                     | Must be in the chain map: `8453` (Base) or `1` (Ethereum mainnet). Selects the deployment address and the chain tuning row.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `RPC_URL`                                                 | yes      | —                                     | RPC for the configured chain, used for reads, simulation, and sends. Must be a full RPC that relays `eth_sendRawTransaction` — a read-only relay that acks sends without forwarding them to the sequencer would leave every tx unmined.                                                                                                                                                                                                                                                                                                                                                                                        |
 | `RPC_URL_FALLBACK`                                        | no       | —                                     | Optional fallback RPC for the signer's transport.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | `LIQUIDATOR_PRIVATE_KEY`                                  | yes      | —                                     | `0x`-prefixed 32-byte private key for the sender EOA.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | `EXECUTOOOR_ADDRESS`                                      | no       | derived                               | Override for the shared Executor address.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
@@ -114,10 +118,30 @@ RPC_URL_FALLBACK=https://base-mainnet-fallback.example
 LIQUIDATOR_PRIVATE_KEY=0x...
 ZEROX_API_KEY=...
 ONEINCH_API_KEY=...
+# Fee and economics knobs default from the chain's tuning row; set them only to override.
 MAX_FEE_GWEI=300
 PRIORITY_FEE_GWEI=0.1
 LOG_LEVEL=info
 ```
+
+### Per-chain defaults
+
+Several defaults are **chain-dependent**, resolved from the `CHAIN_ID` row before any env override is
+applied. Block counts come from one shared wall-clock intent divided by the chain's block time, so the
+same behaviour keeps the same timing on a ~2s and a ~12s chain.
+
+| Default                                 | Base (8453) | Mainnet (1) | Why it differs                                                             |
+| --------------------------------------- | ----------- | ----------- | -------------------------------------------------------------------------- |
+| settle cooldown / stuck / backoff, etc. | 20n/4n/2n   | 3n/1n/1n    | Same wall-clock intent, ~6x the block time.                                |
+| `MAX_FEE_GWEI`                          | `300`       | `50`        | Never binds on Base; on mainnet it is the only hard bound on spend per tx. |
+| `PRIORITY_FEE_GWEI`                     | `0.1`       | `2`         | Base tips are nominal; mainnet's are a real market.                        |
+| `MIN_SURPLUS_BPS`                       | `0`         | `25`        | Break-even is a loss after mainnet gas — see the caveat below.             |
+| `SEIZE_CAP_MARGIN_BPS`                  | `30`        | `60`        | One block of oracle drift is ~6x longer on mainnet.                        |
+
+> **Mainnet caveat.** Gas is not part of the profitability comparison (`src/runner/profitability.ts`
+> weighs the quoted route against the contract-derived repay only). `MIN_SURPLUS_BPS` is a stopgap
+> proxy: because it is bps of the repay, it under-covers small positions and over-charges large ones.
+> Calibrate it against observed gas per liquidation and typical position size.
 
 ### Markets, venues, and probing
 
@@ -280,35 +304,45 @@ Useful options:
 
 ## Running With Docker Compose
 
-[docker-compose.yml](./docker-compose.yml) defines a single `bot` service (discovery is the remote
-API, so there is no database or indexer). It builds from the repo root so workspace packages resolve
-correctly.
+[docker-compose.yml](./docker-compose.yml) defines one service per chain — `bot-8453` and `bot-1`
+(discovery is the remote API, so there is no database or indexer). Both build from the repo root so
+workspace packages resolve correctly.
+
+Operator-facing RPC and venue vars are **chainId-suffixed**; inside each container the runtime env is
+unsuffixed, because each service runs exactly one chain.
 
 From `bots/midnight-liquidation`:
 
 ```sh
-export RPC_URL=https://base-mainnet.example
+export RPC_URL_8453=https://base-mainnet.example
+export RPC_URL_1=https://eth-mainnet.example
 export LIQUIDATOR_PRIVATE_KEY=0x...
-export ZEROX_API_KEY=...   # and/or ONEINCH_API_KEY
+export ZEROX_API_KEY_8453=...   # and/or ONEINCH_API_KEY_8453 / LIFI_API_KEY_8453
 docker compose up --build
 ```
+
+Run a single chain with `docker compose up --build bot-8453`.
 
 Optional variables:
 
 ```sh
 export EXECUTOOOR_ADDRESS=0x...
 export LOG_LEVEL=debug
+export RPC_URL_FALLBACK_8453=https://base-mainnet-fallback.example
+export ALLOW_BAD_DEBT_ONLY_1=true   # run a chain unarmed, with no venue key
 ```
 
 ## Deploying to Railway
 
-The bot runs as a single service on the Railway project `bot.liquidation.midnight` (discovery is the
-remote API — no Postgres or indexer service). [scripts/deploy-railway.ts](./scripts/deploy-railway.ts)
-provisions and deploys it idempotently from the [Railway CLI](https://docs.railway.com/guides/cli), so
-it runs the same locally or in CI.
+The bot runs as one service per chain on the Railway project `bot.liquidation.midnight` (discovery is
+the remote API — no Postgres or indexer service).
+[scripts/deploy-railway.ts](./scripts/deploy-railway.ts) provisions and deploys them idempotently from
+the [Railway CLI](https://docs.railway.com/guides/cli), so it runs the same locally or in CI.
 
-Railway service names are project-wide: production uses `bot`, while non-production environments use
-an environment prefix (for example, `staging-bot`).
+Railway service names are project-wide: production uses `bot-<chainId>` (`bot-8453`, `bot-1`), while
+non-production environments use an environment prefix (for example, `staging-bot-8453`). After
+`bot-8453` is confirmed healthy, the script retires the legacy single-chain `bot` service — leaving it
+up would run a second, stale Base liquidator against the same funded key.
 
 The [Dockerfile](./Dockerfile) is a single-stage Node image (pnpm installs, esbuild bundles, node runs);
 `RAILWAY_DOCKERFILE_PATH` points Railway at it and `railway up` runs from the repo root so the pnpm
@@ -321,18 +355,36 @@ environment and run the script:
 
 ```sh
 export RAILWAY_PROJECT_ID=...   # required: the Railway project to deploy to
-export RPC_URL=https://base-mainnet.example
-export LIQUIDATOR_PRIVATE_KEY=0x...
-# Optional: RAILWAY_ENVIRONMENT (defaults to production).
+export RPC_URL_8453=https://base-mainnet.example
+export RPC_URL_1=https://eth-mainnet.example
+export LIQUIDATOR_PRIVATE_KEY=0x...          # or per-chain LIQUIDATOR_PRIVATE_KEY_<chainId>
+export ZEROX_API_KEY=...                     # venue inputs; per-chain via ZEROX_API_KEY_<chainId> etc.
+# Optional: RAILWAY_ENVIRONMENT (defaults to production), RPC_URL_FALLBACK_<chainId>,
+# MAX_FEE_GWEI/PRIORITY_FEE_GWEI/MIN_SURPLUS_BPS[_<chainId>], ALLOW_BAD_DEBT_ONLY[_<chainId>].
 pnpm --filter @morpho-org/midnight-liquidation run deploy:railway
 ```
 
 Secrets are read from the script's environment, piped to Railway via stdin (never argv), and never
-logged. The script fails loud if `RPC_URL` or `LIQUIDATOR_PRIVATE_KEY` is missing.
+logged. The script fails loud — before mutating any Railway state — if a chain's `RPC_URL_<chainId>`
+or private key is missing, or if a chain has no venue enabled and no `ALLOW_BAD_DEBT_ONLY` opt-in.
 
-Set `DEPLOY_ONLY=1` (or `true`) to re-ship the **already-provisioned** `bot` service from the current
-working tree without setting any secrets or variables — the mode the deploy CI uses (it holds no
-RPC/keys). In this mode `RPC_URL` and `LIQUIDATOR_PRIVATE_KEY` are not required.
+The venue posture is **synchronized** on every full run: `ENABLE_LIFI` / `ALLOW_BAD_DEBT_ONLY` are set
+explicitly, and each venue key and fee override is either set from this run's inputs or **deleted**
+when absent — so neither a stale opt-in nor a dropped key can linger from a previous run. A `CRASHED`
+deployment counts as a failed deploy, because the bot fails loud on a bad config.
+
+Set `DEPLOY_ONLY=1` (or `true`) to re-ship every **already-provisioned** `bot-<chainId>` service from
+the current working tree without setting any secrets or variables — the mode the deploy CI uses (it
+holds no RPC/keys). In this mode the RPC and key requirements do not apply.
+
+Mainnet needs the Executor deployed once before its service can boot (startup asserts it holds code):
+
+```sh
+RPC_URL=<mainnet> DEPLOYER_PRIVATE_KEY=0x... pnpm --filter @repo/contracts run deploy:executor
+```
+
+Provisioning mainnet ahead of any listed market is safe: the whitelist is fail-closed, so the bot
+idles at `markets.listed { markets: 0 }` rather than erroring, and starts working when markets list.
 
 ### Venue API keys
 

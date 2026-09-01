@@ -7,6 +7,8 @@ import { getAddress, isAddress, isHex } from 'viem'
 
 import type { paths } from '../generated/markets-api'
 
+import { collectPages } from './paginate.utils'
+
 /** A candidate position to evaluate: a (market, borrower) pair the API flagged as at-risk. */
 export type BorrowerCandidate = { marketId: Hex; borrower: Address }
 
@@ -76,29 +78,22 @@ export async function discoverBorrowers(
   fetchPage: FetchCandidatePage,
   deps: { logger: Logger; maxPages?: number }
 ): Promise<BorrowerCandidate[]> {
-  const maxPages = deps.maxPages ?? MAX_DISCOVERY_PAGES
+  const rows = await collectPages(fetchPage, {
+    logger: deps.logger,
+    maxPages: deps.maxPages ?? MAX_DISCOVERY_PAGES,
+    event: 'discover.max_pages'
+  })
+
   const seen = new Set<string>()
   const candidates: BorrowerCandidate[] = []
-  let cursor: string | null = null
-  let pages = 0
-
-  do {
-    const page = await fetchPage(cursor)
-    pages += 1
-    for (const row of page.data) {
-      const candidate = parseCandidate(row)
-      if (!candidate) continue
-      const key = `${candidate.marketId}:${candidate.borrower}`
-      if (seen.has(key)) continue
-      seen.add(key)
-      candidates.push(candidate)
-    }
-    cursor = page.cursor
-    if (cursor && pages >= maxPages) {
-      deps.logger.warn('discover.max_pages', { pages, cap: maxPages, collected: candidates.length })
-      break
-    }
-  } while (cursor)
+  for (const row of rows) {
+    const candidate = parseCandidate(row)
+    if (!candidate) continue
+    const key = `${candidate.marketId}:${candidate.borrower}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    candidates.push(candidate)
+  }
 
   return candidates
 }

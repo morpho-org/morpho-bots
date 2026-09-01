@@ -6,7 +6,9 @@ import { hasBumpHeadroom } from '@repo/bot-kit'
 import { Executor } from '@repo/contracts'
 import { tryCatch } from '@repo/utils'
 import { getAddress, isAddress, isHex, parseGwei } from 'viem'
-import { base } from 'viem/chains'
+import { base, mainnet } from 'viem/chains'
+
+import { InvalidConfigError } from './invalid-config.error'
 
 // Swap venues are no longer a per-collateral config file: markets come from the Midnight markets API
 // (the whitelist), and the enabled venues are inferred from which venue API keys are present in env.
@@ -18,23 +20,158 @@ const LIFI_API_KEY_ENV = 'LIFI_API_KEY'
 // ---------------------------------------------------------------------------
 // Per-chain Midnight deployment map
 // ---------------------------------------------------------------------------
-export type ChainConfig = { chain: Chain; midnight: Address }
 
-// Chains v0 supports, with the Midnight deployment address per chain. The deployless lens needs
-// no per-chain deployer — soltag bakes the CREATE2 factory + factoryData into its compiled output
-// (see the lens fetcher). On-chain validation of these addresses (getCode) lands in Phase 2.
-// loadConfig fails loud for any CHAIN_ID not present here.
+/**
+ * Nominal block time per supported chain. Every block-denominated tunable is derived from a
+ * wall-clock intent through {@link blocksFor}, so these are the only place the chains' differing
+ * cadence is encoded — an ~6x ratio between Base and Ethereum mainnet.
+ */
+const BASE_BLOCK_TIME_MS = 2_000
+const MAINNET_BLOCK_TIME_MS = 12_000
+
+/**
+ * Converts a wall-clock intent into a block count at `blockTimeMs`, floored at one block (a target
+ * shorter than one block must still wait a block, never zero).
+ *
+ * Block counts are expressed this way rather than as per-chain literals so the INTENT is the source
+ * of truth: `blocksFor(8_000, …)` reads as "bump a stuck tx after ~8s" on every chain, whereas a bare
+ * `4n` beside a `1n` is unauditable. Base's row reproduces the previous hard-coded values exactly by
+ * construction — see the parity test in `test/config.test.ts`.
+ */
+const blocksFor = (ms: number, blockTimeMs: number): bigint =>
+  BigInt(Math.max(1, Math.round(ms / blockTimeMs)))
+
+/**
+ * Wall-clock intent behind each block-denominated tunable, shared by every chain. Changing one of
+ * these retimes that behaviour on all chains at once, which is the point: the value is a duration,
+ * and only its expression in blocks is chain-specific.
+ */
+const SETTLED_COOLDOWN_MS = 40_000
+const STUCK_MS = 8_000
+const RECONCILE_MS = 6_000
+const BALANCE_LOG_MS = 60_000
+const BACKOFF_BASE_MS = 4_000
+const BACKOFF_MAX_MS = 128_000
+
+/**
+ * Per-chain calibration for every tunable whose correct value depends on the chain's block time or
+ * fee market. Each field is that chain's DEFAULT — the matching env var still overrides it (see
+ * `loadConfig`), so a deployment retunes without a code change.
+ *
+ * Block-denominated fields are counts of BLOCKS, so their wall-clock meaning scales with block time;
+ * they are derived via {@link blocksFor} rather than written per-chain. The remaining fields do NOT
+ * scale with block time and each carry their own justification below.
+ */
+export type TuningConfig = {
+  /** Blocks a settled position stays suppressed before it may be re-attempted. */
+  settledCooldownBlocks: bigint
+  /** Blocks without a receipt before the queue fee-bumps a pending tx. */
+  stuckBlocks: bigint
+  /** Blocks between nonce reconciliations against chain state. */
+  reconcileEveryBlocks: number
+  /** Blocks between EOA gas-balance metric emissions. */
+  balanceEveryBlocks: bigint
+  /** First step of the per-position failure backoff, in blocks. */
+  backoffBaseBlocks: bigint
+  /** Ceiling of the per-position failure backoff, in blocks. */
+  backoffMaxBlocks: bigint
+  /** Block-watcher poll interval, in MILLISECONDS (not blocks). */
+  blockPollMs: number
+  /**
+   * Fee-bump attempts before a stuck tx is dropped. Does not scale with block time — it is sized
+   * against how fast the chain's basefee can climb (EIP-1559 allows +12.5% per block).
+   */
+  maxBumpAttempts: number
+  /** First-send tip, as a DECIMAL GWEI STRING (parsed and validated exactly like the env var). */
+  priorityFeeGwei: string
+  /** Fee ceiling, as a DECIMAL GWEI STRING. Also bounds the signing policy — see `index.ts`. */
+  maxFeeGwei: string
+  /** Surplus (bps) over the contract-derived repay a route must clear to be simulated. */
+  minSurplusBps: number
+  /** Headroom (bps) shaved off the on-chain repay cap when sizing a cap-binding seize. */
+  seizeCapMarginBps: number
+}
+
+/** Per-chain deployment address plus that chain's {@link TuningConfig}. */
+export type ChainConfig = { chain: Chain; midnight: Address; tuning: TuningConfig }
+
+const tuningFor = (
+  blockTimeMs: number,
+  fees: Pick<
+    TuningConfig,
+    'maxBumpAttempts' | 'priorityFeeGwei' | 'maxFeeGwei' | 'minSurplusBps' | 'seizeCapMarginBps'
+  >
+): TuningConfig => ({
+  settledCooldownBlocks: blocksFor(SETTLED_COOLDOWN_MS, blockTimeMs),
+  stuckBlocks: blocksFor(STUCK_MS, blockTimeMs),
+  reconcileEveryBlocks: Number(blocksFor(RECONCILE_MS, blockTimeMs)),
+  balanceEveryBlocks: blocksFor(BALANCE_LOG_MS, blockTimeMs),
+  backoffBaseBlocks: blocksFor(BACKOFF_BASE_MS, blockTimeMs),
+  backoffMaxBlocks: blocksFor(BACKOFF_MAX_MS, blockTimeMs),
+  // Polling faster than the block time is harmless and keeps head-detection latency low, so this is
+  // deliberately NOT scaled: the cost of an extra `eth_blockNumber` is far below the cost of learning
+  // about a liquidatable position a second late.
+  blockPollMs: 2_000,
+  ...fees
+})
+
+// Chains this bot supports, with the Midnight deployment address and calibration per chain. The chain
+// map is the one place a new chain is wired (add its `chain`, `midnight`, and `tuning` here). The
+// deployment address is genuinely per-chain — mainnet and Base are DIFFERENT addresses — though the
+// deployed bytecode is byte-identical, so the ABI, lens, and sizing math are shared. The deployless
+// lens needs no per-chain deployer (soltag bakes the CREATE2 factory + factoryData into its compiled
+// output), but that factory must exist on-chain; the canonical 0x4e59… is present on both chains.
+// On-chain validation of these addresses (getCode) runs at startup in `index.ts`. loadConfig fails
+// loud for any CHAIN_ID not present here.
 const CHAIN_MAP: Record<number, ChainConfig> = {
-  [base.id]: { chain: base, midnight: getAddress('0xAdedD8ab6dE832766Fedf0FaC4992E5C4D3EA18A') }
+  [base.id]: {
+    chain: base,
+    midnight: getAddress('0xAdedD8ab6dE832766Fedf0FaC4992E5C4D3EA18A'),
+    tuning: tuningFor(BASE_BLOCK_TIME_MS, {
+      maxBumpAttempts: 3,
+      // Clears the in-block p95 tip in ~91% of Base blocks; escalation only adds 1.42x on top.
+      priorityFeeGwei: '0.1',
+      // Never binds on Base, whose basefee sits near zero — effectively "no ceiling".
+      maxFeeGwei: '300',
+      // Pure break-even: the gate compares two contract-derived quantities and carries no tuned
+      // value, so it can only reject plans that would have reverted on-chain. Base gas is negligible
+      // relative to any liquidation, so break-even is the right bar there.
+      minSurplusBps: 0,
+      seizeCapMarginBps: 30
+    })
+  },
+  [mainnet.id]: {
+    chain: mainnet,
+    midnight: getAddress('0x471686c42792F93528B000beF54bC10E3aa2045f'),
+    tuning: tuningFor(MAINNET_BLOCK_TIME_MS, {
+      // Base's 3 attempts escalate only 1.125^3 = 1.42x. Mainnet basefee can rise 12.5% per block, so
+      // a 3-step ladder can fall further behind the market on every bump; 6 reaches ~2.03x.
+      maxBumpAttempts: 6,
+      // Mainnet tips are a real market, unlike Base's. Sized ~2x the observed p90 tip so a liquidation
+      // still clears during the volatility that produces liquidations. A tip too low to include is not
+      // merely a missed fill: it exhausts the bump ladder, drops the tx, and latches a nonce hole that
+      // stops the bot sending at all. Calibrate DOWN from here with production data.
+      priorityFeeGwei: '2',
+      // On mainnet this is the only hard bound on spend per transaction (maxFee x the signing policy's
+      // gas ceiling), because nothing compares expected surplus against gas cost. Still three orders of
+      // magnitude above the basefee this was calibrated against.
+      maxFeeGwei: '50',
+      // PROVISIONAL. Gas is absent from the profitability comparison (see `runner/profitability.ts`),
+      // so on mainnet break-even on the swap is a LOSS after gas. This is a stopgap proxy and a poor
+      // one: it is bps of the repay, so it does not express a fixed gas cost — it under-covers small
+      // positions and over-charges large ones. Replace it with a gas-aware gate; until then, calibrate
+      // against observed gas per liquidation and typical position size.
+      minSurplusBps: 25,
+      // One-block oracle-drift headroom, and a mainnet block is ~6x the drift window of a Base one.
+      seizeCapMarginBps: 60
+    })
+  }
 }
 
 // ---------------------------------------------------------------------------
 // Env table
 // ---------------------------------------------------------------------------
 const LOG_LEVELS = ['debug', 'info', 'warn', 'error'] as const
-const DEFAULT_MAX_FEE_GWEI = '300'
-// Clears the in-block p95 tip in ~91% of Base blocks; escalation only adds 1.42x on top.
-const DEFAULT_PRIORITY_FEE_GWEI = '0.1'
 const PRIVATE_KEY_HEX_LENGTH = 66 // '0x' + 32 bytes
 
 // Borrower-candidate discovery defaults (the markets liquidation-candidates endpoint). The URL is a
@@ -60,14 +197,6 @@ const DEFAULT_PENDLE_SLIPPAGE_BPS = 50
 // wasted quote. The 31 Jul archive implies (8.52, 15.83] for that maturity's basis regime; that is one
 // observation and deliberately NOT the default.
 const DEFAULT_HEADROOM_FLOOR_BPS = 3
-const DEFAULT_SEIZE_CAP_MARGIN_BPS = 30 // shave the repay cap when sizing a cap-binding seize — one-block oracle-drift headroom; calibratable
-// Pure break-even by default: at 0 the profitability gate compares two contract-derived quantities and
-// carries no tuned value, so it can only reject plans that would have reverted on-chain. Raising it
-// trades captured liquidations for margin against gas and sim→exec drift, and wants a measured basis
-// distribution rather than a guess — one maturity implies only a wide, unhelpful interval.
-const DEFAULT_MIN_SURPLUS_BPS = 0
-const DEFAULT_BACKOFF_BASE_BLOCKS = 2n
-const DEFAULT_BACKOFF_MAX_BLOCKS = 64n
 // Opt-in per-position cooldown (ms) after a liquidation attempt fails to produce a submittable tx
 // (no route / quote failure / sim revert). 0 disables it — the default, so existing deployments
 // re-attempt every tick as before.
@@ -184,6 +313,12 @@ export type Config = {
   chainId: number
   chain: Chain
   midnight: Address
+  /**
+   * This chain's block-time / fee-market calibration. The fields the env can override are already
+   * resolved into `quoting`, `maxFeeWei`, and `priorityFeeWei`; what remains here are the values
+   * `index.ts` threads straight into the bot-kit runner, queue, and balance monitor.
+   */
+  tuning: TuningConfig
   rpcUrl: string
   rpcUrlFallback: string | undefined
   liquidatorPrivateKey: Hex
@@ -212,7 +347,7 @@ export type Config = {
 function required(env: Env, name: string): string {
   const value = env[name]
   if (value === undefined || value.trim() === '') {
-    throw new Error(`Missing required env var: ${name}`)
+    throw new InvalidConfigError(`Missing required env var: ${name}`)
   }
   return value
 }
@@ -227,14 +362,14 @@ function intEnv(
   const raw = env[name]?.trim()
   if (!raw) return def
   if (!/^\d+$/.test(raw)) {
-    throw new Error(`${name} must be a non-negative integer, got: ${env[name]}`)
+    throw new InvalidConfigError(`${name} must be a non-negative integer, got: ${env[name]}`)
   }
   const value = Number(raw)
   if (bounds.min !== undefined && value < bounds.min) {
-    throw new Error(`${name} must be >= ${bounds.min}, got: ${env[name]}`)
+    throw new InvalidConfigError(`${name} must be >= ${bounds.min}, got: ${env[name]}`)
   }
   if (bounds.max !== undefined && value > bounds.max) {
-    throw new Error(`${name} must be <= ${bounds.max}, got: ${env[name]}`)
+    throw new InvalidConfigError(`${name} must be <= ${bounds.max}, got: ${env[name]}`)
   }
   return value
 }
@@ -244,7 +379,7 @@ function bigintEnv(env: Env, name: string, def: bigint): bigint {
   const raw = env[name]?.trim()
   if (!raw) return def
   if (!/^\d+$/.test(raw)) {
-    throw new Error(`${name} must be a non-negative integer, got: ${env[name]}`)
+    throw new InvalidConfigError(`${name} must be a non-negative integer, got: ${env[name]}`)
   }
   return BigInt(raw)
 }
@@ -255,11 +390,11 @@ function numberEnv(env: Env, name: string, def: number, bounds: { min?: number }
   const raw = env[name]?.trim()
   if (!raw) return def
   if (!/^\d+(\.\d+)?$/.test(raw) || Number(raw) <= 0) {
-    throw new Error(`${name} must be a positive number, got: ${env[name]}`)
+    throw new InvalidConfigError(`${name} must be a positive number, got: ${env[name]}`)
   }
   const value = Number(raw)
   if (bounds.min !== undefined && value < bounds.min) {
-    throw new Error(`${name} must be >= ${bounds.min}, got: ${env[name]}`)
+    throw new InvalidConfigError(`${name} must be >= ${bounds.min}, got: ${env[name]}`)
   }
   return value
 }
@@ -274,7 +409,7 @@ function boolEnv(env: Env, name: string, def: boolean): boolean {
   const raw = env[name]?.trim().toLowerCase()
   if (!raw) return def
   if (raw !== 'true' && raw !== 'false') {
-    throw new Error(`${name} must be "true" or "false", got: ${env[name]}`)
+    throw new InvalidConfigError(`${name} must be "true" or "false", got: ${env[name]}`)
   }
   return raw === 'true'
 }
@@ -289,7 +424,9 @@ function ladderEnv(env: Env, name: string, def: string[]): string[] {
   const sizes = raw.split(',').map(part => part.trim())
   for (const size of sizes) {
     if (!/^\d+(\.\d+)?$/.test(size) || Number(size) <= 0) {
-      throw new Error(`${name} must be comma-separated positive numbers, got: ${env[name]}`)
+      throw new InvalidConfigError(
+        `${name} must be comma-separated positive numbers, got: ${env[name]}`
+      )
     }
   }
   return sizes
@@ -306,14 +443,14 @@ function urlListEnv(env: Env, name: string, def: string[]): string[] {
   if (!raw) return def
   const urls = raw.split(',').map(part => part.trim())
   if (urls.some(part => part.length === 0)) {
-    throw new Error(
+    throw new InvalidConfigError(
       `${name} must not contain empty entries (leading, trailing, or repeated commas), got: ${env[name]}`
     )
   }
   const normalized = urls.map(url => {
     const parsed = tryCatch(() => new URL(url))
     if (parsed.error) {
-      throw new Error(`${name} is not a valid URL: ${url}`)
+      throw new InvalidConfigError(`${name} is not a valid URL: ${url}`)
     }
     parsed.data.pathname = parsed.data.pathname.replace(/\/+$/, '')
     return parsed.data.toString()
@@ -332,7 +469,7 @@ function addressListEnv(env: Env, name: string): Address[] {
     .filter(part => part.length > 0)
     .map(part => {
       if (!isAddress(part, { strict: false })) {
-        throw new Error(`${name} contains an invalid address: ${part}`)
+        throw new InvalidConfigError(`${name} contains an invalid address: ${part}`)
       }
       return getAddress(part)
     })
@@ -353,14 +490,19 @@ export function loadConfig(
   const chainIdRaw = required(env, 'CHAIN_ID')
   if (!/^\d+$/.test(chainIdRaw)) {
     // Plain decimal only — reject hex (Number('0x1')) and exponent (Number('1e3')) forms.
-    throw new Error(`CHAIN_ID must be a positive integer, got: ${chainIdRaw}`)
+    throw new InvalidConfigError(`CHAIN_ID must be a positive integer, got: ${chainIdRaw}`)
   }
   const chainId = Number(chainIdRaw)
   const chainConfig = chainMap[chainId]
   if (!chainConfig) {
     const supported = Object.keys(chainMap).join(', ') || '(none configured)'
-    throw new Error(`Unsupported CHAIN_ID ${chainId}; supported chain ids: ${supported}`)
+    throw new InvalidConfigError(
+      `Unsupported CHAIN_ID ${chainId}; supported chain ids: ${supported}`
+    )
   }
+  // This chain's defaults for every block-time- and fee-market-dependent tunable. Each is passed in
+  // the `def` position of the env parsers below, so an explicitly-set env var always wins.
+  const { tuning } = chainConfig
 
   const rpcUrl = required(env, 'RPC_URL')
 
@@ -369,7 +511,7 @@ export function loadConfig(
     !isHex(liquidatorPrivateKey, { strict: true }) ||
     liquidatorPrivateKey.length !== PRIVATE_KEY_HEX_LENGTH
   ) {
-    throw new Error('LIQUIDATOR_PRIVATE_KEY must be a 0x-prefixed 32-byte hex string')
+    throw new InvalidConfigError('LIQUIDATOR_PRIVATE_KEY must be a 0x-prefixed 32-byte hex string')
   }
 
   // The Executor singleton has a deterministic CREATE2 address (soltag bakes the canonical factory +
@@ -378,7 +520,7 @@ export function loadConfig(
   // env only to override (e.g. a non-standard deployment).
   const executooorOverride = env.EXECUTOOOR_ADDRESS?.trim()
   if (executooorOverride && !isAddress(executooorOverride, { strict: false })) {
-    throw new Error(`EXECUTOOOR_ADDRESS is not a valid address: ${executooorOverride}`)
+    throw new InvalidConfigError(`EXECUTOOOR_ADDRESS is not a valid address: ${executooorOverride}`)
   }
   const executooorAddress = executooorOverride
     ? getAddress(executooorOverride)
@@ -386,26 +528,38 @@ export function loadConfig(
 
   const logLevel = env.LOG_LEVEL?.trim() || 'info'
   if (!isLogLevel(logLevel)) {
-    throw new Error(`LOG_LEVEL must be one of ${LOG_LEVELS.join(', ')}, got: ${env.LOG_LEVEL}`)
+    throw new InvalidConfigError(
+      `LOG_LEVEL must be one of ${LOG_LEVELS.join(', ')}, got: ${env.LOG_LEVEL}`
+    )
   }
 
-  const maxFeeGwei = env.MAX_FEE_GWEI?.trim() || DEFAULT_MAX_FEE_GWEI
+  // The per-chain defaults are decimal gwei STRINGS, substituted only in the `||` fallback position so
+  // the validation below is identical whether the value came from env or from the chain map.
+  const maxFeeGwei = env.MAX_FEE_GWEI?.trim() || tuning.maxFeeGwei
   if (!/^\d+(\.\d+)?$/.test(maxFeeGwei) || Number(maxFeeGwei) <= 0) {
-    throw new Error(`MAX_FEE_GWEI must be a positive number, got: ${env.MAX_FEE_GWEI}`)
+    throw new InvalidConfigError(`MAX_FEE_GWEI must be a positive number, got: ${env.MAX_FEE_GWEI}`)
   }
 
-  const priorityFeeGwei = env.PRIORITY_FEE_GWEI?.trim() || DEFAULT_PRIORITY_FEE_GWEI
+  const priorityFeeGwei = env.PRIORITY_FEE_GWEI?.trim() || tuning.priorityFeeGwei
   if (!/^\d+(\.\d+)?$/.test(priorityFeeGwei) || Number(priorityFeeGwei) <= 0) {
-    throw new Error(`PRIORITY_FEE_GWEI must be a positive number, got: ${env.PRIORITY_FEE_GWEI}`)
+    throw new InvalidConfigError(
+      `PRIORITY_FEE_GWEI must be a positive number, got: ${env.PRIORITY_FEE_GWEI}`
+    )
   }
   const priorityFeeWei = parseGwei(priorityFeeGwei)
   if (priorityFeeWei <= 0n) {
-    throw new Error(`PRIORITY_FEE_GWEI must be at least 1 wei, got: ${env.PRIORITY_FEE_GWEI}`)
+    throw new InvalidConfigError(
+      `PRIORITY_FEE_GWEI must be at least 1 wei, got: ${env.PRIORITY_FEE_GWEI}`
+    )
   }
   const maxFeeWei = parseGwei(maxFeeGwei)
   if (!hasBumpHeadroom(priorityFeeWei, maxFeeWei)) {
-    throw new Error(
-      `PRIORITY_FEE_GWEI (${priorityFeeGwei}) leaves no room to bump under MAX_FEE_GWEI (${maxFeeGwei})`
+    // Name each side's SOURCE: the pair is resolved from two independent fallbacks, so an operator who
+    // set only one of them would otherwise see an error quoting a value they never configured.
+    const source = (envValue: string | undefined) =>
+      envValue?.trim() ? 'env' : `chain ${chainId} default`
+    throw new InvalidConfigError(
+      `PRIORITY_FEE_GWEI (${priorityFeeGwei}, from ${source(env.PRIORITY_FEE_GWEI)}) leaves no room to bump under MAX_FEE_GWEI (${maxFeeGwei}, from ${source(env.MAX_FEE_GWEI)})`
     )
   }
 
@@ -425,21 +579,21 @@ export function loadConfig(
   if (env[ZEROX_API_KEY_ENV]?.trim()) enabledVenues.push('0x')
   if (env[ONEINCH_API_KEY_ENV]?.trim()) enabledVenues.push('1inch')
   if (enabledVenues.length === 0 && !allowBadDebtOnly) {
-    throw new Error(
+    throw new InvalidConfigError(
       `No venues enabled (set ENABLE_LIFI=true or ${LIFI_API_KEY_ENV} / ${ZEROX_API_KEY_ENV} / ${ONEINCH_API_KEY_ENV}). Set at least one, or set ALLOW_BAD_DEBT_ONLY=true to run in bad-debt-only mode.`
     )
   }
   const zeroxBaseUrl = env.ZEROX_BASE_URL?.trim() || undefined
   if (zeroxBaseUrl && tryCatch(() => new URL(zeroxBaseUrl)).error) {
-    throw new Error(`ZEROX_BASE_URL is not a valid URL: ${zeroxBaseUrl}`)
+    throw new InvalidConfigError(`ZEROX_BASE_URL is not a valid URL: ${zeroxBaseUrl}`)
   }
   const oneinchBaseUrl = env.ONEINCH_BASE_URL?.trim() || undefined
   if (oneinchBaseUrl && tryCatch(() => new URL(oneinchBaseUrl)).error) {
-    throw new Error(`ONEINCH_BASE_URL is not a valid URL: ${oneinchBaseUrl}`)
+    throw new InvalidConfigError(`ONEINCH_BASE_URL is not a valid URL: ${oneinchBaseUrl}`)
   }
   const lifiBaseUrl = env.LIFI_BASE_URL?.trim() || undefined
   if (lifiBaseUrl && tryCatch(() => new URL(lifiBaseUrl)).error) {
-    throw new Error(`LIFI_BASE_URL is not a valid URL: ${lifiBaseUrl}`)
+    throw new InvalidConfigError(`LIFI_BASE_URL is not a valid URL: ${lifiBaseUrl}`)
   }
   const venues: VenueConfig = {
     enabled: enabledVenues,
@@ -475,11 +629,11 @@ export function loadConfig(
       min: 0,
       max: 10_000
     }),
-    seizeCapMarginBps: intEnv(env, 'SEIZE_CAP_MARGIN_BPS', DEFAULT_SEIZE_CAP_MARGIN_BPS, {
+    seizeCapMarginBps: intEnv(env, 'SEIZE_CAP_MARGIN_BPS', tuning.seizeCapMarginBps, {
       min: 0,
       max: 10_000
     }),
-    minSurplusBps: intEnv(env, 'MIN_SURPLUS_BPS', DEFAULT_MIN_SURPLUS_BPS, {
+    minSurplusBps: intEnv(env, 'MIN_SURPLUS_BPS', tuning.minSurplusBps, {
       min: 0,
       max: 10_000
     }),
@@ -487,15 +641,15 @@ export function loadConfig(
       min: 0,
       max: 10_000
     }),
-    backoffBaseBlocks: bigintEnv(env, 'BACKOFF_BASE_BLOCKS', DEFAULT_BACKOFF_BASE_BLOCKS),
-    backoffMaxBlocks: bigintEnv(env, 'BACKOFF_MAX_BLOCKS', DEFAULT_BACKOFF_MAX_BLOCKS)
+    backoffBaseBlocks: bigintEnv(env, 'BACKOFF_BASE_BLOCKS', tuning.backoffBaseBlocks),
+    backoffMaxBlocks: bigintEnv(env, 'BACKOFF_MAX_BLOCKS', tuning.backoffMaxBlocks)
   }
 
   // Borrower-candidate discovery endpoint. Default to the public markets API; fail loud at startup on
   // a malformed override rather than at the first tick's fetch.
   const apiUrl = env.LIQUIDATION_CANDIDATES_API_URL?.trim() || DEFAULT_CANDIDATES_API_URL
   if (tryCatch(() => new URL(apiUrl)).error) {
-    throw new Error(`LIQUIDATION_CANDIDATES_API_URL is not a valid URL: ${apiUrl}`)
+    throw new InvalidConfigError(`LIQUIDATION_CANDIDATES_API_URL is not a valid URL: ${apiUrl}`)
   }
   const discovery: DiscoveryConfig = {
     apiUrl,
@@ -506,6 +660,7 @@ export function loadConfig(
     chainId,
     chain: chainConfig.chain,
     midnight: chainConfig.midnight,
+    tuning,
     rpcUrl,
     rpcUrlFallback: env.RPC_URL_FALLBACK?.trim() || undefined,
     liquidatorPrivateKey,

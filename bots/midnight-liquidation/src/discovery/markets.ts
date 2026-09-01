@@ -6,6 +6,9 @@ import createClient from 'openapi-fetch'
 import { isAddress, isHex } from 'viem'
 
 import type { components, paths } from '../generated/midnight-api'
+import type { FetchPage } from './paginate.utils'
+
+import { collectPages } from './paginate.utils'
 
 // Response shapes from `GET /v0/midnight/markets` (the seed script imports these too). The spec types
 // ids/addresses as plain strings; we brand the fields the codebase consumes as viem `Hex`/`Address`
@@ -46,6 +49,21 @@ type FetchLike = (request: Request) => Promise<Response>
 const REQUEST_TIMEOUT_MS = 5_000
 
 /**
+ * Page size requested from the markets endpoint. Sent explicitly rather than relying on the server's
+ * default, which is not ours to control and has already drifted once (the generated spec documents
+ * "max 20, default 10" while the live API returns 100). The walk follows the cursor either way — this
+ * only trades round-trips.
+ */
+const PAGE_LIMIT = 100
+
+/**
+ * Runaway-cursor backstop for the whitelist walk, NOT an expected limit — the listed set is a handful
+ * of markets. Reaching it means the whitelist was truncated, which is fail-closed under-inclusion
+ * (listed markets silently dropped out of scope), so it logs loud via `markets.max_pages`.
+ */
+const MAX_MARKET_PAGES = 50
+
+/**
  * The markets-list operation path — a literal key of the generated {@link paths}, so `client.GET(PATH)`
  * is type-checked against the spec. The runtime base URL is derived by stripping this suffix from the
  * configured endpoint URL.
@@ -84,17 +102,28 @@ export function createListedMarketFilter(deps: {
   let listed = new Set<string>()
   let updatedAt: number | null = null
 
-  async function fetchListed(): Promise<ApiMarket[]> {
+  const fetchPage: FetchPage = async cursor => {
     const body = await fetchWithRetry(
       () =>
         client.GET(PATH, {
-          params: { query: { listed: 'true' } },
+          params: {
+            query: { listed: 'true', limit: PAGE_LIMIT, ...(cursor ? { cursor } : {}) }
+          },
           signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS)
         }),
       { label: 'markets', sleep }
     )
-    return Array.isArray(body.data) ? (body.data as ApiMarket[]) : []
+    const nextCursor =
+      typeof body.cursor === 'string' && body.cursor.length > 0 ? body.cursor : null
+    return { cursor: nextCursor, data: Array.isArray(body.data) ? body.data : [] }
   }
+
+  const fetchListed = async (): Promise<ApiMarket[]> =>
+    (await collectPages(fetchPage, {
+      logger: deps.logger,
+      maxPages: MAX_MARKET_PAGES,
+      event: 'markets.max_pages'
+    })) as ApiMarket[]
 
   async function refresh(): Promise<void> {
     const rows = await fetchListed()

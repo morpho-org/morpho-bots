@@ -34,11 +34,7 @@ import type { Market } from './execution/encode-call'
 import type { LiquidationPlan } from './sizing/plan'
 
 import { loadConfig } from './config'
-import {
-  LISTED_MARKETS_MAX_AGE_MS,
-  SETTLED_COOLDOWN_BLOCKS,
-  TOKEN_PRICES_REFRESH_MS
-} from './constants'
+import { LISTED_MARKETS_MAX_AGE_MS, TOKEN_PRICES_REFRESH_MS } from './constants'
 import {
   createApiCandidateSource,
   discoverBorrowers,
@@ -325,7 +321,12 @@ async function main() {
     getConsumedNonce: signer.consumedNonce,
     maxFeeWei: config.maxFeeWei,
     logger,
-    settledCooldownBlocks: SETTLED_COOLDOWN_BLOCKS,
+    // Block-denominated, so all four come from the chain's tuning row rather than bot-kit's
+    // Base-shaped defaults — on a 12s chain those would mean 6x their intended wall-clock.
+    settledCooldownBlocks: config.tuning.settledCooldownBlocks,
+    stuckBlocks: config.tuning.stuckBlocks,
+    maxBumpAttempts: config.tuning.maxBumpAttempts,
+    reconcileEveryBlocks: config.tuning.reconcileEveryBlocks,
     revertReason
   })
 
@@ -333,6 +334,7 @@ async function main() {
   const balanceMonitor = createBalanceMonitor({
     address: eoa,
     read: signer.balance,
+    everyBlocks: config.tuning.balanceEveryBlocks,
     logger
   })
   const heartbeatMonitor = createHeartbeatMonitor({
@@ -411,6 +413,7 @@ async function main() {
     getBlockNumber: () => getBlockNumber(client),
     tick,
     maintain,
+    intervalMs: config.tuning.blockPollMs,
     logger,
     revertReason
   })

@@ -1,11 +1,19 @@
 import type { Address } from 'viem'
 
+import {
+  BALANCE_EVERY_BLOCKS,
+  BLOCK_POLL_MS,
+  hasBumpHeadroom,
+  MAX_BUMP_ATTEMPTS,
+  RECONCILE_EVERY_BLOCKS,
+  STUCK_BLOCKS
+} from '@repo/bot-kit'
 import { Executor } from '@repo/contracts'
 import { getAddress, parseGwei } from 'viem'
-import { mainnet } from 'viem/chains'
+import { base, mainnet, optimism } from 'viem/chains'
 import { describe, expect, it } from 'vitest'
 
-import type { ChainConfig, Config } from '../src/config'
+import type { ChainConfig, Config, TuningConfig } from '../src/config'
 
 import { loadConfig } from '../src/config'
 
@@ -14,8 +22,27 @@ const EXECUTOOOR = '0x3333333333333333333333333333333333333333'
 const COLLATERAL = '0x4444444444444444444444444444444444444444'
 const PRIVATE_KEY = `0x${'a'.repeat(64)}`
 
+// The fixture chain is deliberately one the real CHAIN_MAP does NOT support (optimism), so these
+// cases exercise env parsing in isolation. Keying it on a supported chain would make every "applies
+// defaults" assertion below silently assert that chain's production tuning row instead — the real
+// rows are covered by their own tests further down.
+const FIXTURE_TUNING: TuningConfig = {
+  settledCooldownBlocks: 20n,
+  stuckBlocks: 4n,
+  reconcileEveryBlocks: 3,
+  balanceEveryBlocks: 30n,
+  backoffBaseBlocks: 2n,
+  backoffMaxBlocks: 64n,
+  blockPollMs: 2_000,
+  maxBumpAttempts: 3,
+  priorityFeeGwei: '0.1',
+  maxFeeGwei: '300',
+  minSurplusBps: 0,
+  seizeCapMarginBps: 30
+}
+
 const CHAIN_MAP: Record<number, ChainConfig> = {
-  [mainnet.id]: { chain: mainnet, midnight: MIDNIGHT }
+  [optimism.id]: { chain: optimism, midnight: MIDNIGHT, tuning: FIXTURE_TUNING }
 }
 
 const deps = { chainMap: CHAIN_MAP }
@@ -23,7 +50,7 @@ const deps = { chainMap: CHAIN_MAP }
 // A venue API key is present by default so most cases exercise the armed (not bad-debt-only) posture.
 function baseEnv(overrides: Record<string, string | undefined> = {}) {
   return {
-    CHAIN_ID: String(mainnet.id),
+    CHAIN_ID: String(optimism.id),
     RPC_URL: 'https://rpc.example',
     LIQUIDATOR_PRIVATE_KEY: PRIVATE_KEY,
     EXECUTOOOR_ADDRESS: EXECUTOOOR,
@@ -36,8 +63,8 @@ describe('loadConfig', () => {
   it('parses a complete env into a typed config, applying defaults', () => {
     const config: Config = loadConfig(baseEnv(), deps)
 
-    expect(config.chainId).toBe(mainnet.id)
-    expect(config.chain).toBe(mainnet)
+    expect(config.chainId).toBe(optimism.id)
+    expect(config.chain).toBe(optimism)
     expect(config.midnight).toBe(MIDNIGHT)
     expect(config.rpcUrl).toBe('https://rpc.example')
     expect(config.rpcUrlFallback).toBeUndefined()
@@ -103,6 +130,83 @@ describe('loadConfig', () => {
     expect(config.chainId).toBe(8453)
     expect(config.chain.id).toBe(8453)
     expect(config.midnight).toBe(getAddress('0xAdedD8ab6dE832766Fedf0FaC4992E5C4D3EA18A'))
+  })
+
+  it('resolves the built-in mainnet chain config from the default map', () => {
+    const config = loadConfig(baseEnv({ CHAIN_ID: '1' }))
+    expect(config.chainId).toBe(1)
+    expect(config.chain.id).toBe(1)
+    // Mainnet's Midnight is at a DIFFERENT address than Base's, so this must not be shared.
+    expect(config.midnight).toBe(getAddress('0x471686c42792F93528B000beF54bC10E3aa2045f'))
+    expect(config.midnight).not.toBe(getAddress('0xAdedD8ab6dE832766Fedf0FaC4992E5C4D3EA18A'))
+  })
+
+  // Adding a second chain must not silently retune the working one. These are the exact values the
+  // bot ran with before per-chain tuning existed, asserted against the REAL map.
+  it('keeps every Base tuning value byte-identical to the pre-multichain defaults', () => {
+    const { tuning, maxFeeWei, priorityFeeWei, quoting } = loadConfig(baseEnv({ CHAIN_ID: '8453' }))
+
+    expect(tuning.settledCooldownBlocks).toBe(20n)
+    expect(tuning.stuckBlocks).toBe(4n)
+    expect(tuning.reconcileEveryBlocks).toBe(3)
+    expect(tuning.balanceEveryBlocks).toBe(30n)
+    expect(tuning.backoffBaseBlocks).toBe(2n)
+    expect(tuning.backoffMaxBlocks).toBe(64n)
+    expect(tuning.blockPollMs).toBe(2_000)
+    expect(tuning.maxBumpAttempts).toBe(3)
+    expect(maxFeeWei).toBe(parseGwei('300'))
+    expect(priorityFeeWei).toBe(parseGwei('0.1'))
+    expect(quoting.seizeCapMarginBps).toBe(30)
+    expect(quoting.minSurplusBps).toBe(0)
+    expect(quoting.backoffBaseBlocks).toBe(2n)
+    expect(quoting.backoffMaxBlocks).toBe(64n)
+  })
+
+  // Passing these explicitly decouples the bot from bot-kit's own defaults, so a change there would
+  // otherwise silently apply to blue-liquidation and not to this bot. Base is the chain those
+  // defaults were written for, so it is where the two must agree.
+  it("matches bot-kit's own defaults on the chain they were calibrated for", () => {
+    const { tuning } = loadConfig(baseEnv({ CHAIN_ID: '8453' }))
+
+    expect(tuning.stuckBlocks).toBe(STUCK_BLOCKS)
+    expect(tuning.maxBumpAttempts).toBe(MAX_BUMP_ATTEMPTS)
+    expect(tuning.reconcileEveryBlocks).toBe(RECONCILE_EVERY_BLOCKS)
+    expect(tuning.balanceEveryBlocks).toBe(BALANCE_EVERY_BLOCKS)
+    expect(tuning.blockPollMs).toBe(BLOCK_POLL_MS)
+  })
+
+  // A mis-scaled fee pair fails loud at startup, which on a production chain means discovering it
+  // during a deploy. Every shipped row must satisfy the bump-headroom invariant up front.
+  it.each([base.id, mainnet.id])('leaves bump headroom on chain %i by default', chainId => {
+    const config = loadConfig(baseEnv({ CHAIN_ID: String(chainId) }))
+    expect(hasBumpHeadroom(config.priorityFeeWei, config.maxFeeWei)).toBe(true)
+  })
+
+  it('applies mainnet-specific tuning that differs from Base', () => {
+    const mainnetConfig = loadConfig(baseEnv({ CHAIN_ID: '1' }))
+    const baseConfig = loadConfig(baseEnv({ CHAIN_ID: '8453' }))
+
+    // ~6x the block time means ~1/6 the block count for the same wall-clock intent.
+    expect(mainnetConfig.tuning.settledCooldownBlocks).toBeLessThan(
+      baseConfig.tuning.settledCooldownBlocks
+    )
+    expect(mainnetConfig.tuning.balanceEveryBlocks).toBe(5n)
+    expect(mainnetConfig.tuning.reconcileEveryBlocks).toBe(1)
+    // A real tip on a real fee market, and a ceiling that actually bounds spend.
+    expect(mainnetConfig.priorityFeeWei).toBeGreaterThan(baseConfig.priorityFeeWei)
+    expect(mainnetConfig.maxFeeWei).toBeLessThan(baseConfig.maxFeeWei)
+    // Break-even is a loss after mainnet gas, so the surplus bar must be above zero.
+    expect(mainnetConfig.quoting.minSurplusBps).toBeGreaterThan(0)
+  })
+
+  it('lets an env var override the per-chain tuning default', () => {
+    const config = loadConfig(
+      baseEnv({ CHAIN_ID: '1', MAX_FEE_GWEI: '123', BACKOFF_MAX_BLOCKS: '7' })
+    )
+    expect(config.maxFeeWei).toBe(parseGwei('123'))
+    expect(config.quoting.backoffMaxBlocks).toBe(7n)
+    // Unset knobs still come from the chain row.
+    expect(config.quoting.minSurplusBps).toBeGreaterThan(0)
   })
 
   it('throws when a required var is missing', () => {
@@ -185,10 +289,19 @@ describe('loadConfig', () => {
   // Within one bump of the ceiling, the first replacement exceeds it and drops, wedging the nonce.
   it('throws when PRIORITY_FEE_GWEI leaves no bump headroom under MAX_FEE_GWEI', () => {
     expect(() => loadConfig(baseEnv({ MAX_FEE_GWEI: '1', PRIORITY_FEE_GWEI: '2' }), deps)).toThrow(
-      /PRIORITY_FEE_GWEI \(2\) leaves no room to bump under MAX_FEE_GWEI \(1\)/
+      /PRIORITY_FEE_GWEI \(2, from env\) leaves no room to bump under MAX_FEE_GWEI \(1, from env\)/
     )
     expect(() => loadConfig(baseEnv({ MAX_FEE_GWEI: '1', PRIORITY_FEE_GWEI: '1' }), deps)).toThrow(
-      /PRIORITY_FEE_GWEI \(1\) leaves no room to bump under MAX_FEE_GWEI \(1\)/
+      /PRIORITY_FEE_GWEI \(1, from env\) leaves no room to bump under MAX_FEE_GWEI \(1, from env\)/
+    )
+  })
+
+  // The pair is resolved from two independent fallbacks, so an operator who set only one of them
+  // would otherwise see an error quoting a value they never configured anywhere.
+  it('names which side came from env and which from the chain default', () => {
+    // Only the ceiling is set, and set below the chain's own tip → the tip side is a chain default.
+    expect(() => loadConfig(baseEnv({ CHAIN_ID: '1', MAX_FEE_GWEI: '1' }))).toThrow(
+      /PRIORITY_FEE_GWEI \(2, from chain 1 default\) leaves no room to bump under MAX_FEE_GWEI \(1, from env\)/
     )
   })
 
