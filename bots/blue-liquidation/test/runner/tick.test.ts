@@ -3,7 +3,7 @@ import type { CooldownStore } from '@repo/bot-kit'
 import type { QuoteOutcome, SwapPlan } from '@repo/swaps'
 import type { Address } from 'viem'
 
-import { createBackoff, createCooldownStore } from '@repo/bot-kit'
+import { createBackoff, createCooldownStore, createPendingQueue } from '@repo/bot-kit'
 import { lensKey } from '@repo/utils'
 import { getAddress } from 'viem'
 import { describe, expect, it } from 'vitest'
@@ -103,8 +103,12 @@ function runWith(opts: {
   cooldown?: CooldownStore
   /** Models the queue's outcome; the two no-broadcast reasons are NOT interchangeable. */
   submitOutcome?: SubmitOutcome
+  /** Shared spy, so a caller can observe the tick's and the queue's events in ONE stream. */
+  spy?: ReturnType<typeof spyLogger>
+  /** Replaces the stub `submit` — used to broadcast through a real pending queue. */
+  submitWith?: (args: { label: string; blockNumber: bigint }) => Promise<SubmitOutcome>
 }) {
-  const { logger, events } = spyLogger()
+  const { logger, events } = opts.spy ?? spyLogger()
   let simulateCalls = 0
   let submitCalls = 0
   let quoteCalls = 0
@@ -131,8 +135,9 @@ function runWith(opts: {
       simulateCalls += 1
       return opts.simulateResult ?? { status: 'ok' }
     },
-    submit: async () => {
+    submit: async args => {
       submitCalls += 1
+      if (opts.submitWith) return opts.submitWith(args)
       return opts.submitOutcome ?? { sent: true }
     },
     backoff,
@@ -349,7 +354,18 @@ describe('runTick', () => {
       // would re-quote, re-simulate and re-send.
       const { counters, backoff } = await runWith({
         seedBackoffAt: 1n,
-        submitOutcome: { sent: false, reason: 'send_failed' }
+        submitOutcome: { sent: false, reason: 'send_failed', executionRevert: false }
+      })
+      expect(counters).toMatchObject({ ok: 1, submitted: 0, notSent: 1 })
+      expect(backoff.shouldSkip(LABEL, 101n)).toBe(true)
+    })
+
+    it("keeps backoff on an execution-reverted send: blue's incentive is static", async () => {
+      // Pins the divergence documented at the backoff.record call in src/runner/tick.ts: midnight
+      // exempts this case, blue must not.
+      const { counters, backoff } = await runWith({
+        seedBackoffAt: 1n,
+        submitOutcome: { sent: false, reason: 'send_failed', executionRevert: true }
       })
       expect(counters).toMatchObject({ ok: 1, submitted: 0, notSent: 1 })
       expect(backoff.shouldSkip(LABEL, 101n)).toBe(true)
@@ -363,5 +379,33 @@ describe('runTick', () => {
       expect(counters).toMatchObject({ ok: 1, submitted: 1, notSent: 0 })
       expect(backoff.shouldSkip(LABEL, 1n)).toBe(false)
     })
+  })
+  it('emits one id that joins plan.built to the queue tx.sent', async () => {
+    // BOTS-90's acceptance criterion as a test: grouping a window's events by `id` must not split one
+    // position. Broadcast through the REAL queue, since the split was between the tick's field name
+    // and the queue's — a stubbed submit cannot see it.
+    const spy = spyLogger()
+    const queue = createPendingQueue({
+      send: async () => ({ nonce: 7, txHash: `0x${'1'.repeat(64)}` }),
+      getReceipt: async () => null,
+      getBaseFee: async () => 1n,
+      maxFeeWei: 10n ** 18n,
+      logger: spy.logger
+    })
+    await runWith({
+      spy,
+      submitWith: ({ label, blockNumber }) =>
+        queue.submit({
+          request: { to: ROUTER, data: '0x' },
+          label,
+          maxFeePerGas: 1000n,
+          maxPriorityFeePerGas: 1000n,
+          blockNumber
+        })
+    })
+    const planBuilt = spy.events.find(e => e.event === 'plan.built')
+    const txSent = spy.events.find(e => e.event === 'tx.sent')
+    expect(planBuilt?.fields?.id).toBe(LABEL)
+    expect(txSent?.fields?.id).toBe(planBuilt?.fields?.id)
   })
 })

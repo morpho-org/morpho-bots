@@ -5,7 +5,12 @@ import { tryCatch } from '@repo/utils'
 
 import type { Logger } from '../logger'
 
-import { isExecutionRevert, revertReason as defaultRevertReason, TxSendError } from '../tx-error'
+import {
+  isExecutionRevert,
+  revertReason as defaultRevertReason,
+  revertSelector
+} from '../revert.utils'
+import { TxSendError } from '../tx-send.error'
 import { bumpFees } from './fee-policy'
 
 /** Default blocks a pending tx may sit unconfirmed before the queue bumps its fee and replaces it. */
@@ -48,7 +53,22 @@ export type GetConsumedNonce = () => Promise<number>
 /** What a caller hands {@link PendingQueue.submit}. */
 export type SubmitArgs = {
   request: TxRequest
+  /**
+   * Opaque key this send is tracked and deduplicated under — a liquidator's `lensKey` position key, a
+   * reallocation bot's vault address, a resolver's market id. Logged as `id`; behavioral here, and the
+   * divergence is deliberate: {@link PendingQueue.inflightLabels} membership is tested against this
+   * exact string every tick, so renaming it or normalizing its casing would silently miss a live entry
+   * and let a second nonce-consuming send go out for a position already in flight.
+   */
   label: string
+  /**
+   * What separates two sends sharing one {@link SubmitArgs.label} — Midnight's `(collateralIndex,
+   * postMaturityMode)` alternatives, say — spread onto this send's log events beside `id`.
+   *
+   * Correlation only: never parsed, never behavioral, and NOT part of the dedup key (that is `label`,
+   * for the reason its own doc gives). Omit it when a label already identifies a send uniquely.
+   */
+  correlation?: Readonly<Record<string, string | number | boolean>>
   maxFeePerGas: bigint
   maxPriorityFeePerGas: bigint
   blockNumber: bigint
@@ -61,9 +81,20 @@ export type SubmitArgs = {
  * (`tx.send_aborted`, `nonce.sync_failed`, `queue.nonce_hole`) — a queue-wide condition that would
  * have refused any position, so a caller must NOT hold it against this one. `send_failed` means the
  * node rejected this position's own transaction (`tx.submit_failed`), which is a fact about the
- * position and should re-arm whatever per-position backoff the caller keeps.
+ * position — though whether that fact re-arms a caller's per-position backoff turns on the
+ * `executionRevert` split below.
+ *
+ * `send_failed` carries `executionRevert`, which splits that fact in two. `true` means the chain
+ * declined this plan right now — a caller may treat it as economic. `false` means the send machinery
+ * failed (nonce, funds, RPC) and nothing was learned about the plan itself. `selector` is the revert
+ * payload's 4-byte selector when it carried one: a caller watching consecutive declines needs to know
+ * whether the chain keeps refusing for the SAME reason, which the decoded message cannot be relied on
+ * to say.
  */
-export type SubmitOutcome = { sent: true } | { sent: false; reason: 'refused' | 'send_failed' }
+export type SubmitOutcome =
+  | { sent: true }
+  | { sent: false; reason: 'refused' }
+  | { sent: false; reason: 'send_failed'; executionRevert: boolean; selector?: Hex }
 
 /** One tracked tx — the queue's full per-nonce record. */
 type Pending = {
@@ -86,7 +117,9 @@ export type PendingQueue = {
    *
    * On failure the outcome distinguishes {@link SubmitOutcome}'s two reasons, which callers must not
    * collapse: `refused` is queue-wide and says nothing about this position, while `send_failed` is
-   * this position's own send being rejected.
+   * this position's own send being rejected. Nor may a caller collapse `send_failed`'s
+   * `executionRevert` split — an execution revert is the chain's verdict on the plan, a false one is
+   * the send machinery failing, and only the latter is evidence about the position.
    *
    * Concurrent calls are serialized end to end (latch checks → `syncNonce` → `send` → tracking), so a
    * pass that submits for several positions at once cannot hand two of them the same nonce and cannot
@@ -97,7 +130,7 @@ export type PendingQueue = {
   readonly size: number
   snapshot(): { nonce: number; txHash: Hex; attempt: number }[]
   /**
-   * Labels (`${id}:${borrower}`) the tick must NOT re-submit — its backpressure set. Covers
+   * {@link SubmitArgs.label}s the tick must NOT re-submit — its backpressure set. Covers
    * currently-pending txs AND, when `settledCooldownBlocks` is set, positions whose tx settled
    * within that many blocks. The cooldown matters when sends and reads use different RPCs: a tx
    * confirms on the send RPC before the (laggy) read RPC reflects the cleared position, so without
@@ -231,7 +264,7 @@ export function createPendingQueue({
     // Latched by a prior hashless send: skip until the next `onBlock` clears it. The signer has
     // rolled its cursor back, so broadcasting again now would race that rollback.
     if (sendAborted) {
-      logger.warn('tx.send_aborted', { label: args.label })
+      logger.warn('tx.send_aborted', { id: args.label })
       return { sent: false, reason: 'refused' }
     }
     // Nothing in flight → reconcile the cursor with chain before claiming a nonce. A failed sync
@@ -243,7 +276,7 @@ export function createPendingQueue({
     if (syncNonce && pending.size === 0) {
       const synced = await tryCatch(syncNonce())
       if (synced.error) {
-        logger.warn('nonce.sync_failed', { label: args.label, reason: revertReason(synced.error) })
+        logger.warn('nonce.sync_failed', { id: args.label, reason: revertReason(synced.error) })
         return { sent: false, reason: 'refused' }
       }
       if (nonceHoleLow !== null) clearNonceHole('sync')
@@ -253,7 +286,7 @@ export function createPendingQueue({
     // above on an empty queue; here it only fires while other entries remain in flight. The onBlock
     // sweep clears it once the chain consumes past the hole.
     if (nonceHoleLow !== null) {
-      logger.warn('queue.nonce_hole', { label: args.label, nonce: nonceHoleLow })
+      logger.warn('queue.nonce_hole', { id: args.label, nonce: nonceHoleLow })
       return { sent: false, reason: 'refused' }
     }
     const sent = await tryCatch(
@@ -264,9 +297,14 @@ export function createPendingQueue({
       })
     )
     if (sent.error) {
+      const executionRevert = isExecutionRevert(sent.error)
+      const selector = revertSelector(sent.error)
       logger.warn('tx.submit_failed', {
-        label: args.label,
+        id: args.label,
+        ...args.correlation,
         reason: revertReason(sent.error),
+        executionRevert,
+        ...(selector ? { selector } : {}),
         ...(sent.error instanceof TxSendError && sent.error.nonce !== undefined
           ? { nonce: sent.error.nonce }
           : {})
@@ -278,7 +316,12 @@ export function createPendingQueue({
         sendAborted = true
         throw sent.error
       }
-      return { sent: false, reason: 'send_failed' }
+      return {
+        sent: false,
+        reason: 'send_failed',
+        executionRevert,
+        ...(selector ? { selector } : {})
+      }
     }
     const { nonce, txHash } = sent.data
     pending.set(nonce, {
@@ -292,7 +335,7 @@ export function createPendingQueue({
       attempt: 0
     })
     logger.info('tx.sent', {
-      label: args.label,
+      id: args.label,
       nonce,
       txHash,
       maxFee: args.maxFeePerGas,
@@ -313,7 +356,7 @@ export function createPendingQueue({
       settle(entry, blockNumber)
       latchNonceHole(entry.nonce)
       logger.warn('tx.dropped', {
-        label: entry.label,
+        id: entry.label,
         nonce: entry.nonce,
         txHash: entry.txHash,
         reason: 'max_bump_attempts'
@@ -330,7 +373,7 @@ export function createPendingQueue({
       settle(entry, blockNumber)
       latchNonceHole(entry.nonce)
       logger.warn('tx.dropped', {
-        label: entry.label,
+        id: entry.label,
         nonce: entry.nonce,
         txHash: entry.txHash,
         reason: 'fee_ceiling'
@@ -346,7 +389,7 @@ export function createPendingQueue({
         settle(entry, blockNumber)
         latchNonceHole(entry.nonce)
         logger.warn('tx.dropped', {
-          label: entry.label,
+          id: entry.label,
           nonce: entry.nonce,
           txHash: entry.txHash,
           reason: 'reverts_on_replace',
@@ -355,7 +398,7 @@ export function createPendingQueue({
       } else {
         entry.attempt += 1
         logger.warn('tx.replace_failed', {
-          label: entry.label,
+          id: entry.label,
           nonce: entry.nonce,
           txHash: entry.txHash,
           attempt: entry.attempt,
@@ -371,7 +414,7 @@ export function createPendingQueue({
     entry.submittedAtBlock = blockNumber
     entry.attempt += 1
     logger.info('tx.bumped', {
-      label: entry.label,
+      id: entry.label,
       nonce: entry.nonce,
       oldHash,
       newHash: replaced.data.txHash,
@@ -450,14 +493,14 @@ export function createPendingQueue({
           settle(entry, blockNumber)
           if (receipt.status === 'success') {
             logger.info('tx.confirmed', {
-              label: entry.label,
+              id: entry.label,
               nonce: entry.nonce,
               txHash: entry.txHash,
               blockNumber: receipt.blockNumber
             })
           } else {
             logger.warn('tx.reverted', {
-              label: entry.label,
+              id: entry.label,
               nonce: entry.nonce,
               txHash: entry.txHash,
               blockNumber: receipt.blockNumber
@@ -471,7 +514,7 @@ export function createPendingQueue({
         }
       } catch (error) {
         logger.warn('tx.onblock_error', {
-          label: entry.label,
+          id: entry.label,
           nonce: entry.nonce,
           txHash: entry.txHash,
           reason: revertReason(error)
@@ -489,7 +532,7 @@ export function createPendingQueue({
     const entry = pending.get(nonce)
     if (!entry) return false
     logger.warn('tx.dropped', {
-      label: entry.label,
+      id: entry.label,
       nonce: entry.nonce,
       txHash: entry.txHash,
       reason

@@ -30,6 +30,9 @@ export const MAX_INITCODE_SIZE = 49_152
 /**
  * Stable per-pair key for a batch-lens result map. `id` widens to {@link Hex} so both a market id
  * (bytes32) and an address-shaped id key uniformly.
+ *
+ * Also the liquidators' log join key (emitted verbatim as `id` — see "One join key per subject" in
+ * `docs/CONVENTIONS.md`), which is why both halves are lowercased here rather than at each call site.
  */
 export function lensKey(id: Hex, borrower: Address): string {
   return `${id.toLowerCase()}:${borrower.toLowerCase()}`

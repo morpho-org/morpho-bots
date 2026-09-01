@@ -2,7 +2,7 @@ import { tryCatch } from '@repo/utils'
 
 import type { Logger } from '../logger'
 
-import { revertReason as defaultRevertReason } from '../tx-error'
+import { revertReason as defaultRevertReason } from '../revert.utils'
 import { BLOCK_POLL_MS, createBlockWatcher } from './watcher'
 
 /** The long-running lifecycle handle {@link createRunner} returns. */

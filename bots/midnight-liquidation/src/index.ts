@@ -48,9 +48,10 @@ import { createListedMarketFilter, createUnionListedMarketFilter } from './disco
 import { createTokenPriceSource } from './discovery/token-prices'
 import { encodeLiquidationExec } from './execution/encode-call'
 import { composeQuoting } from './quotes'
+import { revertReason } from './revert.utils'
+import { createRevertStreakStore } from './runner/revert-streak'
 import { runTick } from './runner/tick'
 import { readMidnightLiquidationLens } from './state/lens.sol'
-import { revertReason } from './tx-error'
 
 async function main() {
   const config = loadConfig()
@@ -139,20 +140,6 @@ async function main() {
     timeoutMs: config.quoting.quoteTimeoutMs
   })
 
-  // Venue selector: caches a best-first venue ranking per pair from log-scaled indicative probes.
-  // Decimals are read once per collateral (memoized in the selector); the collateral set is bounded by
-  // the listed markets, so these are a handful of one-off reads over the process lifetime.
-  const venueSelector = createVenueSelector({
-    venues,
-    chainId: config.chainId,
-    ladderWholeTokens: config.probe.ladderWholeTokens,
-    getDecimals: token =>
-      readContract(client, { address: token, abi: erc20Abi, functionName: 'decimals' }),
-    indicativeQuote: (venue, params) => priceByVenue(probeClient, { venue, baseUrls, params }),
-    staleMs: config.probe.staleMs,
-    logger
-  })
-
   // Market whitelist: only listed markets are discovered / probed / liquidated. One filter per
   // configured markets source, unioned — the union applies the max-age rule PER SOURCE, so a source
   // that goes down or goes stale drops out of the whitelist instead of emptying it. Refresh once at
@@ -168,14 +155,34 @@ async function main() {
   })
   await tryCatch(listedMarkets.refresh())
 
-  // Loan-token USD prices, used ONLY to order the tick's candidates by expected profit. Fails open:
-  // an unpriced token sorts last, so a fetch failure degrades ordering to discovery order rather than
-  // suppressing work. Shares the candidates endpoint's base URL, so pointing the bot at a staging host
-  // moves both. The first fetch runs in the refresh loop below rather than being awaited here — see
-  // there for why.
+  // Token USD prices, used to order the tick's candidates by expected profit AND to denominate the
+  // probe ladder. Fails open on both counts: an unpriced token sorts last and its ladder falls back
+  // to whole collateral tokens, so a fetch failure degrades ordering rather than suppressing work.
+  // Shares the candidates endpoint's base URL, so pointing the bot at a staging host moves both. The
+  // first fetch runs in the refresh loop below rather than being awaited here — see there for why, and
+  // note the consequence: a pair probed before it lands gets one whole-token ladder for one TTL.
   const tokenPrices = createTokenPriceSource({
     apiUrl: config.discovery.apiUrl,
     chainId: config.chainId,
+    logger
+  })
+
+  // Venue selector: caches each venue's rate curve per pair from log-scaled indicative probes, and
+  // interpolates it per candidate. Decimals are read once per collateral (memoized in the selector);
+  // the collateral set is bounded by the listed markets, so these are a handful of one-off reads over
+  // the process lifetime. The ladder is USD-denominated, so a rung means the same notional on an
+  // 8-decimal $80k collateral as on an 18-decimal $1 one — `usdPriceOf` comes straight off the price
+  // snapshot, so denominating the ladder costs no chain read and cannot leave a pair cold on an RPC
+  // blip (it degrades to the whole-token ladder).
+  const venueSelector = createVenueSelector({
+    venues,
+    chainId: config.chainId,
+    ladderSizes: config.probe.ladderSizes,
+    getDecimals: token =>
+      readContract(client, { address: token, abi: erc20Abi, functionName: 'decimals' }),
+    usdPriceOf: async token => tokenPrices.usdPriceOf(token),
+    indicativeQuote: (venue, params) => priceByVenue(probeClient, { venue, baseUrls, params }),
+    staleMs: config.probe.staleMs,
     logger
   })
 
@@ -195,7 +202,7 @@ async function main() {
     : null
   const unwrappers = [createErc4626Unwrapper({ client, logger }), ...(pendle ? [pendle] : [])]
 
-  const { quoteFor } = composeQuoting({
+  const { quoteFor, resolveRoute } = composeQuoting({
     httpClient,
     selector: venueSelector,
     chainId: config.chainId,
@@ -214,6 +221,9 @@ async function main() {
   // Opt-in per-position cooldown (default disabled): one in-memory store for the process lifetime,
   // complementary to `backoff` (see POSITION_LIQUIDATION_COOLDOWN_MS).
   const cooldown = createCooldownStore({ cooldownMs: config.positionCooldownMs })
+  // Telemetry only: an execution-reverted send is exempt from backoff, so this is what reports a
+  // position whose sends keep being declined — see `createRevertStreakStore` for the threshold.
+  const revertStreaks = createRevertStreakStore()
 
   // The exec calldata for one liquidation — the same bytes the simulate gate checks and the queue
   // broadcasts, so a sim-ok plan and its broadcast can't drift.
@@ -359,6 +369,13 @@ async function main() {
             data: encodeExec(market, borrower, plan, swapPlan)
           },
           label,
+          // One position submits several `(slot, mode)` alternatives under one label, so without this
+          // their `tx.submit_failed` rows are indistinguishable — the same discriminator every other
+          // stage already emits.
+          correlation: {
+            collateralIndex: plan.collateralIndex,
+            postMaturityMode: plan.postMaturityMode
+          },
           maxFeePerGas: fees.maxFeePerGas,
           maxPriorityFeePerGas: fees.maxPriorityFeePerGas,
           blockNumber
@@ -366,8 +383,18 @@ async function main() {
       },
       backoff,
       cooldown,
+      revertStreaks,
       inflightLabels: () => queue.inflightLabels(),
       usdValueOf: tokenPrices.usdValueOf,
+      // Phase A.5's probe seam. `refresh` is staleness-gated and `select` is a pure cache lookup, so
+      // the tick warms only the pairs its sized candidates sell through and the composer's own refresh
+      // for the same pair is a no-op afterwards.
+      routing: {
+        resolveRoute,
+        warmRoute: venueSelector.refresh,
+        routeCost: venueSelector.select,
+        venues
+      },
       logger
     })
 

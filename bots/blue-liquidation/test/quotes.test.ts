@@ -1,5 +1,6 @@
 import type { Logger } from '@repo/bot-kit'
-import type { RateLimitedClient, VenuePair, VenueQuoteEstimate, VenueSelector } from '@repo/swaps'
+import type { RateLimitedClient, Unwrapper, Venue, VenuePair, VenueSelector } from '@repo/swaps'
+import type { Address } from 'viem'
 
 import { getAddress } from 'viem'
 import { describe, expect, it } from 'vitest'
@@ -62,18 +63,56 @@ const httpStub: RateLimitedClient = { getJson: async <T>() => OK_ZEROX_BODY as T
 // The position label the tick threads as the QuoteRequest correlation id (`${id}:${borrower}`).
 const LABEL = '0xabc:0x9999999999999999999999999999999999999999'
 
-// A selector stub: records which pairs were refreshed and returns a fixed best-first order.
-function fakeSelector(order: VenueQuoteEstimate[], onRefresh?: () => Promise<void>) {
+// A selector stub: records which pairs were refreshed and returns a fixed best-first order. `clamped`
+// makes the curve untrustworthy, which is how a case asks for the oracle-reference min-out derivation
+// instead of the curve-predicted one.
+function fakeSelector(
+  order: Venue[],
+  options: { onRefresh?: () => Promise<void>; clamped?: boolean } = {}
+) {
   const refreshed: VenuePair[] = []
   const selector: VenueSelector = {
     refresh: async pair => {
       refreshed.push(pair)
-      if (onRefresh) await onRefresh()
+      if (options.onRefresh) await options.onRefresh()
     },
-    select: () => order,
+    select: () =>
+      order.map(venue => ({
+        venue,
+        estimatedOut: 1000n,
+        costBps: null,
+        costBpsRaw: null,
+        clamped: options.clamped ?? false,
+        ageMs: 0
+      })),
     snapshot: () => []
   }
   return { selector, refreshed }
+}
+
+// An unwrapper converting the collateral straight to the loan token, recording what it was asked
+// about — so a test can assert the read was never spent.
+const unwrapsToLoan = (): Unwrapper & { probed: Address[] } => {
+  const probed: Address[] = []
+  return {
+    kind: 'fake-erc4626',
+    probed,
+    async resolve({ token }) {
+      probed.push(token)
+      return {
+        step: {
+          tokenIn: COLLATERAL,
+          tokenOut: LOAN,
+          target: TARGET,
+          value: 0n,
+          callData: '0x12345678',
+          amountIn: { source: 'balance', offset: 4n }
+        },
+        expectedAmountOut: 1000n,
+        amountOutMinimum: 1000n
+      }
+    }
+  }
 }
 
 function compose(
@@ -83,6 +122,7 @@ function compose(
     excludeCollaterals?: `0x${string}`[]
     logger?: Logger
     httpClient?: RateLimitedClient
+    unwrappers?: readonly Unwrapper[]
   } = {}
 ) {
   return composeQuoting({
@@ -93,22 +133,36 @@ function compose(
     venues: overrides.venues ?? ['0x'],
     baseUrls: {},
     maxRouteImpactBps: 500,
-    unwrappers: [],
+    unwrappers: overrides.unwrappers ?? [],
     excludeCollaterals: overrides.excludeCollaterals ?? [],
     logger: overrides.logger ?? NOOP_LOGGER
   })
 }
 
 describe('composeQuoting (Blue lens-projection adapter)', () => {
+  it('passes no swap-free opt-in, so zero venues never yields a broadcastable plan', async () => {
+    // `kind: 'swap'` goes straight to simulate+submit in the tick, and Blue supports running unarmed
+    // (ALLOW_DETECTION_ONLY). It has no swap-free liquidation path, so it leaves the package's
+    // `swapFreeWithoutVenues` off — even a collateral that unwraps straight to the loan token.
+    const unwrapper = unwrapsToLoan()
+    const { selector, refreshed } = fakeSelector(['0x'])
+    const { quoteFor } = compose(selector, { venues: [], unwrappers: [unwrapper] })
+    expect(await quoteFor(PLAN, OUT, LABEL)).toEqual({ kind: 'no_config', firmCalls: 0 })
+    // The refusal precedes unwrap resolution, so it also spends no detection read.
+    expect(unwrapper.probed).toHaveLength(0)
+    expect(refreshed).toHaveLength(0)
+  })
+
   it('returns no_config (and never probes) for an excluded collateral', async () => {
-    const { selector, refreshed } = fakeSelector([{ venue: '0x', expectedOut: 1000n }])
+    const { selector, refreshed } = fakeSelector(['0x'])
     const { quoteFor } = compose(selector, { excludeCollaterals: [COLLATERAL] })
-    expect(await quoteFor(PLAN, OUT, LABEL)).toEqual({ kind: 'no_config' })
+    // `firmCalls: 0`, not absent: an absent count reads as unknown, and this path provably spent none.
+    expect(await quoteFor(PLAN, OUT, LABEL)).toEqual({ kind: 'no_config', firmCalls: 0 })
     expect(refreshed).toHaveLength(0)
   })
 
   it('refreshes the pair probe, then projects out.params into an executable swap', async () => {
-    const { selector, refreshed } = fakeSelector([{ venue: '0x', expectedOut: 1000n }])
+    const { selector, refreshed } = fakeSelector(['0x'])
     const { quoteFor } = compose(selector)
     const outcome = await quoteFor(PLAN, OUT, LABEL)
 
@@ -130,8 +184,10 @@ describe('composeQuoting (Blue lens-projection adapter)', () => {
   it('still quotes (cold-default) when the probe refresh throws', async () => {
     // Cold cache (select → []) + a refresh that rejects → the firm-quote step falls back to the
     // deterministic enabled-venue order rather than failing the position.
-    const { selector } = fakeSelector([], async () => {
-      throw new Error('probe boom')
+    const { selector } = fakeSelector([], {
+      onRefresh: async () => {
+        throw new Error('probe boom')
+      }
     })
     const { quoteFor } = compose(selector)
     expect((await quoteFor(PLAN, OUT, LABEL)).kind).toBe('swap')
@@ -140,7 +196,7 @@ describe('composeQuoting (Blue lens-projection adapter)', () => {
   it('returns no_config when no venues are enabled (detection-only posture)', async () => {
     const { selector } = fakeSelector([])
     const { quoteFor } = compose(selector, { venues: [] })
-    expect(await quoteFor(PLAN, OUT, LABEL)).toEqual({ kind: 'no_config' })
+    expect(await quoteFor(PLAN, OUT, LABEL)).toEqual({ kind: 'no_config', firmCalls: 0 })
   })
 
   it('threads the position label into quote log events as the correlation id', async () => {
@@ -151,7 +207,7 @@ describe('composeQuoting (Blue lens-projection adapter)', () => {
       warn: () => {},
       error: () => {}
     }
-    const { selector } = fakeSelector([{ venue: '0x', expectedOut: 1000n }])
+    const { selector } = fakeSelector(['0x'])
     const { quoteFor } = compose(selector, { logger: capturing })
     await quoteFor(PLAN, OUT, LABEL)
     const selectOk = events.find(e => e.event === 'select.ok')
@@ -168,7 +224,9 @@ describe('composeQuoting (Blue lens-projection adapter)', () => {
         return OK_ZEROX_BODY as T
       }
     }
-    const { selector } = fakeSelector([{ venue: '0x', expectedOut: 1000n }])
+    // Clamped, so the percentage is derived against the oracle reference: the adapter's projection is
+    // what is pinned here, not the curve's prediction of the venue's own output.
+    const { selector } = fakeSelector(['0x'], { clamped: true })
     return compose(selector, { httpClient: capturing })
       .quoteFor(PLAN, OUT, LABEL)
       .then(() => {

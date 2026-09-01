@@ -1,4 +1,6 @@
-import type { PlanInput } from '../sizing/plan'
+import { isAddressEqual } from 'viem'
+
+import type { CollateralSlot, PlanInput } from '../sizing/plan'
 import type { LensOut } from '../state/lens.sol'
 
 /**
@@ -21,8 +23,22 @@ export function isLiquidatable(out: LensOut): boolean {
  * Maps a fresh {@link LensOut} into the sizing {@link PlanInput}. The market-config fields
  * (`maturity`, `rcfThreshold`) come from the returned `market`; everything else is the flat
  * per-position state the lens read in the same `eth_call`.
+ *
+ * This is also where `swapFree` is decided, and it is the only place that can be: the sizing layer
+ * holds no token addresses, and the lens cannot compare a slot's token to the loan token without
+ * duplicating market state it already returns. A slot whose token IS the loan token needs no swap to
+ * fund its repay, which changes both its cost model and its execution risk — see
+ * {@link CollateralSlot.swapFree}.
  */
 export function planInputFromLens(out: LensOut): PlanInput {
+  const collaterals: CollateralSlot[] = out.collaterals.map(slot => ({
+    index: slot.index,
+    amt: slot.amt,
+    price: slot.price,
+    maxLif: slot.maxLif,
+    lltv: slot.lltv,
+    swapFree: isSwapFreeSlot(out, slot.index)
+  }))
   return {
     blockTimestamp: out.blockTimestamp,
     maturity: out.market.maturity,
@@ -33,10 +49,14 @@ export function planInputFromLens(out: LensOut): PlanInput {
     badDebt: out.badDebt,
     maxDebt: out.maxDebt,
     rcfThreshold: out.market.rcfThreshold,
-    bestCollateralIndex: out.bestCollateralIdx,
-    bestCollateralAmt: out.bestCollateralAmt,
-    bestCollateralPrice: out.bestCollateralPrice,
-    bestCollateralMaxLif: out.bestCollateralMaxLif,
-    bestCollateralLltv: out.bestCollateralLltv
+    collaterals
   }
+}
+
+// Whether a market-level collateral index addresses the market's own loan token. A slot index the
+// market does not define cannot be swap-free — the lens only emits indices `toMarket(id)` returned, so
+// this is unreachable defensiveness rather than an expected branch.
+const isSwapFreeSlot = (out: LensOut, index: number): boolean => {
+  const token = out.market.collateralParams[index]?.token
+  return token !== undefined && isAddressEqual(token, out.market.loanToken)
 }

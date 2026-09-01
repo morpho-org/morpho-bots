@@ -1,7 +1,13 @@
 import { BaseError, encodeErrorResult, ExecutionRevertedError } from 'viem'
 import { describe, expect, it } from 'vitest'
 
-import { abiRevertDecoder, isExecutionRevert, revertReason, TxSendError } from '../src/tx-error'
+import {
+  abiRevertDecoder,
+  isExecutionRevert,
+  revertReason,
+  revertSelector
+} from '../src/revert.utils'
+import { TxSendError } from '../src/tx-send.error'
 
 const SOLIDITY_ERRORS = [
   { type: 'error', name: 'Error', inputs: [{ type: 'string' }] },
@@ -104,5 +110,28 @@ describe('isExecutionRevert', () => {
   it('rejects transient/non-viem errors', () => {
     expect(isExecutionRevert(new Error('connection reset'))).toBe(false)
     expect(isExecutionRevert(new BaseError('http timeout'))).toBe(false)
+  })
+})
+
+describe('revertSelector', () => {
+  it('returns the 4-byte selector of a revert payload', () => {
+    const data = encodeErrorResult({ abi: CUSTOM_ABI, errorName: 'NotBorrower', args: [BORROWER] })
+    expect(revertSelector(revertError(data))).toBe(data.slice(0, 10))
+  })
+
+  it('unwraps a TxSendError so a hashless send is classified like its inner error', () => {
+    const data = encodeErrorResult({ abi: CUSTOM_ABI, errorName: 'Halted', args: [] })
+    expect(revertSelector(new TxSendError(revertError(data), 7))).toBe(data.slice(0, 10))
+  })
+
+  it('returns undefined for errors carrying no revert payload', () => {
+    expect(revertSelector(new BaseError('http timeout'))).toBeUndefined()
+    expect(revertSelector(new Error('connection reset'))).toBeUndefined()
+    expect(revertSelector('string failure')).toBeUndefined()
+  })
+
+  it('returns undefined for a payload too short to hold a selector', () => {
+    expect(revertSelector(revertError('0x'))).toBeUndefined()
+    expect(revertSelector(revertError('0xdead'))).toBeUndefined()
   })
 })

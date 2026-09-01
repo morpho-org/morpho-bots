@@ -1,15 +1,18 @@
 import type { Logger, SimulateResult, SubmitOutcome } from '@repo/bot-kit'
 import type { CooldownStore } from '@repo/bot-kit'
-import type { QuoteOutcome, SwapPlan } from '@repo/swaps'
+import type { QuoteOutcome, SwapPlan, Venue, VenuePair } from '@repo/swaps'
 import type { Address, Hex } from 'viem'
 
-import { createBackoff, createCooldownStore, TxSendError } from '@repo/bot-kit'
+import { createBackoff, createCooldownStore, createPendingQueue, TxSendError } from '@repo/bot-kit'
+import { MAX_COST_LEVEL_AGE_MS } from '@repo/swaps'
 import { lensKey } from '@repo/utils'
 import { getAddress } from 'viem'
 import { describe, expect, it } from 'vitest'
 
 import type { BorrowerCandidate } from '../../src/discovery/borrowers'
-import type { LensInput, LensOut } from '../../src/state/lens.sol'
+import type { RevertStreak, RevertStreakStore } from '../../src/runner/revert-streak'
+import type { LiquidationPlan } from '../../src/sizing/plan'
+import type { LensCollateral, LensInput, LensOut } from '../../src/state/lens.sol'
 
 import { runTick } from '../../src/runner/tick'
 
@@ -26,14 +29,30 @@ function spyLogger() {
   return { logger, events }
 }
 
+// The tick must classify no send outcome on a path that aborts, so either call is a failure.
+const unreachableStreaks: RevertStreakStore = {
+  record: () => {
+    throw new Error('unexpected streak record')
+  },
+  reset: () => {
+    throw new Error('unexpected streak reset')
+  }
+}
+
 // The sums documented on TickCounters. Asserted rather than eyeballed so a new loop exit that forgets
 // its counter fails a test instead of silently dropping a position from the tally.
 const expectCounterIdentities = (c: Record<string, number>) => {
   expect(c.pairs).toBeGreaterThanOrEqual(c.liquidatable!)
+  // Per POSITION, up to and including sizing.
   expect(c.liquidatable).toBe(c.inflightSkipped! + c.planSkipped! + c.planned!)
-  expect(c.planned).toBe(
+  // Per CANDIDATE from there on: one position can yield several (slot, mode) alternatives, so this
+  // sum heads on `candidates`, not `planned` — and `candidates >= planned` always.
+  expect(c.candidates).toBeGreaterThanOrEqual(c.planned!)
+  expect(c.candidates).toBe(
     c.cooledDown! +
       c.backoffSkipped! +
+      c.siblingSkipped! +
+      c.preselectSkipped! +
       c.noSwapPath! +
       c.quoteFailed! +
       c.quoteUnprofitable! +
@@ -41,19 +60,29 @@ const expectCounterIdentities = (c: Record<string, number>) => {
       c.reverted!
   )
   expect(c.ok).toBe(c.submitted! + c.notSent!)
+  // Decomposes `notSent`, so it sits after that sum: the three no-broadcast outcomes are handled
+  // differently and must never be collapsed.
+  expect(c.notSent).toBe(c.sendRefused! + c.sendReverted! + c.sendRejected!)
 }
 
 const BORROWER: Address = getAddress('0x1111111111111111111111111111111111111111')
 const CALLER: Address = getAddress('0x2222222222222222222222222222222222222222')
 const TOKEN: Address = getAddress('0x3333333333333333333333333333333333333333')
+// Sorts after TOKEN, so `collateralParams` stays ascending as the protocol requires.
+const COLLATERAL: Address = getAddress('0x7777777777777777777777777777777777777777')
 const ORACLE: Address = getAddress('0x4444444444444444444444444444444444444444')
 const ROUTER: Address = getAddress('0x5555555555555555555555555555555555555555')
 const ZERO = '0x0000000000000000000000000000000000000000' as const
 const MARKET: Hex = `0x${'a'.repeat(64)}`
 const LABEL = lensKey(MARKET, BORROWER)
+// Extra collateral tokens for multi-slot fixtures. All sort after TOKEN and among themselves, so
+// `collateralParams` stays ascending as the protocol requires.
+const collateralAt = (nibble: string): Address => getAddress(`0x${nibble.repeat(40)}`)
 // 3.63% incentive → a 349bps headroom ceiling; the ramp reaches 3bps about 30s past maturity.
 const WAD_ONE = 10n ** 18n
 const MAX_LIF = 1036269430051813471n
+// lltv 98% / cursor 0.30 — the loan-as-collateral slot's maxLif (60 bps of headroom at full ramp).
+const LOAN_MAX_LIF = 1006036217303822937n
 
 const SWAP_PLAN: SwapPlan = {
   steps: [
@@ -72,6 +101,17 @@ const SWAP_PLAN: SwapPlan = {
 }
 
 // A liquidatable reading: valid, gate open, has debt, unlocked, unhealthy, pre-maturity.
+// One activated collateral slot. The default addresses `collateralParams[1]` (COLLATERAL), so it needs
+// a swap; `index: 0` addresses the market's loan token and is therefore swap-free.
+const slot = (overrides: Partial<LensCollateral> = {}): LensCollateral => ({
+  index: 1,
+  amt: 5000n,
+  price: 10n ** 36n,
+  maxLif: 1100000000000000000n,
+  lltv: 860000000000000000n,
+  ...overrides
+})
+
 function lensOut(overrides: Partial<LensOut> = {}): LensOut {
   return {
     valid: true,
@@ -84,18 +124,22 @@ function lensOut(overrides: Partial<LensOut> = {}): LensOut {
     maxDebt: 900n,
     badDebt: 0n,
     activatedBitmap: 1n,
-    bestCollateralIdx: 0,
-    bestCollateralAmt: 5000n,
-    bestCollateralPrice: 10n ** 36n,
-    bestCollateralMaxLif: 1100000000000000000n,
-    bestCollateralLltv: 860000000000000000n,
+    collaterals: [slot()],
     market: {
       chainId: 8453n,
       midnight: ZERO,
       loanToken: TOKEN,
+      // Two slots, mirroring a live loan-as-collateral market: [0] is the loan token itself at 98%
+      // lltv, [1] is a real collateral at 86%. Ascending by address, as the protocol requires.
       collateralParams: [
         {
           token: TOKEN,
+          lltv: 980000000000000000n,
+          liquidationCursor: 300000000000000000n,
+          oracle: ORACLE
+        },
+        {
+          token: COLLATERAL,
           lltv: 860000000000000000n,
           liquidationCursor: 250000000000000000n,
           oracle: ORACLE
@@ -112,6 +156,14 @@ function lensOut(overrides: Partial<LensOut> = {}): LensOut {
 
 const candidates = (...borrowers: Address[]): BorrowerCandidate[] =>
   borrowers.map(borrower => ({ marketId: MARKET, borrower }))
+
+// A two-slot position: `collateralParams[1]` (COLLATERAL, 86% lltv) needs a swap and outranks
+// `collateralParams[0]` (the loan token itself, 98% lltv) on surplus, so it is tried first.
+const twoSlots = () =>
+  lensOut({
+    activatedBitmap: 0b11n,
+    collaterals: [slot({ index: 1 }), slot({ index: 0, maxLif: LOAN_MAX_LIF })]
+  })
 
 // Per-borrower readings, so one tick can hold candidates with different surpluses / loan tokens.
 function stubReadLensByBorrower(byBorrower: Map<Address, LensOut>) {
@@ -146,16 +198,42 @@ function runWith(opts: {
   headroomFloorBps?: number
   minSurplusBps?: number
   cooldown?: CooldownStore
-  /** Models the queue's outcome; the two no-broadcast reasons are NOT interchangeable. */
+  /** Models the queue's outcome; the three no-broadcast outcomes are NOT interchangeable. */
   submitOutcome?: SubmitOutcome
   /** Models a send that claimed a nonce but produced no hash, which aborts the tick. */
   submitThrows?: Error
+  /** What the streak store reports back for a recorded execution revert. */
+  revertStreak?: RevertStreak
   /** Distinct readings per borrower, for ordering cases. Overrides `out`. */
   outsByBorrower?: Map<Address, LensOut>
   /** Defaults to an identity valuation, so surplusUsd tracks surplus and ordering is deterministic. */
   usdValueOf?: (loanToken: Address, loanUnits: bigint) => bigint | null
+  /**
+   * Per-call quote outcomes, consumed in order — for candidate fall-through, where the point is that
+   * the SECOND call behaves differently from the first. The last entry repeats once exhausted.
+   */
+  quoteOutcomes?: QuoteOutcome[]
+  /** Per-call simulate results, same sequencing as `quoteOutcomes`. */
+  simulateResults?: SimulateResult[]
+  /**
+   * What the fake probe curve reports, in bps of the oracle reference, keyed by the collateral token
+   * being sold — the axis a real pair differs by. A token ABSENT from the map reads as a cold pair
+   * (`routeCost` → `[]`), which is what the fail-open path keys on; an empty/omitted map is therefore
+   * a fully cold curve, i.e. exactly the pre-curve behaviour.
+   */
+  routeCostBps?: Map<Address, number>
+  /** Models an estimate taken from a ladder end: present in the curve, but not trustworthy. */
+  clampedRoutes?: boolean
+  /** Ages every estimate, to exercise the level bound `curveIsTrusted` applies. */
+  routeCostAgeMs?: number
+  /** Enabled venues; the stub curve only ever ranks `0x`, so a longer list models an INCOMPLETE one. */
+  venues?: readonly Venue[]
+  /** Shared spy, so a caller can observe the tick's and the queue's events in ONE stream. */
+  spy?: ReturnType<typeof spyLogger>
+  /** Replaces the stub `submit` — used to broadcast through a real pending queue. */
+  submitWith?: (args: { label: string; blockNumber: bigint }) => Promise<SubmitOutcome>
 }) {
-  const { logger, events } = spyLogger()
+  const { logger, events } = opts.spy ?? spyLogger()
   const order: Address[] = []
   let simulateCalls = 0
   let submitCalls = 0
@@ -168,6 +246,61 @@ function runWith(opts: {
   const defaultOutcome: QuoteOutcome = opts.noSwap
     ? { kind: 'no_config' }
     : { kind: 'swap', plan: SWAP_PLAN }
+  // Collateral tokens phase A.5 asked to be warmed, in call order — one entry per refresh actually
+  // issued, so a duplicate here is a duplicated probe burst.
+  const warmed: Address[] = []
+  // Candidate slots phase A.5 resolved a route for — the RPC a suppressed position must not spend.
+  const resolved: number[] = []
+  // Every streak call in order, so a test can pin that the tick records the chain's declines and ends
+  // the streak on everything else — the store's own arithmetic is covered in revert-streak.test.ts.
+  const streakCalls: { kind: 'record' | 'reset'; label: string; selector?: Hex }[] = []
+  const revertStreaks: RevertStreakStore = {
+    record: (label, selector) => {
+      streakCalls.push({ kind: 'record', label, selector })
+      return (
+        opts.revertStreak ?? {
+          count: 1,
+          durationMs: 0,
+          selector,
+          selectorConstant: true,
+          escalate: 'below'
+        }
+      )
+    },
+    reset: label => {
+      streakCalls.push({ kind: 'reset', label })
+    }
+  }
+  const routing = {
+    resolveRoute: async (plan: LiquidationPlan, out: LensOut) => {
+      resolved.push(plan.collateralIndex)
+      const collateral = out.market.collateralParams[plan.collateralIndex]
+      if (!collateral || collateral.token === out.market.loanToken) return null
+      return {
+        pair: { collateral: collateral.token, loan: out.market.loanToken },
+        amountIn: plan.seizedAssets
+      }
+    },
+    warmRoute: async (pair: VenuePair) => {
+      warmed.push(pair.collateral)
+    },
+    routeCost: (pair: VenuePair, _amountIn: bigint, referenceAmountOut: bigint) => {
+      const bps = opts.routeCostBps?.get(pair.collateral)
+      if (bps === undefined) return []
+      const cost = (referenceAmountOut * BigInt(bps)) / 10_000n
+      return [
+        {
+          venue: '0x' as const,
+          estimatedOut: referenceAmountOut - cost,
+          costBps: bps,
+          costBpsRaw: bps,
+          clamped: opts.clampedRoutes ?? false,
+          ageMs: opts.routeCostAgeMs ?? 0
+        }
+      ]
+    },
+    venues: opts.venues ?? (['0x'] as const)
+  }
   const result = runTick({
     discover: async () => {
       if (opts.discoverError) throw opts.discoverError
@@ -184,21 +317,28 @@ function runWith(opts: {
     quoteFor: async (_plan, _out, label) => {
       quoteCalls += 1
       order.push(getAddress(`0x${label.slice(-40)}`))
-      return opts.quoteOutcome ?? defaultOutcome
+      const sequenced =
+        opts.quoteOutcomes?.[Math.min(quoteCalls - 1, opts.quoteOutcomes.length - 1)]
+      return sequenced ?? opts.quoteOutcome ?? defaultOutcome
     },
     simulate: async () => {
       simulateCalls += 1
-      return opts.simulateResult ?? { status: 'ok' }
+      const sequenced =
+        opts.simulateResults?.[Math.min(simulateCalls - 1, opts.simulateResults.length - 1)]
+      return sequenced ?? opts.simulateResult ?? { status: 'ok' }
     },
-    submit: async () => {
+    submit: async args => {
       submitCalls += 1
       if (opts.submitThrows) throw opts.submitThrows
+      if (opts.submitWith) return opts.submitWith(args)
       return opts.submitOutcome ?? { sent: true }
     },
     backoff,
     cooldown,
+    revertStreaks,
     inflightLabels: () => opts.inflight ?? new Set(),
     usdValueOf: opts.usdValueOf ?? ((_loanToken, loanUnits) => loanUnits),
+    routing,
     logger
   })
   return result.then(counters => ({
@@ -209,6 +349,9 @@ function runWith(opts: {
     submitCalls: () => submitCalls,
     quoteCalls: () => quoteCalls,
     order,
+    warmed,
+    resolved,
+    streakCalls,
     events
   }))
 }
@@ -224,8 +367,11 @@ describe('runTick', () => {
       inflightSkipped: 0,
       planSkipped: 0,
       planned: 1,
+      candidates: 1,
       cooledDown: 0,
       backoffSkipped: 0,
+      siblingSkipped: 0,
+      preselectSkipped: 0,
       noSwapPath: 0,
       quoteFailed: 0,
       quoteUnprofitable: 0,
@@ -233,6 +379,9 @@ describe('runTick', () => {
       reverted: 0,
       submitted: 1,
       notSent: 0,
+      sendRefused: 0,
+      sendReverted: 0,
+      sendRejected: 0,
       unpriced: 0
     })
     expect(simulateCalls()).toBe(1)
@@ -286,6 +435,28 @@ describe('runTick', () => {
     expect(counters).toMatchObject({ liquidatable: 1, backoffSkipped: 1, submitted: 0 })
     expect(quoteCalls()).toBe(0)
     expect(simulateCalls()).toBe(0)
+  })
+
+  it('spends no route RPC or probe warm on a suppressed position', async () => {
+    // Backoff exists to bound API + RPC usage under a backlog, so the suppression gate has to be read
+    // in phase A.5 too: resolving routes there would spend an uncached read per candidate per tick on
+    // exactly the positions the gate exists to stop, and put that latency ahead of the first send.
+    const { counters, resolved, warmed } = await runWith({
+      chainHead: 101n,
+      seedBackoffAt: 100n
+    })
+    expect(counters).toMatchObject({ backoffSkipped: 1 })
+    expect(resolved).toHaveLength(0)
+    expect(warmed).toHaveLength(0)
+  })
+
+  it('spends no route RPC on a cooled-down position', async () => {
+    const cooldown = createCooldownStore({ cooldownMs: 60_000 })
+    cooldown.mark(LABEL)
+    const { counters, resolved, warmed } = await runWith({ cooldown })
+    expect(counters).toMatchObject({ cooledDown: 1 })
+    expect(resolved).toHaveLength(0)
+    expect(warmed).toHaveLength(0)
   })
 
   it('clears backoff on a successful submit', async () => {
@@ -365,6 +536,24 @@ describe('runTick', () => {
       expect(events.some(e => e.event === 'cooldown.skip')).toBe(true)
     })
 
+    it('holds one verdict for the whole tick, even as the wall-clock window expires', async () => {
+      // `CooldownStore.shouldSkip` is wall clock, unlike block-keyed backoff, so a window expiring
+      // mid-tick would have phase A.5 skip the route warm and phase B quote anyway — leaving the
+      // candidate ranked on gross surplus with a route it never priced. The verdict is snapshotted.
+      let asked = 0
+      const expiring: CooldownStore = {
+        shouldSkip: () => {
+          asked += 1
+          return asked === 1 // cooled when A.5 looks, expired by the time B would
+        },
+        mark: () => {}
+      }
+      const { counters, quoteCalls, simulateCalls } = await runWith({ cooldown: expiring })
+      expect(counters).toMatchObject({ liquidatable: 1, cooledDown: 1, submitted: 0 })
+      expect(quoteCalls()).toBe(0)
+      expect(simulateCalls()).toBe(0)
+    })
+
     it('marks the position on a failed quote so the next tick cools it down', async () => {
       const cooldown = createCooldownStore({ cooldownMs: 60_000 })
       const { counters } = await runWith({
@@ -432,15 +621,25 @@ describe('runTick', () => {
       // Seeded at block 1 (suppressed until 3) so it does not suppress this tick at 100. A queue-wide
       // refusal says nothing about this position, so its history must survive un-extended: clearing
       // it is what let a failing position reset to attempt 1 and re-quote every other block.
-      const { counters, backoff, submitCalls } = await runWith({
+      const { counters, backoff, submitCalls, streakCalls } = await runWith({
         seedBackoffAt: 1n,
         submitOutcome: { sent: false, reason: 'refused' }
       })
       expect(submitCalls()).toBe(1)
-      expect(counters).toMatchObject({ ok: 1, submitted: 0, notSent: 1 })
+      expect(counters).toMatchObject({
+        ok: 1,
+        submitted: 0,
+        notSent: 1,
+        sendRefused: 1,
+        sendReverted: 0,
+        sendRejected: 0
+      })
       expect(backoff.shouldSkip(LABEL, 1n)).toBe(true)
       // Not re-armed: the next block may try again, which is the point of not blaming the position.
       expect(backoff.shouldSkip(LABEL, 101n)).toBe(false)
+      // Nothing was sent, so the chain said nothing about this plan: the streak must be neither
+      // extended nor reset.
+      expect(streakCalls).toEqual([])
       expectCounterIdentities(counters)
     })
 
@@ -448,13 +647,101 @@ describe('runTick', () => {
       // The send itself failed, which is a fact about this position. Reaching submit at all means any
       // earlier entry had expired, so leaving it untouched would suppress nothing and the next block
       // would re-quote, re-simulate and re-send — the exact loop backoff exists to stop.
-      const { counters, backoff } = await runWith({
+      const { counters, backoff, streakCalls } = await runWith({
         seedBackoffAt: 1n,
-        submitOutcome: { sent: false, reason: 'send_failed' }
+        submitOutcome: { sent: false, reason: 'send_failed', executionRevert: false }
       })
-      expect(counters).toMatchObject({ ok: 1, submitted: 0, notSent: 1 })
+      expect(counters).toMatchObject({
+        ok: 1,
+        submitted: 0,
+        notSent: 1,
+        sendRefused: 0,
+        sendReverted: 0,
+        sendRejected: 1
+      })
       expect(backoff.shouldSkip(LABEL, 101n)).toBe(true)
+      // The chain never saw this plan, so it cannot extend a streak of the chain declining it.
+      expect(streakCalls).toEqual([{ kind: 'reset', label: LABEL }])
       expectCounterIdentities(counters)
+    })
+
+    it('does not extend the suppression window when the CHAIN declined the send', async () => {
+      // The measured 2026-08-28 shape: `simulate.ok` at `latest`, then a min-out shortfall on the send.
+      // Post-maturity the LIF ramps on wall-clock, so that says nothing about the next block — backing
+      // off here is what sampled the ramp exponentially and produced 25-31s gaps between attempts.
+      const { counters, backoff, streakCalls } = await runWith({
+        seedBackoffAt: 1n,
+        submitOutcome: {
+          sent: false,
+          reason: 'send_failed',
+          executionRevert: true,
+          selector: '0x08c379a0'
+        }
+      })
+      expect(counters).toMatchObject({
+        ok: 1,
+        submitted: 0,
+        notSent: 1,
+        sendRefused: 0,
+        sendReverted: 1,
+        sendRejected: 0
+      })
+      expect(backoff.shouldSkip(LABEL, 101n)).toBe(false)
+      // Reported, not suppressed: the streak is the backstop for a persistent estimator-only revert.
+      expect(streakCalls).toEqual([{ kind: 'record', label: LABEL, selector: '0x08c379a0' }])
+      expectCounterIdentities(counters)
+    })
+
+    it('escalates a revert streak that has run past the threshold', async () => {
+      const { events } = await runWith({
+        submitOutcome: {
+          sent: false,
+          reason: 'send_failed',
+          executionRevert: true,
+          selector: '0x08c379a0'
+        },
+        revertStreak: {
+          count: 37,
+          durationMs: 16 * 60_000,
+          selector: '0x08c379a0',
+          selectorConstant: true,
+          escalate: 'crossed'
+        }
+      })
+      const escalation = events.find(e => e.event === 'send.revert_streak')
+      expect(escalation?.level).toBe('warn')
+      // The count rides along with the duration so a count-based rule can be calibrated later, and the
+      // selector says whether the chain keeps refusing for the SAME reason.
+      expect(escalation?.fields).toMatchObject({
+        borrower: BORROWER,
+        reverts: 37,
+        durationMs: 16 * 60_000,
+        selector: '0x08c379a0',
+        selectorConstant: true
+      })
+    })
+
+    it('stays quiet while the streak is inside the threshold', async () => {
+      const { events } = await runWith({
+        submitOutcome: { sent: false, reason: 'send_failed', executionRevert: true }
+      })
+      expect(events.some(e => e.event === 'send.revert_streak')).toBe(false)
+    })
+
+    it('stays quiet on an already-escalated streak, so a stuck position warns once', async () => {
+      // This path has no throttle by design, so an `ongoing` streak would otherwise ship a warn every
+      // tick — twice on a tick where both siblings revert — for as long as the position stays stuck.
+      const { events } = await runWith({
+        submitOutcome: { sent: false, reason: 'send_failed', executionRevert: true },
+        revertStreak: {
+          count: 120,
+          durationMs: 60 * 60_000,
+          selector: '0x08c379a0',
+          selectorConstant: true,
+          escalate: 'ongoing'
+        }
+      })
+      expect(events.some(e => e.event === 'send.revert_streak')).toBe(false)
     })
 
     it('clears backoff and counts submitted only when the queue broadcast', async () => {
@@ -464,6 +751,11 @@ describe('runTick', () => {
       })
       expect(counters).toMatchObject({ ok: 1, submitted: 1, notSent: 0 })
       expect(backoff.shouldSkip(LABEL, 1n)).toBe(false)
+    })
+
+    it('ends the revert streak on a broadcast', async () => {
+      const { streakCalls } = await runWith({ submitOutcome: { sent: true } })
+      expect(streakCalls).toEqual([{ kind: 'reset', label: LABEL }])
     })
 
     it('emits tick.end with complete: false when a submit aborts the tick', async () => {
@@ -487,13 +779,210 @@ describe('runTick', () => {
           },
           backoff: createBackoff({ baseBlocks: 2n, maxBlocks: 64n }),
           cooldown: createCooldownStore({ cooldownMs: 0 }),
+          revertStreaks: unreachableStreaks,
           inflightLabels: () => new Set(),
           usdValueOf: (_loanToken, loanUnits) => loanUnits,
+          // A fully cold curve, so this case exercises the fail-open ordering it always did.
+          routing: {
+            resolveRoute: async () => null,
+            warmRoute: async () => {},
+            routeCost: () => [],
+            venues: ['0x']
+          },
           logger
         })
       ).rejects.toThrow('nonce claimed, no hash')
       const end = events.find(e => e.event === 'tick.end')
       expect(end?.fields).toMatchObject({ ok: 1, submitted: 0, notSent: 0, complete: false })
+      // `expectCounterIdentities` cannot be used here: `ok === submitted + notSent` is intentionally
+      // short by one on this path. The `notSent` decomposition still holds, because the throw
+      // increments none of its four terms.
+      // Read per key rather than casting the whole bag: a missing counter must fail this assertion
+      // (`Number(undefined)` is NaN), not be typed into existence.
+      const counted = (key: string) => Number(end?.fields?.[key])
+      expect(counted('notSent')).toBe(
+        counted('sendRefused') + counted('sendReverted') + counted('sendRejected')
+      )
+    })
+
+    // `pendingBackoff` is keyed by POSITION and shared by every sibling candidate, so not ARMING it on
+    // an execution revert is necessary but not sufficient: a sibling arms it on either side of the
+    // reverted send. Unlike a broadcast, an execution revert does not enter `submittedLabels`, so the
+    // next-ranked candidate still runs — hence both orderings below, which is what a delete rather than
+    // a latch gets wrong on the common multi-collateral position.
+    describe('sibling precedence', () => {
+      const declined: SubmitOutcome = {
+        sent: false,
+        reason: 'send_failed',
+        executionRevert: true,
+        selector: '0x08c379a0'
+      }
+
+      it('a quote failure then an execution revert leaves the position unsuppressed', async () => {
+        const { counters, backoff } = await runWith({
+          out: twoSlots(),
+          quoteOutcomes: [
+            { kind: 'failed', reason: 'timeout' },
+            { kind: 'swap', plan: SWAP_PLAN }
+          ],
+          submitOutcome: declined
+        })
+        expect(counters).toMatchObject({ candidates: 2, quoteFailed: 1, ok: 1, sendReverted: 1 })
+        expect(backoff.shouldSkip(LABEL, 101n)).toBe(false)
+        expectCounterIdentities(counters)
+      })
+
+      it('a no-route quote then a floor_unmet sibling leaves the position unsuppressed', async () => {
+        // Every suppression set is keyed by POSITION while candidates are per `(slot, mode)`, so
+        // without the retry-worthy latch the first candidate's `no_route` backs off the position and
+        // the second — an economic refusal the ramping LIF is expected to clear next block — never
+        // gets its contested block.
+        const { counters, backoff, cooldown } = await runWith({
+          out: twoSlots(),
+          cooldown: createCooldownStore({ cooldownMs: 60_000 }),
+          quoteOutcomes: [
+            { kind: 'failed', reason: 'no_route' },
+            { kind: 'failed', reason: 'floor_unmet' }
+          ]
+        })
+        expect(counters).toMatchObject({ candidates: 2, quoteFailed: 1, quoteUnprofitable: 1 })
+        expect(backoff.shouldSkip(LABEL, 101n)).toBe(false)
+        expect(cooldown.shouldSkip(LABEL)).toBe(false)
+        expectCounterIdentities(counters)
+      })
+
+      it('still suppresses when NO sibling is retry-worthy', async () => {
+        // The other half: the latch must not become a blanket exemption.
+        const { counters, backoff, cooldown } = await runWith({
+          out: twoSlots(),
+          cooldown: createCooldownStore({ cooldownMs: 60_000 }),
+          quoteOutcome: { kind: 'failed', reason: 'no_route' }
+        })
+        expect(counters).toMatchObject({ candidates: 2, quoteFailed: 2 })
+        expect(backoff.shouldSkip(LABEL, 101n)).toBe(true)
+        expect(cooldown.shouldSkip(LABEL)).toBe(true)
+        expectCounterIdentities(counters)
+      })
+
+      it('a broken send still arms backoff over a retry-worthy sibling', async () => {
+        // `backoffForced` outranks the latch: a nonce/funds/RPC rejection is a fact about the
+        // position, not about one candidate's economics.
+        const { counters, backoff } = await runWith({
+          out: twoSlots(),
+          quoteOutcomes: [
+            { kind: 'failed', reason: 'floor_unmet' },
+            { kind: 'swap', plan: SWAP_PLAN }
+          ],
+          submitOutcome: { sent: false, reason: 'send_failed', executionRevert: false }
+        })
+        expect(counters).toMatchObject({ quoteUnprofitable: 1, sendRejected: 1 })
+        expect(backoff.shouldSkip(LABEL, 101n)).toBe(true)
+        expectCounterIdentities(counters)
+      })
+
+      it('a no-route quote then an execution revert leaves the position unsuppressed', async () => {
+        const { counters, backoff } = await runWith({
+          out: twoSlots(),
+          quoteOutcomes: [
+            { kind: 'failed', reason: 'no_route' },
+            { kind: 'swap', plan: SWAP_PLAN }
+          ],
+          submitOutcome: declined
+        })
+        expect(counters).toMatchObject({ candidates: 2, quoteFailed: 1, ok: 1, sendReverted: 1 })
+        expect(backoff.shouldSkip(LABEL, 101n)).toBe(false)
+        expectCounterIdentities(counters)
+      })
+
+      it('a simulation revert then an execution revert leaves the position unsuppressed', async () => {
+        const { counters, backoff } = await runWith({
+          out: twoSlots(),
+          simulateResults: [{ status: 'revert', reason: 'stale quote' }, { status: 'ok' }],
+          submitOutcome: declined
+        })
+        expect(counters).toMatchObject({ candidates: 2, reverted: 1, ok: 1, sendReverted: 1 })
+        expect(backoff.shouldSkip(LABEL, 101n)).toBe(false)
+        expectCounterIdentities(counters)
+      })
+
+      it('a send REJECTION still suppresses, even when a sibling execution-reverted', async () => {
+        // The exemption is an economic verdict on ONE candidate's plan; it refutes nothing about
+        // broken send machinery, which is a fact about the position. Without the override the
+        // position would re-send into a broken nonce/funds/RPC path every block.
+        let calls = 0
+        const { counters, backoff } = await runWith({
+          out: twoSlots(),
+          submitWith: async () => {
+            calls += 1
+            return calls === 1
+              ? { sent: false, reason: 'send_failed', executionRevert: false }
+              : declined
+          }
+        })
+        expect(counters).toMatchObject({ candidates: 2, sendRejected: 1, sendReverted: 1 })
+        expect(backoff.shouldSkip(LABEL, 101n)).toBe(true)
+        expectCounterIdentities(counters)
+      })
+
+      it('suppresses on a rejection that lands AFTER the sibling execution revert', async () => {
+        let calls = 0
+        const { counters, backoff } = await runWith({
+          out: twoSlots(),
+          submitWith: async () => {
+            calls += 1
+            return calls === 1
+              ? declined
+              : { sent: false, reason: 'send_failed', executionRevert: false }
+          }
+        })
+        expect(counters).toMatchObject({ candidates: 2, sendRejected: 1, sendReverted: 1 })
+        expect(backoff.shouldSkip(LABEL, 101n)).toBe(true)
+        expectCounterIdentities(counters)
+      })
+
+      it('an execution revert then a quote failure leaves the position unsuppressed', async () => {
+        const { counters, backoff } = await runWith({
+          out: twoSlots(),
+          quoteOutcomes: [
+            { kind: 'swap', plan: SWAP_PLAN },
+            { kind: 'failed', reason: 'no_route' }
+          ],
+          submitOutcome: declined
+        })
+        expect(counters).toMatchObject({ candidates: 2, quoteFailed: 1, ok: 1, sendReverted: 1 })
+        expect(backoff.shouldSkip(LABEL, 101n)).toBe(false)
+        expectCounterIdentities(counters)
+      })
+
+      it('an execution revert then a simulation revert leaves the position unsuppressed', async () => {
+        const { counters, backoff } = await runWith({
+          out: twoSlots(),
+          simulateResults: [{ status: 'ok' }, { status: 'revert', reason: 'stale quote' }],
+          submitOutcome: declined
+        })
+        expect(counters).toMatchObject({ candidates: 2, reverted: 1, ok: 1, sendReverted: 1 })
+        expect(backoff.shouldSkip(LABEL, 101n)).toBe(false)
+        expectCounterIdentities(counters)
+      })
+
+      it('leaves an opted-in cooldown armed, unlike backoff', async () => {
+        // The cooldown is a flat, default-off window an operator opts into to throttle a class of
+        // positions; it never samples the LIF ramp geometrically the way backoff does, so lifting it is
+        // an operator's call rather than an inference from one sibling's outcome.
+        const cooldown = createCooldownStore({ cooldownMs: 60_000 })
+        const { counters, backoff } = await runWith({
+          cooldown,
+          out: twoSlots(),
+          quoteOutcomes: [
+            { kind: 'failed', reason: 'no_route' },
+            { kind: 'swap', plan: SWAP_PLAN }
+          ],
+          submitOutcome: declined
+        })
+        expect(counters).toMatchObject({ quoteFailed: 1, sendReverted: 1 })
+        expect(backoff.shouldSkip(LABEL, 101n)).toBe(false)
+        expect(cooldown.shouldSkip(LABEL)).toBe(true)
+      })
     })
   })
 
@@ -504,7 +993,7 @@ describe('runTick', () => {
       const cooldown = createCooldownStore({ cooldownMs: 60_000 })
       const { counters, events, backoff, quoteCalls } = await runWith({
         cooldown,
-        out: lensOut({ bestCollateralAmt: 0n })
+        out: lensOut({ collaterals: [slot({ amt: 0n })] })
       })
       expect(counters).toMatchObject({ liquidatable: 1, planSkipped: 1, planned: 0 })
       expect(quoteCalls()).toBe(0)
@@ -524,7 +1013,11 @@ describe('runTick', () => {
       const { counters, events, backoff, quoteCalls, simulateCalls } = await runWith({
         cooldown,
         headroomFloorBps: 3,
-        out: lensOut({ healthy: true, blockTimestamp: 2020n, bestCollateralMaxLif: MAX_LIF })
+        out: lensOut({
+          healthy: true,
+          blockTimestamp: 2020n,
+          collaterals: [slot({ maxLif: MAX_LIF })]
+        })
       })
       expect(counters).toMatchObject({ liquidatable: 1, planSkipped: 1, planned: 0 })
       expect(quoteCalls()).toBe(0)
@@ -555,7 +1048,11 @@ describe('runTick', () => {
       // gates are open and normal mode wins with the full maxLif. It must be worked, not skipped.
       const { counters, quoteCalls } = await runWith({
         headroomFloorBps: 100,
-        out: lensOut({ healthy: false, blockTimestamp: 2020n, bestCollateralMaxLif: MAX_LIF })
+        out: lensOut({
+          healthy: false,
+          blockTimestamp: 2020n,
+          collaterals: [slot({ maxLif: MAX_LIF })]
+        })
       })
       expect(counters).toMatchObject({ liquidatable: 1, planSkipped: 0, planned: 1 })
       expect(quoteCalls()).toBe(1)
@@ -775,6 +1272,577 @@ describe('runTick', () => {
       expect(built.map(e => e.fields?.surplus)).toEqual([200n, 50n])
       // Rendered at the USD scale rather than as a raw 1e8-scaled bigint.
       expect(built[0]?.fields?.surplusUsd).toBe('0.000002')
+    })
+  })
+
+  describe('multi-collateral candidate fall-through', () => {
+    it('counts one planned POSITION but two CANDIDATES', async () => {
+      // The two `tick.end` identities count different things; this is the case that separates them.
+      const { counters } = await runWith({ out: twoSlots() })
+      expect(counters).toMatchObject({ liquidatable: 1, planned: 1, candidates: 2 })
+      expectCounterIdentities(counters)
+    })
+
+    it('falls through to the swap-free slot IN THE SAME TICK when the first slot fails to quote', async () => {
+      // The regression this whole restructuring exists for. `backoff.record(label, chainHead)` sets
+      // `until = chainHead + baseBlocks` and `shouldSkip(label, chainHead)` tests `chainHead < until`,
+      // so recording the first candidate's failure inline would suppress its own sibling and the
+      // position would go unliquidated for a block — with the certain slot sitting right there.
+      const { counters, submitCalls, quoteCalls } = await runWith({
+        out: twoSlots(),
+        quoteOutcomes: [
+          { kind: 'failed', reason: 'no_route' },
+          { kind: 'swap', plan: SWAP_PLAN }
+        ]
+      })
+      expect(quoteCalls()).toBe(2)
+      expect(submitCalls()).toBe(1)
+      expect(counters).toMatchObject({ candidates: 2, quoteFailed: 1, ok: 1, submitted: 1 })
+      expectCounterIdentities(counters)
+    })
+
+    it('records backoff and cooldown ONCE for the position, after every candidate has had its turn', async () => {
+      const cooldown = createCooldownStore({ cooldownMs: 60_000 })
+      const { counters, backoff, quoteCalls } = await runWith({
+        cooldown,
+        out: twoSlots(),
+        quoteOutcome: { kind: 'failed', reason: 'no_route' }
+      })
+      // Both candidates were tried despite the first one failing.
+      expect(quoteCalls()).toBe(2)
+      expect(counters).toMatchObject({ candidates: 2, quoteFailed: 2 })
+      // One position, so one backoff entry at attempt 1 — not two attempts' worth of exponent.
+      expect(backoff.shouldSkip(LABEL, 101n)).toBe(true)
+      expect(backoff.shouldSkip(LABEL, 102n)).toBe(false)
+      expect(cooldown.shouldSkip(LABEL)).toBe(true)
+      expectCounterIdentities(counters)
+    })
+
+    it('skips the remaining candidates once one has broadcast', async () => {
+      const { counters, submitCalls } = await runWith({ out: twoSlots() })
+      // One liquidation per position per tick: the sibling is an alternative, not extra work.
+      expect(submitCalls()).toBe(1)
+      expect(counters).toMatchObject({ candidates: 2, submitted: 1, siblingSkipped: 1 })
+      expectCounterIdentities(counters)
+    })
+
+    it('clears backoff on a successful sibling rather than leaving the earlier failure recorded', async () => {
+      const cooldown = createCooldownStore({ cooldownMs: 60_000 })
+      const { backoff } = await runWith({
+        cooldown,
+        out: twoSlots(),
+        quoteOutcomes: [
+          { kind: 'failed', reason: 'no_route' },
+          { kind: 'swap', plan: SWAP_PLAN }
+        ]
+      })
+      // The position was liquidated, so the failed sibling must not suppress the next block.
+      expect(backoff.shouldSkip(LABEL, 101n)).toBe(false)
+      expect(cooldown.shouldSkip(LABEL)).toBe(false)
+    })
+
+    it('records NO backoff when every candidate is an economic refusal', async () => {
+      // `floor_unmet` and an unprofitable quote say nothing about the next attempt — both sides of the
+      // comparison move on a ten-second scale — so neither suppresses the position.
+      const cooldown = createCooldownStore({ cooldownMs: 60_000 })
+      const { counters, backoff } = await runWith({
+        cooldown,
+        out: twoSlots(),
+        quoteOutcome: { kind: 'failed', reason: 'floor_unmet' }
+      })
+      expect(counters).toMatchObject({ candidates: 2, quoteUnprofitable: 2 })
+      expect(backoff.shouldSkip(LABEL, 101n)).toBe(false)
+      expect(cooldown.shouldSkip(LABEL)).toBe(false)
+      expectCounterIdentities(counters)
+    })
+
+    it('marks cooldown but NOT backoff when every candidate lacks a swap path', async () => {
+      // Preserves the documented `no_config` contract: a coverage gap, not a failure.
+      const cooldown = createCooldownStore({ cooldownMs: 60_000 })
+      const { counters, backoff } = await runWith({
+        cooldown,
+        out: twoSlots(),
+        noSwap: true
+      })
+      expect(counters).toMatchObject({ candidates: 2, noSwapPath: 2 })
+      expect(backoff.shouldSkip(LABEL, 101n)).toBe(false)
+      expect(cooldown.shouldSkip(LABEL)).toBe(true)
+      expectCounterIdentities(counters)
+    })
+
+    it('falls through to the other MODE when the first mode simulates reverted', async () => {
+      // Matured AND unhealthy on one slot, so the contract opens both gates. Normal mode ranks first
+      // (full maxLif vs a ramping post-maturity LIF) but its gate `debt > maxDebt` can close between
+      // the lens read and the broadcast — if the price recovered, it reverts. Post-maturity's gate
+      // cannot close, so it must still be available to submit in the SAME tick.
+      const bothModes = lensOut({ blockTimestamp: 2060n, healthy: false })
+      const { counters, submitCalls, events } = await runWith({
+        out: bothModes,
+        simulateResults: [{ status: 'revert', reason: 'NotLiquidatable' }, { status: 'ok' }]
+      })
+      expect(counters).toMatchObject({ planned: 1, candidates: 2, reverted: 1, submitted: 1 })
+      expect(submitCalls()).toBe(1)
+      const sims = events.filter(e => e.event.startsWith('simulate.'))
+      expect(sims.map(e => e.fields?.postMaturityMode)).toEqual([false, true])
+      expectCounterIdentities(counters)
+    })
+
+    it('attributes every plan.skipped line to its slot', async () => {
+      const { events } = await runWith({
+        out: lensOut({ collaterals: [slot({ index: 1, amt: 0n }), slot({ index: 0, amt: 0n })] })
+      })
+      const skipped = events.filter(e => e.event === 'plan.skipped')
+      expect(skipped.map(e => e.fields?.collateralIndex)).toEqual([1, 0])
+    })
+
+    it('identifies which candidate each simulate line belongs to', async () => {
+      // Two attempts on one position share a (marketId, borrower), so without collateralIndex the log
+      // join cannot separate them.
+      const { events } = await runWith({
+        out: twoSlots(),
+        simulateResults: [{ status: 'revert', reason: 'stale quote' }, { status: 'ok' }]
+      })
+      const sims = events.filter(e => e.event.startsWith('simulate.'))
+      expect(sims).toHaveLength(2)
+      expect(sims.map(e => e.fields?.collateralIndex)).toEqual([1, 0])
+    })
+  })
+
+  describe('net-of-route-cost ordering', () => {
+    // Extra collateral tokens, in `collateralParams` order: slot index i+1 sells `SWAP_TOKENS[i]`.
+    const SWAP_TOKENS = ['8', '9', 'a', 'b', 'c'].map(collateralAt)
+    // Against this fixture's debt (1000, maxDebt 900, cap-bound) a slot's gross surplus is exactly
+    // `1000 * (maxLif - 1)`, and its oracle reference is `1000 * maxLif` — so maxLif 1.10 is a surplus
+    // of 100 on a reference of 1100, and the loan-token slot's 1.006036 maxLif is a surplus of 6.
+    const lifFor = (surplus: number) => WAD_ONE + BigInt(surplus) * 10n ** 15n
+
+    /**
+     * A position with one activated slot per requested gross surplus, each selling its own collateral
+     * token, optionally plus the market's own loan-token slot at index 0 — the swap-free alternative,
+     * whose surplus is always 6.
+     */
+    const multiSlot = (args: { surpluses: number[]; withLoanSlot?: boolean }): LensOut => {
+      const base = lensOut()
+      const swapSlots = args.surpluses.map((surplus, i) =>
+        slot({ index: i + 1, maxLif: lifFor(surplus) })
+      )
+      return lensOut({
+        collaterals: args.withLoanSlot
+          ? [...swapSlots, slot({ index: 0, maxLif: LOAN_MAX_LIF })]
+          : swapSlots,
+        market: {
+          ...base.market,
+          collateralParams: [
+            base.market.collateralParams[0]!,
+            ...SWAP_TOKENS.slice(0, args.surpluses.length).map(token => ({
+              token,
+              lltv: 860000000000000000n,
+              liquidationCursor: 250000000000000000n,
+              oracle: ORACLE
+            }))
+          ]
+        }
+      })
+    }
+
+    const costs = (...bps: [Address, number][]) => new Map(bps)
+
+    const builtIndexes = (events: { event: string; fields?: Record<string, unknown> }[]) =>
+      events.filter(e => e.event === 'plan.built').map(e => e.fields?.collateralIndex)
+
+    const preselectSkips = (events: { event: string; fields?: Record<string, unknown> }[]) =>
+      events
+        .filter(e => e.event === 'preselect.skipped')
+        .map(e => [e.fields?.collateralIndex, e.fields?.reason])
+
+    it('flips a pair of candidates that gross surplus would have ranked the other way', async () => {
+      // Slot 1 is worth 100 gross but pays 300 bps of a 1100 reference (33); slot 2 is worth 80 and
+      // pays nothing. 67 < 80, so the cheaper route wins — the ordering the oracle alone cannot see.
+      const out = multiSlot({ surpluses: [100, 80] })
+      const priced = await runWith({
+        out,
+        routeCostBps: costs([SWAP_TOKENS[0]!, 300], [SWAP_TOKENS[1]!, 0])
+      })
+      expect(builtIndexes(priced.events)).toEqual([2])
+      expect(priced.events.find(e => e.event === 'plan.built')?.fields).toMatchObject({
+        routeCostBps: 0,
+        netUsd: '0.0000008'
+      })
+
+      const gross = await runWith({ out })
+      expect(builtIndexes(gross.events)).toEqual([1])
+    })
+
+    it('prefers the swap-free candidate over a higher-gross one that pays route cost', async () => {
+      // The measured shape: a loan-as-collateral slot pays zero, so a nominally larger swap slot loses
+      // to it on a route cost of a few tens of bps. 8 gross - 30 bps of 1008 (3) = 5, against 6.
+      const out = multiSlot({ surpluses: [8], withLoanSlot: true })
+      const priced = await runWith({ out, routeCostBps: costs([SWAP_TOKENS[0]!, 30]) })
+      expect(builtIndexes(priced.events)).toEqual([0])
+
+      const gross = await runWith({ out })
+      expect(builtIndexes(gross.events)).toEqual([1])
+    })
+
+    it('keeps the true net winner that gross ordering would have truncated away', async () => {
+      // Five candidates, cap four. Gross order is 100/80/60/40/20 and drops the 20; net order puts the
+      // 20 FIRST, because it is the only one whose route is free. Capping before re-ranking — what
+      // sizing used to do — would have discarded the winner before it was ever compared.
+      const out = multiSlot({ surpluses: [100, 80, 60, 40, 20] })
+      const priced = SWAP_TOKENS.map((token, i) => [token, i < 4 ? 1000 : 0] as [Address, number])
+      const { counters, events } = await runWith({ out, routeCostBps: costs(...priced) })
+      expect(builtIndexes(events)).toEqual([5])
+      expect(preselectSkips(events)).toEqual([[4, 'position_cap']])
+      expect(counters).toMatchObject({ candidates: 5, preselectSkipped: 1, submitted: 1 })
+      expectCounterIdentities(counters)
+
+      const gross = await runWith({ out })
+      expect(builtIndexes(gross.events)).toEqual([1])
+      expect(preselectSkips(gross.events)).toEqual([[5, 'position_cap']])
+    })
+
+    it('never lets the cap discard the best swap-free candidate', async () => {
+      // Four free-routing swap slots outrank the swap-free one on net as well as gross, so the cap
+      // would drop it on the ordering alone — it is the only candidate guaranteed to be fundable.
+      const out = multiSlot({ surpluses: [100, 80, 60, 40], withLoanSlot: true })
+      const free = SWAP_TOKENS.slice(0, 4).map(token => [token, 0] as [Address, number])
+      const { counters, events } = await runWith({
+        out,
+        routeCostBps: costs(...free),
+        quoteOutcome: { kind: 'failed', reason: 'no_route' }
+      })
+      // The 40-gross slot is the one the cap gives up for it; index 0 is never a `position_cap` drop.
+      expect(preselectSkips(events)).toContainEqual([4, 'position_cap'])
+      expect(builtIndexes(events)).toContain(0)
+      expectCounterIdentities(counters)
+    })
+
+    it('falls open to gross ordering, with no new cutoff, when the curve is cold', async () => {
+      const out = multiSlot({ surpluses: [100, 80, 60] })
+      const { counters, events, quoteCalls } = await runWith({
+        out,
+        quoteOutcome: { kind: 'failed', reason: 'no_route' }
+      })
+      expect(builtIndexes(events)).toEqual([1, 2, 3])
+      expect(quoteCalls()).toBe(3)
+      expect(counters).toMatchObject({ candidates: 3, preselectSkipped: 0, quoteFailed: 3 })
+      expectCounterIdentities(counters)
+    })
+
+    it('falls open the same way when the best estimate is clamped', async () => {
+      // A clamped estimate comes from a ladder end rather than from between two rungs, so it cannot be
+      // trusted at this size. Priced, it would have ordered 2/3/1 and quoted only two of the three.
+      const out = multiSlot({ surpluses: [100, 80, 60] })
+      const map = costs([SWAP_TOKENS[0]!, 1000], [SWAP_TOKENS[1]!, 0], [SWAP_TOKENS[2]!, 0])
+      const clamped = await runWith({
+        out,
+        routeCostBps: map,
+        clampedRoutes: true,
+        quoteOutcome: { kind: 'failed', reason: 'no_route' }
+      })
+      expect(builtIndexes(clamped.events)).toEqual([1, 2, 3])
+      expect(clamped.counters).toMatchObject({ preselectSkipped: 0, quoteFailed: 3 })
+
+      const trusted = await runWith({
+        out,
+        routeCostBps: map,
+        quoteOutcome: { kind: 'failed', reason: 'no_route' }
+      })
+      expect(builtIndexes(trusted.events)).toEqual([2, 3])
+      expect(trusted.counters).toMatchObject({ preselectSkipped: 1, quoteFailed: 2 })
+    })
+
+    it('falls open the same way when the curve is STALE', async () => {
+      // `estimatedOut` is consumed here as an absolute LEVEL against a current oracle, and the level
+      // is the one term cache age decays. Past the bound it must read as unknown, not as costed —
+      // otherwise an arbitrarily old price drives the cutoff and permanently skips a candidate.
+      const out = multiSlot({ surpluses: [100, 80, 60] })
+      const map = costs([SWAP_TOKENS[0]!, 1000], [SWAP_TOKENS[1]!, 0], [SWAP_TOKENS[2]!, 0])
+      const stale = await runWith({
+        out,
+        routeCostBps: map,
+        routeCostAgeMs: MAX_COST_LEVEL_AGE_MS + 1,
+        quoteOutcome: { kind: 'failed', reason: 'no_route' }
+      })
+      expect(builtIndexes(stale.events)).toEqual([1, 2, 3])
+      expect(stale.counters).toMatchObject({ preselectSkipped: 0, quoteFailed: 3 })
+    })
+
+    it('falls open the same way when the curve ranked only SOME enabled venues', async () => {
+      // The quoting layer keeps its full fall-through unless every enabled venue is ranked, because a
+      // missing venue could be the better one. A cutoff scored on that same partial curve must not be
+      // stricter than the quoting it is preselecting for.
+      const out = multiSlot({ surpluses: [100, 80, 60] })
+      const map = costs([SWAP_TOKENS[0]!, 1000], [SWAP_TOKENS[1]!, 0], [SWAP_TOKENS[2]!, 0])
+      const partial = await runWith({
+        out,
+        routeCostBps: map,
+        venues: ['0x', '1inch'], // the stub curve only ever ranks `0x`
+        quoteOutcome: { kind: 'failed', reason: 'no_route' }
+      })
+      expect(builtIndexes(partial.events)).toEqual([1, 2, 3])
+      expect(partial.counters).toMatchObject({ preselectSkipped: 0, quoteFailed: 3 })
+    })
+
+    it('leaves a position whose loan token is unpriced on gross ordering', async () => {
+      // Both terms come from the same USD conversion, so an unpriced loan token makes the cost unknown
+      // rather than zero — the position must not be scored as if its route were free.
+      const out = multiSlot({ surpluses: [100, 80] })
+      const { counters, events } = await runWith({
+        out,
+        routeCostBps: costs([SWAP_TOKENS[0]!, 300], [SWAP_TOKENS[1]!, 0]),
+        usdValueOf: () => null,
+        quoteOutcome: { kind: 'failed', reason: 'no_route' }
+      })
+      expect(builtIndexes(events)).toEqual([1, 2])
+      expect(counters).toMatchObject({ unpriced: 2, preselectSkipped: 0 })
+    })
+  })
+
+  describe('bounded preselection', () => {
+    const SWAP_TOKENS = ['8', '9', 'a', 'b', 'c'].map(collateralAt)
+    const lifFor = (surplus: number) => WAD_ONE + BigInt(surplus) * 10n ** 15n
+
+    // Three swap slots plus the loan-token slot, all routing free, so the ordering is the gross one and
+    // the bound is what decides how many quotes the position spends.
+    const fourCandidates = (): LensOut => {
+      const base = lensOut()
+      return lensOut({
+        collaterals: [
+          ...[100, 80, 60].map((surplus, i) => slot({ index: i + 1, maxLif: lifFor(surplus) })),
+          slot({ index: 0, maxLif: LOAN_MAX_LIF })
+        ],
+        market: {
+          ...base.market,
+          collateralParams: [
+            base.market.collateralParams[0]!,
+            ...SWAP_TOKENS.slice(0, 3).map(token => ({
+              token,
+              lltv: 860000000000000000n,
+              liquidationCursor: 250000000000000000n,
+              oracle: ORACLE
+            }))
+          ]
+        }
+      })
+    }
+    const freeRoutes = new Map(SWAP_TOKENS.slice(0, 3).map(token => [token, 0]))
+
+    it('quotes the top-ranked candidate plus a bounded fall-through, reserving the swap-free one', async () => {
+      const { counters, events, quoteCalls } = await runWith({
+        out: fourCandidates(),
+        routeCostBps: freeRoutes,
+        quoteOutcome: { kind: 'failed', reason: 'no_route' }
+      })
+      // Two attempts, then the third swap slot is dropped — but the swap-free candidate is exempt from
+      // the bound however late it ranks, so it still gets its turn in the same tick.
+      expect(quoteCalls()).toBe(3)
+      expect(
+        events.filter(e => e.event === 'plan.built').map(e => e.fields?.collateralIndex)
+      ).toEqual([1, 2, 0])
+      expect(
+        events
+          .filter(e => e.event === 'preselect.skipped')
+          .map(e => [e.fields?.collateralIndex, e.fields?.reason])
+      ).toEqual([[3, 'fall_through_bound']])
+      expect(counters).toMatchObject({ candidates: 4, quoteFailed: 3, preselectSkipped: 1 })
+      expectCounterIdentities(counters)
+    })
+
+    it('spends no fall-through on a position that already broadcast', async () => {
+      const { counters } = await runWith({ out: fourCandidates(), routeCostBps: freeRoutes })
+      expect(counters).toMatchObject({
+        candidates: 4,
+        submitted: 1,
+        siblingSkipped: 3,
+        preselectSkipped: 0
+      })
+      expectCounterIdentities(counters)
+    })
+
+    it('does not consume the bound with candidates excluded BEFORE the suppression checks', async () => {
+      // A cooldown skip spends no venue call, so it must not consume a budget that exists to cap venue
+      // calls — every candidate reports the one verdict that applies, rather than two of them reporting
+      // `cooledDown` and the rest `preselectSkipped`.
+      const cooldown = createCooldownStore({ cooldownMs: 60_000 })
+      cooldown.mark(LABEL)
+      const { counters } = await runWith({
+        out: fourCandidates(),
+        routeCostBps: freeRoutes,
+        cooldown
+      })
+      expect(counters).toMatchObject({ candidates: 4, cooledDown: 4, preselectSkipped: 0 })
+      expectCounterIdentities(counters)
+    })
+
+    it('does not consume the bound with candidates excluded AFTER the cooldown check either', async () => {
+      const { counters } = await runWith({
+        out: fourCandidates(),
+        routeCostBps: freeRoutes,
+        seedBackoffAt: 100n
+      })
+      expect(counters).toMatchObject({ candidates: 4, backoffSkipped: 4, preselectSkipped: 0 })
+      expectCounterIdentities(counters)
+    })
+  })
+
+  describe('phase A.5 probe warming', () => {
+    it('warms a pair once for several candidates that share it', async () => {
+      const second = getAddress('0x6666666666666666666666666666666666666666')
+      const { warmed } = await runWith({ borrowers: [BORROWER, second] })
+      expect(warmed).toEqual([COLLATERAL])
+    })
+
+    it('warms nothing for a candidate that needs no route', async () => {
+      // The swap-free slot resolves to no pair at all, so it never costs a probe burst.
+      const { warmed } = await runWith({
+        out: lensOut({
+          activatedBitmap: 0b11n,
+          collaterals: [slot({ index: 1 }), slot({ index: 0, maxLif: LOAN_MAX_LIF })]
+        })
+      })
+      expect(warmed).toEqual([COLLATERAL])
+    })
+
+    it('warms no pair for a position sizing never reached', async () => {
+      // A cold refresh is one venue call per ladder rung per venue, so warming has to be scoped to the
+      // pairs that actually have a sized candidate — an in-flight position has none.
+      const { warmed } = await runWith({ inflight: new Set([LABEL]) })
+      expect(warmed).toEqual([])
+    })
+
+    it('resolves and warms nothing for a bad-debt write-off', async () => {
+      // A write-off trades nothing and phase B never quotes it, so resolving its unwrap chain and
+      // sweeping its pair would be venue and chain work spent on a route no one will ever sell through.
+      const { counters, warmed, quoteCalls } = await runWith({
+        out: lensOut({
+          healthy: true,
+          blockTimestamp: 3000n,
+          debt: 1000n,
+          badDebt: 1000n,
+          market: { ...lensOut().market, maturity: 2000n }
+        })
+      })
+      expect(quoteCalls()).toBe(0)
+      expect(warmed).toEqual([])
+      // Costed as zero, not unknown: `unknown` fails the whole POSITION open to gross ordering.
+      expect(counters).toMatchObject({ submitted: 1, preselectSkipped: 0 })
+      expectCounterIdentities(counters)
+    })
+
+    it('resolves no route past the gross probe bound', async () => {
+      // Each distinct pair costs a full indicative sweep, so the candidates whose route is resolved at
+      // all are bounded on the gross ordering — the one cap that must be applied before any cost is
+      // known. Nine candidates, eight probed, and the swap-free one is still reserved a place.
+      const nibbles = ['8', '9', 'a', 'b', 'c', 'd', 'e', 'f']
+      const base = lensOut()
+      const out = lensOut({
+        collaterals: [
+          ...[100, 90, 80, 70, 60, 50, 40, 30].map((surplus, i) =>
+            slot({ index: i + 1, maxLif: WAD_ONE + BigInt(surplus) * 10n ** 15n })
+          ),
+          slot({ index: 0, maxLif: LOAN_MAX_LIF })
+        ],
+        market: {
+          ...base.market,
+          collateralParams: [
+            base.market.collateralParams[0]!,
+            ...nibbles.map(nibble => ({
+              token: collateralAt(nibble),
+              lltv: 860000000000000000n,
+              liquidationCursor: 250000000000000000n,
+              oracle: ORACLE
+            }))
+          ]
+        }
+      })
+      const { counters, warmed, events } = await runWith({
+        out,
+        quoteOutcome: { kind: 'failed', reason: 'no_route' }
+      })
+
+      // Seven swap pairs: the eighth slot in the bound is the reserved swap-free candidate, which needs
+      // no pair at all, and the ninth-ranked swap slot is dropped before resolution.
+      expect(warmed).toHaveLength(7)
+      const skips = events
+        .filter(e => e.event === 'preselect.skipped')
+        .map(e => [e.fields?.collateralIndex, e.fields?.reason])
+      expect(skips.filter(([, reason]) => reason === 'probe_cap')).toEqual([[8, 'probe_cap']])
+      // The final net cap then keeps four of the eight probed ones, as it always did.
+      expect(counters).toMatchObject({ candidates: 9, preselectSkipped: 5, quoteFailed: 4 })
+      expectCounterIdentities(counters)
+    })
+  })
+
+  describe('firm-call budget', () => {
+    it('sums the firm calls a tick actually spent onto tick.end', async () => {
+      const { events } = await runWith({
+        out: lensOut({
+          activatedBitmap: 0b11n,
+          collaterals: [slot({ index: 1 }), slot({ index: 0, maxLif: LOAN_MAX_LIF })]
+        }),
+        quoteOutcomes: [
+          { kind: 'failed', reason: 'no_route', firmCalls: 2 },
+          { kind: 'swap', plan: SWAP_PLAN, firmCalls: 3 }
+        ]
+      })
+      expect(events.find(e => e.event === 'tick.end')?.fields).toMatchObject({
+        firmCalls: 5,
+        firmCallsUnknown: 0
+      })
+    })
+
+    it('reports an absent count as unknown rather than as zero', async () => {
+      const { events } = await runWith({})
+      const end = events.find(e => e.event === 'tick.end')
+      expect(end?.fields?.firmCalls).toBeNull()
+      expect(end?.fields).toMatchObject({ firmCallsUnknown: 1 })
+      expect(typeof end?.fields?.durationMs).toBe('number')
+    })
+  })
+  describe('position join key', () => {
+    it('emits one id that joins plan.built to the queue tx.sent', async () => {
+      // BOTS-90's acceptance criterion as a test: grouping a maturity's events by `id` must not split
+      // one position. Broadcast through the REAL queue, since the split was between the tick's field
+      // name and the queue's — a stubbed submit cannot see it.
+      const spy = spyLogger()
+      const queue = createPendingQueue({
+        send: async () => ({ nonce: 7, txHash: `0x${'1'.repeat(64)}` }),
+        getReceipt: async () => null,
+        getBaseFee: async () => 1n,
+        maxFeeWei: 10n ** 18n,
+        logger: spy.logger
+      })
+      await runWith({
+        spy,
+        submitWith: ({ label, blockNumber }) =>
+          queue.submit({
+            request: { to: ROUTER, data: '0x' },
+            label,
+            maxFeePerGas: 1000n,
+            maxPriorityFeePerGas: 1000n,
+            blockNumber
+          })
+      })
+      const planBuilt = spy.events.find(e => e.event === 'plan.built')
+      const txSent = spy.events.find(e => e.event === 'tx.sent')
+      expect(planBuilt?.fields?.id).toBe(LABEL)
+      expect(txSent?.fields?.id).toBe(planBuilt?.fields?.id)
+    })
+
+    it('gives one position two candidate rows sharing the id, separated by the discriminator', async () => {
+      // Multi-collateral: `id` alone can no longer identify a ROW, so the pair
+      // (collateralIndex, postMaturityMode) is what has to separate the position's alternatives.
+      const { events } = await runWith({
+        out: twoSlots(),
+        quoteOutcome: { kind: 'failed', reason: 'no_route' }
+      })
+      const built = events.filter(e => e.event === 'plan.built')
+      expect(built.map(e => e.fields?.id)).toEqual([LABEL, LABEL])
+      expect(built.map(e => [e.fields?.collateralIndex, e.fields?.postMaturityMode])).toEqual([
+        [1, false],
+        [0, false]
+      ])
     })
   })
 })

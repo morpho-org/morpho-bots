@@ -1,12 +1,14 @@
 import type { LiquidationPlan } from '../sizing/plan'
-import type { LensOut } from '../state/lens.sol'
 
 import { ORACLE_PRICE_SCALE } from '../constants'
 import { mulDivDown } from '../sizing/math'
 
 /**
- * The loan-token amount the swap is expected to produce, valued at the lens's fresh oracle price (no
- * DEX slippage).
+ * The loan-token amount the swap is expected to produce, valued at the fresh oracle price the plan
+ * was sized against (no DEX slippage).
+ *
+ * Reads the price off the PLAN, not the lens output: a position can activate several collateral slots
+ * at different prices, so only the plan knows which one it chose to seize.
  *
  * Every non-bad-debt plan is seize-exact (`plan.seizedAssets` is pinned, `repaidUnits = 0`), and the
  * contract transfers exactly `seizedAssets` to the Executor before the callback — so the seized
@@ -16,6 +18,8 @@ import { mulDivDown } from '../sizing/math'
  * token's native units. This is the venue-agnostic reference output: a Uniswap min-out is derived
  * from it, and an aggregator's quoted output is sanity-checked against it.
  */
-export function expectedLoanOut(plan: Pick<LiquidationPlan, 'seizedAssets'>, out: LensOut): bigint {
-  return mulDivDown(plan.seizedAssets, out.bestCollateralPrice, ORACLE_PRICE_SCALE)
+export function expectedLoanOut(
+  plan: Pick<LiquidationPlan, 'seizedAssets' | 'oraclePrice'>
+): bigint {
+  return mulDivDown(plan.seizedAssets, plan.oraclePrice, ORACLE_PRICE_SCALE)
 }

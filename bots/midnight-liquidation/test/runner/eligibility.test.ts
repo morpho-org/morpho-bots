@@ -6,6 +6,7 @@ import type { LensOut } from '../../src/state/lens.sol'
 import { isLiquidatable, planInputFromLens } from '../../src/runner/eligibility'
 
 const TOKEN = getAddress('0x3333333333333333333333333333333333333333')
+const COLLATERAL = getAddress('0x5555555555555555555555555555555555555555')
 const ORACLE = getAddress('0x4444444444444444444444444444444444444444')
 const ZERO = '0x0000000000000000000000000000000000000000' as const
 
@@ -22,18 +23,22 @@ function lensOut(overrides: Partial<LensOut> = {}): LensOut {
     maxDebt: 900n,
     badDebt: 0n,
     activatedBitmap: 1n,
-    bestCollateralIdx: 0,
-    bestCollateralAmt: 5000n,
-    bestCollateralPrice: 10n ** 36n,
-    bestCollateralMaxLif: 1100000000000000000n,
-    bestCollateralLltv: 860000000000000000n,
+    collaterals: [
+      {
+        index: 0,
+        amt: 5000n,
+        price: 10n ** 36n,
+        maxLif: 1100000000000000000n,
+        lltv: 860000000000000000n
+      }
+    ],
     market: {
       chainId: 8453n,
       midnight: ZERO,
       loanToken: TOKEN,
       collateralParams: [
         {
-          token: TOKEN,
+          token: COLLATERAL,
           lltv: 860000000000000000n,
           liquidationCursor: 250000000000000000n,
           oracle: ORACLE
@@ -71,7 +76,7 @@ describe('isLiquidatable', () => {
 
 describe('planInputFromLens', () => {
   it('maps obligation config and flat position state into PlanInput', () => {
-    const out = lensOut({ debt: 1234n, badDebt: 7n, maxDebt: 1000n, bestCollateralIdx: 3 })
+    const out = lensOut({ debt: 1234n, badDebt: 7n, maxDebt: 1000n })
     expect(planInputFromLens(out)).toEqual({
       blockTimestamp: 1000n,
       maturity: 2000n,
@@ -82,11 +87,32 @@ describe('planInputFromLens', () => {
       badDebt: 7n,
       maxDebt: 1000n,
       rcfThreshold: 10n ** 30n,
-      bestCollateralIndex: 3,
-      bestCollateralAmt: 5000n,
-      bestCollateralPrice: 10n ** 36n,
-      bestCollateralMaxLif: 1100000000000000000n,
-      bestCollateralLltv: 860000000000000000n
+      collaterals: [
+        {
+          index: 0,
+          amt: 5000n,
+          price: 10n ** 36n,
+          maxLif: 1100000000000000000n,
+          lltv: 860000000000000000n,
+          swapFree: false
+        }
+      ]
     })
+  })
+
+  it('flags a slot whose token IS the loan token as swap-free', () => {
+    // Midnight's loan-as-collateral markets. This is the ONLY place the flag can be derived: the lens
+    // returns no such field and the sizing layer holds no addresses.
+    const out = lensOut({
+      market: {
+        ...lensOut().market,
+        collateralParams: [{ ...lensOut().market.collateralParams[0]!, token: TOKEN }]
+      }
+    })
+    expect(planInputFromLens(out).collaterals[0]?.swapFree).toBe(true)
+  })
+
+  it('leaves every slot of a conventional market not swap-free', () => {
+    expect(planInputFromLens(lensOut()).collaterals.map(slot => slot.swapFree)).toEqual([false])
   })
 })

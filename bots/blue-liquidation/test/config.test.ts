@@ -135,8 +135,8 @@ describe('loadConfig', () => {
     const config = loadConfig(baseEnv())
     expect(config.probe.staleMs).toBe(600_000)
     expect(config.probe.httpRps).toBe(1)
-    expect(config.probe.ladderWholeTokens).toEqual(['0.01', '0.1', '1', '10', '100'])
-    expect(loadConfig(baseEnv({ PROBE_LADDER: '0.5, 5, 50' })).probe.ladderWholeTokens).toEqual([
+    expect(config.probe.ladderSizes).toEqual(['0.01', '0.1', '1', '10', '100'])
+    expect(loadConfig(baseEnv({ PROBE_LADDER: '0.5, 5, 50' })).probe.ladderSizes).toEqual([
       '0.5',
       '5',
       '50'

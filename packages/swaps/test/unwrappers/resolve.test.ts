@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { Unwrapper } from '../../src/unwrappers/resolve'
 
-import { MAX_UNWRAP_DEPTH, resolveUnwraps } from '../../src/unwrappers/resolve'
+import { MAX_UNWRAP_DEPTH, previewUnwrapChain, resolveUnwraps } from '../../src/unwrappers/resolve'
 
 const A = getAddress('0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')
 const B = getAddress('0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb')
@@ -113,5 +113,69 @@ describe('resolveUnwraps', () => {
     await expect(
       resolveUnwraps([broken], { token: A, amountIn: 1n, executor: EXECUTOR, stopToken: LOAN })
     ).rejects.toThrow('probe exploded')
+  })
+})
+
+// The same conversion as `hop`, but answering the pair-only seam too — and recording whether the
+// expensive half was ever reached, which is the whole point of having the seam.
+const previewingHop = (from: Address, to: Address): Unwrapper & { resolved: number } => {
+  const state = { resolved: 0 }
+  return {
+    kind: `preview:${from.slice(0, 6)}`,
+    get resolved() {
+      return state.resolved
+    },
+    previewTokenOut: async token => (isAddressEqual(token, from) ? to : null),
+    async resolve({ token, amountIn }) {
+      state.resolved += 1
+      if (!isAddressEqual(token, from)) return null
+      return {
+        step: {
+          tokenIn: from,
+          tokenOut: to,
+          target: from,
+          value: 0n,
+          callData: '0x12345678',
+          amountIn: { source: 'fixed', value: amountIn }
+        },
+        expectedAmountOut: amountIn,
+        amountOutMinimum: amountIn
+      }
+    }
+  }
+}
+
+describe('previewUnwrapChain', () => {
+  it('walks to the terminal token without resolving a single hop', async () => {
+    const first = previewingHop(A, B)
+    const second = previewingHop(B, LOAN)
+    expect(await previewUnwrapChain([first, second], { token: A, stopToken: LOAN })).toBe(LOAN)
+    // The reason the seam exists: `resolve` is a rate-limited hosted request for a Pendle PT, and
+    // phase A.5 discards its calldata.
+    expect(first.resolved).toBe(0)
+    expect(second.resolved).toBe(0)
+  })
+
+  it('returns the input token when nothing applies', async () => {
+    expect(await previewUnwrapChain([previewingHop(B, LOAN)], { token: A, stopToken: LOAN })).toBe(
+      A
+    )
+  })
+
+  it('stops at the stop token rather than unwrapping past it', async () => {
+    const beyond = previewingHop(LOAN, C)
+    expect(await previewUnwrapChain([beyond], { token: LOAN, stopToken: LOAN })).toBe(LOAN)
+  })
+
+  it('treats a self-loop hop as not applying, like the resolving walk', async () => {
+    expect(await previewUnwrapChain([previewingHop(A, A)], { token: A, stopToken: LOAN })).toBe(A)
+  })
+
+  it('reports unavailable when ANY unwrapper lacks the seam', async () => {
+    // A partial walk would report the wrong terminal token, and the wrong token is a probe of the
+    // wrong pair — so the caller must fall back to a full resolve rather than trust a subset.
+    expect(
+      await previewUnwrapChain([previewingHop(A, B), hop(B, LOAN)], { token: A, stopToken: LOAN })
+    ).toBeNull()
   })
 })

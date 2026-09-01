@@ -1,10 +1,11 @@
 import type { Logger } from '@repo/bot-kit'
 import type { Address } from 'viem'
 
+import { USD_LADDER_PRICE_DECIMALS } from '@repo/swaps'
 import { getAddress } from 'viem'
 import { describe, expect, it } from 'vitest'
 
-import { createTokenPriceSource } from '../../src/discovery/token-prices'
+import { createTokenPriceSource, USD_PRICE_SCALE_DECIMALS } from '../../src/discovery/token-prices'
 
 const BASE_URL = 'https://api.example.test/markets/midnight/liquidation-candidates'
 const USDC: Address = getAddress('0x1111111111111111111111111111111111111111')
@@ -88,6 +89,21 @@ describe('createTokenPriceSource', () => {
     // Scales linearly, and floors rather than rounding up.
     expect(source.usdValueOf(USDC, 1n)).toBe(100n)
     expect(source.snapshot()).toMatchObject({ tokens: 2 })
+  })
+
+  it('prices one whole token without a chain read, at the ladder scale the selector expects', async () => {
+    // The probe ladder's denomination hangs off this, and `@repo/swaps` fixes its own scale
+    // independently — nothing but this assertion couples the two, and a divergence would silently
+    // mis-size every rung by orders of magnitude.
+    expect(USD_LADDER_PRICE_DECIMALS).toBe(USD_PRICE_SCALE_DECIMALS)
+
+    const source = sourceWith({ data: [row(USDC, 6, 1), row(WETH, 18, 2500)] })
+    await source.refresh()
+    expect(source.usdPriceOf(USDC)).toBe(100_000_000n)
+    expect(source.usdPriceOf(WETH)).toBe(250_000_000_000n)
+    // The per-unit form of the same figure, so the two cannot disagree about one whole token.
+    expect(source.usdPriceOf(WETH)).toBe(source.usdValueOf(WETH, 10n ** 18n))
+    expect(source.usdPriceOf(UNLISTED)).toBeNull()
   })
 
   it('is case-insensitive on the token address', async () => {

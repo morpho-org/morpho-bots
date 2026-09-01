@@ -75,17 +75,26 @@ const DEFAULT_POSITION_LIQUIDATION_COOLDOWN_MS = 0
 
 // Market whitelist + venue-probing defaults. The markets API is Morpho's own (not a rate-limited
 // venue), so it can be refreshed briskly. The probe uses an ISOLATED rps budget (see index.ts) so its
-// bursts never queue ahead of a time-sensitive firm quote; log-scaled ladder sizes are whole
-// collateral tokens (converted per-collateral to base units). `PROBE_STALE_MS` caps probe cadence per
-// pair; a pair is re-probed only when a liquidatable position touches it after the cache goes stale.
+// bursts never queue ahead of a time-sensitive firm quote.
 // The whitelist may read MORE THAN ONE markets endpoint (comma-separated), unioned per-source — see
 // `MarketsConfig`. The default is the single public endpoint: an additional source widens what the bot
 // will touch, so it must be opted into explicitly per deployment rather than shipped in the default.
 const DEFAULT_MARKETS_API_URLS = ['https://api.morpho.org/v0/midnight/markets']
 const DEFAULT_MARKETS_REFRESH_MS = 60_000
-const DEFAULT_PROBE_STALE_MS = 600_000
+
+// The cached probe curve is a price LEVEL, so the route cost it yields decays with the pair's price.
+// Post-maturity liquidation incentives are ~20bps and observed route cost is of the same order, so a
+// multi-minute cache would decide candidate selection on a number that had moved further than the
+// margin being decided. Venue ORDERING is drift-immune at any age (all venues share a refresh), so
+// this bounds only the absolute cost term — see `createVenueSelector`.
+const DEFAULT_PROBE_STALE_MS = 45_000
 const DEFAULT_PROBE_HTTP_RPS = 1
-const DEFAULT_PROBE_LADDER = ['0.01', '0.1', '1', '10', '100']
+
+// Decades of USD notional, converted per-collateral to base units against the token price (see
+// `createVenueSelector`). Fixed and deliberately wide rather than fitted to observed seize sizes: a
+// $0.01–$100k span brackets every real liquidation on any collateral, whereas the whole-token ladder
+// it replaces put 90% of an 8-decimal, ~$80k/token collateral's seizes below its bottom rung.
+const DEFAULT_PROBE_LADDER = ['0.01', '0.1', '1', '10', '100', '1000', '10000', '100000']
 
 type Env = Record<string, string | undefined>
 
@@ -161,13 +170,14 @@ export type MarketsConfig = {
 
 /**
  * Venue-probing knobs. The probe fetches indicative quotes across enabled venues at each log-scaled
- * `ladderWholeTokens` size, caches the best-first ranking per pair for `staleMs`, and runs on its own
- * `httpRps` budget (isolated from firm quotes). Sizes stay as raw strings until converted per-collateral.
+ * `ladderSizes` rung, caches the per-venue rate curve for the pair for `staleMs`, and runs on its own
+ * `httpRps` budget (isolated from firm quotes). Sizes stay as raw strings until converted
+ * per-collateral; this bot wires a USD price source, so they are read as USD notional.
  */
 export type ProbeConfig = {
   staleMs: number
   httpRps: number
-  ladderWholeTokens: string[]
+  ladderSizes: string[]
 }
 
 export type Config = {
@@ -449,7 +459,7 @@ export function loadConfig(
   const probe: ProbeConfig = {
     staleMs: intEnv(env, 'PROBE_STALE_MS', DEFAULT_PROBE_STALE_MS, { min: 1 }),
     httpRps: intEnv(env, 'PROBE_HTTP_RPS', DEFAULT_PROBE_HTTP_RPS, { min: 1 }),
-    ladderWholeTokens: ladderEnv(env, 'PROBE_LADDER', DEFAULT_PROBE_LADDER)
+    ladderSizes: ladderEnv(env, 'PROBE_LADDER', DEFAULT_PROBE_LADDER)
   }
 
   const quoting: QuotingConfig = {

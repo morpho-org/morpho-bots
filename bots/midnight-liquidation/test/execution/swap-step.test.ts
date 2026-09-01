@@ -1,54 +1,14 @@
-import { getAddress, zeroAddress } from 'viem'
 import { describe, expect, it } from 'vitest'
 
 import type { LiquidationPlan } from '../../src/sizing/plan'
-import type { LensOut } from '../../src/state/lens.sol'
 
 import { ORACLE_PRICE_SCALE, WAD } from '../../src/constants'
 import { expectedLoanOut } from '../../src/execution/swap-step'
 
-const LOAN = getAddress('0x6666666666666666666666666666666666666666')
-const COLLATERAL = getAddress('0x7777777777777777777777777777777777777777')
-const ORACLE = getAddress('0x8888888888888888888888888888888888888888')
-
-// price = 2 loan per collateral (1000 collateral → 2000 loan); maxLif = 1.1×.
+// price = 2 loan per collateral (1000 collateral → 2000 loan). The oracle price now rides on the plan
+// itself, so these cases need no lens output at all — a position can activate several slots at
+// different prices, and only the plan knows which one it chose.
 const PRICE = ORACLE_PRICE_SCALE * 2n
-const MAX_LIF = (WAD * 11n) / 10n
-
-const out: LensOut = {
-  valid: true,
-  hasDebt: true,
-  healthy: false,
-  locked: false,
-  gateAllows: true,
-  blockTimestamp: 1500n,
-  debt: 5000n,
-  maxDebt: 1000n,
-  badDebt: 0n,
-  activatedBitmap: 1n,
-  bestCollateralIdx: 0,
-  bestCollateralAmt: 1000n,
-  bestCollateralPrice: PRICE,
-  bestCollateralMaxLif: MAX_LIF,
-  bestCollateralLltv: (WAD * 86n) / 100n,
-  market: {
-    chainId: 8453n,
-    midnight: zeroAddress,
-    loanToken: LOAN,
-    collateralParams: [
-      {
-        token: COLLATERAL,
-        lltv: (WAD * 86n) / 100n,
-        liquidationCursor: (WAD * 25n) / 100n,
-        oracle: ORACLE
-      }
-    ],
-    maturity: 2000n, // pre-maturity at blockTimestamp 1500 → normal mode
-    rcfThreshold: WAD,
-    enterGate: zeroAddress,
-    liquidatorGate: zeroAddress
-  }
-}
 
 describe('expectedLoanOut', () => {
   it('values a whole-slot plan at the oracle price', () => {
@@ -58,10 +18,12 @@ describe('expectedLoanOut', () => {
       repaidUnits: 0n,
       postMaturityMode: false,
       lif: WAD,
-      impliedRepaidUnits: 1000n
+      impliedRepaidUnits: 1000n,
+      oraclePrice: PRICE,
+      swapFree: false
     }
     // 1000 collateral × price(2) = 2000 loan.
-    expect(expectedLoanOut(plan, out)).toBe(2000n)
+    expect(expectedLoanOut(plan)).toBe(2000n)
   })
 
   it('values a cap-binding seize-exact plan at the oracle price (pinned seizedAssets)', () => {
@@ -73,11 +35,11 @@ describe('expectedLoanOut', () => {
       repaidUnits: 0n,
       postMaturityMode: false,
       lif: WAD,
-      impliedRepaidUnits: 1098n
+      impliedRepaidUnits: 1098n,
+      oraclePrice: ORACLE_PRICE_SCALE * 3n,
+      swapFree: false
     }
-    expect(expectedLoanOut(plan, { ...out, bestCollateralPrice: ORACLE_PRICE_SCALE * 3n })).toBe(
-      1098n
-    )
+    expect(expectedLoanOut(plan)).toBe(1098n)
   })
 
   it('returns 0 when the oracle price is 0 (avoids a divide-by-zero)', () => {
@@ -87,8 +49,10 @@ describe('expectedLoanOut', () => {
       repaidUnits: 0n,
       postMaturityMode: false,
       lif: WAD,
-      impliedRepaidUnits: 1000n
+      impliedRepaidUnits: 1000n,
+      oraclePrice: 0n,
+      swapFree: false
     }
-    expect(expectedLoanOut(plan, { ...out, bestCollateralPrice: 0n })).toBe(0n)
+    expect(expectedLoanOut(plan)).toBe(0n)
   })
 })

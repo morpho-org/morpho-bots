@@ -1,6 +1,6 @@
 import type { Address, Hex } from 'viem'
 
-import { ExecutionRevertedError } from 'viem'
+import { encodeErrorResult, ExecutionRevertedError } from 'viem'
 import { describe, expect, it } from 'vitest'
 
 import type { Logger, LogLevel } from '../../src/logger'
@@ -15,7 +15,7 @@ import type {
 } from '../../src/queue/pending-queue'
 
 import { createPendingQueue } from '../../src/queue/pending-queue'
-import { TxSendError } from '../../src/tx-error'
+import { TxSendError } from '../../src/tx-send.error'
 
 // The cooldown the opted-in cases run with (mirrors midnight's SETTLED_COOLDOWN_BLOCKS tuning).
 const SETTLED_COOLDOWN_BLOCKS = 20n
@@ -173,6 +173,29 @@ describe('createPendingQueue', () => {
     expect(events.find(e => e.event === 'tx.submit_failed')?.level).toBe('warn')
   })
 
+  it('spreads the caller correlation onto tx.submit_failed, beside the shared id', async () => {
+    // A liquidator can submit several alternatives of ONE position under one label, so the label
+    // alone cannot tell their failures apart in a structured query.
+    const { logger, events } = captureLogger()
+    const send: SendTx = async () => {
+      throw new Error('rpc down')
+    }
+    const { queue } = setup({ send, logger })
+    await queue.submit({
+      request: REQUEST,
+      label: 'market:borrower',
+      correlation: { collateralIndex: 2, postMaturityMode: true },
+      maxFeePerGas: 1000n,
+      maxPriorityFeePerGas: 1000n,
+      blockNumber: 0n
+    })
+    expect(events.find(e => e.event === 'tx.submit_failed')?.fields).toMatchObject({
+      id: 'market:borrower',
+      collateralIndex: 2,
+      postMaturityMode: true
+    })
+  })
+
   it('rethrows a first-send failure after a nonce was claimed but no hash was returned', async () => {
     const { logger, events } = captureLogger()
     const send: SendTx = async () => {
@@ -323,6 +346,20 @@ describe('createPendingQueue', () => {
     expect(queue.inflightLabels().has('market:borrower')).toBe(true)
   })
 
+  it('emits the tracking key as `id` on the send and on the settlement', async () => {
+    // The field name is the schema every dashboard joins on, and this package owns it. The behavioral
+    // key keeps the name `label` on the way IN — see SubmitArgs.label.
+    const { logger, events } = captureLogger()
+    const { queue } = setup({
+      logger,
+      getReceipt: async () => ({ status: 'success', blockNumber: 10n })
+    })
+    await submitOne(queue, 0n)
+    await queue.onBlock(1n)
+    expect(events.find(e => e.event === 'tx.sent')?.fields?.id).toBe('market:borrower')
+    expect(events.find(e => e.event === 'tx.confirmed')?.fields?.id).toBe('market:borrower')
+  })
+
   it('keeps a confirmed label in the backpressure set for the cooldown, then releases it', async () => {
     const { queue } = setup({ getReceipt: async () => ({ status: 'success', blockNumber: 10n }) })
     await submitOne(queue, 0n)
@@ -378,7 +415,7 @@ describe('drop', () => {
     const dropped = events.find(e => e.event === 'tx.dropped')
     expect(dropped?.level).toBe('warn')
     expect(dropped?.fields).toMatchObject({
-      label: 'market:borrower',
+      id: 'market:borrower',
       nonce: 7,
       txHash: hashOf(1),
       reason: 'nonce_consumed'
@@ -416,7 +453,7 @@ describe('nonce-consumed reconciliation', () => {
     await queue.onBlock(1n)
     expect(queue.size).toBe(0)
     expect(events.find(e => e.event === 'tx.dropped')?.fields).toMatchObject({
-      label: 'market:borrower',
+      id: 'market:borrower',
       nonce: 7,
       txHash: hashOf(1),
       reason: 'nonce_consumed'
@@ -558,9 +595,7 @@ describe('nonce-hole latch', () => {
     expect(await ctx.submit('c', 6n)).toEqual({ sent: false, reason: 'refused' })
     expect(ctx.sends.length).toBe(sendsAfterDrop) // no new broadcast
     expect(ctx.queue.size).toBe(1)
-    expect(ctx.events.some(e => e.event === 'queue.nonce_hole' && e.fields?.label === 'c')).toBe(
-      true
-    )
+    expect(ctx.events.some(e => e.event === 'queue.nonce_hole' && e.fields?.id === 'c')).toBe(true)
     // The chain now consumes past the dropped nonce (7 mined → count 8 > hole high 7): latch clears.
     ctx.consumedRef.value = 8
     await ctx.queue.onBlock(7n)
@@ -639,7 +674,52 @@ describe('submit outcome', () => {
     // The node rejected THIS position's transaction — a fact about the position, so a caller must be
     // able to re-arm its backoff. Collapsing this with a queue refusal is what let a failing send
     // re-quote and re-send every block.
-    expect(await submitOne(queue)).toEqual({ sent: false, reason: 'send_failed' })
+    expect(await submitOne(queue)).toEqual({
+      sent: false,
+      reason: 'send_failed',
+      executionRevert: false
+    })
+  })
+
+  it('reports executionRevert on a send the chain reverted, and logs its selector', async () => {
+    const data = encodeErrorResult({
+      abi: [{ type: 'error', name: 'Error', inputs: [{ type: 'string' }] }] as const,
+      errorName: 'Error',
+      args: ['return too low']
+    })
+    const send: SendTx = async () => {
+      throw Object.assign(new ExecutionRevertedError({}), { data })
+    }
+    const { logger, events } = captureLogger()
+    const { queue } = setup({ send, logger })
+    // The selector rides the outcome, not just the log line: the caller watching consecutive declines
+    // needs to know whether the chain keeps refusing for the same reason.
+    expect(await submitOne(queue)).toEqual({
+      sent: false,
+      reason: 'send_failed',
+      executionRevert: true,
+      selector: data.slice(0, 10)
+    })
+    const failed = events.find(e => e.event === 'tx.submit_failed')
+    expect(failed?.fields?.reason).toBe('return too low')
+    expect(failed?.fields?.executionRevert).toBe(true)
+    expect(failed?.fields?.selector).toBe(data.slice(0, 10))
+  })
+
+  it('omits the selector when a transport failure carries no revert payload', async () => {
+    const send: SendTx = async () => {
+      throw new Error('nonce too low')
+    }
+    const { logger, events } = captureLogger()
+    const { queue } = setup({ send, logger })
+    expect(await submitOne(queue)).toEqual({
+      sent: false,
+      reason: 'send_failed',
+      executionRevert: false
+    })
+    const failed = events.find(e => e.event === 'tx.submit_failed')
+    expect(failed?.fields?.executionRevert).toBe(false)
+    expect(failed?.fields).not.toHaveProperty('selector')
   })
 
   it('reports refused when the empty-queue nonce re-sync throws', async () => {

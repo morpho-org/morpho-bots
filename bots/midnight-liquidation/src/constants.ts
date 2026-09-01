@@ -53,6 +53,21 @@ export const LISTED_MARKETS_MAX_AGE_MS = 10 * 60_000
 export const TOKEN_PRICES_REFRESH_MS = 60_000
 
 /**
+ * Firm-quote attempts one position may spend in a single tick before its remaining, lower-ranked
+ * alternatives are dropped as `preselectSkipped`.
+ *
+ * The retry period a maturity is judged on is set by HTTP calls per candidate, not by candidate count,
+ * and `MAX_PLAN_CANDIDATES_PER_POSITION` alternatives times a venue fall-through is several seconds of
+ * firm quoting for ONE borrower. Two keeps the top-ranked candidate plus one fall-through, which is
+ * what net-of-route-cost ordering buys: with the deciding term inside the ranking, a candidate ranked
+ * third is one the curve says loses, not one that merely sorted late.
+ *
+ * Applied ONLY to a position whose route costs are all known, and never to its best swap-free
+ * candidate — see the `preselectSkipped` counter for both exemptions.
+ */
+export const MAX_PRESELECTED_CANDIDATES_PER_POSITION = 2
+
+/**
  * Basis-point denominator (100% = 10_000 bps) for the sizing layer's `seizeCapMarginBps` math.
  * `@repo/swaps` carries its own copy for slippage/route-quality math — kept separate so protocol
  * sizing never depends on the swap-quoting package.

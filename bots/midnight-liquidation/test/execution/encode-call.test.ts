@@ -1,5 +1,5 @@
 import type { SwapPlan } from '@repo/swaps'
-import type { Hex } from 'viem'
+import type { Address, Hex } from 'viem'
 
 import { MidnightAbi } from '@repo/contracts'
 import { executorAbi } from 'executooor-viem'
@@ -233,6 +233,54 @@ describe('encodeLiquidationExec', () => {
     if (collateralSweep.functionName !== 'callWithPlaceholders4845164670')
       throw new Error('expected placeholder call')
     expect(isAddressEqual(collateralSweep.args[0], COLLATERAL)).toBe(true)
+  })
+
+  it('emits ONE sweep for a loan-as-collateral market, whose two market tokens coincide', () => {
+    // Midnight's loan-as-collateral slot: `collateralParams[0].token === loanToken`, and the plan has
+    // no steps because the seized assets already ARE the loan token. A second sweep would transfer
+    // zero — see `sweepCalls`.
+    const selfMarket: Market = {
+      ...market,
+      collateralParams: [{ ...collateralParam, token: LOAN }]
+    }
+    const swapFreePlan: SwapPlan = {
+      steps: [],
+      expectedAmountOut: 100n,
+      amountOutMinimum: 100n
+    }
+    const calls = outerCalls(
+      encodeLiquidationExec({
+        executor: EXECUTOR,
+        midnight: MIDNIGHT,
+        market: selfMarket,
+        collateralIndex: 0,
+        seizedAssets: 100n,
+        repaidUnits: 0n,
+        borrower: BORROWER,
+        postMaturityMode: true,
+        plan: swapFreePlan,
+        recipient: RECIPIENT
+      })
+    )
+    // liquidate + exactly one sweep, where a distinct-token market emits two.
+    expect(calls).toHaveLength(2)
+    const sweep = decodeFunctionData({ abi: executorAbi, data: calls[1]! })
+    if (sweep.functionName !== 'callWithPlaceholders4845164670')
+      throw new Error('expected placeholder call')
+    expect(isAddressEqual(sweep.args[0], LOAN)).toBe(true)
+  })
+
+  it('encodes a zero-step plan as repay approval only — no conversion calls', () => {
+    // A swap-free plan is a real plan, not a missing one: the callback queue is just the USDT-safe
+    // approve pair that lets Midnight pull the repay.
+    const swapFreePlan: SwapPlan = { steps: [], expectedAmountOut: 100n, amountOutMinimum: 100n }
+    const { queue } = decodeLiquidate(encode(swapFreePlan))
+    expect(queue).toHaveLength(2) // approve(0) then approve(balance), nothing else
+    for (const call of queue) {
+      const decoded = decodeFunctionData({ abi: executorAbi, data: call })
+      const target = decoded.args[0] as Address
+      expect(isAddressEqual(target, LOAN)).toBe(true)
+    }
   })
 
   it('prepends an unwrap step (spliced redeem, no approval) and sweeps the intermediate', () => {

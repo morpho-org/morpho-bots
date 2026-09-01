@@ -32,6 +32,19 @@ export const POOL_FEE = 500
 export const WETH_USDC_ORACLE = '0xFEa2D58cEfCb9fcb597723c6bAE66fFE4193aFE4' as Address
 export const LLTV = 860000000000000000n // 0.86 WAD (enabled on-chain)
 export const LIQUIDATION_CURSOR = 250000000000000000n // 0.25 WAD (enabled by the seeder via configurator)
+
+// Loan-as-collateral params, matching the live Base markets: the loan token (USDC) is its own
+// collateral, priced by an identity oracle (price = 1e36, i.e. 1 USDC = 1 USDC). The 98% lltv is
+// deliberate — it exists so the ~60bps incentive covers a liquidator's gas. Both values may be
+// unenabled on this deployment; the seeder enables them via the configurator.
+export const LOAN_COLLATERAL_LLTV = 980000000000000000n // 0.98 WAD
+export const LOAN_COLLATERAL_CURSOR = 300000000000000000n // 0.30 WAD
+
+// Fork-local address for the identity oracle stand-in — arbitrary, nothing is deployed here on Base.
+// The protocol ships a real one at 0x4429112b3C00b40Cf295db81cfcdE39d7d5ADC1d, but it was deployed
+// for the Aug-2026 loan-as-collateral markets, i.e. AFTER FORK_BLOCK, so calling it on this fork
+// reverts with "returned no data". See {@link deployIdentityOracle}.
+export const IDENTITY_ORACLE = '0x00000000000000000000000000000000000d0c01' as Address
 export const CONFIGURATOR = '0xcBa28b38103307Ec8dA98377ffF9816C164f9AFa' as Address
 export const ECRECOVER_RATIFIER = '0xd6e70365C8E8DDa9a4ca662C07bbE663b017755E' as Address
 
@@ -165,6 +178,24 @@ export function testClient(rpcUrl: string) {
   return createTestClient({ chain: base, mode: 'anvil', transport: http(rpcUrl) }).extend(
     publicActions
   )
+}
+
+// Runtime that returns 1e36 for any calldata: PUSH32 1e36, MSTORE at 0, RETURN 32 bytes from 0.
+const IDENTITY_ORACLE_RUNTIME =
+  '0x7f0000000000000000000000000000000000c097ce7bc90715b34b9f100000000060005260206000f3' as const
+
+/**
+ * Places a constant-`price() = 1e36` oracle at {@link IDENTITY_ORACLE} on the fork.
+ *
+ * A stub rather than the live contract because that one postdates FORK_BLOCK, and a stub rather than
+ * a FORK_BLOCK bump because bumping would move the WETH oracle price and Uniswap pool state the other
+ * fork case is calibrated against. Faithful rather than a simplification: the only oracle surface the
+ * lens and the seeder use is `price() returns (uint256)`, and returning that constant is the identity
+ * oracle's entire behavior.
+ */
+export const deployIdentityOracle = async (test: TestClient): Promise<Address> => {
+  await test.setCode({ address: IDENTITY_ORACLE, bytecode: IDENTITY_ORACLE_RUNTIME })
+  return IDENTITY_ORACLE
 }
 
 /** Funds `address` with 100 ETH for gas. */

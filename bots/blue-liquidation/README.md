@@ -48,7 +48,7 @@ Env vars (fail-loud on a missing required var, an unknown chain, or a malformed 
 | `ALLOW_DETECTION_ONLY`                                              | no       | `false`                          | Opt-in: boot with zero venues (discover + log only, skip every liquidation). Without it, zero venues is a startup error               |
 | `EXCLUDE_COLLATERALS`                                               | no       | —                                | Comma-separated collateral deny-list (skipped with `config.no_swap_path`)                                                             |
 | `ZEROX_BASE_URL` / `ONEINCH_BASE_URL` / `LIFI_BASE_URL`             | no       | —                                | Optional per-venue API host overrides                                                                                                 |
-| `PROBE_STALE_MS` / `PROBE_HTTP_RPS` / `PROBE_LADDER`                | no       | see `config.ts`                  | Venue-probe cache staleness, isolated probe rate, and whole-token ladder sizes                                                        |
+| `PROBE_STALE_MS` / `PROBE_HTTP_RPS` / `PROBE_LADDER`                | no       | see `config.ts`                  | Venue-probe cache staleness, isolated probe rate, and ladder sizes (whole collateral tokens — this bot wires no USD price source)     |
 | `MAX_FEE_GWEI`                                                      | no       | `300`                            | Hard ceiling for fee bumps                                                                                                            |
 | `MAX_ROUTE_IMPACT_BPS`                                              | no       | `500`                            | Reject aggregator routes this far below the oracle ref                                                                                |
 | `PENDLE_SLIPPAGE_BPS`                                               | no       | `50`                             | Slippage for the Pendle PT → underlying unwrap hop (before the downstream venue sells)                                                |
@@ -68,9 +68,13 @@ container the runtime env remains unsuffixed because each service runs exactly o
 There is no per-collateral routing file. Venues are **enabled by key presence** (`ZEROX_API_KEY`,
 `ONEINCH_API_KEY`, `LIFI_API_KEY` — or `ENABLE_LIFI=true` for keyless LiFi), and for each
 liquidatable position a background probe cache ranks the enabled venues best-first for the
-`(collateral, loan)` pair (log-scaled indicative quotes on an isolated rate budget — see
-`PROBE_LADDER`/`PROBE_STALE_MS`/`PROBE_HTTP_RPS`). The firm quote goes to the top venue and falls
-through to the next on failure, so a transient venue outage costs coverage, never correctness.
+`(collateral, loan)` pair (log-scaled indicative quotes on an isolated rate budget, interpolated at
+the seize size — see `PROBE_LADDER`/`PROBE_STALE_MS`/`PROBE_HTTP_RPS`; ladder sizes are whole
+collateral tokens here, since this bot wires no USD price source). The firm quote goes to the top
+venue and falls through to the next on failure, so a transient venue outage costs coverage, never
+correctness. The curve also predicts that venue's own output to set the quote's min-out denominator,
+but only while it is fresher than the package's prediction-age ceiling — well under this bot's
+ten-minute `PROBE_STALE_MS`, so an older curve simply pays the two-pass derivation's extra call.
 Collateral that wraps an ERC-4626 vault or a Pendle PT is auto-unwrapped before the venue swap.
 `EXCLUDE_COLLATERALS` is the operator's deny-list for collaterals the bot must never seize/hold.
 
@@ -234,7 +238,10 @@ executable quote from the top venue — `0x` / `1inch` / `lifi` (one rate-limite
 route-bound fixed sell amount; LiFi routes keyless) — falling through to the next venue on failure.
 A free oracle-based route-quality check (against the full-path oracle reference) rejects any route
 more than `MAX_ROUTE_IMPACT_BPS` below it. Quotes are made only for the small liquidatable set; a
-per-`(id, borrower)` exponential backoff suppresses repeated failures.
+per-`(id, borrower)` exponential backoff suppresses repeated failures — including a send the chain
+declined with an execution revert, which is a deliberate divergence from `bots/midnight-liquidation`
+(blue's liquidation incentive is static, so a shortfall on this block does predict the next one; see
+[TIB-2026-08-28](../../docs/decisions/TIB-2026-08-28-midnight-send-shortfall-classification.md)).
 
 ### Simulation
 
@@ -252,6 +259,31 @@ Sim-ok plans are broadcast via the signer and tracked in an in-memory nonce queu
 distinct nonces, EIP-1559 ≥12.5% fee bump on stuck nonces, and a hard `MAX_FEE_GWEI` ceiling that
 drops rather than chases a gas spike. State is not persisted — chain truth wins; a restart re-derives
 the nonce from `getTransactionCount('pending')`.
+
+### Log correlation
+
+Every **position-scoped** event carries the position in one field, **`id`**, whose value is
+`lensKey(marketId, borrower)`: the two halves joined by `:` with both lowercased. So a window's events
+group into one row per position with **no normalization in the query** (`GROUP BY id`). `tx.*` used to
+name the same string `label`; it does not any more. The full set:
+
+`plan.built`, `cooldown.skip`, `config.no_swap_path`, `quote.excluded_collateral`, `unwrap.failed`,
+`unwrap.resolved`, `unwrap.bad_route`, `unwrap.preview_reverted`, `unwrap.preview_zero`,
+`quote.floor_unmet`, `quote.ok`, `quote.failed`, `quote.route_quality_failed`, `probe.error`,
+`select.cold_default`, `select.ok`, `simulate.ok`, `simulate.revert`, `tx.send_aborted`,
+`tx.submit_failed`, `tx.sent`, `tx.bumped`, `tx.confirmed`, `tx.reverted`, `tx.dropped`,
+`tx.replace_failed`, `tx.onblock_error`, `nonce.sync_failed`, `queue.nonce_hole`.
+
+`plan.built` also keeps `marketId` and `borrower` as human-readable extras — for reading a single
+line, not for grouping. A Blue market has exactly one collateral, so one position is one candidate:
+unlike `bots/midnight-liquidation`, `id` alone identifies a row and no candidate discriminator is
+emitted.
+
+Everything else is scoped to something other than a position and carries **no** `id`, by design —
+per tick (`discover.*`, `lens.read`, `tick.end`, `tick.error`, `block.new`), per venue pair
+(`probe.venue_error`, `probe.refreshed`), queue-wide (`queue.nonce_hole_cleared`,
+`queue.maintenance_failed`, `reconcile.failed`), or process/config (`startup`, `shutdown`,
+`quoting.*`, `discovery.*`, `signer.*`, `heartbeat.*`, `runner.*`, `watcher.error`, `pendle.*`).
 
 ## Testing
 

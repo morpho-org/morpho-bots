@@ -50,6 +50,14 @@
 - **Logging**: Log errors appropriately for debugging and monitoring. Prefer structured logs with
   enough context (bot name, operation, relevant inputs) that an operator can answer "what did the
   bot do and why?" a day later.
+- **One join key per subject**: every event scoped to the same subject carries that subject under
+  **one** field name, with one shape and one casing, produced by a shared helper rather than
+  assembled at each call site — so grouping needs no normalization in the query. The liquidators'
+  subject is a position and the field is `id` (see `lensKey` in `@repo/utils`); a subject that
+  subdivides adds a discriminator beside the key rather than changing it, named identically in every
+  package that emits it. A key that is also **behavioral** (a map key, a dedupe set) keeps whatever
+  name that role gave it — `PendingQueue`'s `SubmitArgs.label` is logged as `id` but stays `label` in
+  the API, because its value is compared, not just displayed. Never re-derive the key at a call site.
 - **Promises**: Use `tryCatch` from `@repo/utils` to handle promise throws.
 
 ### Environment Variables

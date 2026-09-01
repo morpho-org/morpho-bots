@@ -24,7 +24,7 @@ import type {
 
 import { evaluatePolicy, PolicyViolationError } from './policy'
 import { createHttpTransport } from './transport'
-import { TxSendError } from './tx-error'
+import { TxSendError } from './tx-send.error'
 
 /** The signed-send primitives {@link createSigner} returns and `createPendingQueue` injects. */
 export type Signer = {

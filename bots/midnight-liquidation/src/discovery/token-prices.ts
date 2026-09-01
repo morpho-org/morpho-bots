@@ -54,6 +54,16 @@ type TokenPriceSource = {
    */
   usdValueOf: (token: Address, loanUnits: bigint) => bigint | null
   /**
+   * USD price of ONE WHOLE `token`, scaled by `10 ** USD_PRICE_SCALE_DECIMALS`; `null` on the same
+   * terms as {@link TokenPriceSource.usdValueOf}, whose per-unit form this is.
+   *
+   * Served straight off the snapshot, so — unlike deriving it as `usdValueOf(token, 10 ** decimals)` —
+   * it needs no on-chain `decimals` read and cannot fail on one. That matters because the probe
+   * ladder's denomination hangs off it: an RPC blip there would leave a pair cold instead of falling
+   * back to the whole-token ladder.
+   */
+  usdPriceOf: (token: Address) => bigint | null
+  /**
    * Refetches the snapshot. **Contractually non-throwing**: an API failure is reported as
    * `prices.refresh_failed` and the previous snapshot is retained, because ranking degrades to
    * discovery order rather than failing closed. Callers therefore never need to handle a rejection.
@@ -180,6 +190,7 @@ export const createTokenPriceSource = (deps: {
       if (!entry) return null
       return mulDivDown(loanUnits, entry.priceE8, 10n ** BigInt(entry.decimals))
     },
+    usdPriceOf: token => priced.get(getAddress(token))?.priceE8 ?? null,
     refresh,
     snapshot: () => ({ source, tokens: priced.size, updatedAt })
   }

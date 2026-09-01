@@ -9,10 +9,9 @@ import type { QuoteOutcome, Swap, Venue } from '../src/types'
 import type { Unwrapper } from '../src/unwrappers/resolve'
 
 import { ONEINCH_ROUTER, ZEROX_ALLOWANCE_HOLDER } from '../src/constants'
+import { routeCostBps } from '../src/cost-bps.utils'
 import { clearsFloor, composeMultiVenueQuoting, passesRouteQuality } from '../src/quoting'
 import { QuoteError } from '../src/types'
-
-const NOOP_LOGGER: QuoteLogger = { info: () => {}, warn: () => {} }
 
 const ROUTER = getAddress('0x5555555555555555555555555555555555555555')
 const LOAN = getAddress('0x6666666666666666666666666666666666666666')
@@ -66,6 +65,20 @@ function fakeUnwrapper(args: { from: Address; to: Address; out: bigint }): Unwra
   }
 }
 
+// An unwrapper whose detection read fails, standing in for a transient RPC failure inside erc4626 /
+// Pendle resolution. Records whether it was reached at all.
+const throwingUnwrapper = (): Unwrapper & { probed: Address[] } => {
+  const probed: Address[] = []
+  return {
+    kind: 'throwing',
+    probed,
+    async resolve({ token }) {
+      probed.push(token)
+      throw new QuoteError('api_error', 'detection read failed')
+    }
+  }
+}
+
 const throwingHttp: RateLimitedClient = {
   getJson: async () => {
     throw new QuoteError('rate_limited', 'boom')
@@ -102,10 +115,11 @@ function oneInchBody(dstAmount: string) {
 
 const LIFI_SPENDER = getAddress('0xbBbBBBBbbBBBbbbBbbBbbbbBBbBbbbbBbBbbBBbB')
 
-// A LiFi-shaped firm-quote body with the given toAmount.
-function lifiBody(toAmount: string) {
+// A LiFi-shaped firm-quote body with the given toAmount, and an explicit minimum when the case cares
+// (LiFi reports its own `toAmountMin`, so a stub returning the full amount overshoots any lower floor).
+function lifiBody(toAmount: string, toAmountMin = toAmount) {
   return {
-    estimate: { approvalAddress: LIFI_SPENDER, toAmount, toAmountMin: toAmount },
+    estimate: { approvalAddress: LIFI_SPENDER, toAmount, toAmountMin },
     transactionRequest: { to: ROUTER, data: '0xfee', value: '0x0' }
   }
 }
@@ -122,6 +136,24 @@ function liquidSwapBody(amountOut: string) {
   }
 }
 
+/**
+ * A 0x stub that behaves like the real thing: it applies the slippage WE send to ITS OWN quote. That
+ * is precisely why deriving the percentage against the oracle reference put the floor too low, so a
+ * stub returning a fixed minimum could not have caught it.
+ */
+const aggregator = (quotes: string[]) => {
+  const sent: (Record<string, string> | undefined)[] = []
+  const client: RateLimitedClient = {
+    getJson: async <T>(args: { searchParams?: Record<string, string> }) => {
+      sent.push(args.searchParams)
+      const buy = BigInt(quotes[sent.length - 1] ?? quotes.at(-1)!)
+      const bps = BigInt(args.searchParams?.slippageBps ?? '0')
+      return zeroxBody(buy.toString(), ((buy * (10_000n - bps)) / 10_000n).toString()) as T
+    }
+  }
+  return { client, sent }
+}
+
 // A client that dispatches a fixed body per venue (throws no_route for an unstubbed venue).
 function multiHttp(bodies: Partial<Record<HttpVenue, unknown>>): RateLimitedClient {
   return {
@@ -133,14 +165,30 @@ function multiHttp(bodies: Partial<Record<HttpVenue, unknown>>): RateLimitedClie
   }
 }
 
+// `clamped` marks every fake estimate as taken off the probed ladder, which is how a suite asks for
+// the pre-curve behaviour: no trustworthy prediction, and the full venue fall-through.
 function composeMulti(
   venues: Venue[],
   order: { venue: Venue; expectedOut: bigint }[],
   httpClient: RateLimitedClient,
-  options: { unwrappers?: readonly Unwrapper[] } = {}
+  options: {
+    unwrappers?: readonly Unwrapper[]
+    clamped?: boolean
+    ageMs?: number
+    swapFreeWithoutVenues?: boolean
+  } = {}
 ) {
   const refreshed: { collateral: Address; loan: Address }[] = []
-  const selected: { pair: { collateral: Address; loan: Address }; amountIn: bigint }[] = []
+  const selected: {
+    pair: { collateral: Address; loan: Address }
+    amountIn: bigint
+    referenceAmountOut?: bigint
+  }[] = []
+  const events: { event: string; fields: Record<string, unknown> }[] = []
+  const logger: QuoteLogger = {
+    info: (event, fields = {}) => events.push({ event, fields }),
+    warn: (event, fields = {}) => events.push({ event, fields })
+  }
   const quoting = composeMultiVenueQuoting({
     httpClient,
     chainId: 8453,
@@ -149,22 +197,35 @@ function composeMulti(
     baseUrls: {},
     maxRouteImpactBps: 500, // floor = 950
     unwrappers: options.unwrappers ?? [],
+    swapFreeWithoutVenues: options.swapFreeWithoutVenues ?? false,
     refresh: async pair => {
       refreshed.push(pair)
     },
-    select: (pair, amountIn) => {
-      selected.push({ pair, amountIn })
-      return order
+    // Mirrors the real selector: one interpolated output per venue, with the cost derived from the
+    // caller's own reference at read time (see createVenueSelector).
+    select: (pair, amountIn, referenceAmountOut) => {
+      selected.push({ pair, amountIn, referenceAmountOut })
+      return order.map(({ venue, expectedOut }) => {
+        const raw = routeCostBps({ reference: referenceAmountOut, amountOut: expectedOut })
+        return {
+          venue,
+          estimatedOut: expectedOut,
+          costBps: raw === null ? null : Math.max(raw, 0),
+          costBpsRaw: raw,
+          clamped: options.clamped ?? false,
+          ageMs: options.ageMs ?? 0
+        }
+      })
     },
-    logger: NOOP_LOGGER
+    logger
   })
-  return { ...quoting, refreshed, selected }
+  return { ...quoting, refreshed, selected, events }
 }
 
 describe('composeMultiVenueQuoting', () => {
   it('returns no_config (no API call) when no venues are enabled', async () => {
     const { quoteFor } = composeMulti([], [], multiHttp({}))
-    expect(await quoteFor(REQUEST)).toEqual({ kind: 'no_config' })
+    expect(await quoteFor(REQUEST)).toEqual({ kind: 'no_config', firmCalls: 0 })
   })
 
   it('quotes the top-ranked venue when it passes route quality', async () => {
@@ -192,7 +253,9 @@ describe('composeMultiVenueQuoting', () => {
       // 0x quotes 900 (< floor 950) → fall through; lifi quotes 990 (≥ 950) → win. The runner-up is
       // lifi rather than 1inch because 1inch only RECONSTRUCTS its min-out, so it can never satisfy an
       // enforced economic floor (see Swap.minOutSource).
-      multiHttp({ '0x': zeroxBody('900'), lifi: lifiBody('990') })
+      multiHttp({ '0x': zeroxBody('900'), lifi: lifiBody('990') }),
+      // Clamped, so the ranking is untrustworthy and the walk keeps its full fall-through.
+      { clamped: true }
     )
     const outcome = await quoteFor(REQUEST)
     expect(outcome.kind).toBe('swap')
@@ -222,7 +285,11 @@ describe('composeMultiVenueQuoting', () => {
 
   it('maps an adapter QuoteError to a failed outcome with its reason', async () => {
     const { quoteFor } = composeMulti(['0x'], [{ venue: '0x', expectedOut: 1000n }], throwingHttp)
-    expect(await quoteFor(REQUEST)).toEqual({ kind: 'failed', reason: 'rate_limited' })
+    expect(await quoteFor(REQUEST)).toEqual({
+      kind: 'failed',
+      reason: 'rate_limited',
+      firmCalls: 1
+    })
   })
 
   it('maps an unwrapper error to a failed outcome', async () => {
@@ -233,14 +300,14 @@ describe('composeMultiVenueQuoting', () => {
       }
     }
     const { quoteFor } = composeMulti(['0x'], [], multiHttp({}), { unwrappers: [broken] })
-    expect(await quoteFor(REQUEST)).toEqual({ kind: 'failed', reason: 'api_error' })
+    expect(await quoteFor(REQUEST)).toEqual({ kind: 'failed', reason: 'api_error', firmCalls: 0 })
   })
 
   it('route-quality-checks an unwrap-only plan (chain ends in the loan token)', async () => {
     // Output 900 < floor 950 → the oracle sanity check applies to unwrap-only plans too.
     const bad = fakeUnwrapper({ from: COLLATERAL, to: LOAN, out: 900n })
     const { quoteFor } = composeMulti(['0x'], [], multiHttp({}), { unwrappers: [bad] })
-    expect(await quoteFor(REQUEST)).toEqual({ kind: 'failed', reason: 'bad_route' })
+    expect(await quoteFor(REQUEST)).toEqual({ kind: 'failed', reason: 'bad_route', firmCalls: 0 })
   })
 
   // The reviewer's counterexample: an unwrap chain can clear route quality and still land under
@@ -260,7 +327,8 @@ describe('composeMultiVenueQuoting', () => {
     // fund the repay.
     expect(await quoteFor({ ...REQUEST, minAcceptableAmountOut: 990n })).toEqual({
       kind: 'failed',
-      reason: 'floor_unmet'
+      reason: 'floor_unmet',
+      firmCalls: 0
     })
   })
 
@@ -276,7 +344,8 @@ describe('composeMultiVenueQuoting', () => {
     )
     expect(await quoteFor({ ...REQUEST, tokenInDecimals: 18 })).toEqual({
       kind: 'failed',
-      reason: 'api_error'
+      reason: 'api_error',
+      firmCalls: 0
     })
   })
 
@@ -317,7 +386,8 @@ describe('composeMultiVenueQuoting', () => {
         { venue: 'liquidswap', expectedOut: 1000n },
         { venue: '0x', expectedOut: 1000n }
       ],
-      multiHttp({ liquidswap: liquidSwapBody('1000'), '0x': zeroxBody('1000') })
+      multiHttp({ liquidswap: liquidSwapBody('1000'), '0x': zeroxBody('1000') }),
+      { clamped: true }
     )
     // No tokenInDecimals → liquidswap throws api_error → coverage-first fall-through to 0x.
     const outcome = await quoteFor(REQUEST)
@@ -331,7 +401,7 @@ describe('composeMultiVenueQuoting', () => {
       [{ venue: '0x', expectedOut: 1000n }],
       multiHttp({ '0x': { liquidityAvailable: false } })
     )
-    expect(await quoteFor(REQUEST)).toEqual({ kind: 'failed', reason: 'no_route' })
+    expect(await quoteFor(REQUEST)).toEqual({ kind: 'failed', reason: 'no_route', firmCalls: 1 })
   })
 
   it('probes and selects the POST-unwrap pair with the threaded worst-case amount', async () => {
@@ -346,7 +416,9 @@ describe('composeMultiVenueQuoting', () => {
     expect(outcome.kind).toBe('swap')
     // The probe/ranking pair is the tradable underlying, sized by the unwrap's worst-case output.
     expect(refreshed).toEqual([{ collateral: UNDERLYING, loan: LOAN }])
-    expect(selected).toEqual([{ pair: { collateral: UNDERLYING, loan: LOAN }, amountIn: 970n }])
+    expect(selected).toEqual([
+      { pair: { collateral: UNDERLYING, loan: LOAN }, amountIn: 970n, referenceAmountOut: 1000n }
+    ])
     if (outcome.kind === 'swap') {
       expect(outcome.plan.steps).toHaveLength(2)
       expect(outcome.plan.steps[1]).toMatchObject({ tokenIn: UNDERLYING, tokenOut: LOAN })
@@ -364,11 +436,193 @@ describe('composeMultiVenueQuoting', () => {
     expect(refreshed).toHaveLength(0)
   })
 
-  it('skips unwrap resolution entirely in bad-debt-only mode (no venues)', async () => {
+  it('skips unwrap resolution entirely with no venues and no swap-free path', async () => {
+    // The refusal must come BEFORE the unwrap chain: a caller with no swap-free path cannot act on
+    // any outcome, so resolving first would spend reads that provably cannot lead to a broadcast.
     const unwrapper = fakeUnwrapper({ from: COLLATERAL, to: UNDERLYING, out: 970n })
     const { quoteFor } = composeMulti([], [], multiHttp({}), { unwrappers: [unwrapper] })
-    expect(await quoteFor(REQUEST)).toEqual({ kind: 'no_config' })
+    expect(await quoteFor(REQUEST)).toEqual({ kind: 'no_config', firmCalls: 0 })
     expect(unwrapper.probed).toHaveLength(0)
+  })
+
+  it('reports no_config, never failed, when an unwrapper throws with no venues', async () => {
+    // `failed` arms per-position backoff where `no_config` does not, so a transient read failure must
+    // not push a deliberately unarmed deployment into a suppression state machine it never enters.
+    const unwrapper = throwingUnwrapper()
+    const { quoteFor } = composeMulti([], [], multiHttp({}), { unwrappers: [unwrapper] })
+    expect(await quoteFor(REQUEST)).toEqual({ kind: 'no_config', firmCalls: 0 })
+    // The throw never runs: refusing first is what makes it unreachable, which is the fix.
+    expect(unwrapper.probed).toHaveLength(0)
+  })
+
+  it('still resolves unwraps with no venues when the caller has a swap-free path', async () => {
+    // Midnight's posture: the unwrap chain is what decides whether a venue is needed at all, so a
+    // bad-debt-only deployment resolves it. A chain ending elsewhere than the loan token still needs
+    // a venue, so the outcome is unchanged; only the probing is.
+    const unwrapper = fakeUnwrapper({ from: COLLATERAL, to: UNDERLYING, out: 970n })
+    const { quoteFor } = composeMulti([], [], multiHttp({}), {
+      unwrappers: [unwrapper],
+      swapFreeWithoutVenues: true
+    })
+    expect(await quoteFor(REQUEST)).toEqual({ kind: 'no_config', firmCalls: 0 })
+    expect(unwrapper.probed.length).toBeGreaterThan(0)
+  })
+
+  it('refuses an unwrap-only chain with no venues, even opted into a swap-free path', async () => {
+    // The venue-less exception covers `'no-swap'` only. A chain that merely LANDS on the loan token
+    // (a PT-USDC or vault-share collateral in a USDC market) still moves assets, which is more than
+    // an ALLOW_BAD_DEBT_ONLY posture promises — and `kind: 'swap'` goes straight to simulate+submit.
+    const unwrapper = fakeUnwrapper({ from: COLLATERAL, to: LOAN, out: 1000n })
+    const { quoteFor } = composeMulti([], [], throwingHttp, {
+      unwrappers: [unwrapper],
+      swapFreeWithoutVenues: true
+    })
+    expect(await quoteFor(REQUEST)).toEqual({ kind: 'no_config', firmCalls: 0 })
+  })
+
+  it('still takes that same unwrap-only chain when a venue IS enabled', async () => {
+    // The other half of the pin: only the venue-less case narrowed. An armed deployment keeps the
+    // unwrap-only plan it always built, without spending a venue call on a path with nothing to sell.
+    const unwrapper = fakeUnwrapper({ from: COLLATERAL, to: LOAN, out: 1000n })
+    const { quoteFor } = composeMulti(['0x'], [], throwingHttp, { unwrappers: [unwrapper] })
+    const outcome = await quoteFor(REQUEST)
+    expect(outcome.kind).toBe('swap')
+    if (outcome.kind === 'swap') expect(outcome.plan.steps).toHaveLength(1)
+  })
+
+  describe('collateral token IS the loan token (loan-as-collateral)', () => {
+    // referenceAmountOut === amountIn === 1000 in REQUEST, which is what an identity oracle at
+    // price 1e36 produces, so these cases are the live loan-as-collateral shape.
+    const SELF: QuoteRequest = { ...REQUEST, collateralToken: LOAN }
+
+    it('returns a zero-step plan without probing or quoting any venue', async () => {
+      const { quoteFor, refreshed, selected } = composeMulti(
+        ['0x', '1inch'],
+        [{ venue: '0x', expectedOut: 1000n }],
+        throwingHttp // any venue call at all would surface as a rate_limited failure
+      )
+      const outcome = await quoteFor(SELF)
+      expect(outcome).toEqual({
+        kind: 'swap',
+        plan: { steps: [], expectedAmountOut: 1000n, amountOutMinimum: 1000n },
+        firmCalls: 0
+      })
+      expect(refreshed).toHaveLength(0)
+      expect(selected).toHaveLength(0)
+    })
+
+    it('resolves with NO venues enabled when the caller opted into a swap-free path', async () => {
+      // The point of moving the gate: a keyless / bad-debt-only deployment must still clear these.
+      const { quoteFor } = composeMulti([], [], throwingHttp, { swapFreeWithoutVenues: true })
+      const outcome = await quoteFor(SELF)
+      expect(outcome.kind).toBe('swap')
+      if (outcome.kind === 'swap') expect(outcome.plan.steps).toHaveLength(0)
+    })
+
+    it('refuses with NO venues enabled when the caller has no swap-free path', async () => {
+      // The safety invariant behind a detection-only deployment: with the venues gone it must hand
+      // back nothing actionable, because its caller takes `kind: 'swap'` straight to simulate+submit.
+      // Opting in is what arms this path, so the default must never produce a broadcastable plan.
+      const { quoteFor } = composeMulti([], [], throwingHttp)
+      expect(await quoteFor(SELF)).toEqual({ kind: 'no_config', firmCalls: 0 })
+    })
+
+    it('does not consult the unwrappers — the sell path is already over', async () => {
+      const unwrapper = fakeUnwrapper({ from: LOAN, to: UNDERLYING, out: 1000n })
+      const { quoteFor } = composeMulti(['0x'], [], throwingHttp, { unwrappers: [unwrapper] })
+      expect((await quoteFor(SELF)).kind).toBe('swap')
+      expect(unwrapper.probed).toHaveLength(0)
+    })
+
+    it('fails closed on an oracle that is not 1:1 (route quality)', async () => {
+      // The only way a zero-step plan can be a bad route: the identity oracle disagrees with itself.
+      // floor = 950, so a reference of 1100 puts the seize 13.6% under its own oracle value.
+      const { quoteFor } = composeMulti(['0x'], [], throwingHttp)
+      expect(await quoteFor({ ...SELF, referenceAmountOut: 1100n })).toEqual({
+        kind: 'failed',
+        reason: 'bad_route',
+        firmCalls: 0
+      })
+    })
+
+    it('fails closed when the seize cannot cover its own break-even repay', async () => {
+      const { quoteFor } = composeMulti(['0x'], [], throwingHttp)
+      expect(await quoteFor({ ...SELF, minAcceptableAmountOut: 1001n })).toEqual({
+        kind: 'failed',
+        reason: 'floor_unmet',
+        firmCalls: 0
+      })
+    })
+
+    it('passes at exact break-even, the near-maturity rounding case', async () => {
+      // Post-maturity the two ceil divisions can make impliedRepaidUnits === seizedAssets exactly.
+      // The floor is `>=`, so break-even passes and the liquidation is attempted for zero surplus.
+      const { quoteFor } = composeMulti(['0x'], [], throwingHttp)
+      expect((await quoteFor({ ...SELF, minAcceptableAmountOut: 1000n })).kind).toBe('swap')
+    })
+  })
+})
+
+// Every case here reads the FALLBACK derivation, so the curve is clamped throughout: the percentage
+// under test is the one derived against the oracle reference, which is what a venue is asked for when
+// the probe has no trustworthy prediction of its output.
+describe('correlation fields', () => {
+  // These carry the position join key and the candidate discriminator across the pipeline stages, so
+  // a maturity's events group without normalization. Correlation only — never parsed, never branched on.
+  const correlated: QuoteRequest = {
+    ...REQUEST,
+    id: '0xabc:0x1111111111111111111111111111111111111111',
+    candidate: { collateralIndex: 2, postMaturityMode: true }
+  }
+
+  it('spreads the candidate discriminator beside the id on every quote event', async () => {
+    const { quoteFor, events } = composeMulti(
+      ['0x'],
+      [{ venue: '0x', expectedOut: 1000n }],
+      multiHttp({ '0x': zeroxBody('1000') })
+    )
+    await quoteFor(correlated)
+    const selectOk = events.find(e => e.event === 'select.ok')
+    expect(selectOk?.fields).toMatchObject({
+      id: correlated.id,
+      collateralIndex: 2,
+      postMaturityMode: true
+    })
+  })
+
+  it('never lets the discriminator shadow the join key', async () => {
+    // The discriminator is caller-supplied, so a key collision must not be able to rewrite `id` —
+    // that would resurrect exactly the split this field set exists to remove.
+    const { quoteFor, events } = composeMulti(
+      ['0x'],
+      [{ venue: '0x', expectedOut: 1000n }],
+      multiHttp({ '0x': zeroxBody('1000') })
+    )
+    await quoteFor({ ...correlated, candidate: { ...correlated.candidate, id: 'spoofed' } })
+    expect(events.find(e => e.event === 'select.ok')?.fields?.id).toBe(correlated.id)
+  })
+
+  it('reaches the unwrap hops, so a per-hop diagnostic is attributable', async () => {
+    const seen: (Record<string, unknown> | undefined)[] = []
+    const probe: Unwrapper = {
+      kind: 'probe',
+      resolve: async ({ correlation }) => {
+        seen.push(correlation)
+        return null
+      }
+    }
+    const { quoteFor } = composeMulti(
+      ['0x'],
+      [{ venue: '0x', expectedOut: 1000n }],
+      multiHttp({ '0x': zeroxBody('1000') }),
+      { unwrappers: [probe] }
+    )
+    await quoteFor(correlated)
+    expect(seen[0]).toEqual({
+      collateralIndex: 2,
+      postMaturityMode: true,
+      id: correlated.id
+    })
   })
 })
 
@@ -389,7 +643,9 @@ describe('economic min-out floor', () => {
   // produces. 1inch takes an absolute `minReturn` and so never exercises it.
   const quoteWith = async (request: QuoteRequest, body: unknown) => {
     const { client, calls } = capturingHttp(body)
-    const { quoteFor } = composeMulti(['0x'], [{ venue: '0x', expectedOut: 1000n }], client)
+    const { quoteFor } = composeMulti(['0x'], [{ venue: '0x', expectedOut: 1000n }], client, {
+      clamped: true
+    })
     await quoteFor(request)
     return { calls }
   }
@@ -452,26 +708,10 @@ describe('aggregator min-out actually clears break-even', () => {
   const REFERENCE = 10_000n
   const FLOOR = 9_580n
 
-  /**
-   * A 0x stub that behaves like the real thing: it applies the slippage WE send to ITS OWN quote. That
-   * is precisely why deriving the percentage against the oracle reference put the floor too low, so a
-   * stub returning a fixed minimum could not have caught it.
-   */
-  const aggregator = (quotes: string[]) => {
-    const sent: (Record<string, string> | undefined)[] = []
-    const client: RateLimitedClient = {
-      getJson: async <T>(args: { searchParams?: Record<string, string> }) => {
-        sent.push(args.searchParams)
-        const buy = BigInt(quotes[sent.length - 1] ?? quotes.at(-1)!)
-        const bps = BigInt(args.searchParams?.slippageBps ?? '0')
-        return zeroxBody(buy.toString(), ((buy * (10_000n - bps)) / 10_000n).toString()) as T
-      }
-    }
-    return { client, sent }
-  }
-
+  // Clamped: these pin the two-pass fallback, where the first pass can only guess the venue's own
+  // output from the oracle reference. The one-call path a trustworthy curve unlocks is its own suite.
   const quoteVia = async (client: RateLimitedClient, expectedOut: bigint) =>
-    composeMulti(['0x'], [{ venue: '0x', expectedOut }], client).quoteFor({
+    composeMulti(['0x'], [{ venue: '0x', expectedOut }], client, { clamped: true }).quoteFor({
       ...REQUEST,
       referenceAmountOut: REFERENCE,
       minAcceptableAmountOut: FLOOR
@@ -499,10 +739,10 @@ describe('aggregator min-out actually clears break-even', () => {
 
     expect(sent).toHaveLength(2)
     // 9600 · 9877/10000 = 9481, which is 99 units under break-even.
-    expect(outcome).toEqual({ kind: 'failed', reason: 'floor_unmet' })
+    expect(outcome).toEqual({ kind: 'failed', reason: 'floor_unmet', firmCalls: 2 })
   })
 
-  it('refuses the venue when the re-quote fails outright', async () => {
+  it('reports a re-quote that never answered as the transport failure it is', async () => {
     let call = 0
     const client: RateLimitedClient = {
       getJson: async <T>() => {
@@ -514,18 +754,18 @@ describe('aggregator min-out actually clears break-even', () => {
     const outcome = await quoteVia(client, 9700n)
 
     expect(call).toBe(2)
-    // The earlier revision kept the first, known-underfloor quote here, which preserved the bug.
-    expect(outcome).toEqual({ kind: 'failed', reason: 'floor_unmet' })
+    // NOT `floor_unmet`: the venue never said its own quote misses the floor — we could not ask it in
+    // terms of its own output. An earlier revision kept the first, known-underfloor quote here; the one
+    // after it refused it as an economic verdict, which a trusted curve is entitled to stop walking on.
+    expect(outcome).toEqual({ kind: 'failed', reason: 'rate_limited', firmCalls: 2 })
   })
 
   it('spends the second call only when the first floor is short', async () => {
     // Break-even equal to the reference asks zero slippage, so the first minimum already clears it.
     const { client, sent } = aggregator(['10000'])
-    const outcome = await composeMulti(
-      ['0x'],
-      [{ venue: '0x', expectedOut: 10_000n }],
-      client
-    ).quoteFor({
+    const outcome = await composeMulti(['0x'], [{ venue: '0x', expectedOut: 10_000n }], client, {
+      clamped: true
+    }).quoteFor({
       ...REQUEST,
       referenceAmountOut: REFERENCE,
       minAcceptableAmountOut: REFERENCE
@@ -553,5 +793,250 @@ describe('aggregator min-out actually clears break-even', () => {
     expect(clearsFloor(swap('derived'), 9_580n)).toBe(false)
     // ...and a venue-reported minimum below the floor is still refused.
     expect(clearsFloor({ ...swap('venue'), amountOutMinimum: 9_579n }, 9_580n)).toBe(false)
+  })
+})
+
+// A trustworthy curve predicts the venue's own quoted output, which is the denominator the second pass
+// above exists to discover. The prediction is biased DOWN by design, and these cases pin BOTH bounds on
+// how far the encoded floor may then sit from break-even: too high a prediction is refused by
+// `clearsFloor`, too low an one is refused past `MAX_FLOOR_OVERSHOOT_BPS`, and each costs the second
+// pass back.
+describe('curve-predicted min-out denominator', () => {
+  const REFERENCE = 10_000n
+  const FLOOR = 9_580n
+
+  // `estimatedOut` is what the curve interpolated; `quotes` is what the venue really answers.
+  const quoteWithCurve = async (estimatedOut: bigint, quotes: string[]) => {
+    const { client, sent } = aggregator(quotes)
+    const outcome = await composeMulti(
+      ['0x'],
+      [{ venue: '0x', expectedOut: estimatedOut }],
+      client
+    ).quoteFor({ ...REQUEST, referenceAmountOut: REFERENCE, minAcceptableAmountOut: FLOOR })
+    return { outcome, sent }
+  }
+
+  it('spends ONE call, floor cleared, when the curve predicts the venue output', async () => {
+    // Curve 9700 → prediction 9690 (10bps under), venue really quotes 9700: 113bps against 9690 lands
+    // the encoded minimum at 9590, above the 9580 break-even, so the second pass is never needed.
+    const { outcome, sent } = await quoteWithCurve(9_700n, ['9700'])
+
+    expect(sent).toHaveLength(1)
+    expect(sent[0]?.slippageBps).toBe('113')
+    expect(outcome.kind).toBe('swap')
+    if (outcome.kind !== 'swap') return
+    expect(outcome.plan.amountOutMinimum).toBe(9_590n)
+    expect(outcome.plan.amountOutMinimum).toBeGreaterThanOrEqual(FLOOR)
+    expect(outcome.firmCalls).toBe(1)
+  })
+
+  it('leaves a small overshoot alone: one call, floor a few bps above break-even', async () => {
+    // Curve 9690 → prediction 9680, venue quotes 9700: 103bps lands the minimum at 9600, exactly 20 bps
+    // over break-even — at the bound, so the overshoot is accepted rather than re-derived.
+    const { outcome, sent } = await quoteWithCurve(9_690n, ['9700'])
+
+    expect(sent).toHaveLength(1)
+    expect(sent[0]?.slippageBps).toBe('103')
+    expect(outcome.kind).toBe('swap')
+    if (outcome.kind !== 'swap') return
+    expect(outcome.plan.amountOutMinimum).toBe(9_600n)
+    expect(outcome.firmCalls).toBe(1)
+  })
+
+  it('spends the second pass on an UNDER-estimate too, when the overshoot exceeds the bound', async () => {
+    // Curve 9650 → prediction 9640, venue quotes 9700. A denominator under the real quote asks for LESS
+    // slippage than break-even needs, so the first pass encodes 9639 — 61.6 bps ABOVE break-even, three
+    // times the whole post-maturity incentive. Every fill in that band would revert at send although
+    // the repay covered it, so the bound spends the second pass and lands the floor back on break-even.
+    const { outcome, sent } = await quoteWithCurve(9_650n, ['9700', '9700'])
+
+    expect(sent).toHaveLength(2)
+    expect(sent[0]?.slippageBps).toBe('62')
+    expect(sent[1]?.slippageBps).toBe('123')
+    expect(outcome.kind).toBe('swap')
+    if (outcome.kind !== 'swap') return
+    expect(outcome.plan.amountOutMinimum).toBe(FLOOR)
+    expect(outcome.firmCalls).toBe(2)
+  })
+
+  it('falls back to the second pass on an OVER-estimate, and still clears the floor', async () => {
+    // Curve 9900 → prediction 9890, above the venue's real 9700: 313bps lands the minimum at 9396,
+    // 184 units UNDER break-even. The postcondition refuses it and pass 2 re-derives against 9700.
+    const { outcome, sent } = await quoteWithCurve(9_900n, ['9700', '9700'])
+
+    expect(sent).toHaveLength(2)
+    expect(sent[0]?.slippageBps).toBe('313')
+    expect(sent[1]?.slippageBps).toBe('123')
+    expect(outcome.kind).toBe('swap')
+    if (outcome.kind !== 'swap') return
+    expect(outcome.plan.amountOutMinimum).toBeGreaterThanOrEqual(FLOOR)
+    expect(outcome.firmCalls).toBe(2)
+  })
+
+  it('keeps the overshooting first quote when the re-quote drifts down under the floor', async () => {
+    // The overshoot second pass is an IMPROVEMENT the venue may decline: the first quote was already
+    // usable, so a re-quote that came back lower must not turn an expensive fill into no fill.
+    const { outcome, sent } = await quoteWithCurve(9_650n, ['9700', '9500'])
+
+    expect(sent).toHaveLength(2)
+    expect(outcome.kind).toBe('swap')
+    if (outcome.kind !== 'swap') return
+    expect(outcome.plan.amountOutMinimum).toBe(9_639n)
+    expect(outcome.firmCalls).toBe(2)
+  })
+
+  it('keeps the overshooting first quote when the re-quote fails outright', async () => {
+    let call = 0
+    const client: RateLimitedClient = {
+      getJson: async <T>() => {
+        call += 1
+        if (call === 2) throw new QuoteError('rate_limited', 'second pass throttled')
+        return zeroxBody('9700', '9639') as T
+      }
+    }
+    const outcome = await composeMulti(
+      ['0x'],
+      [{ venue: '0x', expectedOut: 9_650n }],
+      client
+    ).quoteFor({ ...REQUEST, referenceAmountOut: REFERENCE, minAcceptableAmountOut: FLOOR })
+
+    expect(call).toBe(2)
+    expect(outcome.kind).toBe('swap')
+    if (outcome.kind !== 'swap') return
+    expect(outcome.plan.amountOutMinimum).toBe(9_639n)
+  })
+
+  it('ignores an estimate older than the prediction age bound', async () => {
+    // Ordering survives any cache age, but a min-out denominator consumes the absolute level. A bot
+    // whose probe TTL is minutes (blue's is ten) must not thereby encode a minutes-old denominator.
+    const { client, sent } = aggregator(['9700', '9700'])
+    const outcome = await composeMulti(['0x'], [{ venue: '0x', expectedOut: 9_700n }], client, {
+      ageMs: 60_001
+    }).quoteFor({ ...REQUEST, referenceAmountOut: REFERENCE, minAcceptableAmountOut: FLOOR })
+
+    // 420bps against the reference, exactly as before the curve existed.
+    expect(sent).toHaveLength(2)
+    expect(sent[0]?.slippageBps).toBe('420')
+    expect(outcome.kind).toBe('swap')
+  })
+
+  it('ignores a clamped estimate, restoring the pre-curve two-pass derivation', async () => {
+    const { client, sent } = aggregator(['9700', '9700'])
+    const outcome = await composeMulti(['0x'], [{ venue: '0x', expectedOut: 9_700n }], client, {
+      clamped: true
+    }).quoteFor({ ...REQUEST, referenceAmountOut: REFERENCE, minAcceptableAmountOut: FLOOR })
+
+    // 420bps against the reference, exactly as before the curve existed.
+    expect(sent).toHaveLength(2)
+    expect(sent[0]?.slippageBps).toBe('420')
+    expect(outcome.kind).toBe('swap')
+  })
+})
+
+describe('venue fall-through cap', () => {
+  it('quotes only the winner when the curve ranked every enabled venue', async () => {
+    // The same books as the fall-through case, minus the clamp: 0x loses on route quality and lifi
+    // WOULD have won, but a complete unclamped curve already named the winner. `firmCalls: 1` is the
+    // proof that lifi was never asked.
+    const { quoteFor } = composeMulti(
+      ['0x', 'lifi'],
+      [
+        { venue: '0x', expectedOut: 900n },
+        { venue: 'lifi', expectedOut: 990n }
+      ],
+      multiHttp({ '0x': zeroxBody('900'), lifi: lifiBody('990') })
+    )
+    expect(await quoteFor(REQUEST)).toEqual({ kind: 'failed', reason: 'bad_route', firmCalls: 1 })
+  })
+
+  it('still falls through when the WINNER is unreachable: the curve ranked output, not uptime', async () => {
+    // A complete unclamped curve, so the walk would normally stop at 0x. But 0x has no stub and throws
+    // `no_route` — a transport-class failure the ranking says nothing about, unlike `bad_route` or
+    // `floor_unmet`. Capping here would lose a liquidation lifi could have filled, so the walk goes on.
+    const { quoteFor } = composeMulti(
+      ['0x', 'lifi'],
+      [
+        { venue: '0x', expectedOut: 1000n },
+        { venue: 'lifi', expectedOut: 990n }
+      ],
+      // The runner-up's own minimum lands on break-even, as a real venue's does for the slippage it
+      // was asked for, so its quote costs exactly one call.
+      multiHttp({ lifi: lifiBody('990', '900') })
+    )
+    const outcome = await quoteFor(REQUEST)
+    expect(outcome.kind).toBe('swap')
+    expect(finalSpender(outcome)).toBe(LIFI_SPENDER)
+    // Both requests were issued: the winner's throw plus the runner-up's success.
+    expect(outcome.firmCalls).toBe(2)
+  })
+
+  it('still falls through when the min-out RE-QUOTE fails on a trusted curve', async () => {
+    // The winner's own quote never said it misses the floor: the request that would have asked it in
+    // its own terms failed. Classifying that as `floor_unmet` let a transient 429 on the SECOND pass
+    // stop the walk and lose a liquidation the runner-up could have filled — the one thing the curve
+    // was never allowed to cost.
+    let zeroxCalls = 0
+    const client: RateLimitedClient = {
+      getJson: async <T>(args: { venue: HttpVenue }) => {
+        if (args.venue === 'lifi') return lifiBody('9700', '9580') as T
+        zeroxCalls += 1
+        if (zeroxCalls === 1) return zeroxBody('9700', '9396') as T
+        throw new QuoteError('rate_limited', 're-quote throttled')
+      }
+    }
+    const { quoteFor } = composeMulti(
+      ['0x', 'lifi'],
+      [
+        { venue: '0x', expectedOut: 9_900n },
+        { venue: 'lifi', expectedOut: 9_700n }
+      ],
+      client
+    )
+    const outcome = await quoteFor({
+      ...REQUEST,
+      referenceAmountOut: 10_000n,
+      minAcceptableAmountOut: 9_580n
+    })
+
+    expect(zeroxCalls).toBe(2)
+    expect(outcome.kind).toBe('swap')
+    expect(finalSpender(outcome)).toBe(LIFI_SPENDER)
+  })
+
+  it('counts every call of a multi-venue walk that ends in failure', async () => {
+    const { quoteFor } = composeMulti(
+      ['0x', 'lifi'],
+      [
+        { venue: '0x', expectedOut: 900n },
+        { venue: 'lifi', expectedOut: 900n }
+      ],
+      multiHttp({ '0x': zeroxBody('900'), lifi: lifiBody('900') }),
+      { clamped: true }
+    )
+    expect(await quoteFor(REQUEST)).toEqual({ kind: 'failed', reason: 'bad_route', firmCalls: 2 })
+  })
+
+  it('reports the probe-fidelity pair and the call count on select.ok', async () => {
+    const { quoteFor, events } = composeMulti(
+      ['0x'],
+      [{ venue: '0x', expectedOut: 9_700n }],
+      multiHttp({ '0x': zeroxBody('9600') })
+    )
+    const outcome = await quoteFor({
+      ...REQUEST,
+      referenceAmountOut: 10_000n,
+      minAcceptableAmountOut: 9_580n
+    })
+
+    expect(outcome.kind).toBe('swap')
+    // The curve interpolated 9700 against a 10000 reference (300bps); the firm quote came back at
+    // 9600 (400bps). Both are quoted costs — the pair is what makes probe fidelity measurable.
+    expect(events.find(entry => entry.event === 'select.ok')?.fields).toMatchObject({
+      venue: '0x',
+      curveCostBps: 300,
+      curveAgeMs: 0,
+      firmQuoteCostBps: 400,
+      firmCalls: 1
+    })
   })
 })
