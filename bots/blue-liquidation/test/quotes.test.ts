@@ -1,5 +1,6 @@
 import type { Logger } from '@repo/bot-kit'
 import type { RateLimitedClient, Unwrapper, Venue, VenuePair, VenueSelector } from '@repo/swaps'
+import type { Address } from 'viem'
 
 import { getAddress } from 'viem'
 import { describe, expect, it } from 'vitest'
@@ -89,6 +90,31 @@ function fakeSelector(
   return { selector, refreshed }
 }
 
+// An unwrapper converting the collateral straight to the loan token, recording what it was asked
+// about — so a test can assert the read was never spent.
+const unwrapsToLoan = (): Unwrapper & { probed: Address[] } => {
+  const probed: Address[] = []
+  return {
+    kind: 'fake-erc4626',
+    probed,
+    async resolve({ token }) {
+      probed.push(token)
+      return {
+        step: {
+          tokenIn: COLLATERAL,
+          tokenOut: LOAN,
+          target: TARGET,
+          value: 0n,
+          callData: '0x12345678',
+          amountIn: { source: 'balance', offset: 4n }
+        },
+        expectedAmountOut: 1000n,
+        amountOutMinimum: 1000n
+      }
+    }
+  }
+}
+
 function compose(
   selector: VenueSelector,
   overrides: {
@@ -113,43 +139,20 @@ function compose(
   })
 }
 
-describe('detection-only posture (no venues enabled)', () => {
-  // ALLOW_DETECTION_ONLY exists so an operator can run Blue unarmed — docker-compose defaults
-  // Robinhood (4663) to it with a funded LIQUIDATOR_PRIVATE_KEY. `kind: 'swap'` goes straight to
-  // simulate+submit in the tick, so the adapter must never produce one, whatever the collateral is.
-  // Blue has no swap-free liquidation path, which is why it leaves `swapFreeWithoutVenues` off.
-  const unwrapToLoan: Unwrapper & { probed: `0x${string}`[] } = {
-    kind: 'fake-erc4626',
-    probed: [],
-    async resolve({ token }) {
-      unwrapToLoan.probed.push(token)
-      return {
-        step: {
-          tokenIn: COLLATERAL,
-          tokenOut: LOAN,
-          target: TARGET,
-          value: 0n,
-          callData: '0x12345678',
-          amountIn: { source: 'balance', offset: 4n }
-        },
-        expectedAmountOut: 1000n,
-        amountOutMinimum: 1000n
-      }
-    }
-  }
-
-  it('never returns a broadcastable plan for a collateral that unwraps to the loan token', async () => {
-    unwrapToLoan.probed.length = 0
+describe('composeQuoting (Blue lens-projection adapter)', () => {
+  it('passes no swap-free opt-in, so zero venues never yields a broadcastable plan', async () => {
+    // `kind: 'swap'` goes straight to simulate+submit in the tick, and Blue supports running unarmed
+    // (ALLOW_DETECTION_ONLY). It has no swap-free liquidation path, so it leaves the package's
+    // `swapFreeWithoutVenues` off — even a collateral that unwraps straight to the loan token.
+    const unwrapper = unwrapsToLoan()
     const { selector, refreshed } = fakeSelector(['0x'])
-    const { quoteFor } = compose(selector, { venues: [], unwrappers: [unwrapToLoan] })
+    const { quoteFor } = compose(selector, { venues: [], unwrappers: [unwrapper] })
     expect(await quoteFor(PLAN, OUT, LABEL)).toEqual({ kind: 'no_config', firmCalls: 0 })
-    // And it costs nothing: the refusal precedes unwrap resolution, so no detection read is spent.
-    expect(unwrapToLoan.probed).toHaveLength(0)
+    // The refusal precedes unwrap resolution, so it also spends no detection read.
+    expect(unwrapper.probed).toHaveLength(0)
     expect(refreshed).toHaveLength(0)
   })
-})
 
-describe('composeQuoting (Blue lens-projection adapter)', () => {
   it('returns no_config (and never probes) for an excluded collateral', async () => {
     const { selector, refreshed } = fakeSelector(['0x'])
     const { quoteFor } = compose(selector, { excludeCollaterals: [COLLATERAL] })

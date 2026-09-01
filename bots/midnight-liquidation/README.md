@@ -164,7 +164,8 @@ There is no swap config file. Instead:
   collateral→loan pair, a background job requests
   indicative quotes from every enabled venue at the `PROBE_LADDER` sizes and caches each venue's rate
   curve, which is then interpolated at the actual seize size. This probe is **gated** to pairs that
-  have a liquidatable position and cached for `PROBE_STALE_MS`, and runs on its own `PROBE_HTTP_RPS`
+  have a liquidatable position that is neither cooled-down nor backed off, is cached for
+  `PROBE_STALE_MS`, and runs on its own `PROBE_HTTP_RPS`
   budget — so venues' tight rate limits (~1 req/sec) are respected and quiet markets cost nothing. It
   is started, never awaited: a pair is warmed for the next tick rather than delaying this one.
 - **When a position is liquidatable**, the bot firm-quotes once against the pre-chosen best venue and

@@ -580,11 +580,8 @@ export type QuoteLogger = {
  * cost is reported as {@link QuoteOutcome.firmCalls}. Quotes are made ONLY for liquidatable positions,
  * so API + probe usage is bounded by the (small) liquidatable set, never the full candidate universe.
  *
- * No enabled venues → `no_config`, preserving the caller's no-swap posture. Whether that refusal is
- * immediate depends on {@link composeMultiVenueQuoting}'s `swapFreeWithoutVenues`: a caller with a
- * swap-free liquidation path resolves the unwrap chain first, because that chain is what decides
- * whether a venue is needed at all; a caller without one refuses before spending any RPC, since
- * nothing downstream could succeed.
+ * No enabled venues → `no_config`, preserving the caller's no-swap posture; `swapFreeWithoutVenues`
+ * decides whether that refusal precedes or follows the unwrap chain.
  */
 export function composeMultiVenueQuoting(deps: {
   httpClient: RateLimitedClient
@@ -598,13 +595,12 @@ export function composeMultiVenueQuoting(deps: {
   /** Pre-swap converters, tried in order each hop. Pass `[]` for venue-only quoting. */
   unwrappers: readonly Unwrapper[]
   /**
-   * Whether a venue-less deployment may still act on a plan that needs no venue (the sell path
-   * already ends in the loan token). Only for callers whose protocol has such a mode — Midnight's
-   * loan-as-collateral slots, which must stay liquidatable in `ALLOW_BAD_DEBT_ONLY` mode.
+   * Whether a venue-less deployment may still act on a plan needing no venue — the unwrap chain is
+   * then resolved first, since it is what decides whether a venue is needed at all. Only for callers
+   * whose protocol has such a mode (Midnight's loan-as-collateral slots under `ALLOW_BAD_DEBT_ONLY`).
    *
-   * Defaults to `false`, which is what keeps a deliberately unarmed deployment unarmed: with no
-   * venues the quote refuses immediately, before any unwrap RPC, so the bot can neither broadcast
-   * nor arm per-position backoff off a transient read failure.
+   * Defaults to `false`, which is what keeps a deliberately unarmed deployment unarmed: it refuses
+   * before any unwrap RPC, so it can neither broadcast nor arm backoff off a transient read failure.
    */
   swapFreeWithoutVenues?: boolean
   /**
@@ -706,10 +702,6 @@ export function composeMultiVenueQuoting(deps: {
       const { collateralToken, loanToken, referenceAmountOut } = request
       const correlation = correlationOf(request)
 
-      // A caller with no swap-free path cannot act on ANY outcome once the venues are gone, so the
-      // refusal comes before the unwrap chain rather than after it. Resolving first would both spend
-      // reads that provably cannot lead to a broadcast and downgrade a transient read failure from
-      // `no_config` (skip) to `failed` (arms backoff) — see `swapFreeWithoutVenues`.
       if (venues.length === 0 && !swapFreeWithoutVenues) return { kind: 'no_config', firmCalls: 0 }
 
       const unwrapped = await tryResolveUnwraps(unwrappers, request, executor, logger)

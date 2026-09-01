@@ -186,6 +186,25 @@ describe('composeQuoting (Midnight lens-projection adapter)', () => {
     expect(await quoteFor(PLAN, OUT, LABEL)).toEqual({ kind: 'no_config', firmCalls: 0 })
   })
 
+  it('still clears a loan-as-collateral slot with no venues enabled', async () => {
+    // Midnight's `swapFreeWithoutVenues` opt-in, which is what keeps these liquidatable under
+    // ALLOW_BAD_DEBT_ONLY: the seize is already the loan token, so it needs no route and the
+    // package's default refusal must not apply. Blue deliberately leaves the flag off.
+    const selfMarket: Market = {
+      ...MARKET,
+      collateralParams: [{ ...MARKET.collateralParams[0]!, token: LOAN }]
+    }
+    const { selector } = fakeSelector([])
+    const { quoteFor } = compose(selector, { venues: [] })
+    const outcome = await quoteFor(
+      { ...PLAN, swapFree: true },
+      { ...OUT, market: selfMarket },
+      LABEL
+    )
+    expect(outcome.kind).toBe('swap')
+    if (outcome.kind === 'swap') expect(outcome.plan.steps).toHaveLength(0)
+  })
+
   it('threads the position label into quote log events as the correlation id', async () => {
     const events: { event: string; fields?: Record<string, unknown> }[] = []
     const capturing: Logger = {

@@ -67,7 +67,7 @@ function fakeUnwrapper(args: { from: Address; to: Address; out: bigint }): Unwra
 
 // An unwrapper whose detection read fails, standing in for a transient RPC failure inside erc4626 /
 // Pendle resolution. Records whether it was reached at all.
-function throwingUnwrapper(): Unwrapper & { probed: Address[] } {
+const throwingUnwrapper = (): Unwrapper & { probed: Address[] } => {
   const probed: Address[] = []
   return {
     kind: 'throwing',
@@ -451,6 +451,8 @@ describe('composeMultiVenueQuoting', () => {
     const unwrapper = throwingUnwrapper()
     const { quoteFor } = composeMulti([], [], multiHttp({}), { unwrappers: [unwrapper] })
     expect(await quoteFor(REQUEST)).toEqual({ kind: 'no_config', firmCalls: 0 })
+    // The throw never runs: refusing first is what makes it unreachable, which is the fix.
+    expect(unwrapper.probed).toHaveLength(0)
   })
 
   it('still resolves unwraps with no venues when the caller has a swap-free path', async () => {

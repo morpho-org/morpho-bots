@@ -89,8 +89,11 @@ computed in `planInputFromLens` (the only layer holding both token addresses and
 rides onto `LiquidationPlan`. It has two consequences:
 
 - `@repo/swaps` short-circuits to `swapFreePlan` whenever the sell path already ends in the loan
-  token, producing a **zero-step `SwapPlan`** — and that short-circuit is evaluated _before_ the
-  no-venues gate, so a keyless / `ALLOW_BAD_DEBT_ONLY` deployment can still clear these positions.
+  token, producing a **zero-step `SwapPlan`**. That short-circuit is evaluated _before_ the no-venues
+  gate for callers that pass `swapFreeWithoutVenues`, so a keyless / `ALLOW_BAD_DEBT_ONLY` deployment
+  can still clear these positions. It is **opt-in, defaulting to off**: the ordering was briefly
+  unconditional, which let a venue-less `blue-liquidation` — whose `ALLOW_DETECTION_ONLY` posture
+  promises it never acts — return a broadcastable plan. Midnight sets it; Blue deliberately does not.
 - `gateOnHeadroom` does not apply. The floor bounds a route cost this path does not pay; charging it
   would forfeit the contested early seconds of every loan-as-collateral maturity, which is where an
   ascending-price auction is won (see `rankByUsdSurplus`). Break-even still binds via

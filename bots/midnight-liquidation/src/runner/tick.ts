@@ -384,9 +384,8 @@ const prepareRoutes = async (deps: {
   sized: readonly SizedCandidate[]
   routing: TickRouting
   /**
-   * Whether phase B will skip this candidate outright. Suppression is position-keyed and constant
-   * within a tick, so consulting it here is safe and keeps backoff's contract — a suppressed position
-   * costs no RPC and no venue traffic — which resolving routes ahead of the gate would have broken.
+   * Whether phase B will skip this candidate outright, so a suppressed position costs no RPC and no
+   * venue traffic.
    */
   suppressed: (candidate: SizedCandidate) => boolean
   logger: Logger
@@ -394,11 +393,11 @@ const prepareRoutes = async (deps: {
   const { sized, routing, suppressed, logger } = deps
   const states = new Map<SizedCandidate, RouteState>()
   const pairs = new Map<string, VenuePair>()
+  let resolvedCount = 0
 
   for (const candidate of sized) {
-    // `unknown` rather than `no_route`: this route's cost is genuinely unmeasured, and claiming it
-    // needs none would price it at zero and let it outrank a costed sibling. Every candidate of a
-    // suppressed position is suppressed, so the fail-open ordering this triggers is moot for it.
+    // `unknown`, not `no_route`: claiming it needs none would price it at zero and let it outrank a
+    // costed sibling. The fail-open ordering that triggers is moot — this position never executes.
     if (suppressed(candidate)) {
       states.set(candidate, { kind: 'unknown' })
       continue
@@ -412,6 +411,7 @@ const prepareRoutes = async (deps: {
       states.set(candidate, { kind: 'no_route' })
       continue
     }
+    resolvedCount += 1
     const resolved = await tryCatch(
       routing.resolveRoute(candidate.plan, candidate.out, candidate.label)
     )
@@ -443,7 +443,9 @@ const prepareRoutes = async (deps: {
       }
     })
   }
-  if (pairs.size > 0) logger.info('probe.warmed', { pairs: pairs.size, candidates: sized.length })
+  // `candidates` counts what actually reached route resolution, not `sized.length` — under a backlog
+  // most of the batch is suppressed and resolves nothing, so the ratio would otherwise drift.
+  if (pairs.size > 0) logger.info('probe.warmed', { pairs: pairs.size, candidates: resolvedCount })
   return states
 }
 
@@ -714,6 +716,15 @@ export async function runTick(deps: {
     }
   }
 
+  // The two suppression gates, defined once because phase A.5 and phase B must agree: A.5 skips the
+  // route RPC for whatever B will skip outright, which is what keeps backoff's promise to bound API
+  // and RPC usage under a backlog. Both stores are position-keyed and unwritten until the tick's
+  // `finally`, so their verdict is constant across a position's candidates within one tick.
+  const isCooled = (label: string) => cooldown.shouldSkip(label)
+  // A write-off sells nothing, so backoff — which suppresses quote/simulate churn — never applies.
+  const isBackedOff = (label: string, plan: LiquidationPlan) =>
+    !isBadDebtRealization(plan) && backoff.shouldSkip(label, chainHead)
+
   // 4. Bound the probe fan-out BEFORE resolving anything, on the gross ordering — this is the one cap
   // that must be applied blind, because it is what bounds learning the cost. It is looser than the
   // final cap so the net ordering below still has a superset to reorder within.
@@ -729,11 +740,8 @@ export async function runTick(deps: {
   const states = await prepareRoutes({
     sized: probeable,
     routing,
-    // The same two gates phase B applies at its cooldown/backoff checks, read here so a suppressed
-    // position spends nothing. `needsSwap` mirrors phase B exactly: a write-off is never backed off.
     suppressed: candidate =>
-      cooldown.shouldSkip(candidate.label) ||
-      (!isBadDebtRealization(candidate.plan) && backoff.shouldSkip(candidate.label, chainHead)),
+      isCooled(candidate.label) || isBackedOff(candidate.label, candidate.plan),
     logger
   })
 
@@ -841,7 +849,7 @@ export async function runTick(deps: {
       // submittable tx is skipped until its wall-clock window elapses — bad-debt realizations included,
       // so a repeatedly-reverting one also backs off. No-op when disabled
       // (POSITION_LIQUIDATION_COOLDOWN_MS=0).
-      if (cooldown.shouldSkip(label)) {
+      if (isCooled(label)) {
         counters.cooledDown += 1
         logger.info('cooldown.skip', {
           id: label,
@@ -856,9 +864,7 @@ export async function runTick(deps: {
       // The swap funds repay/seize liquidations. Pure bad-debt realization transfers no assets, so it
       // deliberately skips quoting and executes as a no-callback `liquidate`.
       const needsSwap = !isBadDebtRealization(liquidationPlan)
-      // Suppress positions that keep failing to quote/simulate — bounds API + RPC usage under a
-      // backlog, since executable quotes are spent only on positions not currently backed off.
-      if (needsSwap && backoff.shouldSkip(label, chainHead)) {
+      if (isBackedOff(label, liquidationPlan)) {
         counters.backoffSkipped += 1
         continue
       }
@@ -1029,9 +1035,8 @@ export async function runTick(deps: {
           } else {
             counters.sendRejected += 1
             // The send machinery failed (nonce, funds, RPC): a fact about this position that says nothing
-            // about the chain's view of the plan, so it arms backoff and ends the streak. FORCED, because
-            // a sibling's execution revert is a verdict on that sibling's plan and refutes nothing about
-            // broken send machinery — without the override the position would re-send every block.
+            // about the chain's view of the plan, so it arms backoff and ends the streak — forced over any
+            // sibling's exemption, see `backoffForced`.
             pendingBackoff.add(label)
             backoffForced.add(label)
             revertStreaks.reset(label)
