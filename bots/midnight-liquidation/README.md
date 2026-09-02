@@ -135,13 +135,12 @@ same behaviour keeps the same timing on a ~2s and a ~12s chain.
 | settle cooldown / stuck / backoff, etc. | 20n/4n/2n   | 3n/1n/1n    | Same wall-clock intent, ~6x the block time.                                |
 | `MAX_FEE_GWEI`                          | `300`       | `50`        | Never binds on Base; on mainnet it is the only hard bound on spend per tx. |
 | `PRIORITY_FEE_GWEI`                     | `0.1`       | `2`         | Base tips are nominal; mainnet's are a real market.                        |
-| `MIN_SURPLUS_BPS`                       | `0`         | `25`        | Break-even is a loss after mainnet gas — see the caveat below.             |
 | `SEIZE_CAP_MARGIN_BPS`                  | `30`        | `60`        | One block of oracle drift is ~6x longer on mainnet.                        |
 
-> **Mainnet caveat.** Gas is not part of the profitability comparison (`src/runner/profitability.ts`
-> weighs the quoted route against the contract-derived repay only). `MIN_SURPLUS_BPS` is a stopgap
-> proxy: because it is bps of the repay, it under-covers small positions and over-charges large ones.
-> Calibrate it against observed gas per liquidation and typical position size.
+`MIN_SURPLUS_BPS` is deliberately **not** per-chain: it stays at pure break-even (`0`) on both, where
+the gate compares two contract-derived quantities and can only reject plans that would have reverted
+on-chain. Raising it trades captured liquidations for margin and wants a measured basis distribution
+rather than a guess.
 
 ### Markets, venues, and probing
 
@@ -360,7 +359,7 @@ export RPC_URL_1=https://eth-mainnet.example
 export LIQUIDATOR_PRIVATE_KEY=0x...          # or per-chain LIQUIDATOR_PRIVATE_KEY_<chainId>
 export ZEROX_API_KEY=...                     # venue inputs; per-chain via ZEROX_API_KEY_<chainId> etc.
 # Optional: RAILWAY_ENVIRONMENT (defaults to production), RPC_URL_FALLBACK_<chainId>,
-# MAX_FEE_GWEI/PRIORITY_FEE_GWEI/MIN_SURPLUS_BPS[_<chainId>], ALLOW_BAD_DEBT_ONLY[_<chainId>].
+# MAX_FEE_GWEI/PRIORITY_FEE_GWEI[_<chainId>], ALLOW_BAD_DEBT_ONLY[_<chainId>].
 pnpm --filter @morpho-org/midnight-liquidation run deploy:railway
 ```
 

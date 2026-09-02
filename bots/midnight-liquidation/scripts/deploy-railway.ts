@@ -21,7 +21,7 @@
  *     (optional; a key ENABLES its venue — LiFi also via ENABLE_LIFI[_<chainId>]=true, keyless)
  *   - ALLOW_BAD_DEBT_ONLY[_<chainId>]=true — required for a chain with NO venue enabled; the bot
  *     fails loud at startup otherwise.
- *   - MAX_FEE_GWEI[_<chainId>] / PRIORITY_FEE_GWEI[_<chainId>] / MIN_SURPLUS_BPS[_<chainId>]
+ *   - MAX_FEE_GWEI[_<chainId>] / PRIORITY_FEE_GWEI[_<chainId>]
  *     (optional) — override the chain's built-in tuning row from src/config.ts.
  *
  *   RAILWAY_PROJECT_ID=… RPC_URL_8453=… RPC_URL_1=… LIQUIDATOR_PRIVATE_KEY=0x… \
@@ -362,7 +362,6 @@ const chainSecrets = CHAINS.map(chain => {
     // the operator sets them, so an unset var leaves the in-code per-chain default in force.
     maxFeeGwei: suffixed('MAX_FEE_GWEI', chain.chainId),
     priorityFeeGwei: suffixed('PRIORITY_FEE_GWEI', chain.chainId),
-    minSurplusBps: suffixed('MIN_SURPLUS_BPS', chain.chainId),
     betterstackHeartbeatUrl: suffixed('BETTERSTACK_HEARTBEAT_URL', chain.chainId)
   }
 })
@@ -411,8 +410,7 @@ for (const chain of chainSecrets) {
   // dropping one from a run restores the chain's in-code default instead of leaving a stale value.
   const tunables: [string, string | undefined][] = [
     ['MAX_FEE_GWEI', chain.maxFeeGwei],
-    ['PRIORITY_FEE_GWEI', chain.priorityFeeGwei],
-    ['MIN_SURPLUS_BPS', chain.minSurplusBps]
+    ['PRIORITY_FEE_GWEI', chain.priorityFeeGwei]
   ]
   for (const [key, value] of tunables) {
     if (value) await setVar(chain.service, `${key}=${value}`)

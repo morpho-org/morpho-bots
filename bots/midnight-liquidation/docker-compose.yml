@@ -22,10 +22,9 @@ services:
       LIFI_API_KEY: ${LIFI_API_KEY_8453:-${LIFI_API_KEY:-}}
       ENABLE_LIFI: ${ENABLE_LIFI_8453:-}
       ALLOW_BAD_DEBT_ONLY: ${ALLOW_BAD_DEBT_ONLY_8453:-}
-      # Unset = the chain's built-in tuning row in src/config.ts (Base: 300 / 0.1 gwei, 0 bps).
+      # Unset = the chain's built-in tuning row in src/config.ts (Base: 300 / 0.1 gwei).
       MAX_FEE_GWEI: ${MAX_FEE_GWEI_8453:-}
       PRIORITY_FEE_GWEI: ${PRIORITY_FEE_GWEI_8453:-}
-      MIN_SURPLUS_BPS: ${MIN_SURPLUS_BPS_8453:-}
       LOG_LEVEL: ${LOG_LEVEL:-info}
       # Optional BetterStack log shipping (in-process loglayer transport). Empty = disabled; the bot
       # ships its structured logs only when BOTH are set (host also required), else behaves as before.
@@ -50,10 +49,9 @@ services:
       LIFI_API_KEY: ${LIFI_API_KEY_1:-${LIFI_API_KEY:-}}
       ENABLE_LIFI: ${ENABLE_LIFI_1:-}
       ALLOW_BAD_DEBT_ONLY: ${ALLOW_BAD_DEBT_ONLY_1:-}
-      # Unset = the chain's built-in tuning row (mainnet: 50 / 2 gwei, 25 bps surplus).
+      # Unset = the chain's built-in tuning row (mainnet: 50 / 2 gwei).
       MAX_FEE_GWEI: ${MAX_FEE_GWEI_1:-}
       PRIORITY_FEE_GWEI: ${PRIORITY_FEE_GWEI_1:-}
-      MIN_SURPLUS_BPS: ${MIN_SURPLUS_BPS_1:-}
       LOG_LEVEL: ${LOG_LEVEL:-info}
       BETTERSTACK_SOURCE_TOKEN: ${BETTERSTACK_SOURCE_TOKEN:-}
       BETTERSTACK_INGESTING_HOST: ${BETTERSTACK_INGESTING_HOST:-}

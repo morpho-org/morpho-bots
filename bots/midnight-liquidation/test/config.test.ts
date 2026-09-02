@@ -37,7 +37,6 @@ const FIXTURE_TUNING: TuningConfig = {
   maxBumpAttempts: 3,
   priorityFeeGwei: '0.1',
   maxFeeGwei: '300',
-  minSurplusBps: 0,
   seizeCapMarginBps: 30
 }
 
@@ -157,7 +156,6 @@ describe('loadConfig', () => {
     expect(maxFeeWei).toBe(parseGwei('300'))
     expect(priorityFeeWei).toBe(parseGwei('0.1'))
     expect(quoting.seizeCapMarginBps).toBe(30)
-    expect(quoting.minSurplusBps).toBe(0)
     expect(quoting.backoffBaseBlocks).toBe(2n)
     expect(quoting.backoffMaxBlocks).toBe(64n)
   })
@@ -195,8 +193,8 @@ describe('loadConfig', () => {
     // A real tip on a real fee market, and a ceiling that actually bounds spend.
     expect(mainnetConfig.priorityFeeWei).toBeGreaterThan(baseConfig.priorityFeeWei)
     expect(mainnetConfig.maxFeeWei).toBeLessThan(baseConfig.maxFeeWei)
-    // Break-even is a loss after mainnet gas, so the surplus bar must be above zero.
-    expect(mainnetConfig.quoting.minSurplusBps).toBeGreaterThan(0)
+    // The surplus bar is deliberately NOT per-chain — both stay at pure break-even.
+    expect(mainnetConfig.quoting.minSurplusBps).toBe(baseConfig.quoting.minSurplusBps)
   })
 
   it('lets an env var override the per-chain tuning default', () => {
@@ -206,7 +204,7 @@ describe('loadConfig', () => {
     expect(config.maxFeeWei).toBe(parseGwei('123'))
     expect(config.quoting.backoffMaxBlocks).toBe(7n)
     // Unset knobs still come from the chain row.
-    expect(config.quoting.minSurplusBps).toBeGreaterThan(0)
+    expect(config.quoting.seizeCapMarginBps).toBe(60)
   })
 
   it('throws when a required var is missing', () => {

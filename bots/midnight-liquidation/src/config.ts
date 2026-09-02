@@ -86,8 +86,6 @@ export type TuningConfig = {
   priorityFeeGwei: string
   /** Fee ceiling, as a DECIMAL GWEI STRING. Also bounds the signing policy — see `index.ts`. */
   maxFeeGwei: string
-  /** Surplus (bps) over the contract-derived repay a route must clear to be simulated. */
-  minSurplusBps: number
   /** Headroom (bps) shaved off the on-chain repay cap when sizing a cap-binding seize. */
   seizeCapMarginBps: number
 }
@@ -99,7 +97,7 @@ const tuningFor = (
   blockTimeMs: number,
   fees: Pick<
     TuningConfig,
-    'maxBumpAttempts' | 'priorityFeeGwei' | 'maxFeeGwei' | 'minSurplusBps' | 'seizeCapMarginBps'
+    'maxBumpAttempts' | 'priorityFeeGwei' | 'maxFeeGwei' | 'seizeCapMarginBps'
   >
 ): TuningConfig => ({
   settledCooldownBlocks: blocksFor(SETTLED_COOLDOWN_MS, blockTimeMs),
@@ -133,10 +131,6 @@ const CHAIN_MAP: Record<number, ChainConfig> = {
       priorityFeeGwei: '0.1',
       // Never binds on Base, whose basefee sits near zero — effectively "no ceiling".
       maxFeeGwei: '300',
-      // Pure break-even: the gate compares two contract-derived quantities and carries no tuned
-      // value, so it can only reject plans that would have reverted on-chain. Base gas is negligible
-      // relative to any liquidation, so break-even is the right bar there.
-      minSurplusBps: 0,
       seizeCapMarginBps: 30
     })
   },
@@ -152,16 +146,9 @@ const CHAIN_MAP: Record<number, ChainConfig> = {
       // merely a missed fill: it exhausts the bump ladder, drops the tx, and latches a nonce hole that
       // stops the bot sending at all. Calibrate DOWN from here with production data.
       priorityFeeGwei: '2',
-      // On mainnet this is the only hard bound on spend per transaction (maxFee x the signing policy's
-      // gas ceiling), because nothing compares expected surplus against gas cost. Still three orders of
-      // magnitude above the basefee this was calibrated against.
+      // Bounds spend per transaction (maxFee x the signing policy's gas ceiling) while still sitting
+      // three orders of magnitude above the basefee this was calibrated against.
       maxFeeGwei: '50',
-      // PROVISIONAL. Gas is absent from the profitability comparison (see `runner/profitability.ts`),
-      // so on mainnet break-even on the swap is a LOSS after gas. This is a stopgap proxy and a poor
-      // one: it is bps of the repay, so it does not express a fixed gas cost — it under-covers small
-      // positions and over-charges large ones. Replace it with a gas-aware gate; until then, calibrate
-      // against observed gas per liquidation and typical position size.
-      minSurplusBps: 25,
       // One-block oracle-drift headroom, and a mainnet block is ~6x the drift window of a Base one.
       seizeCapMarginBps: 60
     })
@@ -197,6 +184,10 @@ const DEFAULT_PENDLE_SLIPPAGE_BPS = 50
 // wasted quote. The 31 Jul archive implies (8.52, 15.83] for that maturity's basis regime; that is one
 // observation and deliberately NOT the default.
 const DEFAULT_HEADROOM_FLOOR_BPS = 3
+// Pure break-even on both chains: at 0 the profitability gate compares two contract-derived
+// quantities and carries no tuned value, so it can only reject plans that would have reverted
+// on-chain. Deliberately NOT a per-chain value — it does not encode gas.
+const DEFAULT_MIN_SURPLUS_BPS = 0
 // Opt-in per-position cooldown (ms) after a liquidation attempt fails to produce a submittable tx
 // (no route / quote failure / sim revert). 0 disables it — the default, so existing deployments
 // re-attempt every tick as before.
@@ -633,7 +624,7 @@ export function loadConfig(
       min: 0,
       max: 10_000
     }),
-    minSurplusBps: intEnv(env, 'MIN_SURPLUS_BPS', tuning.minSurplusBps, {
+    minSurplusBps: intEnv(env, 'MIN_SURPLUS_BPS', DEFAULT_MIN_SURPLUS_BPS, {
       min: 0,
       max: 10_000
     }),
