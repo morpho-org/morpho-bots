@@ -25,11 +25,10 @@ export function createBalanceMonitor(deps: {
   logger: Logger
   everyBlocks?: bigint
 }): { maybeLog: (blockNumber: bigint) => Promise<void> } {
-  // Always asks, so the sampler's edge-triggering never engages — this stays a plain fixed cadence.
-  const sampler = createBlockSampler(deps.everyBlocks ?? BALANCE_EVERY_BLOCKS)
+  const shouldLog = createBlockSampler(deps.everyBlocks ?? BALANCE_EVERY_BLOCKS)
   return {
     async maybeLog(blockNumber) {
-      if (!sampler.claim(blockNumber)) return
+      if (!shouldLog(blockNumber)) return
       const balance = await tryCatch(deps.read())
       if (balance.error) {
         deps.logger.warn('signer.balance_failed', {

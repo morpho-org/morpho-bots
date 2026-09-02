@@ -75,17 +75,14 @@ export type LiquidationPlan = {
 }
 
 /**
- * Why sizing produced no plan. `no_debt` / `healthy` negate `isLiquidatable`, so a caller that gates
- * on it never sees them; the other three are the position-level guards below.
+ * Why sizing produced no plan, one per guard in {@link planWithReason}. `no_debt` / `healthy` negate
+ * `isLiquidatable`, so a caller that gates on it never sees them.
  */
 export type PlanSkipReason =
   | 'no_debt'
   | 'healthy'
-  /** Pure residual bad debt: shares outstanding but no collateral left to seize. */
   | 'no_collateral'
-  /** A non-reverting zero oracle price: unsizable, and a divide-by-zero if used. */
   | 'zero_price'
-  /** Dust, or a price so high the full-debt seize floors to zero collateral. */
   | 'seize_rounds_to_zero'
 
 /**
@@ -119,7 +116,7 @@ const skip = (reason: PlanSkipReason): PlanOutcome => ({ plan: null, reason })
  * in the same call. If a later oracle move makes the derived repay too large, simulation catches the
  * revert before broadcast.
  *
- * Side-effect free. Callers must not treat a skip as a failure — see {@link PlanOutcome}.
+ * Side-effect free.
  */
 export const planWithReason = (input: PlanInput): PlanOutcome => {
   if (!input.hasDebt) return skip('no_debt')

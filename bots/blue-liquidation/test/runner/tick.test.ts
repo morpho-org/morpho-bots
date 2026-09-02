@@ -56,6 +56,7 @@ const PARAMS: MarketParams = {
   lltv: 86n * 10n ** 16n
 }
 const LABEL = lensKey(marketId(PARAMS), BORROWER)
+const POSITION_FIELDS = { id: LABEL, marketId: marketId(PARAMS), borrower: BORROWER }
 
 const SWAP_PLAN: SwapPlan = {
   steps: [
@@ -115,8 +116,6 @@ function runWith(opts: {
   cooldown?: CooldownStore
   /** Models the queue's outcome; the two no-broadcast reasons are NOT interchangeable. */
   submitOutcome?: SubmitOutcome
-  /** Models a send that claimed a nonce but produced no hash, which aborts the tick. */
-  submitThrows?: Error
   /** Shared spy, so a caller can observe the tick's and the queue's events in ONE stream. */
   spy?: ReturnType<typeof spyLogger>
   /** Replaces the stub `submit` — used to broadcast through a real pending queue. */
@@ -151,7 +150,6 @@ function runWith(opts: {
     },
     submit: async args => {
       submitCalls += 1
-      if (opts.submitThrows) throw opts.submitThrows
       if (opts.submitWith) return opts.submitWith(args)
       return opts.submitOutcome ?? { sent: true }
     },
@@ -160,15 +158,20 @@ function runWith(opts: {
     inflightLabels: () => opts.inflight ?? new Set(),
     logger
   })
-  return result.then(counters => ({
-    counters,
-    backoff,
-    cooldown,
-    simulateCalls: () => simulateCalls,
-    submitCalls: () => submitCalls,
-    quoteCalls: () => quoteCalls,
-    events
-  }))
+  // Every tick that resolves must balance; the aborting case rejects and never gets here, which is
+  // the one path where the `ok` identity is legitimately short.
+  return result.then(counters => {
+    expectCounterIdentities(counters)
+    return {
+      counters,
+      backoff,
+      cooldown,
+      simulateCalls: () => simulateCalls,
+      submitCalls: () => submitCalls,
+      quoteCalls: () => quoteCalls,
+      events
+    }
+  })
 }
 
 describe('runTick', () => {
@@ -193,7 +196,6 @@ describe('runTick', () => {
     })
     expect(simulateCalls()).toBe(1)
     expect(submitCalls()).toBe(1)
-    expectCounterIdentities(counters)
   })
 
   it('emits tick.end with complete: true and the full counter bag', async () => {
@@ -210,7 +212,9 @@ describe('runTick', () => {
     await expect(
       runWith({
         spy: { logger, events },
-        submitThrows: new TxSendError('nonce claimed, no hash', 7)
+        submitWith: async () => {
+          throw new TxSendError('nonce claimed, no hash', 7)
+        }
       })
     ).rejects.toThrow('nonce claimed, no hash')
     const end = events.find(e => e.event === 'tick.end')
@@ -227,7 +231,6 @@ describe('runTick', () => {
     expect(counters.submitted).toBe(0)
     expect(submitCalls()).toBe(0)
     expect(backoff.shouldSkip(LABEL, 100n)).toBe(true)
-    expectCounterIdentities(counters)
   })
 
   it('skips with config.no_swap_path when no swap config covers the collateral (no backoff)', async () => {
@@ -245,7 +248,6 @@ describe('runTick', () => {
     expect(submitCalls()).toBe(0)
     expect(events.some(e => e.event === 'config.no_swap_path')).toBe(true)
     expect(backoff.shouldSkip(LABEL, 100n)).toBe(false) // unconfigured ≠ failure
-    expectCounterIdentities(counters)
   })
 
   it('counts a failed quote, backs the position off, and never simulates', async () => {
@@ -256,7 +258,6 @@ describe('runTick', () => {
     expect(simulateCalls()).toBe(0)
     expect(submitCalls()).toBe(0)
     expect(backoff.shouldSkip(LABEL, 100n)).toBe(true)
-    expectCounterIdentities(counters)
   })
 
   it('suppresses a backed-off position without quoting or simulating', async () => {
@@ -268,7 +269,6 @@ describe('runTick', () => {
     expect(counters).toMatchObject({ liquidatable: 1, backoffSkipped: 1, submitted: 0 })
     expect(quoteCalls()).toBe(0)
     expect(simulateCalls()).toBe(0)
-    expectCounterIdentities(counters)
   })
 
   it('clears backoff on a successful submit', async () => {
@@ -293,7 +293,6 @@ describe('runTick', () => {
     expect(submitCalls()).toBe(0)
     // Not a sizing skip: the queue narrates an in-flight label end to end already.
     expect(events.some(e => e.event === 'plan.skipped')).toBe(false)
-    expectCounterIdentities(counters)
   })
 
   it('skips a non-liquidatable (healthy) pair without simulating or submitting', async () => {
@@ -303,7 +302,6 @@ describe('runTick', () => {
     expect(counters).toMatchObject({ pairs: 1, liquidatable: 0, planned: 0, submitted: 0 })
     expect(simulateCalls()).toBe(0)
     expect(submitCalls()).toBe(0)
-    expectCounterIdentities(counters)
   })
 
   it('skips a pair the lens did not return', async () => {
@@ -313,58 +311,26 @@ describe('runTick', () => {
   })
 
   describe('sizing skips', () => {
-    it('reports a collateral-less position as plan.skipped / no_collateral at info', async () => {
+    // The input → reason mapping is pinned in plan.test.ts; this covers the tick's side of it: the
+    // counter, the per-reason level, the id-keyed fields, and that a skip spends and suppresses nothing.
+    it.each([
+      [{ collateral: 0n }, 'no_collateral', 'info'],
+      [{ collateralPrice: 0n }, 'zero_price', 'warn'],
+      [{ borrowShares: 1n }, 'seize_rounds_to_zero', 'info']
+    ] as const)('reports %o as plan.skipped / %s at %s', async (overrides, reason, level) => {
       const cooldown = createCooldownStore({ cooldownMs: 60_000 })
       const { counters, quoteCalls, submitCalls, events, backoff } = await runWith({
         cooldown,
-        out: lensOut({ collateral: 0n })
+        out: lensOut(overrides)
       })
       expect(counters).toMatchObject({ liquidatable: 1, planSkipped: 1, planned: 0, submitted: 0 })
       expect(quoteCalls()).toBe(0)
       expect(submitCalls()).toBe(0)
       const skipped = events.find(e => e.event === 'plan.skipped')
-      expect(skipped?.level).toBe('info')
-      expect(skipped?.fields).toEqual({
-        id: LABEL,
-        marketId: marketId(PARAMS),
-        borrower: BORROWER,
-        reason: 'no_collateral'
-      })
-      // A sizing skip is not a failure: the next lens reading re-derives it for free.
+      expect(skipped?.level).toBe(level)
+      expect(skipped?.fields).toEqual({ ...POSITION_FIELDS, reason })
       expect(backoff.shouldSkip(LABEL, 100n)).toBe(false)
       expect(cooldown.shouldSkip(LABEL)).toBe(false)
-      expectCounterIdentities(counters)
-    })
-
-    it('reports a non-reverting zero oracle price at warn, as a market anomaly', async () => {
-      const { counters, events } = await runWith({ out: lensOut({ collateralPrice: 0n }) })
-      expect(counters).toMatchObject({ liquidatable: 1, planSkipped: 1, planned: 0 })
-      const skipped = events.find(e => e.event === 'plan.skipped')
-      expect(skipped?.level).toBe('warn')
-      expect(skipped?.fields).toEqual({
-        id: LABEL,
-        marketId: marketId(PARAMS),
-        borrower: BORROWER,
-        reason: 'zero_price'
-      })
-      expectCounterIdentities(counters)
-    })
-
-    it('reports a dust position whose seize floors to zero at info', async () => {
-      const { counters, events, quoteCalls } = await runWith({
-        out: lensOut({ borrowShares: 1n })
-      })
-      expect(counters).toMatchObject({ liquidatable: 1, planSkipped: 1, planned: 0 })
-      expect(quoteCalls()).toBe(0)
-      const skipped = events.find(e => e.event === 'plan.skipped')
-      expect(skipped?.level).toBe('info')
-      expect(skipped?.fields).toEqual({
-        id: LABEL,
-        marketId: marketId(PARAMS),
-        borrower: BORROWER,
-        reason: 'seize_rounds_to_zero'
-      })
-      expectCounterIdentities(counters)
     })
 
     it('emits no plan.skipped for a planned position', async () => {
@@ -381,7 +347,6 @@ describe('runTick', () => {
     expect(counters).toMatchObject({ pairs: 0, liquidatable: 0, submitted: 0 })
     expect(events.some(e => e.level === 'warn' && e.event === 'discover.error')).toBe(true)
     expect(submitCalls()).toBe(0)
-    expectCounterIdentities(counters)
   })
 
   describe('position cooldown (opt-in)', () => {
@@ -396,7 +361,6 @@ describe('runTick', () => {
       expect(simulateCalls()).toBe(0)
       expect(submitCalls()).toBe(0)
       expect(events.some(e => e.event === 'cooldown.skip')).toBe(true)
-      expectCounterIdentities(counters)
     })
 
     it('marks the position on a failed quote so the next tick cools it down', async () => {
@@ -454,7 +418,6 @@ describe('runTick', () => {
       expect(submitCalls()).toBe(1)
       expect(counters).toMatchObject({ ok: 1, submitted: 0, notSent: 1 })
       expect(backoff.shouldSkip(LABEL, 1n)).toBe(true)
-      expectCounterIdentities(counters)
       // Not re-armed: the next block may try again, which is the point of not blaming the position.
       expect(backoff.shouldSkip(LABEL, 101n)).toBe(false)
     })
@@ -489,7 +452,6 @@ describe('runTick', () => {
       })
       expect(counters).toMatchObject({ ok: 1, submitted: 1, notSent: 0 })
       expect(backoff.shouldSkip(LABEL, 1n)).toBe(false)
-      expectCounterIdentities(counters)
     })
   })
   it('emits one id that joins plan.built to the queue tx.sent', async () => {

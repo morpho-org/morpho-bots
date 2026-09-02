@@ -1,4 +1,11 @@
-import type { Backoff, CooldownStore, Logger, SimulateResult, SubmitOutcome } from '@repo/bot-kit'
+import type {
+  Backoff,
+  CooldownStore,
+  Logger,
+  LogLevel,
+  SimulateResult,
+  SubmitOutcome
+} from '@repo/bot-kit'
 import type { QuoteOutcome, SwapPlan } from '@repo/swaps'
 import type { Address } from 'viem'
 
@@ -24,11 +31,6 @@ import { isLiquidatable, planInputFromLens } from './eligibility'
  * planned      === cooledDown + backoffSkipped + noSwapPath + quoteFailed + ok + reverted
  * ok           === submitted + notSent
  * ```
- *
- * A Blue market has exactly one collateral, so one position is one candidate and every identity is
- * per position — unlike `bots/midnight-liquidation`, whose `(slot, mode)` alternatives split the
- * middle sum in two. A new loop **exit** must join one of these sums; a new **attribute** of a
- * position that is still worked must not (it would double-count).
  *
  * On `complete: false` the `ok` identity is short by one: an aborting `submit` throws after `ok` was
  * counted and before either of its terms is.
@@ -63,7 +65,7 @@ type TickCounters = {
  * `healthy` negate `isLiquidatable`, and a non-reverting zero oracle price is a market anomaly. The
  * other two are ordinary outcomes for a genuinely liquidatable position, so they stay at `info`.
  */
-const LEVEL_BY_REASON: Record<PlanSkipReason, 'info' | 'warn'> = {
+const LEVEL_BY_REASON: Record<PlanSkipReason, LogLevel> = {
   no_debt: 'warn',
   healthy: 'warn',
   zero_price: 'warn',
@@ -184,6 +186,7 @@ export async function runTick(deps: {
     for (const pair of pairs) {
       const id = marketId(pair.params)
       const label = lensKey(id, pair.borrower)
+      const fields = { id: label, marketId: id, borrower: pair.borrower }
       const out = lensOut.get(label)
       if (!out || !isLiquidatable(out)) continue
       counters.liquidatable += 1
@@ -196,32 +199,22 @@ export async function runTick(deps: {
         continue
       }
 
-      // A sizing skip is not a failure (see `PlanOutcome`): no backoff, no cooldown, just the reason.
+      // A skip is not a failure (see `PlanOutcome`): no backoff, no cooldown, just the reason.
       const { plan: liquidationPlan, reason } = planWithReason(planInputFromLens(out))
       if (!liquidationPlan) {
         counters.planSkipped += 1
-        logger[LEVEL_BY_REASON[reason]]('plan.skipped', {
-          id: label,
-          marketId: id,
-          borrower: pair.borrower,
-          reason
-        })
+        logger[LEVEL_BY_REASON[reason]]('plan.skipped', { ...fields, reason })
         continue
       }
       counters.planned += 1
-      logger.info('plan.built', {
-        id: label,
-        marketId: id,
-        borrower: pair.borrower,
-        seizedAssets: liquidationPlan.seizedAssets
-      })
+      logger.info('plan.built', { ...fields, seizedAssets: liquidationPlan.seizedAssets })
 
       // Opt-in cooldown (complementary to backoff): a position whose last attempt produced no
       // submittable tx is skipped without re-quoting until its wall-clock window elapses. No-op when
       // disabled (POSITION_LIQUIDATION_COOLDOWN_MS=0).
       if (cooldown.shouldSkip(label)) {
         counters.cooledDown += 1
-        logger.info('cooldown.skip', { id: label, marketId: id, borrower: pair.borrower })
+        logger.info('cooldown.skip', fields)
         continue
       }
       // Suppress positions that keep failing to quote/simulate — bounds API + RPC usage under a
@@ -234,7 +227,7 @@ export async function runTick(deps: {
       if (outcome.kind === 'no_config') {
         counters.noSwapPath += 1
         cooldown.mark(label)
-        logger.info('config.no_swap_path', { id: label, marketId: id, borrower: pair.borrower })
+        logger.info('config.no_swap_path', fields)
         continue
       }
       if (outcome.kind === 'failed') {
@@ -251,7 +244,6 @@ export async function runTick(deps: {
         plan: liquidationPlan,
         swapPlan
       })
-      const fields = { id: label, marketId: id, borrower: pair.borrower }
       switch (result.status) {
         case 'ok':
           counters.ok += 1

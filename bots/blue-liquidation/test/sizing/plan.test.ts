@@ -57,39 +57,17 @@ function seizeForFullDebt(input: PlanInput): bigint {
 }
 
 describe('plan — skip cases', () => {
-  it('skips a position with no debt', () => {
-    expect(plan(baseInput({ hasDebt: false }))).toBeNull()
-    expect(planWithReason(baseInput({ hasDebt: false }))).toEqual({ plan: null, reason: 'no_debt' })
-  })
-
-  it('skips a healthy position', () => {
-    expect(plan(baseInput({ healthy: true }))).toBeNull()
-    expect(planWithReason(baseInput({ healthy: true }))).toEqual({ plan: null, reason: 'healthy' })
-  })
-
-  it('skips the degenerate pure-bad-debt case (collateral == 0)', () => {
-    expect(plan(baseInput({ collateral: 0n }))).toBeNull()
-    expect(planWithReason(baseInput({ collateral: 0n }))).toEqual({
-      plan: null,
-      reason: 'no_collateral'
-    })
-  })
-
-  it('skips a zero-price oracle rather than dividing by zero', () => {
-    expect(plan(baseInput({ collateralPrice: 0n }))).toBeNull()
-    expect(planWithReason(baseInput({ collateralPrice: 0n }))).toEqual({
-      plan: null,
-      reason: 'zero_price'
-    })
-  })
-
-  it('skips a dust position that sizes to zero seize', () => {
+  it.each([
+    [{ hasDebt: false }, 'no_debt'],
+    [{ healthy: true }, 'healthy'],
+    // Degenerate pure bad debt: shares outstanding, nothing left to seize.
+    [{ collateral: 0n }, 'no_collateral'],
+    // A non-reverting zero price must skip rather than divide by zero.
+    [{ collateralPrice: 0n }, 'zero_price'],
     // 1 share ≈ 1e-6 assets → seizeForFullDebt floors to 0.
-    expect(plan(baseInput({ borrowShares: 1n }))).toBeNull()
-    expect(planWithReason(baseInput({ borrowShares: 1n }))).toEqual({
-      plan: null,
-      reason: 'seize_rounds_to_zero'
-    })
+    [{ borrowShares: 1n }, 'seize_rounds_to_zero']
+  ] as const)('skips %o as %s', (overrides, reason) => {
+    expect(planWithReason(baseInput(overrides))).toEqual({ plan: null, reason })
   })
 
   it('carries no reason on a sized outcome, and plan() is its projection', () => {
@@ -97,6 +75,7 @@ describe('plan — skip cases', () => {
     expect(outcome.reason).toBeUndefined()
     expect(outcome.plan).not.toBeNull()
     expect(plan(baseInput())).toEqual(outcome.plan)
+    expect(plan(baseInput({ healthy: true }))).toBeNull()
   })
 })
 
