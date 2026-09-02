@@ -75,8 +75,35 @@ export type LiquidationPlan = {
 }
 
 /**
- * Turns a fresh lens reading into a seize-exact liquidation plan, or `null` when the position is not
- * liquidatable or has nothing to seize.
+ * Why sizing produced no plan. `no_debt` / `healthy` negate `isLiquidatable`, so a caller that gates
+ * on it never sees them; the other three are the position-level guards below.
+ */
+export type PlanSkipReason =
+  | 'no_debt'
+  | 'healthy'
+  /** Pure residual bad debt: shares outstanding but no collateral left to seize. */
+  | 'no_collateral'
+  /** A non-reverting zero oracle price: unsizable, and a divide-by-zero if used. */
+  | 'zero_price'
+  /** Dust, or a price so high the full-debt seize floors to zero collateral. */
+  | 'seize_rounds_to_zero'
+
+/**
+ * Sizing result: exactly one of `plan` / `reason` is set. A skip carries its reason so the caller can
+ * report it (`plan.skipped`) instead of dropping the position silently.
+ *
+ * A skip is NOT a failure signal: callers must not record backoff or mark a cooldown on one. Every
+ * reason here is a fact about the position's current state, and the next lens reading re-derives it
+ * for free, so suppressing a skipped position would only delay noticing when it becomes sizeable.
+ */
+type PlanOutcome =
+  | { plan: LiquidationPlan; reason?: undefined }
+  | { plan: null; reason: PlanSkipReason }
+
+const skip = (reason: PlanSkipReason): PlanOutcome => ({ plan: null, reason })
+
+/**
+ * Turns a fresh lens reading into a seize-exact liquidation plan, or the reason there is none.
  *
  * Blue liquidation is permissionless and time-independent, so the only gate is `hasDebt && !healthy`
  * (no maturity, no liquidator gate, no RCF cap). The single sizing rule pins the seize at the amount
@@ -91,17 +118,20 @@ export type LiquidationPlan = {
  * `plan.test.ts`). When collateral binds, seizing all collateral socializes the residual as bad debt
  * in the same call. If a later oracle move makes the derived repay too large, simulation catches the
  * revert before broadcast.
+ *
+ * Side-effect free. Callers must not treat a skip as a failure — see {@link PlanOutcome}.
  */
-export function plan(input: PlanInput): LiquidationPlan | null {
-  if (!input.hasDebt || input.healthy) return null
+export const planWithReason = (input: PlanInput): PlanOutcome => {
+  if (!input.hasDebt) return skip('no_debt')
+  if (input.healthy) return skip('healthy')
   // Degenerate: pure residual bad debt (borrowShares > 0 but collateral == 0). Nothing to seize; a
   // backstop bot does not perform an uncompensated loan-token repay, and Blue rejects a (0, 0)
   // liquidate anyway (`exactlyOneZero`).
-  if (input.collateral === 0n) return null
+  if (input.collateral === 0n) return skip('no_collateral')
   // A zero (non-reverting) oracle price would divide-by-zero below. It also makes maxBorrow 0, so the
   // lens reports the position unhealthy — but we cannot size against it; skip rather than throw and
   // abort the whole tick. (A reverting oracle is already dropped by the lens as valid=false.)
-  if (input.collateralPrice === 0n) return null
+  if (input.collateralPrice === 0n) return skip('zero_price')
 
   const lif = lifFromLltv(input.lltv)
   const repaidAssetsFull = toAssetsDown(
@@ -116,15 +146,22 @@ export function plan(input: PlanInput): LiquidationPlan | null {
   )
   const seizedAssets = min(input.collateral, seizeForFullDebt)
   // Rounds to nothing (dust position, or price ≫ debt): can't pass 0 to `liquidate`, so skip it.
-  if (seizedAssets === 0n) return null
+  if (seizedAssets === 0n) return skip('seize_rounds_to_zero')
   return {
-    seizedAssets,
-    impliedRepaidAssets: impliedRepaidAssets({
+    plan: {
       seizedAssets,
-      collateralPrice: input.collateralPrice,
-      lltv: input.lltv,
-      accruedTotalBorrowAssets: input.accruedTotalBorrowAssets,
-      totalBorrowShares: input.totalBorrowShares
-    })
+      impliedRepaidAssets: impliedRepaidAssets({
+        seizedAssets,
+        collateralPrice: input.collateralPrice,
+        lltv: input.lltv,
+        accruedTotalBorrowAssets: input.accruedTotalBorrowAssets,
+        totalBorrowShares: input.totalBorrowShares
+      })
+    }
   }
 }
+
+/**
+ * {@link planWithReason} projected to just the plan, for callers that do not report the skip reason.
+ */
+export const plan = (input: PlanInput): LiquidationPlan | null => planWithReason(input).plan

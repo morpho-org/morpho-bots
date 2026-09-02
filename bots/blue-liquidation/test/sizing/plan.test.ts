@@ -13,7 +13,7 @@ import {
   mulDivUp,
   toAssetsUp
 } from '../../src/sizing/math'
-import { plan } from '../../src/sizing/plan'
+import { plan, planWithReason } from '../../src/sizing/plan'
 
 const LLTV = 86n * 10n ** 16n // 0.86e18
 
@@ -59,23 +59,44 @@ function seizeForFullDebt(input: PlanInput): bigint {
 describe('plan — skip cases', () => {
   it('skips a position with no debt', () => {
     expect(plan(baseInput({ hasDebt: false }))).toBeNull()
+    expect(planWithReason(baseInput({ hasDebt: false }))).toEqual({ plan: null, reason: 'no_debt' })
   })
 
   it('skips a healthy position', () => {
     expect(plan(baseInput({ healthy: true }))).toBeNull()
+    expect(planWithReason(baseInput({ healthy: true }))).toEqual({ plan: null, reason: 'healthy' })
   })
 
   it('skips the degenerate pure-bad-debt case (collateral == 0)', () => {
     expect(plan(baseInput({ collateral: 0n }))).toBeNull()
+    expect(planWithReason(baseInput({ collateral: 0n }))).toEqual({
+      plan: null,
+      reason: 'no_collateral'
+    })
   })
 
   it('skips a zero-price oracle rather than dividing by zero', () => {
     expect(plan(baseInput({ collateralPrice: 0n }))).toBeNull()
+    expect(planWithReason(baseInput({ collateralPrice: 0n }))).toEqual({
+      plan: null,
+      reason: 'zero_price'
+    })
   })
 
   it('skips a dust position that sizes to zero seize', () => {
-    // Tiny debt vs the virtual-share offset → repaidAssetsFull floors to 0 → seize 0 → null.
+    // 1 share ≈ 1e-6 assets → seizeForFullDebt floors to 0.
     expect(plan(baseInput({ borrowShares: 1n }))).toBeNull()
+    expect(planWithReason(baseInput({ borrowShares: 1n }))).toEqual({
+      plan: null,
+      reason: 'seize_rounds_to_zero'
+    })
+  })
+
+  it('carries no reason on a sized outcome, and plan() is its projection', () => {
+    const outcome = planWithReason(baseInput())
+    expect(outcome.reason).toBeUndefined()
+    expect(outcome.plan).not.toBeNull()
+    expect(plan(baseInput())).toEqual(outcome.plan)
   })
 })
 
