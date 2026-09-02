@@ -31,14 +31,14 @@ function spyLogger() {
 
 // The sums documented on TickCounters. Asserted rather than eyeballed so a new loop exit that forgets
 // its counter fails a test instead of silently dropping a position from the tally.
-const expectCounterIdentities = (c: Record<string, number>) => {
-  expect(c.pairs).toBeGreaterThanOrEqual(c.liquidatable!)
-  expect(c.liquidatable).toBe(c.inflightSkipped! + c.planSkipped! + c.planned!)
+const expectCounterIdentities = (c: Awaited<ReturnType<typeof runTick>>) => {
+  expect(c.pairs).toBeGreaterThanOrEqual(c.liquidatable)
+  expect(c.liquidatable).toBe(c.inflightSkipped + c.planSkipped + c.planned)
   // One collateral per Blue market, so one position is one candidate and `planned` heads this sum.
   expect(c.planned).toBe(
-    c.cooledDown! + c.backoffSkipped! + c.noSwapPath! + c.quoteFailed! + c.ok! + c.reverted!
+    c.cooledDown + c.backoffSkipped + c.noSwapPath + c.quoteFailed + c.ok + c.reverted
   )
-  expect(c.ok).toBe(c.submitted! + c.notSent!)
+  expect(c.ok).toBe(c.submitted + c.notSent)
 }
 
 const BORROWER: Address = getAddress('0x1111111111111111111111111111111111111111')
@@ -205,8 +205,7 @@ describe('runTick', () => {
 
   it('emits tick.end with complete: false when a submit aborts the tick', async () => {
     // The real failure the queue documents for this path: a first send that claimed a nonce but
-    // produced no hash. Using the exported type keeps the fixture honest if the tick ever
-    // discriminates on it.
+    // produced no hash.
     const { logger, events } = spyLogger()
     await expect(
       runWith({
@@ -342,7 +341,12 @@ describe('runTick', () => {
       expect(counters).toMatchObject({ liquidatable: 1, planSkipped: 1, planned: 0 })
       const skipped = events.find(e => e.event === 'plan.skipped')
       expect(skipped?.level).toBe('warn')
-      expect(skipped?.fields).toMatchObject({ id: LABEL, reason: 'zero_price' })
+      expect(skipped?.fields).toEqual({
+        id: LABEL,
+        marketId: marketId(PARAMS),
+        borrower: BORROWER,
+        reason: 'zero_price'
+      })
       expectCounterIdentities(counters)
     })
 
@@ -354,7 +358,12 @@ describe('runTick', () => {
       expect(quoteCalls()).toBe(0)
       const skipped = events.find(e => e.event === 'plan.skipped')
       expect(skipped?.level).toBe('info')
-      expect(skipped?.fields).toMatchObject({ id: LABEL, reason: 'seize_rounds_to_zero' })
+      expect(skipped?.fields).toEqual({
+        id: LABEL,
+        marketId: marketId(PARAMS),
+        borrower: BORROWER,
+        reason: 'seize_rounds_to_zero'
+      })
       expectCounterIdentities(counters)
     })
 

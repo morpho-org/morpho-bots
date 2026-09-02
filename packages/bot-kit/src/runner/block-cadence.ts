@@ -3,20 +3,16 @@
  * of a condition that recurs every tick, in O(1) state — unlike a per-label map, there is nothing to
  * evict and nothing to leak.
  */
-export type BlockSampler = {
+type BlockSampler = {
   /**
    * True when `block` is at least `everyBlocks` past the last granted claim; the first call always
    * grants. STAMPS the cadence on true, hence `claim` rather than a predicate name.
    *
    * A caller that asks ONLY when it has something to say therefore gets edge-triggering for free: a
    * quiet stretch never consumes the window, so the first occurrence after any gap is always reported
-   * and a sustained condition settles to one report per `everyBlocks`. A caller that claims eagerly
-   * (once per tick regardless) gets the same guarantee by calling {@link BlockSampler.reset} after a
-   * quiet tick.
+   * and a sustained condition settles to one report per `everyBlocks`.
    */
   claim: (block: bigint) => boolean
-  /** Clears the cadence after a quiet observation so the next active observation is reported. */
-  reset: () => void
 }
 
 /**
@@ -33,9 +29,6 @@ export const createBlockSampler = (everyBlocks: bigint): BlockSampler => {
       if (lastAt !== null && block - lastAt < everyBlocks) return false
       lastAt = block
       return true
-    },
-    reset() {
-      lastAt = null
     }
   }
 }

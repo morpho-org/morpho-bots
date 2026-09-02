@@ -62,10 +62,6 @@ type TickCounters = {
  * `warn` marks a reason that should not happen, so the line reads as a live assertion: `no_debt` and
  * `healthy` negate `isLiquidatable`, and a non-reverting zero oracle price is a market anomaly. The
  * other two are ordinary outcomes for a genuinely liquidatable position, so they stay at `info`.
- *
- * Every reason here is a per-position fact, so none belongs at `debug`: that level is for a reason
- * that fires identically across a group of positions (see midnight's `insufficient_headroom`), where
- * one line per position per block buries the signal.
  */
 const LEVEL_BY_REASON: Record<PlanSkipReason, 'info' | 'warn'> = {
   no_debt: 'warn',
@@ -183,8 +179,6 @@ export async function runTick(deps: {
   // 3. Compose liquidatability off-chain → plan → quote → simulate → submit. `inflight` is captured
   //    once; discovery yields distinct (market, borrower) pairs, so no label repeats within a tick.
   const inflight = inflightLabels()
-  // Emitted even when a position aborts the tick (a hashless send after the nonce was claimed throws
-  // by design): without `complete`, partial counters look exactly like an idle tick.
   let complete = false
   try {
     for (const pair of pairs) {
