@@ -13,7 +13,6 @@ import {
   createRunner,
   createSigner,
   DEFAULT_MAX_DATA_BYTES,
-  DEFAULT_MAX_GAS_LIMIT,
   initialFees,
   railwayContext,
   simulateLiquidationExec
@@ -33,7 +32,7 @@ import { getBlockNumber, readContract } from 'viem/actions'
 import type { Market } from './execution/encode-call'
 import type { LiquidationPlan } from './sizing/plan'
 
-import { loadConfig } from './config'
+import { BLOCK_POLL_MS, loadConfig } from './config'
 import { LISTED_MARKETS_MAX_AGE_MS, TOKEN_PRICES_REFRESH_MS } from './constants'
 import {
   createApiCandidateSource,
@@ -70,7 +69,7 @@ async function main() {
       chainId: config.chainId,
       targets: [config.executooorAddress],
       maxFeePerGasWei: config.maxFeeWei,
-      maxGasLimit: DEFAULT_MAX_GAS_LIMIT,
+      maxGasLimit: config.maxGasLimit,
       maxDataBytes: DEFAULT_MAX_DATA_BYTES
     },
     logger
@@ -321,8 +320,9 @@ async function main() {
     getConsumedNonce: signer.consumedNonce,
     maxFeeWei: config.maxFeeWei,
     logger,
-    // Block-denominated, so all four come from the chain's tuning row rather than bot-kit's
-    // Base-shaped defaults — on a 12s chain those would mean 6x their intended wall-clock.
+    // From the chain's tuning row rather than bot-kit's Base-shaped defaults: the block-denominated
+    // three would otherwise mean 6x their intended wall-clock on a 12s chain, and `maxBumpAttempts`
+    // is sized against how fast that chain's basefee climbs.
     settledCooldownBlocks: config.tuning.settledCooldownBlocks,
     stuckBlocks: config.tuning.stuckBlocks,
     maxBumpAttempts: config.tuning.maxBumpAttempts,
@@ -413,7 +413,7 @@ async function main() {
     getBlockNumber: () => getBlockNumber(client),
     tick,
     maintain,
-    intervalMs: config.tuning.blockPollMs,
+    intervalMs: BLOCK_POLL_MS,
     logger,
     revertReason
   })

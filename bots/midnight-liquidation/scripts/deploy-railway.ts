@@ -17,12 +17,13 @@
  *   - RPC_URL_<chainId>                 (required per chain) — reads, simulate, sends
  *   - RPC_URL_FALLBACK_<chainId>        (optional) — the signer's failover transport
  *   - LIQUIDATOR_PRIVATE_KEY_<chainId>  (per chain) OR a shared LIQUIDATOR_PRIVATE_KEY fallback
- *   - ZEROX_API_KEY[_<chainId>] / ONEINCH_API_KEY[_<chainId>] / LIFI_API_KEY[_<chainId>]
- *     (optional; a key ENABLES its venue — LiFi also via ENABLE_LIFI[_<chainId>]=true, keyless)
+ *   - ZEROX_API_KEY_<chainId> / ONEINCH_API_KEY_<chainId> / LIFI_API_KEY_<chainId> /
+ *     ENABLE_LIFI_<chainId>=true (optional; a key ENABLES its venue, LiFi also works keyless).
+ *     These have NO unsuffixed fallback — arming is per chain, deliberately.
  *   - ALLOW_BAD_DEBT_ONLY[_<chainId>]=true — required for a chain with NO venue enabled; the bot
- *     fails loud at startup otherwise.
- *   - MAX_FEE_GWEI[_<chainId>] / PRIORITY_FEE_GWEI[_<chainId>]
- *     (optional) — override the chain's built-in tuning row from src/config.ts.
+ *     fails loud at startup otherwise. Unsuffixed is honored: it only ever narrows a chain.
+ *   - PRIORITY_FEE_GWEI[_<chainId>] / MAX_GAS_LIMIT[_<chainId>] (optional) — override the chain's
+ *     built-in defaults from src/config.ts. MAX_GAS_LIMIT is the bound on spend per transaction.
  *
  *   RAILWAY_PROJECT_ID=… RPC_URL_8453=… RPC_URL_1=… LIQUIDATOR_PRIVATE_KEY=0x… \
  *     pnpm --filter @morpho-org/midnight-liquidation run deploy:railway
@@ -102,13 +103,18 @@ function assertPrivateKey(key: string): void {
   }
 }
 
-function parseServices(raw: string): RailwayService[] {
-  const { data } = tryCatch(() => JSON.parse(raw) as unknown)
+// Throws on an unparseable or unrecognized envelope rather than reporting an empty project. An empty
+// LIST is legitimate (a fresh project); an empty PARSE is not, and callers act on absence — a silent
+// `[]` would skip the cutover teardown and leave a second Base liquidator on the funded key.
+const parseServices = (raw: string): RailwayService[] => {
+  const { data, error } = tryCatch(() => JSON.parse(raw) as unknown)
+  if (error) throw new Error(`Could not parse the service list: ${error.message}`)
   const rows = Array.isArray(data)
     ? data
     : isRecord(data) && Array.isArray(data.services)
       ? data.services
-      : []
+      : undefined
+  if (!rows) throw new Error('Unrecognized `railway service list --json` envelope')
   return rows
     .filter(isRecord)
     .map(row => ({ id: str(row.id), name: str(row.name) || str(row.serviceName) }))
@@ -148,9 +154,14 @@ async function ensureContext(): Promise<void> {
   console.log(`Linked project ${PROJECT_ID} (${ENVIRONMENT}).`)
 }
 
-async function listServices(): Promise<RailwayService[]> {
+// Throws rather than reporting an empty project: callers act on absence (create a service, skip a
+// teardown), so a failed listing that read as "nothing there" would silently do the wrong thing.
+const listServices = async (): Promise<RailwayService[]> => {
   const { data, error } = await tryCatch($`railway service list --json`.then(r => r.stdout))
-  return error || typeof data !== 'string' ? [] : parseServices(data)
+  if (error || typeof data !== 'string') {
+    throw new Error(`Failed to list services: ${error ? stderrOf(error) : 'no CLI output'}`)
+  }
+  return parseServices(data)
 }
 
 async function ensureService(name: string): Promise<void> {
@@ -166,7 +177,7 @@ async function ensureService(name: string): Promise<void> {
 // Delete a service if it exists (used to retire the pre-multichain `bot` service after cutover). A
 // failure is a warning, not fatal — the deploy already succeeded; surface it so an operator removes
 // the stale service manually. `--yes` skips the confirmation prompt (non-TTY safe).
-async function removeService(name: string): Promise<void> {
+const removeService = async (name: string): Promise<void> => {
   if (!(await listServices()).some(service => service.name === name)) return
   console.log(`Removing legacy service ${name}…`)
   const { error } = await tryCatch(
@@ -189,22 +200,34 @@ async function setVar(service: string, kv: string): Promise<void> {
 }
 
 // Keys currently set on a service — used to clear stale secrets without blind deletes. The CLI's JSON
-// includes raw values, so it is parsed in-memory and only key NAMES ever leave here.
-async function listVarKeys(service: string): Promise<Set<string>> {
+// includes raw values, so it is parsed in-memory and only key NAMES ever leave here. Throws for the
+// same reason as `listServices`: an empty set would silently skip every stale-key deletion below.
+const listVarKeys = async (service: string): Promise<Set<string>> => {
   const { data, error } = await tryCatch(
     $`railway variable list -s ${service} -e ${ENVIRONMENT} -p ${PROJECT_ID} --json`.then(
       r => r.stdout
     )
   )
-  if (error || typeof data !== 'string') return new Set()
+  if (error || typeof data !== 'string') {
+    throw new Error(
+      `Failed to list variables on ${service}: ${error ? stderrOf(error) : 'no CLI output'}`
+    )
+  }
   const { data: parsed } = tryCatch(() => JSON.parse(data) as unknown)
-  return isRecord(parsed) ? new Set(Object.keys(parsed)) : new Set()
+  // Arrays satisfy `isRecord`, and `Object.keys` on one yields indices — which would match no
+  // variable name and silently skip every deletion below. Require the keyed object explicitly.
+  if (!isRecord(parsed) || Array.isArray(parsed)) {
+    throw new Error(`Unrecognized variable list for ${service}: expected a KEY=VALUE object`)
+  }
+  return new Set(Object.keys(parsed))
 }
 
 // Delete a variable (used to clear a stale venue secret or tunable). Fatal on failure: a stale key
 // that survives the delete silently keeps its venue enabled, which is exactly the drift this prevents.
-async function deleteVar(service: string, key: string): Promise<void> {
-  const { error } = await tryCatch($`railway variable delete ${key} -s ${service} --skip-deploys`)
+const deleteVar = async (service: string, key: string): Promise<void> => {
+  const { error } = await tryCatch(
+    $`railway variable delete ${key} -s ${service} -e ${ENVIRONMENT} -p ${PROJECT_ID} --skip-deploys`
+  )
   if (error) throw new Error(`Failed to delete ${key} on ${service}: ${stderrOf(error)}`)
   console.log(`Deleted ${key} on ${service} (stale).`)
 }
@@ -281,8 +304,10 @@ const CHAINS: ChainDeploy[] = [
   { chainId: 8453, service: serviceName('bot-8453') },
   { chainId: 1, service: serviceName('bot-1') }
 ]
-// The pre-multichain single-chain service name, retired after `bot-8453` is confirmed healthy.
-const LEGACY_BOT_SERVICE = 'bot'
+// The pre-multichain single-chain service, retired after `bot-8453` is confirmed healthy. Resolved
+// through `serviceName` like every other service, so a staging run retires `staging-bot` and never
+// reaches the production one.
+const LEGACY_BOT_SERVICE = serviceName('bot')
 
 // Deploy-only mode (DEPLOY_ONLY=1|true): re-ship the ALREADY-PROVISIONED services from the checked-out
 // tree and set NOTHING — no secrets, no variables. This is the path CI uses: the per-stage GitHub
@@ -292,6 +317,17 @@ const LEGACY_BOT_SERVICE = 'bot'
 if (/^(1|true)$/i.test(process.env.DEPLOY_ONLY?.trim() ?? '')) {
   await ensureContext()
   const services = CHAINS.map(chain => chain.service)
+  // This mode re-ships only; it holds no secrets and so cannot create a service. Name the missing
+  // ones up front — otherwise the first `railway up` fails with a CLI error that does not say the
+  // service was never provisioned, which is exactly what a renamed service looks like in CI.
+  const existing = new Set((await listServices()).map(service => service.name))
+  const missing = services.filter(service => !existing.has(service))
+  if (missing.length > 0) {
+    throw new Error(
+      `DEPLOY_ONLY cannot create services. Not provisioned in ${ENVIRONMENT}: ${missing.join(', ')}. ` +
+        `Run a full (secret-bearing) deploy of this script against ${ENVIRONMENT} first.`
+    )
+  }
   for (const service of services) await deployService(service)
   const statuses = new Map<string, string>()
   for (const service of services) statuses.set(service, await waitForDeploy(service))
@@ -304,19 +340,22 @@ if (/^(1|true)$/i.test(process.env.DEPLOY_ONLY?.trim() ?? '')) {
 // Read a chainId-suffixed env var (e.g. RPC_URL_8453). Endpoints and keys differ per chain, so the
 // operator-facing names are suffixed; the names set INSIDE each container stay unsuffixed, because
 // each service runs exactly one chain.
-function suffixed(name: string, chainId: number): string | undefined {
-  return process.env[`${name}_${chainId}`]?.trim() || undefined
-}
-function requiredSuffixed(name: string, chainId: number): string {
+const suffixed = (name: string, chainId: number): string | undefined =>
+  process.env[`${name}_${chainId}`]?.trim() || undefined
+
+const requiredSuffixed = (name: string, chainId: number): string => {
   const value = suffixed(name, chainId)
   if (!value) throw new Error(`Missing required env var: ${name}_${chainId}`)
   return value
 }
-// A chainId-suffixed boolean flag with an unsuffixed fallback (e.g. ALLOW_BAD_DEBT_ONLY_1).
-function suffixedFlag(name: string, chainId: number): boolean {
-  const raw = suffixed(name, chainId) ?? process.env[name]?.trim()
-  return /^(1|true)$/i.test(raw ?? '')
-}
+
+// A chainId-suffixed boolean flag (e.g. ALLOW_BAD_DEBT_ONLY_1). `sharedFallback` also accepts the
+// unsuffixed name, which is only safe for a flag that NARROWS what a chain does — an ARMING flag
+// must stay per-chain for the same reason venue keys do, or one unsuffixed value arms every chain.
+const suffixedFlag = (name: string, chainId: number, sharedFallback = false): boolean =>
+  /^(1|true)$/i.test(
+    suffixed(name, chainId) ?? (sharedFallback ? process.env[name]?.trim() : undefined) ?? ''
+  )
 
 // Per-chain secrets/config, read + validated up front so we fail loud before mutating Railway state.
 // The venue posture mirrors the bot's own startup gate: a chain with no enabled venue is refused
@@ -332,12 +371,16 @@ const chainSecrets = CHAINS.map(chain => {
       `Missing required env var: LIQUIDATOR_PRIVATE_KEY_${chain.chainId} (or a shared LIQUIDATOR_PRIVATE_KEY)`
     )
   assertPrivateKey(liquidatorPrivateKey)
-  const zeroxApiKey = suffixed('ZEROX_API_KEY', chain.chainId) ?? process.env.ZEROX_API_KEY?.trim()
-  const oneInchApiKey =
-    suffixed('ONEINCH_API_KEY', chain.chainId) ?? process.env.ONEINCH_API_KEY?.trim()
-  const lifiApiKey = suffixed('LIFI_API_KEY', chain.chainId) ?? process.env.LIFI_API_KEY?.trim()
+  // Venue keys are read ONLY from the suffixed name. An unsuffixed fallback would make a single
+  // ZEROX_API_KEY arm every chain at once, which is the opposite of what per-chain keys are for: a
+  // chain is armed deliberately, or it is not armed. The private key keeps its shared fallback above
+  // because reusing one funded EOA across chains is intended.
+  const zeroxApiKey = suffixed('ZEROX_API_KEY', chain.chainId)
+  const oneInchApiKey = suffixed('ONEINCH_API_KEY', chain.chainId)
+  const lifiApiKey = suffixed('LIFI_API_KEY', chain.chainId)
   const enableLifi = suffixedFlag('ENABLE_LIFI', chain.chainId) || Boolean(lifiApiKey)
-  const allowBadDebtOnly = suffixedFlag('ALLOW_BAD_DEBT_ONLY', chain.chainId)
+  // Narrows a chain to bad-debt-only, so a shared opt-in can never widen what a chain will do.
+  const allowBadDebtOnly = suffixedFlag('ALLOW_BAD_DEBT_ONLY', chain.chainId, true)
   const hasVenue = Boolean(zeroxApiKey || oneInchApiKey || enableLifi)
   if (!hasVenue && !allowBadDebtOnly) {
     throw new Error(
@@ -358,10 +401,10 @@ const chainSecrets = CHAINS.map(chain => {
     lifiApiKey,
     enableLifi,
     allowBadDebtOnly,
-    // Fee and economics knobs default from the chain's tuning row in src/config.ts. Pushed only when
-    // the operator sets them, so an unset var leaves the in-code per-chain default in force.
-    maxFeeGwei: suffixed('MAX_FEE_GWEI', chain.chainId),
+    // Fee and economics knobs default from the chain's row in src/config.ts. Pushed only when the
+    // operator sets them, so an unset var leaves the in-code per-chain default in force.
     priorityFeeGwei: suffixed('PRIORITY_FEE_GWEI', chain.chainId),
+    maxGasLimit: suffixed('MAX_GAS_LIMIT', chain.chainId),
     betterstackHeartbeatUrl: suffixed('BETTERSTACK_HEARTBEAT_URL', chain.chainId)
   }
 })
@@ -409,8 +452,8 @@ for (const chain of chainSecrets) {
   // Fee / economics overrides are plain vars (not secrets) and are synchronized the same way, so
   // dropping one from a run restores the chain's in-code default instead of leaving a stale value.
   const tunables: [string, string | undefined][] = [
-    ['MAX_FEE_GWEI', chain.maxFeeGwei],
-    ['PRIORITY_FEE_GWEI', chain.priorityFeeGwei]
+    ['PRIORITY_FEE_GWEI', chain.priorityFeeGwei],
+    ['MAX_GAS_LIMIT', chain.maxGasLimit]
   ]
   for (const [key, value] of tunables) {
     if (value) await setVar(chain.service, `${key}=${value}`)
@@ -431,12 +474,13 @@ for (const chain of chainSecrets) botStatuses.set(chain.service, await waitForDe
 // the Base liquidator is never left without a running instance. Leaving `bot` up would run a second,
 // stale Base liquidator with the same funded key alongside bot-8453 (nonce contention/double-submits).
 const baseService = CHAINS.find(chain => chain.chainId === 8453)?.service
-if (ENVIRONMENT === 'production' && baseService && botStatuses.get(baseService) === 'SUCCESS') {
+if (baseService && botStatuses.get(baseService) === 'SUCCESS') {
   await removeService(LEGACY_BOT_SERVICE)
-} else if (ENVIRONMENT === 'production') {
+} else {
   console.warn(
-    `Skipping '${LEGACY_BOT_SERVICE}' removal — bot-8453 not confirmed SUCCESS. Remove it manually ` +
-      `once bot-8453 is healthy to avoid a stale second Base liquidator.`
+    `Skipping '${LEGACY_BOT_SERVICE}' removal — ${baseService ?? 'the Base bot'} is not confirmed ` +
+      `SUCCESS. Remove it manually once that service is healthy, to avoid a stale second Base ` +
+      `liquidator on the same funded key.`
   )
 }
 

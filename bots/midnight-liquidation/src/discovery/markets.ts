@@ -8,6 +8,7 @@ import { isAddress, isHex } from 'viem'
 import type { components, paths } from '../generated/midnight-api'
 import type { FetchPage } from './paginate.utils'
 
+import { InvalidConfigError } from '../invalid-config.error'
 import { collectPages } from './paginate.utils'
 
 // Response shapes from `GET /v0/midnight/markets` (the seed script imports these too). The spec types
@@ -50,9 +51,9 @@ const REQUEST_TIMEOUT_MS = 5_000
 
 /**
  * Page size requested from the markets endpoint. Sent explicitly rather than relying on the server's
- * default, which is not ours to control and has already drifted once (the generated spec documents
- * "max 20, default 10" while the live API returns 100). The walk follows the cursor either way — this
- * only trades round-trips.
+ * default, which is not ours to control and which the generated spec does not document at all (it
+ * says only "Maximum number of items to return"). Verified accepted by the live endpoint. The walk
+ * follows the cursor either way — this only trades round-trips.
  */
 const PAGE_LIMIT = 100
 
@@ -102,7 +103,10 @@ export function createListedMarketFilter(deps: {
   let listed = new Set<string>()
   let updatedAt: number | null = null
 
-  const fetchPage: FetchPage = async cursor => {
+  // Rows are branded to {@link ApiMarket} here, at the parse boundary, rather than after the walk:
+  // this is where the response shape is actually known. `refresh` still validates every field it
+  // consumes (`isHex` / `isAddress`) before trusting it.
+  const fetchPage: FetchPage<ApiMarket> = async cursor => {
     const body = await fetchWithRetry(
       () =>
         client.GET(PATH, {
@@ -115,15 +119,15 @@ export function createListedMarketFilter(deps: {
     )
     const nextCursor =
       typeof body.cursor === 'string' && body.cursor.length > 0 ? body.cursor : null
-    return { cursor: nextCursor, data: Array.isArray(body.data) ? body.data : [] }
+    return { cursor: nextCursor, data: Array.isArray(body.data) ? (body.data as ApiMarket[]) : [] }
   }
 
-  const fetchListed = async (): Promise<ApiMarket[]> =>
-    (await collectPages(fetchPage, {
+  const fetchListed = () =>
+    collectPages(fetchPage, {
       logger: deps.logger,
       maxPages: MAX_MARKET_PAGES,
       event: 'markets.max_pages'
-    })) as ApiMarket[]
+    })
 
   async function refresh(): Promise<void> {
     const rows = await fetchListed()
@@ -223,7 +227,9 @@ export function createUnionListedMarketFilter(deps: {
   now?: () => number
 }): UnionListedMarketFilter {
   if (deps.filters.length === 0) {
-    throw new Error('createUnionListedMarketFilter requires at least one markets source')
+    throw new InvalidConfigError(
+      'createUnionListedMarketFilter requires at least one markets source'
+    )
   }
   const now = deps.now ?? (() => Date.now())
   const ageOf = (filter: ListedMarketFilter) => {

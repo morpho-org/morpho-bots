@@ -485,11 +485,13 @@ export function createPendingQueue({
         const receipt = await getReceipt(entry.txHash)
         if (receipt) {
           // One-block receipt finality: a receipt is treated as terminal (confirm or revert) the
-          // moment it appears — accepted for the L2s these bots target (Base, Robinhood /
-          // Arbitrum-Orbit), which do not reorg confirmed transactions in practice. If a receipt
-          // were ever orphaned, the consequence is benign: the position simply reappears in the
-          // next discovery pass and is re-liquidated — never a queue entry stuck waiting on a
-          // vanished tx.
+          // moment it appears. Free on the L2s most of these bots target (Base, Robinhood /
+          // Arbitrum-Orbit), which do not reorg confirmed transactions in practice; Ethereum
+          // mainnet does, so there a `tx.confirmed` may name a tx that a short reorg orphans.
+          // The consequence stays bounded: the position reappears in a later discovery pass and is
+          // re-liquidated — never a queue entry stuck waiting on a vanished tx — but the re-plan
+          // can broadcast a second tx while the first is still pending, and whichever lands second
+          // reverts on-chain at the cost of its gas.
           settle(entry, blockNumber)
           if (receipt.status === 'success') {
             logger.info('tx.confirmed', {

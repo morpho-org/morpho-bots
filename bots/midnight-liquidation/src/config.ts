@@ -36,10 +36,9 @@ const MAINNET_BLOCK_TIME_MS = 12_000
  * Block counts are expressed this way rather than as per-chain literals so the INTENT is the source
  * of truth: `blocksFor(8_000, …)` reads as "bump a stuck tx after ~8s" on every chain, whereas a bare
  * `4n` beside a `1n` is unauditable. Base's row reproduces the previous hard-coded values exactly by
- * construction — see the parity test in `test/config.test.ts`.
+ * construction, which `SHIPPED_ROWS` in `test/config.test.ts` asserts.
  */
-const blocksFor = (ms: number, blockTimeMs: number): bigint =>
-  BigInt(Math.max(1, Math.round(ms / blockTimeMs)))
+const blocksFor = (ms: number, blockTimeMs: number) => Math.max(1, Math.round(ms / blockTimeMs))
 
 /**
  * Wall-clock intent behind each block-denominated tunable, shared by every chain. Changing one of
@@ -54,13 +53,25 @@ const BACKOFF_BASE_MS = 4_000
 const BACKOFF_MAX_MS = 128_000
 
 /**
- * Per-chain calibration for every tunable whose correct value depends on the chain's block time or
- * fee market. Each field is that chain's DEFAULT — the matching env var still overrides it (see
- * `loadConfig`), so a deployment retunes without a code change.
+ * Block-watcher poll interval, in milliseconds. Chain-INDEPENDENT, so it is not part of
+ * {@link TuningConfig}: polling faster than the chain produces blocks is harmless, and the cost of an
+ * extra `eth_blockNumber` is far below the cost of learning about a liquidatable position a block
+ * late. Passed explicitly by `index.ts` so a change to bot-kit's own default cannot silently retime
+ * this bot; `test/config.test.ts` asserts the two still agree.
+ */
+export const BLOCK_POLL_MS = 2_000
+
+/**
+ * Chain-specific values threaded straight into the `@repo/bot-kit` runner, queue, and balance
+ * monitor (see `index.ts`). NONE of these has an env var — a deployment retunes them by editing the
+ * chain's row.
  *
- * Block-denominated fields are counts of BLOCKS, so their wall-clock meaning scales with block time;
- * they are derived via {@link blocksFor} rather than written per-chain. The remaining fields do NOT
- * scale with block time and each carry their own justification below.
+ * Block-denominated fields are counts of BLOCKS derived from a shared wall-clock intent via
+ * {@link blocksFor}, so one behaviour keeps roughly one timing on a ~2s and a ~12s chain. Only
+ * roughly: the count is rounded and floored at one block, and the queue compares it strictly
+ * (`elapsed > stuckBlocks`), so mainnet's `stuckBlocks: 1n` first bumps after two blocks (~24s)
+ * against an 8s intent. That is later than intended but not premature — the tx has had two blocks
+ * to be included.
  */
 export type TuningConfig = {
   /** Blocks a settled position stays suppressed before it may be re-attempted. */
@@ -71,84 +82,95 @@ export type TuningConfig = {
   reconcileEveryBlocks: number
   /** Blocks between EOA gas-balance metric emissions. */
   balanceEveryBlocks: bigint
-  /** First step of the per-position failure backoff, in blocks. */
-  backoffBaseBlocks: bigint
-  /** Ceiling of the per-position failure backoff, in blocks. */
-  backoffMaxBlocks: bigint
-  /** Block-watcher poll interval, in MILLISECONDS (not blocks). */
-  blockPollMs: number
   /**
    * Fee-bump attempts before a stuck tx is dropped. Does not scale with block time — it is sized
-   * against how fast the chain's basefee can climb (EIP-1559 allows +12.5% per block).
+   * against how fast the chain's basefee can climb (EIP-1559 allows +12.5% per block). Reachable
+   * only while the bumped `maxFeePerGas` stays under `MAX_FEE_GWEI`, which is what the ladder test
+   * in `test/config.test.ts` pins.
    */
   maxBumpAttempts: number
-  /** First-send tip, as a DECIMAL GWEI STRING (parsed and validated exactly like the env var). */
-  priorityFeeGwei: string
-  /** Fee ceiling, as a DECIMAL GWEI STRING. Also bounds the signing policy — see `index.ts`. */
-  maxFeeGwei: string
-  /** Headroom (bps) shaved off the on-chain repay cap when sizing a cap-binding seize. */
-  seizeCapMarginBps: number
 }
 
-/** Per-chain deployment address plus that chain's {@link TuningConfig}. */
-export type ChainConfig = { chain: Chain; midnight: Address; tuning: TuningConfig }
+/**
+ * This chain's DEFAULTS for the knobs an operator overrides from the environment. Resolved inside
+ * `loadConfig` and deliberately NOT re-exposed on {@link Config}: a resolved value is only ever read
+ * from the field that holds it (`maxGasLimit`, `priorityFeeWei`, `quoting.*`), so there is no
+ * pre-override copy to read by mistake.
+ */
+type ChainDefaults = {
+  /** `PRIORITY_FEE_GWEI` — first-send tip, as a decimal gwei string. */
+  priorityFeeGwei: string
+  /** `MAX_GAS_LIMIT` — ceiling on a signed tx's gas limit; this bot's bound on spend per tx. */
+  maxGasLimit: bigint
+  /** `SEIZE_CAP_MARGIN_BPS` — headroom shaved off the on-chain repay cap when sizing a seize. */
+  seizeCapMarginBps: number
+  /** `BACKOFF_BASE_BLOCKS` — first step of the per-position failure backoff. */
+  backoffBaseBlocks: bigint
+  /** `BACKOFF_MAX_BLOCKS` — ceiling of the per-position failure backoff. */
+  backoffMaxBlocks: bigint
+}
 
-const tuningFor = (
+/** Per-chain deployment address, runtime {@link TuningConfig}, and env-overridable defaults. */
+export type ChainConfig = {
+  chain: Chain
+  midnight: Address
+  tuning: TuningConfig
+  defaults: ChainDefaults
+}
+
+const tuningFor = (blockTimeMs: number, maxBumpAttempts: number): TuningConfig => ({
+  settledCooldownBlocks: BigInt(blocksFor(SETTLED_COOLDOWN_MS, blockTimeMs)),
+  stuckBlocks: BigInt(blocksFor(STUCK_MS, blockTimeMs)),
+  reconcileEveryBlocks: blocksFor(RECONCILE_MS, blockTimeMs),
+  balanceEveryBlocks: BigInt(blocksFor(BALANCE_LOG_MS, blockTimeMs)),
+  maxBumpAttempts
+})
+
+const defaultsFor = (
   blockTimeMs: number,
-  fees: Pick<
-    TuningConfig,
-    'maxBumpAttempts' | 'priorityFeeGwei' | 'maxFeeGwei' | 'seizeCapMarginBps'
-  >
-): TuningConfig => ({
-  settledCooldownBlocks: blocksFor(SETTLED_COOLDOWN_MS, blockTimeMs),
-  stuckBlocks: blocksFor(STUCK_MS, blockTimeMs),
-  reconcileEveryBlocks: Number(blocksFor(RECONCILE_MS, blockTimeMs)),
-  balanceEveryBlocks: blocksFor(BALANCE_LOG_MS, blockTimeMs),
-  backoffBaseBlocks: blocksFor(BACKOFF_BASE_MS, blockTimeMs),
-  backoffMaxBlocks: blocksFor(BACKOFF_MAX_MS, blockTimeMs),
-  // Polling faster than the block time is harmless and keeps head-detection latency low, so this is
-  // deliberately NOT scaled: the cost of an extra `eth_blockNumber` is far below the cost of learning
-  // about a liquidatable position a second late.
-  blockPollMs: 2_000,
-  ...fees
+  rest: Omit<ChainDefaults, 'backoffBaseBlocks' | 'backoffMaxBlocks'>
+): ChainDefaults => ({
+  backoffBaseBlocks: BigInt(blocksFor(BACKOFF_BASE_MS, blockTimeMs)),
+  backoffMaxBlocks: BigInt(blocksFor(BACKOFF_MAX_MS, blockTimeMs)),
+  ...rest
 })
 
 // Chains this bot supports, with the Midnight deployment address and calibration per chain. The chain
-// map is the one place a new chain is wired (add its `chain`, `midnight`, and `tuning` here). The
-// deployment address is genuinely per-chain — mainnet and Base are DIFFERENT addresses — though the
-// deployed bytecode is byte-identical, so the ABI, lens, and sizing math are shared. The deployless
-// lens needs no per-chain deployer (soltag bakes the CREATE2 factory + factoryData into its compiled
-// output), but that factory must exist on-chain; the canonical 0x4e59… is present on both chains.
-// On-chain validation of these addresses (getCode) runs at startup in `index.ts`. loadConfig fails
-// loud for any CHAIN_ID not present here.
+// map is the one place a new chain is wired (add its `chain`, `midnight`, `tuning`, and `defaults`).
+// The deployment address is genuinely per-chain — mainnet and Base are DIFFERENT addresses — though
+// the deployed bytecode is byte-identical, so the ABI, lens, and sizing math are shared. The
+// deployless lens needs no per-chain deployer (soltag bakes the CREATE2 factory + factoryData into
+// its compiled output), but that factory must exist on-chain; the canonical 0x4e59… is present on
+// both chains. On-chain validation of these addresses (getCode) runs at startup in `index.ts`.
+// loadConfig fails loud for any CHAIN_ID not present here.
 const CHAIN_MAP: Record<number, ChainConfig> = {
   [base.id]: {
     chain: base,
     midnight: getAddress('0xAdedD8ab6dE832766Fedf0FaC4992E5C4D3EA18A'),
-    tuning: tuningFor(BASE_BLOCK_TIME_MS, {
-      maxBumpAttempts: 3,
+    tuning: tuningFor(BASE_BLOCK_TIME_MS, 3),
+    defaults: defaultsFor(BASE_BLOCK_TIME_MS, {
       // Clears the in-block p95 tip in ~91% of Base blocks; escalation only adds 1.42x on top.
       priorityFeeGwei: '0.1',
-      // Never binds on Base, whose basefee sits near zero — effectively "no ceiling".
-      maxFeeGwei: '300',
+      maxGasLimit: 15_000_000n,
       seizeCapMarginBps: 30
     })
   },
   [mainnet.id]: {
     chain: mainnet,
     midnight: getAddress('0x471686c42792F93528B000beF54bC10E3aa2045f'),
-    tuning: tuningFor(MAINNET_BLOCK_TIME_MS, {
-      // Base's 3 attempts escalate only 1.125^3 = 1.42x. Mainnet basefee can rise 12.5% per block, so
-      // a 3-step ladder can fall further behind the market on every bump; 6 reaches ~2.03x.
-      maxBumpAttempts: 6,
-      // Mainnet tips are a real market, unlike Base's. Sized ~2x the observed p90 tip so a liquidation
-      // still clears during the volatility that produces liquidations. A tip too low to include is not
-      // merely a missed fill: it exhausts the bump ladder, drops the tx, and latches a nonce hole that
-      // stops the bot sending at all. Calibrate DOWN from here with production data.
+    // Mainnet basefee can rise 12.5% per block, so Base's 3-step ladder (1.42x) can fall further
+    // behind the market on every bump; 6 escalates the tip ~2.03x.
+    tuning: tuningFor(MAINNET_BLOCK_TIME_MS, 6),
+    defaults: defaultsFor(MAINNET_BLOCK_TIME_MS, {
+      // Mainnet tips are a real market, unlike Base's. A tip too low to include is not merely a
+      // missed fill: it exhausts the bump ladder, drops the tx, and latches a nonce hole that stops
+      // the bot sending at all. Sized against a p90 tip of ~2 gwei measured over ~1k blocks (basefee
+      // ~0.2 gwei at the time); revisit against production inclusion data.
       priorityFeeGwei: '2',
-      // Bounds spend per transaction (maxFee x the signing policy's gas ceiling) while still sitting
-      // three orders of magnitude above the basefee this was calibrated against.
-      maxFeeGwei: '50',
+      // THE bound on spend per transaction. Gas is the predictable half of `gas x fee`, so it is the
+      // half worth capping: a liquidation exec sits well under this, while MAX_FEE_GWEI has to stay
+      // wide enough for the bump ladder to survive a congested basefee (see `maxBumpAttempts`).
+      maxGasLimit: 3_000_000n,
       // One-block oracle-drift headroom, and a mainnet block is ~6x the drift window of a Base one.
       seizeCapMarginBps: 60
     })
@@ -159,6 +181,16 @@ const CHAIN_MAP: Record<number, ChainConfig> = {
 // Env table
 // ---------------------------------------------------------------------------
 const LOG_LEVELS = ['debug', 'info', 'warn', 'error'] as const
+// The fee ceiling is deliberately NOT per-chain. It is not a spend bound — `MAX_GAS_LIMIT` is — but
+// the headroom the bump ladder escalates into: `bumpFees` DROPS a tx once the bumped maxFeePerGas
+// would exceed it, and a drop latches a nonce hole that stops the bot sending at all.
+//
+// It does not make the ladder unconditional. A full ladder needs
+// `1.125^maxBumpAttempts * (2*basefee + tip) <= maxFee`, so at 300 gwei mainnet's 6 attempts survive
+// a basefee up to ~73 gwei and Base's 3 survive far beyond anything that chain produces. Above that
+// the ladder truncates rather than the send failing outright. `test/config.test.ts` pins the exact
+// depth each row gets at a congested basefee, so a retune of either fee knob has to restate it.
+const DEFAULT_MAX_FEE_GWEI = '300'
 const PRIVATE_KEY_HEX_LENGTH = 66 // '0x' + 32 bytes
 
 // Borrower-candidate discovery defaults (the markets liquidation-candidates endpoint). The URL is a
@@ -304,12 +336,10 @@ export type Config = {
   chainId: number
   chain: Chain
   midnight: Address
-  /**
-   * This chain's block-time / fee-market calibration. The fields the env can override are already
-   * resolved into `quoting`, `maxFeeWei`, and `priorityFeeWei`; what remains here are the values
-   * `index.ts` threads straight into the bot-kit runner, queue, and balance monitor.
-   */
+  /** Chain-specific runtime values threaded into the bot-kit runner, queue, and balance monitor. */
   tuning: TuningConfig
+  /** Ceiling on a signed tx's gas limit — the signing policy's bound on spend per transaction. */
+  maxGasLimit: bigint
   rpcUrl: string
   rpcUrlFallback: string | undefined
   liquidatorPrivateKey: Hex
@@ -491,9 +521,9 @@ export function loadConfig(
       `Unsupported CHAIN_ID ${chainId}; supported chain ids: ${supported}`
     )
   }
-  // This chain's defaults for every block-time- and fee-market-dependent tunable. Each is passed in
-  // the `def` position of the env parsers below, so an explicitly-set env var always wins.
-  const { tuning } = chainConfig
+  // `tuning` is threaded to bot-kit as-is; `defaults` only ever appears in the `def` position of the
+  // env parsers below, so an explicitly-set env var always wins.
+  const { tuning, defaults } = chainConfig
 
   const rpcUrl = required(env, 'RPC_URL')
 
@@ -524,14 +554,14 @@ export function loadConfig(
     )
   }
 
-  // The per-chain defaults are decimal gwei STRINGS, substituted only in the `||` fallback position so
-  // the validation below is identical whether the value came from env or from the chain map.
-  const maxFeeGwei = env.MAX_FEE_GWEI?.trim() || tuning.maxFeeGwei
+  // Decimal gwei STRINGS, substituted only in the `||` fallback position so the validation below is
+  // identical whether the value came from env or from a default.
+  const maxFeeGwei = env.MAX_FEE_GWEI?.trim() || DEFAULT_MAX_FEE_GWEI
   if (!/^\d+(\.\d+)?$/.test(maxFeeGwei) || Number(maxFeeGwei) <= 0) {
     throw new InvalidConfigError(`MAX_FEE_GWEI must be a positive number, got: ${env.MAX_FEE_GWEI}`)
   }
 
-  const priorityFeeGwei = env.PRIORITY_FEE_GWEI?.trim() || tuning.priorityFeeGwei
+  const priorityFeeGwei = env.PRIORITY_FEE_GWEI?.trim() || defaults.priorityFeeGwei
   if (!/^\d+(\.\d+)?$/.test(priorityFeeGwei) || Number(priorityFeeGwei) <= 0) {
     throw new InvalidConfigError(
       `PRIORITY_FEE_GWEI must be a positive number, got: ${env.PRIORITY_FEE_GWEI}`
@@ -547,10 +577,10 @@ export function loadConfig(
   if (!hasBumpHeadroom(priorityFeeWei, maxFeeWei)) {
     // Name each side's SOURCE: the pair is resolved from two independent fallbacks, so an operator who
     // set only one of them would otherwise see an error quoting a value they never configured.
-    const source = (envValue: string | undefined) =>
-      envValue?.trim() ? 'env' : `chain ${chainId} default`
+    const source = (envValue: string | undefined, fallback: string) =>
+      envValue?.trim() ? 'env' : fallback
     throw new InvalidConfigError(
-      `PRIORITY_FEE_GWEI (${priorityFeeGwei}, from ${source(env.PRIORITY_FEE_GWEI)}) leaves no room to bump under MAX_FEE_GWEI (${maxFeeGwei}, from ${source(env.MAX_FEE_GWEI)})`
+      `PRIORITY_FEE_GWEI (${priorityFeeGwei}, from ${source(env.PRIORITY_FEE_GWEI, `chain ${chainId} default`)}) leaves no room to bump under MAX_FEE_GWEI (${maxFeeGwei}, from ${source(env.MAX_FEE_GWEI, 'built-in default')})`
     )
   }
 
@@ -620,7 +650,7 @@ export function loadConfig(
       min: 0,
       max: 10_000
     }),
-    seizeCapMarginBps: intEnv(env, 'SEIZE_CAP_MARGIN_BPS', tuning.seizeCapMarginBps, {
+    seizeCapMarginBps: intEnv(env, 'SEIZE_CAP_MARGIN_BPS', defaults.seizeCapMarginBps, {
       min: 0,
       max: 10_000
     }),
@@ -632,8 +662,8 @@ export function loadConfig(
       min: 0,
       max: 10_000
     }),
-    backoffBaseBlocks: bigintEnv(env, 'BACKOFF_BASE_BLOCKS', tuning.backoffBaseBlocks),
-    backoffMaxBlocks: bigintEnv(env, 'BACKOFF_MAX_BLOCKS', tuning.backoffMaxBlocks)
+    backoffBaseBlocks: bigintEnv(env, 'BACKOFF_BASE_BLOCKS', defaults.backoffBaseBlocks),
+    backoffMaxBlocks: bigintEnv(env, 'BACKOFF_MAX_BLOCKS', defaults.backoffMaxBlocks)
   }
 
   // Borrower-candidate discovery endpoint. Default to the public markets API; fail loud at startup on
@@ -652,6 +682,7 @@ export function loadConfig(
     chain: chainConfig.chain,
     midnight: chainConfig.midnight,
     tuning,
+    maxGasLimit: bigintEnv(env, 'MAX_GAS_LIMIT', defaults.maxGasLimit),
     rpcUrl,
     rpcUrlFallback: env.RPC_URL_FALLBACK?.trim() || undefined,
     liquidatorPrivateKey,
