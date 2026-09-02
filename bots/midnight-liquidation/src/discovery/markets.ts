@@ -1,15 +1,14 @@
 import type { Logger } from '@repo/bot-kit'
+import type { FetchPage } from '@repo/utils'
 import type { Address, Hex } from 'viem'
 
-import { delay, fetchWithRetry, tryCatch } from '@repo/utils'
+import { collectPages, delay, fetchWithRetry, tryCatch } from '@repo/utils'
 import createClient from 'openapi-fetch'
 import { isAddress, isHex } from 'viem'
 
 import type { components, paths } from '../generated/midnight-api'
-import type { FetchPage } from './paginate.utils'
 
 import { InvalidConfigError } from '../invalid-config.error'
-import { collectPages } from './paginate.utils'
 
 // Response shapes from `GET /v0/midnight/markets` (the seed script imports these too). The spec types
 // ids/addresses as plain strings; we brand the fields the codebase consumes as viem `Hex`/`Address`
@@ -122,12 +121,13 @@ export function createListedMarketFilter(deps: {
     return { cursor: nextCursor, data: Array.isArray(body.data) ? (body.data as ApiMarket[]) : [] }
   }
 
-  const fetchListed = () =>
-    collectPages(fetchPage, {
-      logger: deps.logger,
-      maxPages: MAX_MARKET_PAGES,
-      event: 'markets.max_pages'
-    })
+  const fetchListed = async (): Promise<ApiMarket[]> => {
+    const { rows, pages, truncated } = await collectPages(fetchPage, { maxPages: MAX_MARKET_PAGES })
+    if (truncated) {
+      deps.logger.warn('markets.max_pages', { pages, cap: MAX_MARKET_PAGES, rows: rows.length })
+    }
+    return rows
+  }
 
   async function refresh(): Promise<void> {
     const rows = await fetchListed()

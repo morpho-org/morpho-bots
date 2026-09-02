@@ -1,6 +1,7 @@
 import { describe, expect, test, vi } from 'vitest'
 
 import { MorphoApiService } from '../../../src/infrastructure/morpho-api/service'
+import { TruncatedMarketListError } from '../../../src/infrastructure/morpho-api/truncated-market-list.error'
 import { MorphoApiError } from '../../../src/infrastructure/openapi/error'
 import { MARKET_ID, OTHER_MARKET_ID } from '../../fixtures/offers'
 
@@ -55,6 +56,22 @@ describe('MorphoApiService', () => {
 
     expect(markets).toEqual([{ marketId: MARKET_ID }, { marketId: OTHER_MARKET_ID }])
     expect(GET).toHaveBeenCalledTimes(2)
+  })
+
+  // An endpoint that never returns a null cursor would otherwise loop forever. Failing is deliberate:
+  // resolving crossed books against a silently partial market list would skip real crossings.
+  test('fails rather than returning a partial market list on a runaway cursor', async () => {
+    const GET = vi.fn(async () => ({
+      data: { cursor: 'next', data: [{ market_id: MARKET_ID }] },
+      response: response({})
+    }))
+    const service = new MorphoApiService({ GET } as never, 8453)
+
+    const error = await service.listListedActiveMarkets().catch((caught: unknown) => caught)
+
+    expect(error).toBeInstanceOf(MorphoApiError)
+    expect((error as MorphoApiError).cause).toBeInstanceOf(TruncatedMarketListError)
+    expect(GET).toHaveBeenCalledTimes(50)
   })
 
   test('wraps a non-success response in MorphoApiError', async () => {

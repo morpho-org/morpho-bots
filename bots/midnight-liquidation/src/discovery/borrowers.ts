@@ -1,14 +1,12 @@
 import type { Logger } from '@repo/bot-kit'
+import type { CursorPage, FetchPage } from '@repo/utils'
 import type { Address, Hex } from 'viem'
 
-import { delay, fetchWithRetry } from '@repo/utils'
+import { collectPages, delay, fetchWithRetry } from '@repo/utils'
 import createClient from 'openapi-fetch'
 import { getAddress, isAddress, isHex } from 'viem'
 
 import type { paths } from '../generated/markets-api'
-import type { CursorPage, FetchPage } from './paginate.utils'
-
-import { collectPages } from './paginate.utils'
 
 /** A candidate position to evaluate: a (market, borrower) pair the API flagged as at-risk. */
 export type BorrowerCandidate = { marketId: Hex; borrower: Address }
@@ -82,11 +80,11 @@ export async function discoverBorrowers(
   fetchPage: FetchCandidatePage,
   deps: { logger: Logger; maxPages?: number }
 ): Promise<BorrowerCandidate[]> {
-  const rows = await collectPages(fetchPage, {
-    logger: deps.logger,
-    maxPages: deps.maxPages ?? MAX_DISCOVERY_PAGES,
-    event: 'discover.max_pages'
-  })
+  const maxPages = deps.maxPages ?? MAX_DISCOVERY_PAGES
+  const { rows, pages, truncated } = await collectPages(fetchPage, { maxPages })
+  if (truncated) {
+    deps.logger.warn('discover.max_pages', { pages, cap: maxPages, rows: rows.length })
+  }
 
   const seen = new Set<string>()
   const candidates: BorrowerCandidate[] = []
