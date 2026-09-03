@@ -46,7 +46,7 @@ describe('ViemResolverTransport', () => {
     const transport = new ViemResolverTransport(client, ADDRESS, ADDRESS)
 
     await expect(
-      transport.submit({ marketId: MARKET_ID, data: '0x1234', profit: 42n }, 10n)
+      transport.submit({ marketId: MARKET_ID, data: '0x1234', profit: 42n })
     ).rejects.toBeInstanceOf(ReadonlyMutationError)
   })
 })

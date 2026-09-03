@@ -365,7 +365,7 @@ async function main() {
           eoa,
           data: encodeExec(market, borrower, plan, swapPlan)
         }),
-      submit: async ({ market, borrower, plan, swapPlan, blockNumber, label }) => {
+      submit: async ({ market, borrower, plan, swapPlan, label }) => {
         const fees = initialFees(await signer.getBaseFee(), config.maxFeeWei, config.priorityFeeWei)
         return queue.submit({
           request: {
@@ -381,8 +381,7 @@ async function main() {
             postMaturityMode: plan.postMaturityMode
           },
           maxFeePerGas: fees.maxFeePerGas,
-          maxPriorityFeePerGas: fees.maxPriorityFeePerGas,
-          blockNumber
+          maxPriorityFeePerGas: fees.maxPriorityFeePerGas
         })
       },
       backoff,

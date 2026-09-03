@@ -616,7 +616,6 @@ export async function runTick(deps: {
     borrower: Address
     plan: LiquidationPlan
     swapPlan: SwapPlan | null
-    blockNumber: bigint
     label: string
   }) => Promise<SubmitOutcome>
   /** Per-position exponential backoff suppressing repeated quote/simulate failures (rate-limit defense). */
@@ -1017,7 +1016,6 @@ export async function runTick(deps: {
           borrower: pair.borrower,
           plan: liquidationPlan,
           swapPlan,
-          blockNumber: chainHead,
           label
         })
         if (outcome.sent) {

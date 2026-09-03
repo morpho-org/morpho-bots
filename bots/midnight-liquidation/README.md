@@ -141,6 +141,12 @@ same behaviour keeps the same timing on a ~2s and a ~12s chain.
 | `reconcileEveryBlocks` / `balanceEveryBlocks` | `3` / `30n`  | `1` / `5n`  | Same, for nonce reconciliation and the gas metric. |
 | `maxBumpAttempts`                             | `3`          | `6`         | Mainnet basefee can climb 12.5% per block.         |
 
+`stuckBlocks` is counted from the block that first _sights_ a broadcast, not from the block the tick
+started on, so the wait before a bump is one block longer than the number itself — on mainnet's `1n`
+that is the difference between one block and two. The baseline is deliberately sourced this way: a
+tick's head is captured before quoting and simulation, and ageing against it once fee-bumped fresh
+transactions within a second of sending them.
+
 **Env-overridable** — the chain's row supplies the default, the env var wins:
 
 | Default                                      | Base (8453)  | Mainnet (1)  | Why it differs                                      |

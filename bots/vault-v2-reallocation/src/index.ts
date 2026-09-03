@@ -143,14 +143,13 @@ async function main() {
       // Byte-for-byte what gets broadcast. A revert here — role revoked, cap exceeded, insufficient
       // idle, market no longer enabled — means do not send; the tick gates on `ok` only.
       simulate: (vault, data) => simulateCall(client, { eoa, to: vault, data }),
-      submit: async ({ vault, data, blockNumber }) => {
+      submit: async ({ vault, data }) => {
         const fees = initialFees(await signer.getBaseFee(), config.maxFeeWei)
         return queue.submit({
           request: { to: vault, data },
           label: vault,
           maxFeePerGas: fees.maxFeePerGas,
-          maxPriorityFeePerGas: fees.maxPriorityFeePerGas,
-          blockNumber
+          maxPriorityFeePerGas: fees.maxPriorityFeePerGas
         })
       },
       dryRun: config.dryRun,

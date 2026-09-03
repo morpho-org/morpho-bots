@@ -20,7 +20,7 @@ export interface OrderBookService {
 
 export interface ResolverService {
   simulate(matches: readonly CrossedMatch[]): Promise<SimulationResult>
-  submit(prepared: PreparedResolution, blockNumber: bigint): Promise<void>
+  submit(prepared: PreparedResolution): Promise<void>
 }
 
 interface BotLogger {
@@ -53,11 +53,10 @@ export class CrossedBooksBotService {
 
   /**
    * Computes the first profitable crossed resolution for one block.
-   * @param blockNumber - Block label used only when queueing a write-mode transaction.
    * @returns Submission status and the number of listed markets inspected.
    * @remarks Always simulates first. Readonly mode logs `match.computed` and performs no submission.
    */
-  async run({ blockNumber }: { blockNumber: bigint }) {
+  async run() {
     const markets = await this.markets.listListedActiveMarkets()
     const inflight = this.inflightMarketIds()
     let computed = false
@@ -95,7 +94,7 @@ export class CrossedBooksBotService {
         continue
       }
 
-      await this.resolver.submit(simulation.prepared, blockNumber)
+      await this.resolver.submit(simulation.prepared)
       this.logger.info('match.submitted', fields)
 
       return { submitted: true, markets: markets.length }

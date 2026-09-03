@@ -73,8 +73,8 @@ describe('ResolverExecutionService', () => {
       profit: 42n
     }
 
-    await service.submit(prepared, 99n)
+    await service.submit(prepared)
 
-    expect(submit).toHaveBeenCalledWith(prepared, 99n)
+    expect(submit).toHaveBeenCalledWith(prepared)
   })
 })

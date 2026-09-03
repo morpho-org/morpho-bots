@@ -29,7 +29,7 @@ export class ResolverExecutionService implements ResolverService {
     }
   }
 
-  submit(prepared: PreparedResolution, blockNumber: bigint) {
-    return this.transport.submit(prepared, blockNumber)
+  submit(prepared: PreparedResolution) {
+    return this.transport.submit(prepared)
   }
 }

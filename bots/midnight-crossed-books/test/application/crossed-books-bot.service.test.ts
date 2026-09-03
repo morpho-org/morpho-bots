@@ -89,7 +89,7 @@ describe('CrossedBooksBotService', () => {
   test('loads listed active markets once per run', async () => {
     const { service, listListedActiveMarkets } = setup()
 
-    await service.run({ blockNumber: 10n })
+    await service.run()
 
     expect(listListedActiveMarkets).toHaveBeenCalledTimes(1)
   })
@@ -99,7 +99,7 @@ describe('CrossedBooksBotService', () => {
       inflight: new Set([MARKET_ID])
     })
 
-    const result = await service.run({ blockNumber: 10n })
+    const result = await service.run()
 
     expect(result).toEqual({ submitted: false, markets: 1 })
     expect(getTakeableBook).not.toHaveBeenCalled()
@@ -109,7 +109,7 @@ describe('CrossedBooksBotService', () => {
   test('does not simulate or submit when books do not cross', async () => {
     const { service, simulate, submit } = setup({ matches: [] })
 
-    await service.run({ blockNumber: 10n })
+    await service.run()
 
     expect(simulate).not.toHaveBeenCalled()
     expect(submit).not.toHaveBeenCalled()
@@ -120,7 +120,7 @@ describe('CrossedBooksBotService', () => {
       simulation: { status: 'revert', reason: 'InsufficientProfit' }
     })
 
-    await service.run({ blockNumber: 10n })
+    await service.run()
 
     expect(submit).not.toHaveBeenCalled()
   })
@@ -128,7 +128,7 @@ describe('CrossedBooksBotService', () => {
   test('simulates every crossed offer in one resolution', async () => {
     const { service, match, simulate } = setup()
 
-    await service.run({ blockNumber: 10n })
+    await service.run()
 
     expect(match).toHaveBeenCalledWith({
       asks: [MATCH.ask],
@@ -141,7 +141,7 @@ describe('CrossedBooksBotService', () => {
   test('uses the configured match cap', async () => {
     const { service, match } = setup({ maxMatches: 3 })
 
-    await service.run({ blockNumber: 10n })
+    await service.run()
 
     expect(match).toHaveBeenCalledWith({
       asks: [MATCH.ask],
@@ -158,9 +158,9 @@ describe('CrossedBooksBotService', () => {
     }
     const { service, submit } = setup({ simulation: { status: 'ok', prepared } })
 
-    const result = await service.run({ blockNumber: 10n })
+    const result = await service.run()
 
-    expect(submit).toHaveBeenCalledWith(prepared, 10n)
+    expect(submit).toHaveBeenCalledWith(prepared)
     expect(result).toEqual({ submitted: true, markets: 1 })
   })
 
@@ -175,7 +175,7 @@ describe('CrossedBooksBotService', () => {
       simulation: { status: 'ok', prepared }
     })
 
-    const result = await service.run({ blockNumber: 10n })
+    const result = await service.run()
 
     expect(submit).not.toHaveBeenCalled()
     expect(logger.info).toHaveBeenCalledWith('match.computed', {
@@ -192,7 +192,7 @@ describe('CrossedBooksBotService', () => {
       markets: [MARKET, OTHER_MARKET]
     })
 
-    const result = await service.run({ blockNumber: 10n })
+    const result = await service.run()
 
     expect(getTakeableBook).toHaveBeenCalledTimes(2)
     expect(simulate).toHaveBeenCalledTimes(2)
@@ -221,7 +221,7 @@ describe('CrossedBooksBotService', () => {
       }
     })
 
-    const result = await service.run({ blockNumber: 10n })
+    const result = await service.run()
 
     expect(calls).toBe(2)
     expect(submit).toHaveBeenCalledTimes(1)
@@ -231,7 +231,7 @@ describe('CrossedBooksBotService', () => {
   test('stops after the first successful submission', async () => {
     const { service, getTakeableBook, submit } = setup({ markets: [MARKET, OTHER_MARKET] })
 
-    await service.run({ blockNumber: 10n })
+    await service.run()
 
     expect(getTakeableBook).toHaveBeenCalledTimes(1)
     expect(submit).toHaveBeenCalledTimes(1)
