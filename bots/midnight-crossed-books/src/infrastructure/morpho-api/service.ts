@@ -35,6 +35,14 @@ export class MorphoApiService implements ListedMarketsService {
     private readonly chainId: 8453
   ) {}
 
+  /**
+   * Every listed, active market on the configured chain, following the cursor across all pages.
+   *
+   * Completeness is the contract: a partial list would silently exclude real crossed books, so a
+   * walk that is still paginating at {@link MAX_MARKET_PAGES} fails instead of returning what it
+   * has. Rejects with a {@link MorphoApiError} — wrapping a {@link TruncatedMarketListError} in that
+   * case, and the transport or non-2xx failure otherwise — so callers see one error type.
+   */
   listListedActiveMarkets(): Promise<ListedMarket[]> {
     return withOpenApiErrorBoundary(MARKETS_ENDPOINT, MorphoApiError, async () => {
       const fetchPage: FetchPage<{ market_id: string }> = async cursor => {

@@ -26,6 +26,16 @@ export type CollectedPages<T> = {
  * null cursor would otherwise loop forever. Reaching it sets `truncated`, which callers are expected
  * to report — this function deliberately does no logging so it can live below the logger in the
  * dependency graph, and because the event name and fields belong to the caller either way.
+ *
+ * `truncated` covers only that backstop, so it is not a general "the walk was incomplete" flag: a
+ * rejecting `fetchPage` rejects this call and discards the rows already collected, rather than
+ * returning them with `truncated` set. Retries and per-request deadlines therefore belong inside
+ * `fetchPage`, which is also the only place any I/O happens — this function is otherwise pure.
+ *
+ * @param fetchPage Called once per page, in order, with the previous page's cursor (`null` first).
+ * @param options.maxPages Hard cap on pages fetched. Must be at least 1; one page is always fetched.
+ * @returns Every row in page order, the page count, and whether the cap stopped the walk early.
+ * @throws Whatever `fetchPage` rejects with, unwrapped and with collected rows discarded.
  */
 export const collectPages = async <T>(
   fetchPage: FetchPage<T>,
