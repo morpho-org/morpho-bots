@@ -105,15 +105,19 @@ The on-chain loan-asset collateral must always cover the worst case of current d
 live and prospective sell:
 
 ```text
-worstCaseDebtUnits = debt + Σ over live and prospective sell groups of
-                            ceil(remainingCapAssets × WAD / tickToPrice(tick))
-
-requiredCollateral = ceil(worstCaseDebtUnits × WAD / lltv) × (1 + collateralBufferBps / 10⁴)
+worstCaseDebtUnits     = debt + Σ over live and prospective sell groups of
+                                mulDivUp(remainingCapAssets, WAD, tickToPrice(tick))
+requiredBaseCollateral = mulDivUp(worstCaseDebtUnits, WAD, lltv)
+requiredCollateral     = mulDivUp(requiredBaseCollateral, 10_000 + collateralBufferBps, 10_000)
 ```
+
+The formula is executable integer math — every step is an explicit `mulDivUp`, so integer division
+can never erase or round down a small buffer.
 
 An asset-capped sell accumulates `sellerAssets` against `maxAssets` (L1566–1572); with tick price
 below 1, the units a remaining cap can mint are strictly greater than its assets, and
-`ceil(remainingCapAssets × WAD / tickToPrice(tick))` bounds them deterministically from the tick.
+`mulDivUp(remainingCapAssets, WAD, tickToPrice(tick))` bounds them deterministically from the
+tick.
 The requirement is **time-invariant** — debt does not accrue and the oracle is constant — so it is
 sized per publication, not monitored. The publish gate: the post-publication requirement must be
 `≤` on-chain collateral, otherwise the sell side shrinks through the existing
@@ -144,7 +148,7 @@ unknown keys rejected, quoted decimal-integer strings, whole-list env replacemen
 
 ```yaml
 debt:
-  maximumDebtAssets: '5000000000' # cap on face debt units, raw loan-token base units, positive
+  maximumDebtUnits: '5000000000' # cap on face debt units, raw loan-token base units, positive
   collateralBufferBps: '50' # safety margin over the exact requirement, >= 10
 ```
 
@@ -173,7 +177,7 @@ group-ownership state — `markets.allowlist` and the operator runbook are the b
 `calculateProductionLadderCapacities` gains a debt component:
 
 ```text
-debtHeadroomUnits       = max(0, min(maximumDebtAssets, collateralSupportedUnits)
+debtHeadroomUnits       = max(0, min(maximumDebtUnits, collateralSupportedUnits)
                                  − debt − liveSellWorstCaseUnits)
 sellSideUnits           = min(credit, creditSaleCapacityUnits) + debtHeadroomUnits
 lowerRateCapacityAssets = floor(sellSideUnits × worstCaseTickPrice / WAD)
@@ -185,7 +189,7 @@ assets — today's harmless approximation, since a reduce-only sell can never mi
 unsafe once sells are non-reduce-only: 100 credit units counted as 100 assets at price 0.9 admit
 roughly 111 units of fills, 100 consuming the credit and about 11 minting debt past a zero
 headroom, without failing the §1 collateral assertion (which deliberately ignores credit) —
-silently exceeding `maximumDebtAssets`.
+silently exceeding `maximumDebtUnits`.
 [`generateLadder`](../../bots/quoter-bot/src/domain/ladder/ladder.ts) is capacity-agnostic (it
 takes `LadderMarketState` scalar capacities) and needs **no change**; only capacity derivation
 changes. After generation, an exact per-rung coverage assertion validates the final tree before
@@ -223,7 +227,7 @@ takes a block number); the eventually consistent offer-groups API is never a cov
 production adapter today mixes a block-pinned position read with unpinned API group views: a sell
 filling between the two undercounts `debt + remaining sell capacity` — the later view has already
 removed the filled capacity while the earlier position predates the resulting debt — and the
-recovered apparent headroom can push published worst case past `maximumDebtAssets`. Residual skew
+recovered apparent headroom can push published worst case past `maximumDebtUnits`. Residual skew
 is bounded, not dangerous: worst case exceeding coverage makes tail fills revert on-chain (L1679)
 rather than realize loss, so incoherent snapshots break the policy cap and offer takeability, never
 solvency — but the pinned-block rule removes the breach entirely.
@@ -235,7 +239,7 @@ solvency — but the pinned-block rule removes the breach entirely.
   matches a pinned constant-oracle artifact **and** a live `price()` read returns exactly `1e36` —
   the same pinning pattern as the existing ratifier bytecode check.
 - Report `lltv`, `liquidationCursor`, the derived `maxLif` (L873–876), and the implied worst-case
-  post-maturity settlement penalty `(maxLif − 1) × maximumDebtAssets`. The market ID
+  post-maturity settlement penalty `(maxLif − 1) × maximumDebtUnits`. The market ID
   content-addresses the entire `Market` struct (`IdLib.toId`, create2/SSTORE2, L286–304), so
   allowlisting the ID immutably accepts all of these — no drift monitoring is needed, but the
   operator sees what they accepted. Mutable per-market state is only `tickSpacing` (refine-only to
@@ -258,7 +262,7 @@ solvency — but the pinned-block rule removes the breach entirely.
 | ----------------------------------- | ------------------------------------------------------- |
 | Desired sells do not fit collateral | Capacity shrink — the normal §1/§3 path, no event drama |
 | Debt + live sells exceed collateral | Breach — sell-side freeze plus a loud event             |
-| Debt exceeds `maximumDebtAssets`    | Breach — same transition; never silent zero headroom    |
+| Debt exceeds `maximumDebtUnits`     | Breach — same transition; never silent zero headroom    |
 
 The second case is external interference — an authorized key withdrew collateral, unexpected
 state. The third can arise without any fault: a cap lowered in configuration below the standing
@@ -346,7 +350,7 @@ operator decision.
   (netting). The README's inventory-movement narrative is extended at implementation time.
 - **Exposure caps:** existing lend-exposure caps are unchanged — they cap buys, and are
   conservative while debt is outstanding, since those buys repay rather than add credit.
-  `maximumDebtAssets` is the sell-side symmetric cap.
+  `maximumDebtUnits` is the sell-side symmetric cap.
 - **Fees:** the continuous fee applies to credit only — `pendingFee` accrues at buy fill
   (L1584–1585), and takes revert when the market fee exceeds the offer's `continuousFeeCap`
   (L1545); debt pays no fee, which is part of why debt is static face value.
@@ -358,7 +362,7 @@ operator decision.
   policy; the debt extension must mirror that model, not bypass it: the `reduceOnly` pin becomes
   per-market conditional, and every debt-capable sell draws from an aggregate reservation —
   proposed trees, live sells, and every still-outstanding signed-but-unpublished sell — checked
-  against independently read debt, collateral, group consumption, and `maximumDebtAssets`, never
+  against independently read debt, collateral, group consumption, and `maximumDebtUnits`, never
   per-intent amounts alone. Phase 3 adds a `supplyCollateral` intent. Middleware mode stays
   fail-closed for these writes until those land.
 
@@ -493,11 +497,13 @@ queries follow the existing README examples.
 
 - **Domain:** coverage math — requirement rounds up and headroom down, units ↔ assets conversion
   at the tick price, the per-book worst case at the group's highest-rate tick, merged same-tick
-  rungs, the buffer floor.
+  rungs, the buffer floor, and explicit tiny-value and `uint128`-boundary vectors proving the
+  `mulDivUp` chain (§1) never rounds a small buffer away and never overflows position-scale
+  values.
 - **Application:** a mode flip forces `replace`; removing the `debt` block with outstanding
   on-chain debt fails readiness (§2); removing the **entire market entry** with outstanding debt
   fails readiness while its groups are still cancelled and its registry entry survives (§2);
-  lowering `maximumDebtAssets` below current debt enters the breach transition (§7); the breach
+  lowering `maximumDebtUnits` below current debt enters the breach transition (§7); the breach
   batch cancellation leaves buy groups live, and an unconfirmed batch stays in breach and retries;
   capacity shrink; config validation (absent block, invalid block, block on an unqualified market).
 - **Fork (Anvil, the existing e2e harness):** `touchMarket` is permissionless (L1958–1996), so the
