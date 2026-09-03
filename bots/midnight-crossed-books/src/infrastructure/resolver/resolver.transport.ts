@@ -16,7 +16,7 @@ export type ResolverSimulation =
 
 export interface ResolverTransport {
   simulate(data: Hex): Promise<ResolverSimulation>
-  submit(prepared: PreparedResolution, blockNumber: bigint): Promise<void>
+  submit(prepared: PreparedResolution): Promise<void>
 }
 
 export class ViemResolverTransport implements ResolverTransport {
@@ -62,19 +62,17 @@ export class ViemResolverTransport implements ResolverTransport {
   /**
    * Queues the immutable request prepared by simulation.
    * @param prepared - Resolver target calldata and market label.
-   * @param blockNumber - Block used to seed queue fee and replacement policy.
    * @returns A promise that resolves once the request is accepted by the queue.
    * @throws `ReadonlyMutationError` when submission dependencies were intentionally omitted.
    */
-  async submit(prepared: PreparedResolution, blockNumber: bigint) {
+  async submit(prepared: PreparedResolution) {
     if (!this.submission) throw new ReadonlyMutationError()
     const fees = initialFees(await this.submission.signer.getBaseFee(), this.submission.maxFeeWei)
 
     await this.submission.queue.submit({
       request: { to: this.resolver, data: prepared.data },
       label: prepared.marketId,
-      ...fees,
-      blockNumber
+      ...fees
     })
   }
 }

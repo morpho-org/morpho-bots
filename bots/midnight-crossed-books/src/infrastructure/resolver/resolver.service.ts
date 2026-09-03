@@ -29,7 +29,14 @@ export class ResolverExecutionService implements ResolverService {
     }
   }
 
-  submit(prepared: PreparedResolution, blockNumber: bigint) {
-    return this.transport.submit(prepared, blockNumber)
+  /**
+   * Hands the simulated resolution to the pending queue for broadcast.
+   * @param prepared - Resolver target calldata and market label, exactly as simulation produced it.
+   * @returns A promise resolving once the queue has accepted (or declined) the request.
+   * @throws `ReadonlyMutationError` when the transport was composed without submission dependencies,
+   * and propagates any signer or queue failure the transport raises.
+   */
+  submit(prepared: PreparedResolution) {
+    return this.transport.submit(prepared)
   }
 }

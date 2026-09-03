@@ -231,7 +231,7 @@ function runWith(opts: {
   /** Shared spy, so a caller can observe the tick's and the queue's events in ONE stream. */
   spy?: ReturnType<typeof spyLogger>
   /** Replaces the stub `submit` — used to broadcast through a real pending queue. */
-  submitWith?: (args: { label: string; blockNumber: bigint }) => Promise<SubmitOutcome>
+  submitWith?: (args: { label: string }) => Promise<SubmitOutcome>
 }) {
   const { logger, events } = opts.spy ?? spyLogger()
   const order: Address[] = []
@@ -1815,13 +1815,12 @@ describe('runTick', () => {
       })
       await runWith({
         spy,
-        submitWith: ({ label, blockNumber }) =>
+        submitWith: ({ label }) =>
           queue.submit({
             request: { to: ROUTER, data: '0x' },
             label,
             maxFeePerGas: 1000n,
-            maxPriorityFeePerGas: 1000n,
-            blockNumber
+            maxPriorityFeePerGas: 1000n
           })
       })
       const planBuilt = spy.events.find(e => e.event === 'plan.built')

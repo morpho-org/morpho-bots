@@ -61,17 +61,17 @@ describe('fork: pending-queue bump + replacement against a real node', () => {
       request: { to: LIQUIDATOR, data: '0x' },
       label: 'queue-fork',
       maxFeePerGas: fees.maxFeePerGas,
-      maxPriorityFeePerGas: fees.maxPriorityFeePerGas,
-      blockNumber: 0n
+      maxPriorityFeePerGas: fees.maxPriorityFeePerGas
     })
     expect(queue.size).toBe(1)
     const original = queue.snapshot()[0]
     if (!original) throw new Error('expected a pending entry')
     expect(original.attempt).toBe(0)
 
-    // 2. Advance past STUCK_BLOCKS (4) without mining → real getReceipt returns null, so onBlock detects
-    //    the stuck tx and replaces it at the same nonce with ≥12.5% higher fees (a fresh hash).
-    for (let block = 1n; block <= 5n; block++) await queue.onBlock(block)
+    // 2. Advance without mining → real getReceipt returns null, so onBlock detects the stuck tx and
+    //    replaces it at the same nonce with ≥12.5% higher fees (a fresh hash). Block 1 only sights
+    //    the entry, so the bump lands at sighting + STUCK_BLOCKS (4) + 1 = block 6.
+    for (let block = 1n; block <= 6n; block++) await queue.onBlock(block)
     const bumped = queue.snapshot()[0]
     if (!bumped) throw new Error('expected the bumped entry to remain pending')
     expect(queue.size).toBe(1)

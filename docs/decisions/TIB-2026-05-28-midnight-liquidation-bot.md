@@ -942,3 +942,26 @@ Alternative 5 ("Persistent queue state across runner restarts", rejected here) i
 required by the one-shot model**: a per-run process with no memory of its pending txs could never
 fee-bump a stuck one. The spirit survives — persisted state is a hint reconciled against chain
 truth, and losing the file degrades to this TIB's restart semantics.
+
+### 2026-09-03 — stuck detection ages from a sighting, and a nonce keeps every hash it broadcast
+
+Two of this TIB's queue specifications are superseded (BOTS-50).
+
+**Stuck detection** was specified as `currentBlock - submittedAtBlock > STUCK_BLOCKS (4)`, with
+`submittedAtBlock` supplied by the caller. Every caller supplied the head captured at tick entry —
+before discovery, quoting and simulation — so a slow tick produced an entry that was already older
+than `STUCK_BLOCKS` the moment it was tracked, and the next block replaced it. In production this
+fee-bumped transactions 176–422ms after broadcast on a 2s-block chain. `submittedAtBlock` is now
+stamped by the first `onBlock` that sights an entry and `blockNumber` is gone from `SubmitArgs`: a
+baseline the queue observed cannot be stale, whereas one it is handed always can. The cost is that a
+bump waits one block longer than `stuckBlocks` alone suggests.
+
+**`Pending` carries `txHashes`, not `txHash`.** This TIB gave each entry one hash and had replacement
+overwrite it. A fee bump cannot un-broadcast what it replaced, so when the original mined and the
+replacement did not, the queue held no hash with a receipt and reported a settled liquidation as
+`tx.dropped / nonce_consumed`. An entry now retains every hash broadcast for its nonce; the receipt
+sweep and the reconciler settle on the first that mined and log it by that hash. `nonce_consumed`
+requires a clean read of every hash finding none — a read failure proves nothing and never retires an
+entry.
+
+The **drift / gap awareness** and **fee bump** specifications above are unchanged.
