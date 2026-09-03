@@ -278,22 +278,40 @@ export function createPendingQueue({
     }
   }
 
-  // Retires an entry the chain settled, naming the hash that mined — which after a fee bump need not
-  // be the latest broadcast. See {@link Pending.txHashes}.
-  const settleMined = (
-    entry: Pending,
-    mined: { txHash: Hex; receipt: TxReceiptLite },
-    blockNumber: bigint
-  ): void => {
+  /**
+   * What {@link settleIfMined} left for its caller to decide. `unreadable` NEVER justifies retiring
+   * an entry — the hash that could not be read is the one that may have mined — so `unmined` is the
+   * only answer that hands the entry back for retirement.
+   */
+  type SettlementCheck =
+    | { kind: 'settled' }
+    | { kind: 'unmined' }
+    | { kind: 'unreadable'; error: unknown }
+
+  // The one place a tracked entry is tested against the chain: every caller that would retire an
+  // entry goes through here first, so none of them can discard a hash unread. A settled entry is
+  // logged by the hash that MINED, which after a fee bump need not be the latest broadcast.
+  //
+  // A receipt is terminal the moment it appears. Free on the L2s most of these bots target (Base,
+  // Robinhood / Arbitrum-Orbit), which do not reorg confirmed transactions in practice; Ethereum
+  // mainnet does, so there a `tx.confirmed` may name a tx a short reorg orphans. The consequence
+  // stays bounded: the position reappears in a later discovery pass and is re-liquidated — never a
+  // queue entry stuck waiting on a vanished tx — but the re-plan can broadcast a second tx while the
+  // first is still pending, and whichever lands second reverts on-chain at the cost of its gas.
+  const settleIfMined = async (entry: Pending, blockNumber: bigint): Promise<SettlementCheck> => {
+    const scan = await scanReceipts(getReceipt, entry.txHashes)
+    if (scan.kind === 'unknown') return { kind: 'unreadable', error: scan.error }
+    if (scan.kind === 'none') return { kind: 'unmined' }
     settle(entry, blockNumber)
     const fields = {
       id: entry.label,
       nonce: entry.nonce,
-      txHash: mined.txHash,
-      blockNumber: mined.receipt.blockNumber
+      txHash: scan.txHash,
+      blockNumber: scan.receipt.blockNumber
     }
-    if (mined.receipt.status === 'success') logger.info('tx.confirmed', fields)
+    if (scan.receipt.status === 'success') logger.info('tx.confirmed', fields)
     else logger.warn('tx.reverted', fields)
+    return { kind: 'settled' }
   }
 
   // The nonce-critical section, always entered under `submitMutex`: the latch checks, the empty-queue
@@ -439,14 +457,11 @@ export function createPendingQueue({
       // futile, so drop it. But the ORIGINAL is a likely reason it is no longer valid: it can mine
       // during the gas estimation this send just did, after the sweep's own scan read it as pending.
       // Retiring on the revert alone would discard the receipt for work that succeeded.
-      const settled = isExecutionRevert(replaced.error)
-        ? await scanReceipts(getReceipt, entry.txHashes)
+      const checked = isExecutionRevert(replaced.error)
+        ? await settleIfMined(entry, blockNumber)
         : null
-      if (settled?.kind === 'mined') {
-        settleMined(entry, settled, blockNumber)
-        return
-      }
-      if (settled?.kind === 'none') {
+      if (checked?.kind === 'settled') return
+      if (checked?.kind === 'unmined') {
         settle(entry, blockNumber)
         latchNonceHole(entry.nonce)
         logger.warn('tx.dropped', {
@@ -466,7 +481,7 @@ export function createPendingQueue({
         nonce: entry.nonce,
         txHash: entry.txHashes[0],
         attempt: entry.attempt,
-        reason: revertReason(settled?.error ?? replaced.error)
+        reason: revertReason(checked?.kind === 'unreadable' ? checked.error : replaced.error)
       })
       return
     }
@@ -501,11 +516,10 @@ export function createPendingQueue({
     // Deleting the current key mid-iteration (via `drop`) is well-defined for a Map.
     for (const entry of pending.values()) {
       if (entry.nonce >= count.data) continue
-      const scan = await scanReceipts(getReceipt, entry.txHashes)
       // A consumed nonce whose receipt is ours is a settlement, not a loss — the sweep can miss it
       // when the receipt lands between the two passes, or when its read failed and this one didn't.
-      if (scan.kind === 'mined') settleMined(entry, scan, blockNumber)
-      else if (scan.kind === 'none') drop(entry.nonce, 'nonce_consumed')
+      const checked = await settleIfMined(entry, blockNumber)
+      if (checked.kind === 'unmined') drop(entry.nonce, 'nonce_consumed')
     }
   }
 
@@ -550,28 +564,17 @@ export function createPendingQueue({
       // Per-entry isolation: one entry's transient read failure (getReceipt/getBaseFee) must not
       // abort the sweep for the rest of the queue. replaceStuck owns its own send-error handling.
       try {
-        const scan = await scanReceipts(getReceipt, entry.txHashes)
-        if (scan.kind === 'unknown') {
+        const checked = await settleIfMined(entry, blockNumber)
+        if (checked.kind === 'settled') continue
+        if (checked.kind === 'unreadable') {
           // Skipping the stuck check is deliberate: replacing a tx whose receipt we could not read
           // may replace one that already mined.
           logger.warn('tx.onblock_error', {
             id: entry.label,
             nonce: entry.nonce,
             txHash: entry.txHashes[0],
-            reason: revertReason(scan.error)
+            reason: revertReason(checked.error)
           })
-          continue
-        }
-        if (scan.kind === 'mined') {
-          // One-block receipt finality: a receipt is treated as terminal (confirm or revert) the
-          // moment it appears. Free on the L2s most of these bots target (Base, Robinhood /
-          // Arbitrum-Orbit), which do not reorg confirmed transactions in practice; Ethereum
-          // mainnet does, so there a `tx.confirmed` may name a tx that a short reorg orphans.
-          // The consequence stays bounded: the position reappears in a later discovery pass and is
-          // re-liquidated — never a queue entry stuck waiting on a vanished tx — but the re-plan
-          // can broadcast a second tx while the first is still pending, and whichever lands second
-          // reverts on-chain at the cost of its gas.
-          settleMined(entry, scan, blockNumber)
           continue
         }
         if (entry.submittedAtBlock === null) {
