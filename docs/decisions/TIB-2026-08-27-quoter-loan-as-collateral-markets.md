@@ -157,6 +157,17 @@ re-enable the block, or unwind first (repay, or let the buy side deleverage) and
 same JSON fields as quoted decimal strings. The cap is per-market only — no strategy-wide total
 (see Non-Goals).
 
+The obligation also survives removal of the **entire market entry**. A market enters a durable
+**debt-market registry** — alongside the existing maker-and-market-bound ownership state — when its
+first debt-capable tree is reserved, and leaves it only when a pinned-block read shows
+`debt == 0`. `cleanupRemovedMarkets` may still cancel and forget a removed market's groups
+(stopping further fills is always safe) but never forgets its registry entry; readiness fails for a
+registry market no longer configured with a `debt` block — the same unwind-first remediation as
+above — and maturity alerting (§9, Observability) keys off the registry, not the configured set, so
+a removed market still alerts. The registry is a durable pointer, not truth: every check re-reads
+the debt it names from chain, and losing the state volume degrades exactly like losing
+group-ownership state — `markets.allowlist` and the operator runbook are the backstop.
+
 ### 3. Capacity integration
 
 `calculateProductionLadderCapacities` gains a debt component:
@@ -236,22 +247,44 @@ solvency — but the pinned-block rule removes the breach entirely.
   one can delay post-maturity settlement.
 - `checkPositionHealth` becomes a real check for debt-enabled markets — the coverage invariant over
   the current position plus live sells, catching a maker returning after downtime. It stays
-  `not-required` otherwise. The same check fails readiness when a configured ladder market carries
-  on-chain debt without a `debt` block (§2), so debt mode cannot be silently disabled around an
-  outstanding position.
+  `not-required` otherwise. The same check fails readiness when any **debt-market registry** entry
+  (§2) — still configured or since removed — shows pinned-block `debt > 0` without a `debt` block,
+  so debt mode cannot be silently disabled, nor the market silently dropped, around an outstanding
+  position. It also reports **over-cap debt** (§7) distinctly from a covered, ordinarily full cap.
 
 ### 7. Runtime posture on coverage breach
 
-| Situation                           | Posture                                                   |
-| ----------------------------------- | --------------------------------------------------------- |
-| Desired sells do not fit collateral | Capacity shrink — the normal §1/§3 path, no event drama   |
-| Debt + live sells exceed collateral | Market-local **sell-side** invalidation plus a loud event |
+| Situation                           | Posture                                                 |
+| ----------------------------------- | ------------------------------------------------------- |
+| Desired sells do not fit collateral | Capacity shrink — the normal §1/§3 path, no event drama |
+| Debt + live sells exceed collateral | Breach — sell-side freeze plus a loud event             |
+| Debt exceeds `maximumDebtAssets`    | Breach — same transition; never silent zero headroom    |
 
 The second case is external interference — an authorized key withdrew collateral, unexpected
-state. Buys **keep quoting** because buy fills repay debt (L1581, L1606) — the only self-repair
-channel. Existing hard-halt semantics are untouched: config/reference/decision failures still
-request a strategy-wide hard halt, and a market-read failure still invalidates market-locally
-while other markets continue
+state. The third can arise without any fault: a cap lowered in configuration below the standing
+debt, or out-of-band authorized activity. §3's headroom saturating at zero must never be its only
+signal — a violated policy would be indistinguishable from an ordinarily full cap — so the
+position-health check reports the over-cap state distinctly (§6) and the market enters the same
+breach transition until debt is back within the cap.
+
+The breach transition is a **dedicated make-port operation**, not a detour through reconciliation
+or the hard-halt path (either of which can cancel more than intended): it resolves the market's
+owned **lower-side** group IDs from persisted publications — sides never share a group in either
+grouping mode — and cancels them in **one** native Midnight `multicall` of
+`setConsumed(group, MAX_OFFER_CAP, maker)` inner calls, the exact batch shape the maker-wide
+`invalidate` recovery command already uses, leaving the higher-side groups untouched. Failure
+semantics: an unconfirmed batch leaves the market in breach state — buy groups retained, the loud
+event emitted, the sell cancellation retried on subsequent cycles; there is no partial per-group
+cancellation loop. The market exits breach only when a fresh pinned-block read shows the invariant
+restored: coverage sufficient and debt at or under the cap.
+
+Buys **keep quoting** through breach because buy fills repay debt (L1581, L1606) — the only
+self-repair channel. For the same reason, a coherent debt-enabled configuration whose position is
+already over cap **starts into breach posture** rather than failing readiness closed: refusing to
+start would sever the deleveraging channel, while the §2 configuration contradiction — outstanding
+debt with no `debt` block — still fails hard. Existing hard-halt semantics are untouched:
+config/reference/decision failures still request a strategy-wide hard halt, and a market-read
+failure still invalidates market-locally while other markets continue
 ([`ladder-quoter.service.ts`](../../bots/quoter-bot/src/application/ladder/ladder-quoter.service.ts)).
 Hard-halting everything on breach was rejected (Alternative 5).
 
@@ -394,7 +427,8 @@ while the on-chain fill-time check (L1679) already prevents harm from uncovered 
 - TIB-2026-07-27's V0/V1 capital gates still apply — posting collateral raises capital at the hot
   maker, and a material increase stays gated on the V1 custody/ratifier controls.
 - Chain truth on restart is preserved: debt, collateral, and consumption are re-read fresh; the
-  only new durable state is the debt-mode flag in persisted publication intents.
+  only new durable state is the debt-mode flag in persisted publication intents and the
+  debt-market registry (§2), both pointers into chain truth rather than authoritative balances.
 - Oracle liveness: if an activated collateral's oracle reverts, `take` (when the seller has debt),
   `withdrawCollateral`, `isHealthy`, and `liquidate` revert (L1320–1327) — and per the `336b924a`
   delta note (L6–13), the deployed revision makes `supplyCollateral` revert on an oracle revert
@@ -461,8 +495,11 @@ queries follow the existing README examples.
   at the tick price, the per-book worst case at the group's highest-rate tick, merged same-tick
   rungs, the buffer floor.
 - **Application:** a mode flip forces `replace`; removing the `debt` block with outstanding
-  on-chain debt fails readiness (§2); capacity shrink; breach produces sell freeze while buys
-  continue; config validation (absent block, invalid block, block on an unqualified market).
+  on-chain debt fails readiness (§2); removing the **entire market entry** with outstanding debt
+  fails readiness while its groups are still cancelled and its registry entry survives (§2);
+  lowering `maximumDebtAssets` below current debt enters the breach transition (§7); the breach
+  batch cancellation leaves buy groups live, and an unconfirmed batch stays in breach and retries;
+  capacity shrink; config validation (absent block, invalid block, block on an unqualified market).
 - **Fork (Anvil, the existing e2e harness):** `touchMarket` is permissionless (L1958–1996), so the
   fork creates a loan-as-collateral market — USDC loan, USDC collateral at `lltv = 1e18` with a
   deployed constant oracle — and covers `supplyCollateral`, a non-reduce-only sell take creating
