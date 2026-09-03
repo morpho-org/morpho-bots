@@ -53,12 +53,15 @@ export class CrossedBooksBotService {
 
   /**
    * Computes the first profitable crossed resolution for one block.
-   * @returns Submission status and the number of listed markets inspected.
+   * @returns Whether a profitable resolution was found and handed to the resolver for attempted
+   * queue submission, and the number of listed markets inspected.
    * @throws Whatever market discovery, book reads, simulation, or submission raise — none are caught
    * here, so the caller's tick is what isolates them.
    * @remarks Always simulates first, and submits at most one resolution per call. Logs
    * `match.not_profitable` / `match.computed` / `match.submitted`. Readonly mode performs no
-   * submission; write mode broadcasts through the pending queue, consuming a nonce.
+   * submission; write mode hands the prepared resolution to the resolver, which submits it through
+   * the pending queue. `match.submitted` records acceptance by the resolver, not an on-chain
+   * broadcast guarantee — the pending queue may still decline the transaction.
    */
   async run() {
     const markets = await this.markets.listListedActiveMarkets()

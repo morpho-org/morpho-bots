@@ -141,6 +141,22 @@ export type PendingQueue = {
    * rewind the cursor past an in-flight send.
    */
   submit(args: SubmitArgs): Promise<SubmitOutcome>
+  /**
+   * Advances the queue by one block. For every pending transaction it scans all tracked hashes for
+   * receipts; if any hash mined, the entry is settled and removed. For entries that have not yet
+   * been sighted, it records the current block as `submittedAtBlock` — this first-sighting block
+   * becomes the baseline for stuck detection. Entries whose first-sighting block is older than
+   * `stuckBlocks` are replaced by `replaceStuck`. After the per-entry pass it reconciles consumed
+   * nonces on cadence, clears any nonce-hole latch if the chain has caught up, prunes settled
+   * cooldowns, and releases the send latch.
+   *
+   * @param blockNumber - The observed chain head. Used to age entries, bound cooldowns, and pass to
+   * `replaceStuck`. This is the queue's own observation of the head, not the value supplied to
+   * `submit`.
+   * @returns Resolves once the sweep and all side effects are complete; never rejects — per-entry
+   * receipt/base-fee read failures are isolated and logged as `tx.onblock_error`, and
+   * `replaceStuck` owns its own send-error handling.
+   */
   onBlock(blockNumber: bigint): Promise<void>
   readonly size: number
   snapshot(): { nonce: number; txHash: Hex; attempt: number }[]
