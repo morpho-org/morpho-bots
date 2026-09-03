@@ -21,17 +21,21 @@ type ReceiptScan =
  * Finds the hash that mined among every hash broadcast for one nonce, newest first.
  *
  * A fee bump replaces a transaction but cannot un-broadcast it, so any hash in the list may be the
- * one the chain kept. A per-hash read failure is recorded and the scan CONTINUES rather than
- * aborting — otherwise a transient error on the newest hash would mask a mined original and the
- * queue would report a successful transaction as dropped.
+ * one the chain kept. A read failure on one hash never decides the scan — otherwise a transient
+ * error on the newest would mask a mined original and report a successful transaction as dropped.
+ *
+ * The reads are issued together: they are independent, the common case (nothing mined) reads all of
+ * them anyway, and this runs in the per-block maintenance pass that the tick waits on.
  */
 export const scanReceipts = async (
   getReceipt: GetReceipt,
   txHashes: readonly Hex[]
 ): Promise<ReceiptScan> => {
+  const reads = await Promise.all(
+    txHashes.map(async txHash => ({ txHash, receipt: await tryCatch(getReceipt(txHash)) }))
+  )
   let failure: { error: unknown } | null = null
-  for (const txHash of txHashes) {
-    const receipt = await tryCatch(getReceipt(txHash))
+  for (const { txHash, receipt } of reads) {
     if (receipt.error) {
       failure ??= { error: receipt.error }
       continue

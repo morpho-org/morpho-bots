@@ -278,6 +278,59 @@ describe('createPendingQueue', () => {
     expect(events.find(e => e.event === 'tx.dropped')?.fields?.reason).toBe('reverts_on_replace')
   })
 
+  it('confirms the original when the replacement reverts because that original mined', async () => {
+    // The revert is the position being gone, and the original is a likely reason it is gone: it can
+    // mine during the replacement's gas estimation, after the sweep read it as pending.
+    const { logger, events } = captureLogger()
+    let calls = 0
+    const send: SendTx = async request => {
+      calls += 1
+      if (calls === 1) return { nonce: request.nonce ?? 7, txHash: hashOf(1), gas: STUB_GAS }
+      // The sweep already read this nonce as pending; the original mines while the replacement is
+      // being estimated, and the estimation is what surfaces the revert.
+      mined = true
+      throw new ExecutionRevertedError({})
+    }
+    let mined = false
+    const { queue } = setup({
+      send,
+      logger,
+      getReceipt: async () => (mined ? { status: 'success', blockNumber: 42n } : null)
+    })
+    await submitSighted(queue, 0n)
+    await queue.onBlock(5n)
+
+    expect(queue.size).toBe(0)
+    expect(events.find(e => e.event === 'tx.confirmed')?.fields?.txHash).toBe(hashOf(1))
+    expect(events.some(e => e.event === 'tx.dropped')).toBe(false)
+  })
+
+  it('keeps a stuck tx whose replacement reverted but whose own receipt could not be read', async () => {
+    const { logger, events } = captureLogger()
+    let calls = 0
+    const send: SendTx = async request => {
+      calls += 1
+      if (calls === 1) return { nonce: request.nonce ?? 7, txHash: hashOf(1), gas: STUB_GAS }
+      readable = false // the RPC goes away between the sweep's scan and the retire decision
+      throw new ExecutionRevertedError({})
+    }
+    let readable = true
+    const { queue } = setup({
+      send,
+      logger,
+      getReceipt: async () => {
+        if (readable) return null
+        throw new Error('rpc down')
+      }
+    })
+    await submitSighted(queue, 0n)
+    await queue.onBlock(5n)
+
+    expect(queue.size).toBe(1) // an unreadable receipt is not grounds to retire the nonce
+    expect(events.some(e => e.event === 'tx.dropped')).toBe(false)
+    expect(events.find(e => e.event === 'tx.replace_failed')?.fields?.attempt).toBe(1)
+  })
+
   it('retries a stuck tx on transient send failures, then drops it at maxBumpAttempts', async () => {
     const { logger, events } = captureLogger()
     let calls = 0

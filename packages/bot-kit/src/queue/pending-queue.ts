@@ -280,11 +280,11 @@ export function createPendingQueue({
 
   // Retires an entry the chain settled, naming the hash that mined — which after a fee bump need not
   // be the latest broadcast. See {@link Pending.txHashes}.
-  function settleMined(
+  const settleMined = (
     entry: Pending,
     mined: { txHash: Hex; receipt: TxReceiptLite },
     blockNumber: bigint
-  ): void {
+  ): void => {
     settle(entry, blockNumber)
     const fields = {
       id: entry.label,
@@ -435,10 +435,18 @@ export function createPendingQueue({
     }
     const replaced = await tryCatch(send({ ...entry.request, ...result.fees, nonce: entry.nonce }))
     if (replaced.error) {
-      // A re-broadcast that reverts means the liquidation is no longer valid (e.g. the position was
-      // cleared while our tx was in flight) — bumping it forever is futile, so drop it. A transient
-      // RPC error instead counts as a spent attempt, so `maxBumpAttempts` still bounds the retries.
-      if (isExecutionRevert(replaced.error)) {
+      // A re-broadcast that reverts means the liquidation is no longer valid — bumping it forever is
+      // futile, so drop it. But the ORIGINAL is a likely reason it is no longer valid: it can mine
+      // during the gas estimation this send just did, after the sweep's own scan read it as pending.
+      // Retiring on the revert alone would discard the receipt for work that succeeded.
+      const settled = isExecutionRevert(replaced.error)
+        ? await scanReceipts(getReceipt, entry.txHashes)
+        : null
+      if (settled?.kind === 'mined') {
+        settleMined(entry, settled, blockNumber)
+        return
+      }
+      if (settled?.kind === 'none') {
         settle(entry, blockNumber)
         latchNonceHole(entry.nonce)
         logger.warn('tx.dropped', {
@@ -448,16 +456,18 @@ export function createPendingQueue({
           reason: 'reverts_on_replace',
           detail: revertReason(replaced.error)
         })
-      } else {
-        entry.attempt += 1
-        logger.warn('tx.replace_failed', {
-          id: entry.label,
-          nonce: entry.nonce,
-          txHash: entry.txHashes[0],
-          attempt: entry.attempt,
-          reason: revertReason(replaced.error)
-        })
+        return
       }
+      // A transient failure — of the send, or of the scan that would have justified retiring the
+      // entry — counts as a spent attempt, so `maxBumpAttempts` still bounds the retries.
+      entry.attempt += 1
+      logger.warn('tx.replace_failed', {
+        id: entry.label,
+        nonce: entry.nonce,
+        txHash: entry.txHashes[0],
+        attempt: entry.attempt,
+        reason: revertReason(settled?.error ?? replaced.error)
+      })
       return
     }
     const oldHash = entry.txHashes[0]
