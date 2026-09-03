@@ -146,10 +146,10 @@ export async function createApplication(
   let nextScanAt = 0
   const runner = createRunner({
     getBlockNumber: () => getBlockNumber(chainClient),
-    tick: async blockNumber => {
+    tick: async () => {
       if (Date.now() < nextScanAt || (queue?.size ?? 0) > 0) return
       nextScanAt = Date.now() + config.scanIntervalMs
-      await bot.run({ blockNumber })
+      await bot.run()
     },
     maintain: async blockNumber => {
       await queue?.onBlock(blockNumber)

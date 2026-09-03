@@ -575,7 +575,7 @@ const capPerPosition = <T extends { label: string; plan: LiquidationPlan }>(
  */
 export async function runTick(deps: {
   discover: () => Promise<BorrowerCandidate[]>
-  /** Chain head the runner just polled — the queue's `submittedAtBlock`. */
+  /** Chain head the runner just polled — the tick-constant height backoff windows are measured in. */
   chainHead: bigint
   /** The Executor singleton — the `liquidate` msg.sender whose gate the lens checks. */
   caller: Address
@@ -616,7 +616,6 @@ export async function runTick(deps: {
     borrower: Address
     plan: LiquidationPlan
     swapPlan: SwapPlan | null
-    blockNumber: bigint
     label: string
   }) => Promise<SubmitOutcome>
   /** Per-position exponential backoff suppressing repeated quote/simulate failures (rate-limit defense). */
@@ -1017,7 +1016,6 @@ export async function runTick(deps: {
           borrower: pair.borrower,
           plan: liquidationPlan,
           swapPlan,
-          blockNumber: chainHead,
           label
         })
         if (outcome.sent) {

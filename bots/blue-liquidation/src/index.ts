@@ -260,8 +260,8 @@ async function main() {
   })
   void heartbeatMonitor.start()
 
-  // An HTTP block-poll watcher drives one tick per new block (coalescing backlog), passing the polled
-  // height as the queue's submittedAtBlock. Each liquidatable position resolves its swap, simulates
+  // An HTTP block-poll watcher drives one tick per new block (coalescing backlog). Each
+  // liquidatable position resolves its swap, simulates
   // the real `exec_606BaXt`, and — on a sim-ok result — broadcasts that same exec via the Executor
   // singleton. Pending-queue upkeep runs in `maintain`.
   const tick = (chainHead: bigint) =>
@@ -276,7 +276,7 @@ async function main() {
           eoa,
           data: encodeExec(market, borrower, plan, swapPlan)
         }),
-      submit: async ({ market, borrower, plan, swapPlan, blockNumber, label }) => {
+      submit: async ({ market, borrower, plan, swapPlan, label }) => {
         const fees = initialFees(await signer.getBaseFee(), config.maxFeeWei)
         return queue.submit({
           request: {
@@ -285,8 +285,7 @@ async function main() {
           },
           label,
           maxFeePerGas: fees.maxFeePerGas,
-          maxPriorityFeePerGas: fees.maxPriorityFeePerGas,
-          blockNumber
+          maxPriorityFeePerGas: fees.maxPriorityFeePerGas
         })
       },
       backoff,

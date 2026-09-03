@@ -20,7 +20,7 @@ export interface OrderBookService {
 
 export interface ResolverService {
   simulate(matches: readonly CrossedMatch[]): Promise<SimulationResult>
-  submit(prepared: PreparedResolution, blockNumber: bigint): Promise<void>
+  submit(prepared: PreparedResolution): Promise<void>
 }
 
 interface BotLogger {
@@ -53,11 +53,17 @@ export class CrossedBooksBotService {
 
   /**
    * Computes the first profitable crossed resolution for one block.
-   * @param blockNumber - Block label used only when queueing a write-mode transaction.
-   * @returns Submission status and the number of listed markets inspected.
-   * @remarks Always simulates first. Readonly mode logs `match.computed` and performs no submission.
+   * @returns Whether a profitable resolution was found and handed to the resolver for attempted
+   * queue submission, and the number of listed markets inspected.
+   * @throws Whatever market discovery, book reads, simulation, or submission raise — none are caught
+   * here, so the caller's tick is what isolates them.
+   * @remarks Always simulates first, and submits at most one resolution per call. Logs
+   * `match.not_profitable` / `match.computed` / `match.submitted`. Readonly mode performs no
+   * submission; write mode hands the prepared resolution to the resolver, which submits it through
+   * the pending queue. `match.submitted` records acceptance by the resolver, not an on-chain
+   * broadcast guarantee — the pending queue may still decline the transaction.
    */
-  async run({ blockNumber }: { blockNumber: bigint }) {
+  async run() {
     const markets = await this.markets.listListedActiveMarkets()
     const inflight = this.inflightMarketIds()
     let computed = false
@@ -95,7 +101,7 @@ export class CrossedBooksBotService {
         continue
       }
 
-      await this.resolver.submit(simulation.prepared, blockNumber)
+      await this.resolver.submit(simulation.prepared)
       this.logger.info('match.submitted', fields)
 
       return { submitted: true, markets: markets.length }

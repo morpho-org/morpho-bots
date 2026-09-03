@@ -1,12 +1,12 @@
 # TIB-2026-07-27: Midnight ladder quoter-bot bot — v0
 
-| Field             | Value                                                                                                                    |
-| ----------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| **Status**        | Proposed                                                                                                                 |
-| **Date**          | 2026-07-27                                                                                                               |
-| **Author**        | @devatom                                                                                                                 |
-| **Scope**         | App: midnight-quoter                                                                                                     |
-| **Superseded by** | TIB-2026-08-14-quoter-cross-book-clearance _(partially)_, TIB-2026-08-25-quoter-bootstrap-maturity-premium _(partially)_ |
+| Field             | Value                                                                                                                                                                                    |
+| ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Status**        | Proposed                                                                                                                                                                                 |
+| **Date**          | 2026-07-27                                                                                                                                                                               |
+| **Author**        | @devatom                                                                                                                                                                                 |
+| **Scope**         | App: midnight-quoter                                                                                                                                                                     |
+| **Superseded by** | TIB-2026-08-14-quoter-cross-book-clearance _(partially)_, TIB-2026-08-25-quoter-bootstrap-maturity-premium _(partially)_, TIB-2026-08-27-quoter-loan-as-collateral-markets _(partially)_ |
 
 ---
 
@@ -25,6 +25,16 @@
 > see
 > [TIB-2026-08-25-quoter-bootstrap-maturity-premium](./TIB-2026-08-25-quoter-bootstrap-maturity-premium.md).
 > Every other decision in this TIB remains in force.
+
+> **Partially superseded (2026-08-27).** For markets that opt into a `debt` configuration block,
+> [TIB-2026-08-27-quoter-loan-as-collateral-markets](./TIB-2026-08-27-quoter-loan-as-collateral-markets.md)
+> replaces three postures — for those markets only. The §7 invariant that the credit-reducing side
+> "cannot create negative credit or unintended debt" and the Security posture "No negative credit"
+> now hold only for markets without a `debt` block; on debt-enabled markets they are replaced by a
+> maturity-safe collateral-coverage invariant. The §3 position-health `not-required` posture is
+> replaced by a real coverage check on debt-enabled markets, as §3 itself anticipated. And the
+> Non-Goal "Automatic position-health management in V0" is lifted for those markets. Everything
+> else remains in force.
 
 ## Context
 
