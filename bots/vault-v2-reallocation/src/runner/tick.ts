@@ -21,7 +21,7 @@ export type TickDeps = {
   encodeReallocation: (vaultData: VaultV2Data, reallocation: Reallocation) => Hex
   simulate: (vault: Address, data: Hex) => Promise<SimulateResult>
   /** Resolves true only when the transaction was actually broadcast. */
-  submit: (params: { vault: Address; data: Hex; blockNumber: bigint }) => Promise<SubmitOutcome>
+  submit: (params: { vault: Address; data: Hex }) => Promise<SubmitOutcome>
   /** When true, a sim-ok plan is logged (`reallocation.dry_run`) instead of submitted. */
   dryRun: boolean
   /** Labels (vault addresses) with an in-flight or cooling-down tx — skipped this tick. */
@@ -116,7 +116,7 @@ const processVault = async (deps: TickDeps, vault: Address): Promise<VaultCounte
     return { ...NO_COUNTS, reallocations_found: 1, dry_runs: 1 }
   }
 
-  const outcome = await deps.submit({ vault, data, blockNumber: deps.chainHead })
+  const outcome = await deps.submit({ vault, data })
   if (!outcome.sent) {
     deps.logger.debug('reallocation.not_broadcast', { vault, reason: outcome.reason })
   }

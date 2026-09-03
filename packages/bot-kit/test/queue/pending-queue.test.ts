@@ -551,8 +551,7 @@ describe('stuck-age baseline', () => {
   it('does not bump on the pass that first sights a broadcast, however stale the head', async () => {
     const { queue, sends } = setup()
     await submitOne(queue)
-    // A caller's block used to set this baseline, so a tick that spent blocks quoting made a fresh
-    // broadcast look stuck and bumped it 300ms after it was sent.
+    // The sighting pass may not bump, however stale the head it runs on.
     await queue.onBlock(1_000n)
     expect(sends).toHaveLength(1)
     expect(queue.snapshot()[0]?.attempt).toBe(0)
@@ -659,8 +658,8 @@ describe('multi-hash settlement', () => {
   })
 
   it('settles a consumed nonce whose earlier hash mined instead of dropping it', async () => {
-    // The reconciler used to look only at the latest hash, so a mined original read as an external
-    // send taking our nonce — the misreport this whole record exists to prevent.
+    // A consumed nonce plus a receipt on one of our hashes is our own settlement, not an external
+    // send claiming the nonce.
     const ctx = setupSwappable({ withReconciler: true })
     await submitSighted(ctx.queue, 0n)
     await ctx.queue.onBlock(5n) // bump; nonce not yet consumed, so nothing is retired

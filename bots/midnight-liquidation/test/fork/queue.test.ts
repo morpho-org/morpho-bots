@@ -68,8 +68,9 @@ describe('fork: pending-queue bump + replacement against a real node', () => {
     if (!original) throw new Error('expected a pending entry')
     expect(original.attempt).toBe(0)
 
-    // 2. Advance past STUCK_BLOCKS (4) without mining → real getReceipt returns null, so onBlock detects
-    //    the stuck tx and replaces it at the same nonce with ≥12.5% higher fees (a fresh hash).
+    // 2. Advance without mining → real getReceipt returns null, so onBlock detects the stuck tx and
+    //    replaces it at the same nonce with ≥12.5% higher fees (a fresh hash). Block 1 only sights
+    //    the entry, so the bump lands at sighting + STUCK_BLOCKS (4) + 1 = block 6.
     for (let block = 1n; block <= 6n; block++) await queue.onBlock(block)
     const bumped = queue.snapshot()[0]
     if (!bumped) throw new Error('expected the bumped entry to remain pending')

@@ -65,7 +65,7 @@ describe('runTick', () => {
   it('submits a sim-ok reallocation and counts it', async () => {
     const { deps, events } = makeDeps({ strategy: vi.fn(() => someReallocation()) })
     await runTick(deps)
-    expect(deps.submit).toHaveBeenCalledWith({ vault: VAULT_A, data: DATA, blockNumber: 100n })
+    expect(deps.submit).toHaveBeenCalledWith({ vault: VAULT_A, data: DATA })
     expect(tickEnd(events)).toMatchObject({ reallocations_found: 1, submitted: 1, errors: 0 })
     expect(events.some(e => e.event === 'reallocation.found')).toBe(true)
   })

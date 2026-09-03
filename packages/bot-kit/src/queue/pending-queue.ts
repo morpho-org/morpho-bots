@@ -102,19 +102,18 @@ type Pending = {
   nonce: number
   /**
    * Every hash broadcast for this nonce, newest first — `[0]` is the live replacement target and the
-   * one the send-side log events name. A fee bump cannot un-broadcast what it replaced, so any hash
-   * here may be the one that mines; retiring the nonce requires {@link scanReceipts} to clear them
-   * all. Non-empty by construction, and bounded by `maxBumpAttempts`.
+   * one the send-side log events name. A fee bump cannot un-broadcast what it replaced, so ANY hash
+   * here may be the one that mines. Non-empty by construction; bounded by `maxBumpAttempts + 1`.
    */
   txHashes: [Hex, ...Hex[]]
   request: TxRequest
   label: string
   /**
-   * Head at which the queue FIRST OBSERVED this broadcast, which is what `stuckBlocks` ages against.
-   * `null` until an `onBlock` sights it: a caller's block is captured before quoting and simulation
-   * and can already be several blocks stale by the time the send resolves, which would make a fresh
-   * transaction look stuck and bump it before it could possibly mine. Sighting can only run late,
-   * never early, so the error is always in the safe direction.
+   * Head at which the queue FIRST OBSERVED this broadcast — what `stuckBlocks` ages against, and
+   * `null` until an `onBlock` sights it. Deliberately not a caller's block: that is captured before
+   * quoting and simulation and can be stale by the time the send resolves, which ages a fresh
+   * transaction into an immediate replacement. A sighting can only run late, never early, so the
+   * error is always toward waiting too long rather than bumping too soon.
    */
   submittedAtBlock: bigint | null
   maxFeePerGas: bigint
@@ -279,8 +278,8 @@ export function createPendingQueue({
     }
   }
 
-  // Retires an entry the chain settled, naming the hash that ACTUALLY mined — which after a fee bump
-  // need not be the latest one broadcast, and is the whole point of tracking every hash per nonce.
+  // Retires an entry the chain settled, naming the hash that mined — which after a fee bump need not
+  // be the latest broadcast. See {@link Pending.txHashes}.
   function settleMined(
     entry: Pending,
     mined: { txHash: Hex; receipt: TxReceiptLite },
@@ -465,8 +464,8 @@ export function createPendingQueue({
     entry.txHashes.unshift(replaced.data.txHash)
     entry.maxFeePerGas = result.fees.maxFeePerGas
     entry.maxPriorityFeePerGas = result.fees.maxPriorityFeePerGas
-    // Re-sighted like a first send: this pass already spent a receipt read per entry and a gas
-    // estimation on the replacement, so the block it started from can itself be stale.
+    // Re-sighted like a first send; see {@link Pending.submittedAtBlock}. This pass already spent a
+    // receipt read per entry and a gas estimation, so its own block can be stale too.
     entry.submittedAtBlock = null
     entry.attempt += 1
     logger.info('tx.bumped', {
@@ -496,7 +495,6 @@ export function createPendingQueue({
       // A consumed nonce whose receipt is ours is a settlement, not a loss — the sweep can miss it
       // when the receipt lands between the two passes, or when its read failed and this one didn't.
       if (scan.kind === 'mined') settleMined(entry, scan, blockNumber)
-      // `unknown` leaves "none of our hashes mined" unproven, so it must never retire the nonce.
       else if (scan.kind === 'none') drop(entry.nonce, 'nonce_consumed')
     }
   }
@@ -544,9 +542,8 @@ export function createPendingQueue({
       try {
         const scan = await scanReceipts(getReceipt, entry.txHashes)
         if (scan.kind === 'unknown') {
-          // Every hash read failed, so this entry's fate is unknown this pass. Skipping the stuck
-          // check is deliberate: bumping on an unreadable receipt would replace a tx that may have
-          // already mined.
+          // Skipping the stuck check is deliberate: replacing a tx whose receipt we could not read
+          // may replace one that already mined.
           logger.warn('tx.onblock_error', {
             id: entry.label,
             nonce: entry.nonce,
@@ -568,7 +565,6 @@ export function createPendingQueue({
           continue
         }
         if (entry.submittedAtBlock === null) {
-          // First sighting: stamp the baseline and give the tx a full stuck window from here.
           entry.submittedAtBlock = blockNumber
           continue
         }
