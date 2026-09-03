@@ -37,29 +37,28 @@ export const pendingLadderBuyReservations = (
 
 /**
  * Combines indexed and persisted cross-strategy buy reservations for ladder sizing.
- * @param parameters - API groups, durable ownership, bootstrap intents, and replaced ladder IDs.
+ * @param parameters - API groups, ladder publications, bootstrap intents, and replaced ladder IDs.
  * @returns One reservation per group, including groups still awaiting API indexing.
- * @remarks Current-market groups being replaced are excluded; all other owned buys remain reserved.
+ * @remarks Every live maker buy group reserves, attributed to this strategy or not: the groups come
+ * from the maker's own book, so each one commits maker cash whether or not durable ownership still
+ * records it. Reserving only attributed groups would let a lost ownership store hide live
+ * commitments and size fresh offers past the configured exposure caps. Ownership still gates
+ * reconciliation, cancellation, and replacement; it must not gate exposure. Current-market groups
+ * being replaced are excluded.
  */
 export const ladderCashReservations = (parameters: {
   groups: readonly BootstrapRawGroup[]
   publications: readonly OwnedLadderPublication[]
-  bootstrapGroupIds: readonly Hex[]
   bootstrapOffers: readonly BootstrapOfferIntent[]
   replacedGroupIds: ReadonlySet<Hex>
   ignoredGroupIds?: ReadonlySet<Hex>
 }): LadderCashReservation[] => {
-  const ladderGroupIds = parameters.publications.flatMap(publication =>
-    publication.groups.map(group => group.groupId)
-  )
-  const owned = new Set([...parameters.bootstrapGroupIds, ...ladderGroupIds])
   const indexedIds = new Set(parameters.groups.map(group => group.id))
   const reservations = new Map<Hex, LadderCashReservation>()
 
   for (const group of parameters.groups) {
     if (
       reservations.has(group.id) ||
-      !owned.has(group.id) ||
       parameters.ignoredGroupIds?.has(group.id) ||
       parameters.replacedGroupIds.has(group.id)
     ) {

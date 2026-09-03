@@ -418,7 +418,6 @@ export const createProductionLadderAdapters = (
       const reservations = ladderCashReservations({
         groups,
         publications,
-        bootstrapGroupIds,
         bootstrapOffers: pendingBootstrapOffers,
         replacedGroupIds,
         ignoredGroupIds: removedGroupTombstones

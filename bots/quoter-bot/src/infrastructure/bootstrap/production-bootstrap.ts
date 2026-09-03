@@ -542,7 +542,7 @@ export const createProductionBootstrapAdapters = (
           validation: { apiUrl: `${config.morphoApiBaseUrl}/v0/midnight` },
           loanToken: config.setup.loanAsset,
           loanAssets: offer.assets,
-          reservedLoanAssets: bootstrapReservedLoanAssets(groups, ownedIds, replacedGroupIds)
+          reservedLoanAssets: bootstrapReservedLoanAssets(groups, replacedGroupIds)
         })
       )
     )

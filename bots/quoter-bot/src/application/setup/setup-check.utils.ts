@@ -239,7 +239,8 @@ export const setupResult = (
  * cannot attribute to itself, `passed` otherwise.
  * @remarks Only markets drive readiness. Group ownership is a local durable record, so a redeploy
  * onto a fresh filesystem orphans the bot's own live groups; halting on that cannot self-heal until
- * every orphan expires, while the ladder derives exposure from live on-chain groups regardless.
+ * every orphan expires. Downgrading to a warning is only safe because reservations count every live
+ * maker buy group rather than only attributed ones — see {@link ladderCashReservations}.
  */
 export const unsafeOffersStatus = (offers: {
   unknownNamespaces: readonly string[]
