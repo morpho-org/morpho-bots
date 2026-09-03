@@ -161,16 +161,28 @@ re-enable the block, or unwind first (repay, or let the buy side deleverage) and
 same JSON fields as quoted decimal strings. The cap is per-market only — no strategy-wide total
 (see Non-Goals).
 
-The obligation also survives removal of the **entire market entry**. A market enters a durable
-**debt-market registry** — alongside the existing maker-and-market-bound ownership state — when its
-first debt-capable tree is reserved, and leaves it only when a pinned-block read shows
-`debt == 0`. `cleanupRemovedMarkets` may still cancel and forget a removed market's groups
-(stopping further fills is always safe) but never forgets its registry entry; readiness fails for a
-registry market no longer configured with a `debt` block — the same unwind-first remediation as
-above — and maturity alerting (§9, Observability) keys off the registry, not the configured set, so
-a removed market still alerts. The registry is a durable pointer, not truth: every check re-reads
-the debt it names from chain, and losing the state volume degrades exactly like losing
-group-ownership state — `markets.allowlist` and the operator runbook are the backstop.
+The obligation also survives removal of the **entire market entry**, through a durable
+**debt-market registry** whose lifecycle is atomic with sell ownership:
+
+- **Creation:** the registry entry is written or refreshed in the **same atomic ownership-state
+  write** that durably reserves any debt-capable publication — before ratification or broadcast,
+  exactly where group reservations already sit in the reserve → broadcast → confirm sequence. A
+  crash between separate writes could otherwise leave a signed or live debt-capable tree with no
+  durable obligation. A reverted or uncertain first publication conservatively leaves the entry in
+  place.
+- **Deletion:** garbage collection requires **both** conditions — (1) no reserved or confirmed
+  debt-capable lower-side group remains, including API-missing reservations, and (2) a
+  pinned-block position read taken **at or after** the confirmed cancellations reports
+  `debt == 0`. A zero-debt read alone can race with a still-live sell that mints debt immediately
+  afterward.
+
+`cleanupRemovedMarkets` may still cancel and forget a removed market's groups (stopping further
+fills is always safe) but never forgets its registry entry; readiness fails for a registry market
+no longer configured with a `debt` block — the same unwind-first remediation as above — and
+maturity alerting (§9, Observability) keys off the registry, not the configured set, so a removed
+market still alerts. The registry is a durable pointer, not truth: every check re-reads the debt it
+names from chain, and losing the state volume degrades exactly like losing group-ownership state —
+`markets.allowlist` and the operator runbook are the backstop.
 
 ### 3. Capacity integration
 
@@ -277,10 +289,19 @@ owned **lower-side** group IDs from persisted publications — sides never share
 grouping mode — and cancels them in **one** native Midnight `multicall` of
 `setConsumed(group, MAX_OFFER_CAP, maker)` inner calls, the exact batch shape the maker-wide
 `invalidate` recovery command already uses, leaving the higher-side groups untouched. Failure
-semantics: an unconfirmed batch leaves the market in breach state — buy groups retained, the loud
-event emitted, the sell cancellation retried on subsequent cycles; there is no partial per-group
-cancellation loop. The market exits breach only when a fresh pinned-block read shows the invariant
-restored: coverage sufficient and debt at or under the cap.
+semantics: an unconfirmed batch leaves the market in breach state — existing buy groups retained,
+the loud event emitted, the sell cancellation retried on subsequent cycles; there is no partial
+per-group cancellation loop.
+
+Breach is a **mode**, not a one-shot: merely retaining the buys that existed at breach entry would
+let the only deleveraging channel evaporate as they fill, expire, or go stale. Every breached cycle
+therefore runs a side-scoped reconciliation path that bypasses normal two-sided reconciliation:
+first the sell-freeze batch (retried until confirmed), then — once sells are confirmed frozen —
+normal generation, recenter, and resize for the **higher side only**, replenishing exhausted or
+stale buys while never publishing a lower-side group. The existing allocator supports this
+directly: breach pins `lowerRateCapacityAssets` to zero, and a zero-capacity side emits no rungs.
+The market exits breach only when a fresh pinned-block read shows the invariant restored — coverage
+sufficient and debt at or under the cap — after which two-sided reconciliation resumes.
 
 Buys **keep quoting** through breach because buy fills repay debt (L1581, L1606) — the only
 self-repair channel. For the same reason, a coherent debt-enabled configuration whose position is
@@ -503,9 +524,16 @@ queries follow the existing README examples.
 - **Application:** a mode flip forces `replace`; removing the `debt` block with outstanding
   on-chain debt fails readiness (§2); removing the **entire market entry** with outstanding debt
   fails readiness while its groups are still cancelled and its registry entry survives (§2);
-  lowering `maximumDebtUnits` below current debt enters the breach transition (§7); the breach
-  batch cancellation leaves buy groups live, and an unconfirmed batch stays in breach and retries;
-  capacity shrink; config validation (absent block, invalid block, block on an unqualified market).
+  registry lifecycle vectors (§2) — the entry is written in the same atomic write as the first
+  debt-capable reservation (a crash between reserve and broadcast still leaves the obligation), a
+  reverted first publication leaves the entry, GC refuses while any reservation (including an
+  API-missing one) remains even at `debt == 0`, and the zero-debt read must be ordered at or after
+  the confirmed cancellations; lowering `maximumDebtUnits` below current debt enters the breach
+  transition (§7); breach-mode vectors (§7) — an unconfirmed sell batch stays in breach, retains
+  existing buys, and retries; once sells are confirmed frozen, filled or stale buys are replenished
+  by higher-side-only reconciliation during a persistent breach, no lower-side group is ever
+  published, and the generic hard-halt path is never invoked from breach; capacity shrink; config
+  validation (absent block, invalid block, block on an unqualified market).
 - **Fork (Anvil, the existing e2e harness):** `touchMarket` is permissionless (L1958–1996), so the
   fork creates a loan-as-collateral market — USDC loan, USDC collateral at `lltv = 1e18` with a
   deployed constant oracle — and covers `supplyCollateral`, a non-reduce-only sell take creating
