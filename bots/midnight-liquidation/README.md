@@ -384,8 +384,8 @@ export RAILWAY_PROJECT_ID=...   # required: the Railway project to deploy to
 export RPC_URL_8453=https://base-mainnet.example
 export RPC_URL_1=https://eth-mainnet.example
 export LIQUIDATOR_PRIVATE_KEY=0x...          # or per-chain LIQUIDATOR_PRIVATE_KEY_<chainId>
-export ZEROX_API_KEY_8453=...                # venue keys are per-chain ONLY — no unsuffixed fallback,
-                                             # so arming one chain never arms the other
+export ZEROX_API_KEY=...                     # one venue credential covers every chain; suffix it
+                                             # (ZEROX_API_KEY_1) only to give a chain its own
 export ALLOW_BAD_DEBT_ONLY_1=true            # every chain needs a venue key or this opt-in, or the
                                              # run is refused before it touches Railway
 # Optional: RAILWAY_ENVIRONMENT (defaults to production), RPC_URL_FALLBACK_<chainId>,
@@ -421,13 +421,20 @@ idles at `markets.listed { markets: 0 }` rather than erroring, and starts workin
 There is no swap config file to upload anymore — venues are enabled by the presence of their API key
 (or `ENABLE_LIFI_<chainId>=true` for keyless LiFi). The deploy script uploads
 `LIFI_API_KEY_<chainId>`, `ZEROX_API_KEY_<chainId>`, and `ONEINCH_API_KEY_<chainId>` when they are
-present in its environment. Every per-chain input is read from the suffixed name **only** — the three
-keys, `ENABLE_LIFI`, `ALLOW_BAD_DEBT_ONLY`, and the `PRIORITY_FEE_GWEI` / `MAX_GAS_LIMIT` overrides —
-so one unsuffixed value can never reach a chain you did not name. `LIQUIDATOR_PRIVATE_KEY` is the sole
-exception, because reusing one funded EOA across chains is intended.
+present in its environment. Every per-chain input takes the `_<chainId>` suffix, and the split is by
+whether the value is genuinely the same on every chain:
 
-`ALLOW_BAD_DEBT_ONLY_<chainId>` arms rather than narrows: with no venue enabled, that chain's service
-refuses to start without it, and runs — spending gas to realize bad debt — with it.
+| Accepts an unsuffixed fallback                                                                                                        | Suffixed-only                                                          |
+| ------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| `ZEROX_API_KEY`, `ONEINCH_API_KEY`, `LIFI_API_KEY`, `ENABLE_LIFI` — one venue credential is honored on every chain the venue supports | `RPC_URL` — per chain by definition                                    |
+| `LIQUIDATOR_PRIVATE_KEY` — reusing one funded EOA across chains is intended                                                           | `PRIORITY_FEE_GWEI`, `MAX_GAS_LIMIT` — separately calibrated per chain |
+| `MAX_SPEND_ETH` — chain-independent by design, denominated in the gas token                                                           | `ALLOW_BAD_DEBT_ONLY` — arms a chain rather than crediting it          |
+
+Suffixing always wins over the unsuffixed name, so a chain that needs its own value can still have one.
+
+`ALLOW_BAD_DEBT_ONLY_<chainId>` is suffixed-only because it **arms** rather than narrows: with no
+venue enabled, that chain's service refuses to start without it, and runs — spending gas to realize
+bad debt — with it. It must name the chain it means.
 
 ## How It Works
 

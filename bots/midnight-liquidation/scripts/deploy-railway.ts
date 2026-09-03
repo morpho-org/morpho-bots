@@ -328,10 +328,16 @@ const requiredSuffixed = (name: string, chainId: number): string => {
   return value
 }
 
-// A chainId-suffixed boolean flag (e.g. ALLOW_BAD_DEBT_ONLY_1). Suffixed-only, for the same reason
-// venue keys are: one unsuffixed value would change what every chain does at once.
-const suffixedFlag = (name: string, chainId: number): boolean =>
-  /^(1|true)$/i.test(suffixed(name, chainId) ?? '')
+/**
+ * A per-chain input that falls back to the unsuffixed name. Correct for values that are genuinely
+ * the same everywhere — a venue API key is one credential the provider honors on every chain it
+ * supports, and requiring a copy per chain invites the drift it looks like it prevents. NOT correct
+ * for a value that is calibrated per chain, or that decides what a chain is allowed to do.
+ */
+const shared = (name: string, chainId: number): string | undefined =>
+  suffixed(name, chainId) ?? (process.env[name]?.trim() || undefined)
+
+const isTruthy = (value: string | undefined): boolean => /^(1|true)$/i.test(value ?? '')
 
 // Per-chain secrets/config, read + validated up front so we fail loud before mutating Railway state.
 // The venue posture mirrors the bot's own startup gate: a chain with no enabled venue is refused
@@ -339,25 +345,23 @@ const suffixedFlag = (name: string, chainId: number): boolean =>
 // will only crash-loop.
 const chainSecrets = CHAINS.map(chain => {
   const rpcUrl = requiredSuffixed('RPC_URL', chain.chainId)
-  // A single funded key may be reused across chains (unsuffixed fallback), or set one per chain.
-  const liquidatorPrivateKey =
-    suffixed('LIQUIDATOR_PRIVATE_KEY', chain.chainId) ?? process.env.LIQUIDATOR_PRIVATE_KEY?.trim()
+  // A single funded EOA may be reused across chains, or set one per chain. See {@link shared}.
+  const liquidatorPrivateKey = shared('LIQUIDATOR_PRIVATE_KEY', chain.chainId)
   if (!liquidatorPrivateKey)
     throw new Error(
       `Missing required env var: LIQUIDATOR_PRIVATE_KEY_${chain.chainId} (or a shared LIQUIDATOR_PRIVATE_KEY)`
     )
   assertPrivateKey(liquidatorPrivateKey)
-  // Venue keys are read ONLY from the suffixed name. An unsuffixed fallback would make a single
-  // ZEROX_API_KEY arm every chain at once, which is the opposite of what per-chain keys are for: a
-  // chain is armed deliberately, or it is not armed. The private key keeps its shared fallback above
-  // because reusing one funded EOA across chains is intended.
-  const zeroxApiKey = suffixed('ZEROX_API_KEY', chain.chainId)
-  const oneInchApiKey = suffixed('ONEINCH_API_KEY', chain.chainId)
-  const lifiApiKey = suffixed('LIFI_API_KEY', chain.chainId)
-  const enableLifi = suffixedFlag('ENABLE_LIFI', chain.chainId) || Boolean(lifiApiKey)
-  // Arming, not narrowing: a chain with no venue refuses to deploy without this, and runs — burning
-  // gas to realize bad debt — with it. It is a no-op on a chain that already has a venue.
-  const allowBadDebtOnly = suffixedFlag('ALLOW_BAD_DEBT_ONLY', chain.chainId)
+  // Venue credentials are the same everywhere the venue operates, so one unsuffixed key covers every
+  // chain; suffix it only to give a chain a different key. See {@link shared}.
+  const zeroxApiKey = shared('ZEROX_API_KEY', chain.chainId)
+  const oneInchApiKey = shared('ONEINCH_API_KEY', chain.chainId)
+  const lifiApiKey = shared('LIFI_API_KEY', chain.chainId)
+  const enableLifi = isTruthy(shared('ENABLE_LIFI', chain.chainId)) || Boolean(lifiApiKey)
+  // Suffixed-only, unlike the keys above: this ARMS a chain rather than crediting it. Without it a
+  // venue-less chain refuses to deploy; with it that chain runs and burns gas realizing bad debt, so
+  // it must name the chain it means. A no-op on a chain that already has a venue.
+  const allowBadDebtOnly = isTruthy(suffixed('ALLOW_BAD_DEBT_ONLY', chain.chainId))
   const hasVenue = Boolean(zeroxApiKey || oneInchApiKey || enableLifi)
   if (!hasVenue && !allowBadDebtOnly) {
     throw new Error(
@@ -378,12 +382,13 @@ const chainSecrets = CHAINS.map(chain => {
     lifiApiKey,
     enableLifi,
     allowBadDebtOnly,
-    // Fee and economics knobs default from the chain's row in src/config.ts, and are suffixed-only
-    // because those rows are separately calibrated — one shared value would flatten both at once.
-    // Pushed only when the operator sets them, so an unset var leaves the in-code default in force.
+    // Suffixed-only: these default from the chain's row in src/config.ts, and those rows are
+    // separately calibrated, so one shared value would flatten both at once.
     priorityFeeGwei: suffixed('PRIORITY_FEE_GWEI', chain.chainId),
     maxGasLimit: suffixed('MAX_GAS_LIMIT', chain.chainId),
-    maxSpendEth: suffixed('MAX_SPEND_ETH', chain.chainId),
+    // Shared, because the spend ceiling is chain-independent by design — it is denominated in the
+    // gas token, not in either chain's fee level.
+    maxSpendEth: shared('MAX_SPEND_ETH', chain.chainId),
     betterstackHeartbeatUrl: suffixed('BETTERSTACK_HEARTBEAT_URL', chain.chainId)
   }
 })
