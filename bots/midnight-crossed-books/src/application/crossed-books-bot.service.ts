@@ -54,7 +54,11 @@ export class CrossedBooksBotService {
   /**
    * Computes the first profitable crossed resolution for one block.
    * @returns Submission status and the number of listed markets inspected.
-   * @remarks Always simulates first. Readonly mode logs `match.computed` and performs no submission.
+   * @throws Whatever market discovery, book reads, simulation, or submission raise — none are caught
+   * here, so the caller's tick is what isolates them.
+   * @remarks Always simulates first, and submits at most one resolution per call. Logs
+   * `match.not_profitable` / `match.computed` / `match.submitted`. Readonly mode performs no
+   * submission; write mode broadcasts through the pending queue, consuming a nonce.
    */
   async run() {
     const markets = await this.markets.listListedActiveMarkets()
