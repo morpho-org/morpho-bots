@@ -88,7 +88,7 @@ Environment variables:
 | `ZEROX_BASE_URL` / `ONEINCH_BASE_URL` / `LIFI_BASE_URL`   | no       | public                                | Optional venue API host overrides.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | `EXCLUDE_COLLATERALS`                                     | no       | —                                     | Comma-separated collateral addresses the bot must never seize/hold — skipped (no quote) even in a listed market.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | `MAX_FEE_GWEI`                                            | no       | `300`                                 | Ceiling the pending-tx queue bumps into. NOT a spend bound (that is `MAX_GAS_LIMIT`) — it is the headroom the bump ladder needs, and a value near the basefee makes the queue drop the tx and latch a nonce hole. Chain-independent.                                                                                                                                                                                                                                                                                                                                                                                           |
-| `MAX_GAS_LIMIT`                                           | no       | chain-dependent                       | Ceiling on a signed transaction's gas limit, enforced by the signing policy — the bot's bound on spend per transaction. Gas is the predictable half of `gas x fee`, so it is the half worth capping. See **Per-chain defaults**.                                                                                                                                                                                                                                                                                                                                                                                               |
+| `MAX_GAS_LIMIT`                                           | no       | chain-dependent                       | Ceiling on a signed transaction's gas limit, enforced by the signing policy — the bot's bound on spend per transaction. Gas is the predictable half of `gas x fee`, so it is the half worth capping. Must be at least `21000`. See **Per-chain defaults**.                                                                                                                                                                                                                                                                                                                                                                     |
 | `PRIORITY_FEE_GWEI`                                       | no       | chain-dependent                       | First-send tip — this value, not the ceiling, is what the bot actually pays for inclusion, since the bump ladder only escalates it 12.5% per attempt. Must leave room for one bump under `MAX_FEE_GWEI`. See **Per-chain defaults**.                                                                                                                                                                                                                                                                                                                                                                                           |
 | `LOG_LEVEL`                                               | no       | `info`                                | One of `debug`, `info`, `warn`, `error`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | `CACHE_DIR`                                               | no       | `.cache`                              | Soltag/deployless cache directory.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
@@ -357,9 +357,7 @@ the remote API — no Postgres or indexer service).
 the [Railway CLI](https://docs.railway.com/guides/cli), so it runs the same locally or in CI.
 
 Railway service names are project-wide: production uses `bot-<chainId>` (`bot-8453`, `bot-1`), while
-non-production environments use an environment prefix (for example, `staging-bot-8453`). After
-`bot-8453` is confirmed healthy, the script retires the legacy single-chain `bot` service — leaving it
-up would run a second, stale Base liquidator against the same funded key.
+non-production environments use an environment prefix (for example, `staging-bot-8453`).
 
 The [Dockerfile](./Dockerfile) is a single-stage Node image (pnpm installs, esbuild bundles, node runs);
 `RAILWAY_DOCKERFILE_PATH` points Railway at it and `railway up` runs from the repo root so the pnpm
@@ -377,14 +375,17 @@ export RPC_URL_1=https://eth-mainnet.example
 export LIQUIDATOR_PRIVATE_KEY=0x...          # or per-chain LIQUIDATOR_PRIVATE_KEY_<chainId>
 export ZEROX_API_KEY_8453=...                # venue keys are per-chain ONLY — no unsuffixed fallback,
                                              # so arming one chain never arms the other
+export ALLOW_BAD_DEBT_ONLY_1=true            # every chain needs a venue key or this opt-in, or the
+                                             # run is refused before it touches Railway
 # Optional: RAILWAY_ENVIRONMENT (defaults to production), RPC_URL_FALLBACK_<chainId>,
-# PRIORITY_FEE_GWEI/MAX_GAS_LIMIT[_<chainId>], ALLOW_BAD_DEBT_ONLY[_<chainId>].
+# PRIORITY_FEE_GWEI_<chainId>, MAX_GAS_LIMIT_<chainId>.
 pnpm --filter @morpho-org/midnight-liquidation run deploy:railway
 ```
 
 Secrets are read from the script's environment, piped to Railway via stdin (never argv), and never
 logged. The script fails loud — before mutating any Railway state — if a chain's `RPC_URL_<chainId>`
-or private key is missing, or if a chain has no venue enabled and no `ALLOW_BAD_DEBT_ONLY` opt-in.
+or private key is missing, or if a chain has no venue enabled and no `ALLOW_BAD_DEBT_ONLY_<chainId>`
+opt-in.
 
 The venue posture is **synchronized** on every full run: `ENABLE_LIFI` / `ALLOW_BAD_DEBT_ONLY` are set
 explicitly, and each venue key and fee override is either set from this run's inputs or **deleted**
@@ -409,10 +410,13 @@ idles at `markets.listed { markets: 0 }` rather than erroring, and starts workin
 There is no swap config file to upload anymore — venues are enabled by the presence of their API key
 (or `ENABLE_LIFI_<chainId>=true` for keyless LiFi). The deploy script uploads
 `LIFI_API_KEY_<chainId>`, `ZEROX_API_KEY_<chainId>`, and `ONEINCH_API_KEY_<chainId>` when they are
-present in its environment. Every **arming** input — the three keys and `ENABLE_LIFI` — is read from
-the suffixed name only, so one unsuffixed value can never arm a chain you did not mean to arm;
-`ALLOW_BAD_DEBT_ONLY` keeps its unsuffixed fallback because it only ever narrows a chain. With no
-venue enabled, that chain's service refuses to start unless its `ALLOW_BAD_DEBT_ONLY[_<chainId>]=true`.
+present in its environment. Every per-chain input is read from the suffixed name **only** — the three
+keys, `ENABLE_LIFI`, `ALLOW_BAD_DEBT_ONLY`, and the `PRIORITY_FEE_GWEI` / `MAX_GAS_LIMIT` overrides —
+so one unsuffixed value can never reach a chain you did not name. `LIQUIDATOR_PRIVATE_KEY` is the sole
+exception, because reusing one funded EOA across chains is intended.
+
+`ALLOW_BAD_DEBT_ONLY_<chainId>` arms rather than narrows: with no venue enabled, that chain's service
+refuses to start without it, and runs — spending gas to realize bad debt — with it.
 
 ## How It Works
 

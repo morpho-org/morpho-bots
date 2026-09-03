@@ -18,6 +18,9 @@ import type { ChainConfig, Config, TuningConfig } from '../src/config'
 
 import { BLOCK_POLL_MS as LOCAL_BLOCK_POLL_MS, loadConfig } from '../src/config'
 
+// EIP-1559 raises the basefee by at most 12.5% per block, when every block is completely full.
+const bumped12Point5 = (baseFee: bigint) => (baseFee * 1125n) / 1000n
+
 const MIDNIGHT = '0x1111111111111111111111111111111111111111' as Address
 const EXECUTOOOR = '0x3333333333333333333333333333333333333333'
 const COLLATERAL = '0x4444444444444444444444444444444444444444'
@@ -217,34 +220,60 @@ describe('loadConfig', () => {
     expect(LOCAL_BLOCK_POLL_MS).toBe(BLOCK_POLL_MS)
   })
 
-  // The ladder that actually runs, driven by bot-kit's own fee functions rather than a restatement of
-  // them: the first send is min(2*baseFee + tip, maxFee), each stuck check bumps BOTH fees 1.125x, and
-  // the queue DROPS the tx — latching a nonce hole — once maxFeePerGas would exceed the ceiling. So
-  // `maxBumpAttempts` is only reachable while the basefee leaves room for it, a coupling
-  // `hasBumpHeadroom` cannot express because it ignores the basefee entirely. Pinning the congested
-  // basefee each row survives at full depth is what stops a fee retune quietly shortening the ladder.
-  it.each([
-    [base.id, 5n, 28],
-    [mainnet.id, 60n, 7]
-  ])('gets %i bumps on chain %i at a %i gwei basefee', (chainId, baseFeeGwei, expectedBumps) => {
-    const config = loadConfig(baseEnv({ CHAIN_ID: String(chainId) }))
-    const baseFee = parseGwei(String(baseFeeGwei))
+  // Replays the ladder that actually runs, through bot-kit's own fee functions rather than a
+  // restatement of them, and returns how many bumps land before the queue drops the tx.
+  const ladderBumps = (config: Config, startBaseFee: bigint, risingPerBlock: boolean): number => {
+    // A tx is replaced once it has sat MORE than `stuckBlocks` blocks, so one extra block of basefee
+    // growth compounds between bumps.
+    const blocksBetweenBumps = Number(config.tuning.stuckBlocks) + 1
+    let baseFee = startBaseFee
     let fees = initialFees(baseFee, config.maxFeeWei, config.priorityFeeWei)
-    let bumps = 0
 
-    for (;;) {
+    for (let bumps = 0; ; bumps += 1) {
+      if (risingPerBlock) {
+        for (let block = 0; block < blocksBetweenBumps; block += 1)
+          baseFee = bumped12Point5(baseFee)
+      }
       const next = bumpFees({ ...fees, baseFee, maxFeeWei: config.maxFeeWei })
-      if (next.kind === 'drop') break
+      if (next.kind === 'drop') return bumps
       fees = next.fees
-      bumps += 1
     }
+  }
 
-    // Exact, so a fee retune restates the depth instead of absorbing it. The invariant that
-    // actually matters is the second assertion: fewer bumps than `maxBumpAttempts` means the
-    // ceiling, not the attempt count, is what ends the ladder — and the drop latches a nonce hole.
-    expect(bumps).toBe(expectedBumps)
-    expect(bumps).toBeGreaterThanOrEqual(config.tuning.maxBumpAttempts)
-  })
+  // `bumpFees` reads the LIVE basefee — a replacement's max is `max(prev * 1.125, 2*baseFee + tip)` —
+  // so how deep the ladder gets depends on what the basefee does while the tx sits, not only on
+  // `maxBumpAttempts`. Exceeding `maxFeeWei` DROPS the tx and latches a nonce hole, so a row whose
+  // ladder truncates early stops sending entirely. Two regimes bound it:
+  //
+  //   flat      the basefee holds and the `prev * 1.125` term binds
+  //   max-rise  every block is full (+12.5%/block, the EIP-1559 ceiling) and `2*baseFee` binds
+  //
+  // Base is the tighter row under a rise despite its shallower ladder, because it waits 5 blocks
+  // between bumps to mainnet's 2: the basefee compounds ~1.80x per bump against mainnet's ~1.27x.
+  // Neither bound is near either chain's real basefee; they are pinned exactly so that retuning a fee
+  // knob, `stuckBlocks`, or `maxBumpAttempts` has to restate the ladder rather than quietly shorten it.
+  it.each([
+    [base.id, 105n, 25n],
+    [mainnet.id, 72n, 36n]
+  ])(
+    'chain %i completes its ladder to %i gwei flat and %i gwei rising',
+    (chainId, flat, rising) => {
+      const config = loadConfig(baseEnv({ CHAIN_ID: String(chainId) }))
+      const attempts = config.tuning.maxBumpAttempts
+
+      for (const [limit, isRising] of [
+        [flat, false],
+        [rising, true]
+      ] as const) {
+        expect(ladderBumps(config, parseGwei(String(limit)), isRising)).toBeGreaterThanOrEqual(
+          attempts
+        )
+        // One gwei higher truncates the ladder — which is what makes the bound exact rather than a
+        // value that merely happens to pass.
+        expect(ladderBumps(config, parseGwei(String(limit + 1n)), isRising)).toBeLessThan(attempts)
+      }
+    }
+  )
 
   // `SHIPPED_ROWS` is iterated, so on its own it cannot notice a chain added to CHAIN_MAP without an
   // expectation here. Pin the supported set against the error `loadConfig` raises for an unknown id.
@@ -262,6 +291,18 @@ describe('loadConfig', () => {
     expect(config.quoting.backoffMaxBlocks).toBe(7n)
     // Unset knobs still come from the chain row.
     expect(config.quoting.seizeCapMarginBps).toBe(60)
+  })
+
+  // A gas ceiling under the intrinsic cost of any transaction denies every send at the signing
+  // policy while the process stays up — the bot looks healthy and liquidates nothing.
+  it.each(['0', '20999'])('rejects a MAX_GAS_LIMIT of %s as unspendable', gasLimit => {
+    expect(() => loadConfig(baseEnv({ MAX_GAS_LIMIT: gasLimit }), deps)).toThrow(
+      'MAX_GAS_LIMIT must be at least 21000'
+    )
+  })
+
+  it('accepts a MAX_GAS_LIMIT at the intrinsic-gas floor', () => {
+    expect(loadConfig(baseEnv({ MAX_GAS_LIMIT: '21000' }), deps).maxGasLimit).toBe(21_000n)
   })
 
   it('throws when a required var is missing', () => {

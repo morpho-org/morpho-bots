@@ -105,7 +105,7 @@ function assertPrivateKey(key: string): void {
 
 // Throws on an unparseable or unrecognized envelope rather than reporting an empty project. An empty
 // LIST is legitimate (a fresh project); an empty PARSE is not, and callers act on absence — a silent
-// `[]` would skip the cutover teardown and leave a second Base liquidator on the funded key.
+// `[]` would report every service as missing and create a duplicate alongside it.
 const parseServices = (raw: string): RailwayService[] => {
   const { data, error } = tryCatch(() => JSON.parse(raw) as unknown)
   if (error) throw new Error(`Could not parse the service list: ${error.message}`)
@@ -154,8 +154,9 @@ async function ensureContext(): Promise<void> {
   console.log(`Linked project ${PROJECT_ID} (${ENVIRONMENT}).`)
 }
 
-// Throws rather than reporting an empty project: callers act on absence (create a service, skip a
-// teardown), so a failed listing that read as "nothing there" would silently do the wrong thing.
+// Throws rather than reporting an empty project: callers act on absence (create a service, fail a
+// DEPLOY_ONLY preflight), so a failed listing that read as "nothing there" would silently do the
+// wrong thing.
 const listServices = async (): Promise<RailwayService[]> => {
   const { data, error } = await tryCatch($`railway service list --json`.then(r => r.stdout))
   if (error || typeof data !== 'string') {
@@ -172,23 +173,6 @@ async function ensureService(name: string): Promise<void> {
   console.log(`Creating service ${name}…`)
   const { error } = await tryCatch($`railway add --service ${name} --json`)
   if (error) throw new Error(`Failed to create service ${name}: ${stderrOf(error)}`)
-}
-
-// Delete a service if it exists (used to retire the pre-multichain `bot` service after cutover). A
-// failure is a warning, not fatal — the deploy already succeeded; surface it so an operator removes
-// the stale service manually. `--yes` skips the confirmation prompt (non-TTY safe).
-const removeService = async (name: string): Promise<void> => {
-  if (!(await listServices()).some(service => service.name === name)) return
-  console.log(`Removing legacy service ${name}…`)
-  const { error } = await tryCatch(
-    $`railway service delete --service ${name} --environment ${ENVIRONMENT} --yes --json`
-  )
-  if (error)
-    console.warn(
-      `Could not remove legacy service ${name}: ${stderrOf(error)}\n` +
-        `  Remove it manually — otherwise it runs a second, stale Base liquidator with a funded key.`
-    )
-  else console.log(`Removed legacy service ${name}.`)
 }
 
 // Non-secret variable. `kv` is a single "KEY=VALUE" arg; only the key is logged.
@@ -304,11 +288,6 @@ const CHAINS: ChainDeploy[] = [
   { chainId: 8453, service: serviceName('bot-8453') },
   { chainId: 1, service: serviceName('bot-1') }
 ]
-// The pre-multichain single-chain service, retired after `bot-8453` is confirmed healthy. Resolved
-// through `serviceName` like every other service, so a staging run retires `staging-bot` and never
-// reaches the production one.
-const LEGACY_BOT_SERVICE = serviceName('bot')
-
 // Deploy-only mode (DEPLOY_ONLY=1|true): re-ship the ALREADY-PROVISIONED services from the checked-out
 // tree and set NOTHING — no secrets, no variables. This is the path CI uses: the per-stage GitHub
 // Environment holds only RAILWAY_TOKEN + RAILWAY_PROJECT_ID, and the services/secrets were provisioned
@@ -349,13 +328,10 @@ const requiredSuffixed = (name: string, chainId: number): string => {
   return value
 }
 
-// A chainId-suffixed boolean flag (e.g. ALLOW_BAD_DEBT_ONLY_1). `sharedFallback` also accepts the
-// unsuffixed name, which is only safe for a flag that NARROWS what a chain does — an ARMING flag
-// must stay per-chain for the same reason venue keys do, or one unsuffixed value arms every chain.
-const suffixedFlag = (name: string, chainId: number, sharedFallback = false): boolean =>
-  /^(1|true)$/i.test(
-    suffixed(name, chainId) ?? (sharedFallback ? process.env[name]?.trim() : undefined) ?? ''
-  )
+// A chainId-suffixed boolean flag (e.g. ALLOW_BAD_DEBT_ONLY_1). Suffixed-only, for the same reason
+// venue keys are: one unsuffixed value would change what every chain does at once.
+const suffixedFlag = (name: string, chainId: number): boolean =>
+  /^(1|true)$/i.test(suffixed(name, chainId) ?? '')
 
 // Per-chain secrets/config, read + validated up front so we fail loud before mutating Railway state.
 // The venue posture mirrors the bot's own startup gate: a chain with no enabled venue is refused
@@ -379,8 +355,9 @@ const chainSecrets = CHAINS.map(chain => {
   const oneInchApiKey = suffixed('ONEINCH_API_KEY', chain.chainId)
   const lifiApiKey = suffixed('LIFI_API_KEY', chain.chainId)
   const enableLifi = suffixedFlag('ENABLE_LIFI', chain.chainId) || Boolean(lifiApiKey)
-  // Narrows a chain to bad-debt-only, so a shared opt-in can never widen what a chain will do.
-  const allowBadDebtOnly = suffixedFlag('ALLOW_BAD_DEBT_ONLY', chain.chainId, true)
+  // Arming, not narrowing: a chain with no venue refuses to deploy without this, and runs — burning
+  // gas to realize bad debt — with it. It is a no-op on a chain that already has a venue.
+  const allowBadDebtOnly = suffixedFlag('ALLOW_BAD_DEBT_ONLY', chain.chainId)
   const hasVenue = Boolean(zeroxApiKey || oneInchApiKey || enableLifi)
   if (!hasVenue && !allowBadDebtOnly) {
     throw new Error(
@@ -401,8 +378,9 @@ const chainSecrets = CHAINS.map(chain => {
     lifiApiKey,
     enableLifi,
     allowBadDebtOnly,
-    // Fee and economics knobs default from the chain's row in src/config.ts. Pushed only when the
-    // operator sets them, so an unset var leaves the in-code per-chain default in force.
+    // Fee and economics knobs default from the chain's row in src/config.ts, and are suffixed-only
+    // because those rows are separately calibrated — one shared value would flatten both at once.
+    // Pushed only when the operator sets them, so an unset var leaves the in-code default in force.
     priorityFeeGwei: suffixed('PRIORITY_FEE_GWEI', chain.chainId),
     maxGasLimit: suffixed('MAX_GAS_LIMIT', chain.chainId),
     betterstackHeartbeatUrl: suffixed('BETTERSTACK_HEARTBEAT_URL', chain.chainId)
@@ -469,20 +447,6 @@ for (const chain of chainSecrets) {
 
 const botStatuses = new Map<string, string>()
 for (const chain of chainSecrets) botStatuses.set(chain.service, await waitForDeploy(chain.service))
-
-// Cutover: retire the pre-multichain `bot` service ONLY once its replacement `bot-8453` is healthy, so
-// the Base liquidator is never left without a running instance. Leaving `bot` up would run a second,
-// stale Base liquidator with the same funded key alongside bot-8453 (nonce contention/double-submits).
-const baseService = CHAINS.find(chain => chain.chainId === 8453)?.service
-if (baseService && botStatuses.get(baseService) === 'SUCCESS') {
-  await removeService(LEGACY_BOT_SERVICE)
-} else {
-  console.warn(
-    `Skipping '${LEGACY_BOT_SERVICE}' removal — ${baseService ?? 'the Base bot'} is not confirmed ` +
-      `SUCCESS. Remove it manually once that service is healthy, to avoid a stale second Base ` +
-      `liquidator on the same funded key.`
-  )
-}
 
 console.log('')
 console.log('=== Deployment status ===')

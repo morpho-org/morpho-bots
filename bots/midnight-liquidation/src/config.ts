@@ -185,12 +185,19 @@ const LOG_LEVELS = ['debug', 'info', 'warn', 'error'] as const
 // the headroom the bump ladder escalates into: `bumpFees` DROPS a tx once the bumped maxFeePerGas
 // would exceed it, and a drop latches a nonce hole that stops the bot sending at all.
 //
-// It does not make the ladder unconditional. A full ladder needs
-// `1.125^maxBumpAttempts * (2*basefee + tip) <= maxFee`, so at 300 gwei mainnet's 6 attempts survive
-// a basefee up to ~73 gwei and Base's 3 survive far beyond anything that chain produces. Above that
-// the ladder truncates rather than the send failing outright. `test/config.test.ts` pins the exact
-// depth each row gets at a congested basefee, so a retune of either fee knob has to restate it.
+// It does not make the ladder unconditional, and how far the ladder reaches turns on what the basefee
+// does while a tx sits: a replacement's max is `max(prev * 1.125, 2*basefee + tip)`. Held flat, 300
+// gwei carries mainnet's 6 attempts to a ~72 gwei basefee and Base's 3 to ~105. Rising at the
+// EIP-1559 maximum it reaches only ~36 and ~25 — and Base is the tighter row despite its shallower
+// ladder, because it waits 5 blocks between bumps to mainnet's 2, so the basefee compounds further.
+// Past those the ladder truncates rather than the send failing outright. `test/config.test.ts` pins
+// all four bounds, so retuning a fee knob, `stuckBlocks`, or `maxBumpAttempts` has to restate them.
 const DEFAULT_MAX_FEE_GWEI = '300'
+
+// Floor for `MAX_GAS_LIMIT`. Below the intrinsic cost of the cheapest possible transaction, the
+// signing policy denies every prepared tx (`policy.ts` rejects `tx.gas > maxGasLimit`) while the
+// process stays up and healthy — a silent do-nothing bot. Fail at startup instead.
+const MIN_GAS_LIMIT = 21_000n
 const PRIVATE_KEY_HEX_LENGTH = 66 // '0x' + 32 bytes
 
 // Borrower-candidate discovery defaults (the markets liquidation-candidates endpoint). The URL is a
@@ -395,14 +402,19 @@ function intEnv(
   return value
 }
 
-// Parses an optional non-negative integer env var into a bigint, with a default.
-function bigintEnv(env: Env, name: string, def: bigint): bigint {
+// Parses an optional non-negative integer env var into a bigint, with a default and optional min
+// bound. Zero stays legal by default — it is a meaningful value for the backoff knobs.
+function bigintEnv(env: Env, name: string, def: bigint, bounds: { min?: bigint } = {}): bigint {
   const raw = env[name]?.trim()
   if (!raw) return def
   if (!/^\d+$/.test(raw)) {
     throw new InvalidConfigError(`${name} must be a non-negative integer, got: ${env[name]}`)
   }
-  return BigInt(raw)
+  const value = BigInt(raw)
+  if (bounds.min !== undefined && value < bounds.min) {
+    throw new InvalidConfigError(`${name} must be at least ${bounds.min}, got: ${env[name]}`)
+  }
+  return value
 }
 
 // Parses an optional positive decimal env var, with a default and optional min bound. Decimal form
@@ -682,7 +694,7 @@ export function loadConfig(
     chain: chainConfig.chain,
     midnight: chainConfig.midnight,
     tuning,
-    maxGasLimit: bigintEnv(env, 'MAX_GAS_LIMIT', defaults.maxGasLimit),
+    maxGasLimit: bigintEnv(env, 'MAX_GAS_LIMIT', defaults.maxGasLimit, { min: MIN_GAS_LIMIT }),
     rpcUrl,
     rpcUrlFallback: env.RPC_URL_FALLBACK?.trim() || undefined,
     liquidatorPrivateKey,
