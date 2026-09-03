@@ -1,27 +1,63 @@
-# Runs the midnight-liquidation bot. Borrower candidates come from the markets liquidation-candidates
-# HTTP API (LIQUIDATION_CANDIDATES_API_URL, public by default), so there is no indexer or database to
-# run. The bot's build context is the repo root so the pnpm workspace (packages/*) resolves — see
-# Dockerfile.
+# Runs the per-chain midnight-liquidation bots. Borrower candidates come from the markets
+# liquidation-candidates HTTP API (LIQUIDATION_CANDIDATES_API_URL, public by default), so there is no
+# indexer or database to run. The bots' build context is the repo root so the pnpm workspace
+# (packages/*) resolves — see Dockerfile.
+#
+# Set the chainId-suffixed RPC for whichever chains you run (RPC_URL_8453, RPC_URL_1) and a
+# LIQUIDATOR_PRIVATE_KEY. Venue keys are chainId-suffixed with NO unsuffixed fallback, so arming one
+# chain never arms the other. Compose interpolates this whole file whatever service you name, so the
+# RPCs use `:-` and the bot itself fails loud on an empty RPC_URL — that keeps
+# `docker compose up bot-8453` working without a mainnet endpoint.
 services:
-  bot:
+  bot-8453:
     build:
       context: ../..
       dockerfile: bots/midnight-liquidation/Dockerfile
     environment:
       CHAIN_ID: '8453'
-      RPC_URL: ${RPC_URL:?set RPC_URL}
+      RPC_URL: ${RPC_URL_8453:-}
+      RPC_URL_FALLBACK: ${RPC_URL_FALLBACK_8453:-}
       LIQUIDATOR_PRIVATE_KEY: ${LIQUIDATOR_PRIVATE_KEY:?set LIQUIDATOR_PRIVATE_KEY}
       EXECUTOOOR_ADDRESS: ${EXECUTOOOR_ADDRESS:-}
-      # Venues are enabled by the presence of their API key. With neither set, the bot refuses to
-      # start unless ALLOW_BAD_DEBT_ONLY=true (then it runs bad-debt-only).
-      ZEROX_API_KEY: ${ZEROX_API_KEY:-}
-      ONEINCH_API_KEY: ${ONEINCH_API_KEY:-}
-      ALLOW_BAD_DEBT_ONLY: ${ALLOW_BAD_DEBT_ONLY:-}
-      PRIORITY_FEE_GWEI: ${PRIORITY_FEE_GWEI:-}
+      # Venues are enabled by the presence of their API key (or ENABLE_LIFI=true — LiFi works
+      # keyless). With none set, the bot refuses to start unless ALLOW_BAD_DEBT_ONLY=true.
+      ZEROX_API_KEY: ${ZEROX_API_KEY_8453:-}
+      ONEINCH_API_KEY: ${ONEINCH_API_KEY_8453:-}
+      LIFI_API_KEY: ${LIFI_API_KEY_8453:-}
+      ENABLE_LIFI: ${ENABLE_LIFI_8453:-}
+      ALLOW_BAD_DEBT_ONLY: ${ALLOW_BAD_DEBT_ONLY_8453:-}
+      # Unset = the chain's built-in row in src/config.ts (Base: 0.1 gwei tip, 15M gas ceiling).
+      PRIORITY_FEE_GWEI: ${PRIORITY_FEE_GWEI_8453:-}
+      MAX_GAS_LIMIT: ${MAX_GAS_LIMIT_8453:-}
       LOG_LEVEL: ${LOG_LEVEL:-info}
       # Optional BetterStack log shipping (in-process loglayer transport). Empty = disabled; the bot
       # ships its structured logs only when BOTH are set (host also required), else behaves as before.
+      # One source serves both chains — records carry `bot` and `chainId`. The heartbeat is per-chain.
       BETTERSTACK_SOURCE_TOKEN: ${BETTERSTACK_SOURCE_TOKEN:-}
       BETTERSTACK_INGESTING_HOST: ${BETTERSTACK_INGESTING_HOST:-}
-      BETTERSTACK_HEARTBEAT_URL: ${BETTERSTACK_HEARTBEAT_URL:-}
+      BETTERSTACK_HEARTBEAT_URL: ${BETTERSTACK_HEARTBEAT_URL_8453:-}
+    restart: unless-stopped
+
+  bot-1:
+    build:
+      context: ../..
+      dockerfile: bots/midnight-liquidation/Dockerfile
+    environment:
+      CHAIN_ID: '1'
+      RPC_URL: ${RPC_URL_1:-}
+      RPC_URL_FALLBACK: ${RPC_URL_FALLBACK_1:-}
+      LIQUIDATOR_PRIVATE_KEY: ${LIQUIDATOR_PRIVATE_KEY:?set LIQUIDATOR_PRIVATE_KEY}
+      EXECUTOOOR_ADDRESS: ${EXECUTOOOR_ADDRESS:-}
+      ZEROX_API_KEY: ${ZEROX_API_KEY_1:-}
+      ONEINCH_API_KEY: ${ONEINCH_API_KEY_1:-}
+      LIFI_API_KEY: ${LIFI_API_KEY_1:-}
+      ENABLE_LIFI: ${ENABLE_LIFI_1:-}
+      ALLOW_BAD_DEBT_ONLY: ${ALLOW_BAD_DEBT_ONLY_1:-}
+      # Unset = the chain's built-in row (mainnet: 2 gwei tip, 3M gas ceiling — the spend bound).
+      PRIORITY_FEE_GWEI: ${PRIORITY_FEE_GWEI_1:-}
+      MAX_GAS_LIMIT: ${MAX_GAS_LIMIT_1:-}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      BETTERSTACK_SOURCE_TOKEN: ${BETTERSTACK_SOURCE_TOKEN:-}
+      BETTERSTACK_INGESTING_HOST: ${BETTERSTACK_INGESTING_HOST:-}
+      BETTERSTACK_HEARTBEAT_URL: ${BETTERSTACK_HEARTBEAT_URL_1:-}
     restart: unless-stopped

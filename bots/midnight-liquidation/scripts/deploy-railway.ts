@@ -1,8 +1,9 @@
 /**
- * Reproducible, idempotent deployment of the midnight-liquidation bot to the Railway project
- * `bot.liquidation.midnight`. Borrower candidates come from the markets liquidation-candidates API
- * (LIQUIDATION_CANDIDATES_API_URL, public by default), so the bot runs as a single service — no
- * indexer or database to provision.
+ * Reproducible, idempotent deployment of the multi-chain midnight-liquidation system to the Railway
+ * project `bot.liquidation.midnight`: one `bot-<chainId>` runner per chain (see CHAINS below).
+ * Borrower candidates come from the markets liquidation-candidates API
+ * (LIQUIDATION_CANDIDATES_API_URL, public by default), so there is no indexer or database to
+ * provision.
  *
  * Runs anywhere with the `railway` CLI installed and authenticated. The target project is supplied
  * entirely via env vars — no project identifier is baked into this (open-source) file:
@@ -11,7 +12,20 @@
  *     every command is then implicitly scoped to it.
  *   - Local: an interactive `railway login` session; the script links the project by id.
  *
- *   RAILWAY_PROJECT_ID=… RPC_URL=… LIQUIDATOR_PRIVATE_KEY=0x… \
+ * Per-chain env vars are chainId-suffixed (endpoints, keys, and fee calibration differ per chain);
+ * the names set INSIDE each container stay unsuffixed, because each service runs exactly one chain:
+ *   - RPC_URL_<chainId>                 (required per chain) — reads, simulate, sends
+ *   - RPC_URL_FALLBACK_<chainId>        (optional) — the signer's failover transport
+ *   - LIQUIDATOR_PRIVATE_KEY_<chainId>  (per chain) OR a shared LIQUIDATOR_PRIVATE_KEY fallback
+ *   - ZEROX_API_KEY_<chainId> / ONEINCH_API_KEY_<chainId> / LIFI_API_KEY_<chainId> /
+ *     ENABLE_LIFI_<chainId>=true (optional; a key ENABLES its venue, LiFi also works keyless).
+ *     These have NO unsuffixed fallback — arming is per chain, deliberately.
+ *   - ALLOW_BAD_DEBT_ONLY[_<chainId>]=true — required for a chain with NO venue enabled; the bot
+ *     fails loud at startup otherwise. Unsuffixed is honored: it only ever narrows a chain.
+ *   - PRIORITY_FEE_GWEI[_<chainId>] / MAX_GAS_LIMIT[_<chainId>] (optional) — override the chain's
+ *     built-in defaults from src/config.ts. MAX_SPEND_ETH bounds `gas * fee`, the cost of one tx.
+ *
+ *   RAILWAY_PROJECT_ID=… RPC_URL_8453=… RPC_URL_1=… LIQUIDATOR_PRIVATE_KEY=0x… \
  *     pnpm --filter @morpho-org/midnight-liquidation run deploy:railway
  *
  * The build context MUST be the repo root so the pnpm workspace (packages/*) resolves — the script
@@ -19,11 +33,16 @@
  * and passes `-p/-e` explicitly so the deploy targets this project/environment regardless of whatever
  * the repo-root directory happens to be linked to (a sibling bot's deploy leaves it linked elsewhere).
  *
- * Idempotent: existing services / volume / variables are reused; each run redeploys both services.
+ * Idempotent: existing services / variables are reused; each run redeploys every bot. The venue
+ * posture is SYNCHRONIZED on every full run: ENABLE_LIFI / ALLOW_BAD_DEBT_ONLY are set explicitly, and
+ * each venue key and fee override is either set from this run's inputs or deleted when absent — so
+ * neither a stale opt-in nor a dropped key can linger from a previous run. Cutover: the
+ * pre-multichain `bot` service is removed once its replacement `bot-8453` is confirmed healthy
+ * (leaving it would run a second, stale Base liquidator with a funded key).
  *
- * Secret hygiene: secrets (RPC_URL, LIQUIDATOR_PRIVATE_KEY) are piped to `railway variable set
- * --stdin` so their values never appear in argv; on failure we surface only the variable key, never
- * its value; variable values are never logged.
+ * Secret hygiene: secrets (per-chain RPC_URL, LIQUIDATOR_PRIVATE_KEY, aggregator keys) are piped to
+ * `railway variable set --stdin` so their values never appear in argv; on failure we surface only
+ * the variable key, never its value; variable values are never logged.
  */
 import { delay, tryCatch } from '@repo/utils'
 import { $ } from 'execa'
@@ -84,13 +103,18 @@ function assertPrivateKey(key: string): void {
   }
 }
 
-function parseServices(raw: string): RailwayService[] {
-  const { data } = tryCatch(() => JSON.parse(raw) as unknown)
+// Throws on an unparseable or unrecognized envelope rather than reporting an empty project. An empty
+// LIST is legitimate (a fresh project); an empty PARSE is not, and callers act on absence — a silent
+// `[]` would report every service as missing and create a duplicate alongside it.
+const parseServices = (raw: string): RailwayService[] => {
+  const { data, error } = tryCatch(() => JSON.parse(raw) as unknown)
+  if (error) throw new Error(`Could not parse the service list: ${error.message}`)
   const rows = Array.isArray(data)
     ? data
     : isRecord(data) && Array.isArray(data.services)
       ? data.services
-      : []
+      : undefined
+  if (!rows) throw new Error('Unrecognized `railway service list --json` envelope')
   return rows
     .filter(isRecord)
     .map(row => ({ id: str(row.id), name: str(row.name) || str(row.serviceName) }))
@@ -130,9 +154,15 @@ async function ensureContext(): Promise<void> {
   console.log(`Linked project ${PROJECT_ID} (${ENVIRONMENT}).`)
 }
 
-async function listServices(): Promise<RailwayService[]> {
+// Throws rather than reporting an empty project: callers act on absence (create a service, fail a
+// DEPLOY_ONLY preflight), so a failed listing that read as "nothing there" would silently do the
+// wrong thing.
+const listServices = async (): Promise<RailwayService[]> => {
   const { data, error } = await tryCatch($`railway service list --json`.then(r => r.stdout))
-  return error || typeof data !== 'string' ? [] : parseServices(data)
+  if (error || typeof data !== 'string') {
+    throw new Error(`Failed to list services: ${error ? stderrOf(error) : 'no CLI output'}`)
+  }
+  return parseServices(data)
 }
 
 async function ensureService(name: string): Promise<void> {
@@ -151,6 +181,39 @@ async function setVar(service: string, kv: string): Promise<void> {
   const { error } = await tryCatch($`railway variable set ${kv} -s ${service} --skip-deploys`)
   if (error) throw new Error(`Failed to set ${key} on ${service}: ${stderrOf(error)}`)
   console.log(`Set ${key} on ${service}.`)
+}
+
+// Keys currently set on a service — used to clear stale secrets without blind deletes. The CLI's JSON
+// includes raw values, so it is parsed in-memory and only key NAMES ever leave here. Throws for the
+// same reason as `listServices`: an empty set would silently skip every stale-key deletion below.
+const listVarKeys = async (service: string): Promise<Set<string>> => {
+  const { data, error } = await tryCatch(
+    $`railway variable list -s ${service} -e ${ENVIRONMENT} -p ${PROJECT_ID} --json`.then(
+      r => r.stdout
+    )
+  )
+  if (error || typeof data !== 'string') {
+    throw new Error(
+      `Failed to list variables on ${service}: ${error ? stderrOf(error) : 'no CLI output'}`
+    )
+  }
+  const { data: parsed } = tryCatch(() => JSON.parse(data) as unknown)
+  // Arrays satisfy `isRecord`, and `Object.keys` on one yields indices — which would match no
+  // variable name and silently skip every deletion below. Require the keyed object explicitly.
+  if (!isRecord(parsed) || Array.isArray(parsed)) {
+    throw new Error(`Unrecognized variable list for ${service}: expected a KEY=VALUE object`)
+  }
+  return new Set(Object.keys(parsed))
+}
+
+// Delete a variable (used to clear a stale venue secret or tunable). Fatal on failure: a stale key
+// that survives the delete silently keeps its venue enabled, which is exactly the drift this prevents.
+const deleteVar = async (service: string, key: string): Promise<void> => {
+  const { error } = await tryCatch(
+    $`railway variable delete ${key} -s ${service} -e ${ENVIRONMENT} -p ${PROJECT_ID} --skip-deploys`
+  )
+  if (error) throw new Error(`Failed to delete ${key} on ${service}: ${stderrOf(error)}`)
+  console.log(`Deleted ${key} on ${service} (stale).`)
 }
 
 // Secret variable: value piped via stdin (never argv), `--json` omitted (it echoes raw values).
@@ -212,85 +275,199 @@ async function waitForDeploy(
 
 await assertCli()
 
-const BOT_SERVICE = serviceName('bot')
+// CRASHED is a failure: the bot fails loud at startup on a bad config (no venues without the
+// bad-debt-only opt-in, malformed URLs, a fee pair with no bump headroom), so a crash-looping service
+// must never read as a green deploy.
+const badStatus = (status: string) =>
+  status === 'FAILED' || status === 'TIMEOUT' || status === 'CRASHED'
 
-// Deploy-only mode (DEPLOY_ONLY=1|true): re-ship the ALREADY-PROVISIONED `bot` service from the
-// checked-out tree and set NOTHING — no secrets, no variables. This is the path CI uses: the per-
-// stage GitHub Environment holds only RAILWAY_TOKEN + RAILWAY_PROJECT_ID, and the service/secrets
-// were provisioned once by a full (secret-bearing) run of this script. Skips the RPC/key/venue
-// requirements the full path enforces, so it never needs those secrets in CI.
+// The chains this deploy targets: one `bot-<chainId>` service each. Add a chain here AND in
+// src/config.ts's CHAIN_MAP (with its tuning row) to extend coverage.
+type ChainDeploy = { chainId: number; service: string }
+const CHAINS: ChainDeploy[] = [
+  { chainId: 8453, service: serviceName('bot-8453') },
+  { chainId: 1, service: serviceName('bot-1') }
+]
+// Deploy-only mode (DEPLOY_ONLY=1|true): re-ship the ALREADY-PROVISIONED services from the checked-out
+// tree and set NOTHING — no secrets, no variables. This is the path CI uses: the per-stage GitHub
+// Environment holds only RAILWAY_TOKEN + RAILWAY_PROJECT_ID, and the services/secrets were provisioned
+// once by a full (secret-bearing) run of this script. Skips the RPC/key/venue requirements the full
+// path enforces, so it never needs those secrets in CI. Runs before `chainSecrets` is read.
 if (/^(1|true)$/i.test(process.env.DEPLOY_ONLY?.trim() ?? '')) {
   await ensureContext()
-  await deployService(BOT_SERVICE) // `railway up` rebuilds it server-side
-  const status = await waitForDeploy(BOT_SERVICE)
+  const services = CHAINS.map(chain => chain.service)
+  // This mode re-ships only; it holds no secrets and so cannot create a service. Name the missing
+  // ones up front — otherwise the first `railway up` fails with a CLI error that does not say the
+  // service was never provisioned, which is exactly what a renamed service looks like in CI.
+  const existing = new Set((await listServices()).map(service => service.name))
+  const missing = services.filter(service => !existing.has(service))
+  if (missing.length > 0) {
+    throw new Error(
+      `DEPLOY_ONLY cannot create services. Not provisioned in ${ENVIRONMENT}: ${missing.join(', ')}. ` +
+        `Run a full (secret-bearing) deploy of this script against ${ENVIRONMENT} first.`
+    )
+  }
+  for (const service of services) await deployService(service)
+  const statuses = new Map<string, string>()
+  for (const service of services) statuses.set(service, await waitForDeploy(service))
   console.log('')
   console.log('=== Deploy-only status ===')
-  console.log(`  ${BOT_SERVICE}: ${status}`)
-  process.exit(status === 'FAILED' || status === 'TIMEOUT' ? 1 : 0)
+  for (const [service, status] of statuses) console.log(`  ${service}: ${status}`)
+  process.exit([...statuses.values()].some(badStatus) ? 1 : 0)
 }
 
-// Secrets / config from this process's env (fail loud before mutating any Railway state).
-const rpcUrl = required(process.env, 'RPC_URL')
-const liquidatorPrivateKey = required(process.env, 'LIQUIDATOR_PRIVATE_KEY')
-assertPrivateKey(liquidatorPrivateKey)
+// Read a chainId-suffixed env var (e.g. RPC_URL_8453). Endpoints and keys differ per chain, so the
+// operator-facing names are suffixed; the names set INSIDE each container stay unsuffixed, because
+// each service runs exactly one chain.
+const suffixed = (name: string, chainId: number): string | undefined =>
+  process.env[`${name}_${chainId}`]?.trim() || undefined
 
-// Venues are enabled by the presence of their API key. The bot hard-fails at boot with no key unless
-// ALLOW_BAD_DEBT_ONLY=true — so require the operator to pass a venue key (pushed as a secret) or
-// explicitly opt into bad-debt-only here, rather than deploying a service that crash-loops.
-const zeroxKey = process.env.ZEROX_API_KEY?.trim()
-const oneinchKey = process.env.ONEINCH_API_KEY?.trim()
-const lifiKey = process.env.LIFI_API_KEY?.trim()
-const allowBadDebtOnly = process.env.ALLOW_BAD_DEBT_ONLY?.trim().toLowerCase() === 'true'
-if (!zeroxKey && !oneinchKey && !lifiKey && !allowBadDebtOnly) {
-  throw new Error(
-    'Set LIFI_API_KEY, ZEROX_API_KEY, and/or ONEINCH_API_KEY, or ALLOW_BAD_DEBT_ONLY=true to deploy bad-debt-only.'
-  )
+const requiredSuffixed = (name: string, chainId: number): string => {
+  const value = suffixed(name, chainId)
+  if (!value) throw new Error(`Missing required env var: ${name}_${chainId}`)
+  return value
 }
 
-// Optional BetterStack log shipping: host is a plain var, token is a secret. Off when unset — the
-// bot's in-process loglayer transport stays inert, so the container behaves exactly as before.
-const betterstackHost = process.env.BETTERSTACK_INGESTING_HOST?.trim()
-const betterstackToken = process.env.BETTERSTACK_SOURCE_TOKEN?.trim()
-const betterstackHeartbeatUrl = process.env.BETTERSTACK_HEARTBEAT_URL?.trim()
+/**
+ * A per-chain input that falls back to the unsuffixed name. Correct for values that are genuinely
+ * the same everywhere — a venue API key is one credential the provider honors on every chain it
+ * supports, and requiring a copy per chain invites the drift it looks like it prevents. NOT correct
+ * for a value that is calibrated per chain, or that decides what a chain is allowed to do.
+ */
+const shared = (name: string, chainId: number): string | undefined =>
+  suffixed(name, chainId) ?? (process.env[name]?.trim() || undefined)
+
+const isTruthy = (value: string | undefined): boolean => /^(1|true)$/i.test(value ?? '')
+
+// Per-chain secrets/config, read + validated up front so we fail loud before mutating Railway state.
+// The venue posture mirrors the bot's own startup gate: a chain with no enabled venue is refused
+// unless its bad-debt-only opt-in is set, so a misconfigured full run can't provision a service that
+// will only crash-loop.
+const chainSecrets = CHAINS.map(chain => {
+  const rpcUrl = requiredSuffixed('RPC_URL', chain.chainId)
+  // A single funded EOA may be reused across chains, or set one per chain. See {@link shared}.
+  const liquidatorPrivateKey = shared('LIQUIDATOR_PRIVATE_KEY', chain.chainId)
+  if (!liquidatorPrivateKey)
+    throw new Error(
+      `Missing required env var: LIQUIDATOR_PRIVATE_KEY_${chain.chainId} (or a shared LIQUIDATOR_PRIVATE_KEY)`
+    )
+  assertPrivateKey(liquidatorPrivateKey)
+  // Venue credentials are the same everywhere the venue operates, so one unsuffixed key covers every
+  // chain; suffix it only to give a chain a different key. See {@link shared}.
+  const zeroxApiKey = shared('ZEROX_API_KEY', chain.chainId)
+  const oneInchApiKey = shared('ONEINCH_API_KEY', chain.chainId)
+  const lifiApiKey = shared('LIFI_API_KEY', chain.chainId)
+  const enableLifi = isTruthy(shared('ENABLE_LIFI', chain.chainId)) || Boolean(lifiApiKey)
+  // Suffixed-only, unlike the keys above: this ARMS a chain rather than crediting it. Without it a
+  // venue-less chain refuses to deploy; with it that chain runs and burns gas realizing bad debt, so
+  // it must name the chain it means. A no-op on a chain that already has a venue.
+  const allowBadDebtOnly = isTruthy(suffixed('ALLOW_BAD_DEBT_ONLY', chain.chainId))
+  const hasVenue = Boolean(zeroxApiKey || oneInchApiKey || enableLifi)
+  if (!hasVenue && !allowBadDebtOnly) {
+    throw new Error(
+      `Chain ${chain.chainId} has no venue enabled (set ZEROX_API_KEY/ONEINCH_API_KEY/LIFI_API_KEY` +
+        `[_${chain.chainId}] or ENABLE_LIFI[_${chain.chainId}]=true) and no ` +
+        `ALLOW_BAD_DEBT_ONLY[_${chain.chainId}]=true opt-in.`
+    )
+  }
+  return {
+    ...chain,
+    rpcUrl,
+    // Optional failover endpoint. The bot reads RPC_URL_FALLBACK for the signer's transport, but
+    // nothing has ever pushed it, so the failover path was dead in every deployment until now.
+    rpcUrlFallback: suffixed('RPC_URL_FALLBACK', chain.chainId),
+    liquidatorPrivateKey,
+    zeroxApiKey,
+    oneInchApiKey,
+    lifiApiKey,
+    enableLifi,
+    allowBadDebtOnly,
+    // Suffixed-only: these default from the chain's row in src/config.ts, and those rows are
+    // separately calibrated, so one shared value would flatten both at once.
+    priorityFeeGwei: suffixed('PRIORITY_FEE_GWEI', chain.chainId),
+    maxGasLimit: suffixed('MAX_GAS_LIMIT', chain.chainId),
+    // Shared, because the spend ceiling is chain-independent by design — it is denominated in the
+    // gas token, not in either chain's fee level.
+    maxSpendEth: shared('MAX_SPEND_ETH', chain.chainId),
+    betterstackHeartbeatUrl: suffixed('BETTERSTACK_HEARTBEAT_URL', chain.chainId)
+  }
+})
 
 await ensureContext()
 
-// --- bot: the liquidation runner. Borrower discovery polls the markets liquidation-candidates API
-// and the markets whitelist comes from the Midnight markets API (both public by default), so there is
-// nothing else to provision — no swap-config file/volume anymore.
-await ensureService(BOT_SERVICE)
-await setVar(BOT_SERVICE, 'CHAIN_ID=8453')
-await setVar(BOT_SERVICE, `RAILWAY_DOCKERFILE_PATH=${DOCKERFILE_PATH}`)
-await setVar(BOT_SERVICE, 'LOG_LEVEL=info')
-await setSecret(BOT_SERVICE, 'RPC_URL', rpcUrl)
-await setSecret(BOT_SERVICE, 'LIQUIDATOR_PRIVATE_KEY', liquidatorPrivateKey)
-if (zeroxKey) await setSecret(BOT_SERVICE, 'ZEROX_API_KEY', zeroxKey)
-if (oneinchKey) await setSecret(BOT_SERVICE, 'ONEINCH_API_KEY', oneinchKey)
-if (lifiKey) await setSecret(BOT_SERVICE, 'LIFI_API_KEY', lifiKey)
-if (allowBadDebtOnly) await setVar(BOT_SERVICE, 'ALLOW_BAD_DEBT_ONLY=true')
-if (betterstackHost) await setVar(BOT_SERVICE, `BETTERSTACK_INGESTING_HOST=${betterstackHost}`)
-if (betterstackToken) await setSecret(BOT_SERVICE, 'BETTERSTACK_SOURCE_TOKEN', betterstackToken)
-if (betterstackHeartbeatUrl) {
-  await setSecret(BOT_SERVICE, 'BETTERSTACK_HEARTBEAT_URL', betterstackHeartbeatUrl)
-}
-await deployService(BOT_SERVICE)
+// Optional BetterStack log shipping, one source for midnight-liq shared across its chains (told apart
+// by the bot/chainId fields the logger stamps). Host is a plain var; token is a secret. Off when unset
+// — the bot's in-process loglayer transport stays inert, so the container behaves exactly as before.
+const betterstackHost = process.env.BETTERSTACK_INGESTING_HOST?.trim()
+const betterstackToken = process.env.BETTERSTACK_SOURCE_TOKEN?.trim()
 
-const botStatus = await waitForDeploy(BOT_SERVICE)
+// --- bot-<chainId>: one liquidation runner per chain. Borrower discovery polls the markets
+// liquidation-candidates API and the whitelist comes from the Midnight markets API (both public by
+// default), so there is nothing else to provision. The in-container var names stay RPC_URL /
+// LIQUIDATOR_PRIVATE_KEY (the chainId suffix is only an operator-side convention). The whole venue
+// posture is SYNCHRONIZED every full run — ENABLE_LIFI and ALLOW_BAD_DEBT_ONLY set explicitly (true or
+// false), and each venue key either set from this run's inputs or DELETED when absent: Railway vars
+// persist across runs, so a lingering opt-in or a stale key from a past run would otherwise silently
+// defeat the bot's fail-loud gate / keep a dropped venue enabled.
+for (const chain of chainSecrets) {
+  await ensureService(chain.service)
+  await setVar(chain.service, `CHAIN_ID=${chain.chainId}`)
+  await setVar(chain.service, `RAILWAY_DOCKERFILE_PATH=${DOCKERFILE_PATH}`)
+  await setVar(chain.service, 'LOG_LEVEL=info')
+  await setVar(chain.service, `ENABLE_LIFI=${chain.enableLifi}`)
+  await setVar(chain.service, `ALLOW_BAD_DEBT_ONLY=${chain.allowBadDebtOnly}`)
+  await setSecret(chain.service, 'RPC_URL', chain.rpcUrl)
+  await setSecret(chain.service, 'LIQUIDATOR_PRIVATE_KEY', chain.liquidatorPrivateKey)
+  const existingKeys = await listVarKeys(chain.service)
+  if (chain.rpcUrlFallback) {
+    await setSecret(chain.service, 'RPC_URL_FALLBACK', chain.rpcUrlFallback)
+  } else if (existingKeys.has('RPC_URL_FALLBACK')) {
+    await deleteVar(chain.service, 'RPC_URL_FALLBACK')
+  }
+  const venueKeys: [string, string | undefined][] = [
+    ['ZEROX_API_KEY', chain.zeroxApiKey],
+    ['ONEINCH_API_KEY', chain.oneInchApiKey],
+    ['LIFI_API_KEY', chain.lifiApiKey]
+  ]
+  for (const [key, value] of venueKeys) {
+    if (value) await setSecret(chain.service, key, value)
+    else if (existingKeys.has(key)) await deleteVar(chain.service, key)
+  }
+  // Fee / economics overrides are plain vars (not secrets) and are synchronized the same way, so
+  // dropping one from a run restores the chain's in-code default instead of leaving a stale value.
+  const tunables: [string, string | undefined][] = [
+    ['PRIORITY_FEE_GWEI', chain.priorityFeeGwei],
+    ['MAX_GAS_LIMIT', chain.maxGasLimit],
+    ['MAX_SPEND_ETH', chain.maxSpendEth]
+  ]
+  for (const [key, value] of tunables) {
+    if (value) await setVar(chain.service, `${key}=${value}`)
+    else if (existingKeys.has(key)) await deleteVar(chain.service, key)
+  }
+  if (betterstackHost) await setVar(chain.service, `BETTERSTACK_INGESTING_HOST=${betterstackHost}`)
+  if (betterstackToken) await setSecret(chain.service, 'BETTERSTACK_SOURCE_TOKEN', betterstackToken)
+  if (chain.betterstackHeartbeatUrl) {
+    await setSecret(chain.service, 'BETTERSTACK_HEARTBEAT_URL', chain.betterstackHeartbeatUrl)
+  }
+  await deployService(chain.service)
+}
+
+const botStatuses = new Map<string, string>()
+for (const chain of chainSecrets) botStatuses.set(chain.service, await waitForDeploy(chain.service))
 
 console.log('')
 console.log('=== Deployment status ===')
-console.log(`  ${BOT_SERVICE}: ${botStatus}`)
+for (const [service, status] of botStatuses) console.log(`  ${service}: ${status}`)
 console.log('')
 console.log('=== Manual steps ===')
-console.log('  1. The bot needs a funded liquidator key + a real RPC before it can broadcast.')
-if (!zeroxKey && !oneinchKey && !lifiKey) {
-  console.log(
-    '  2. Deployed in bad-debt-only mode (no venue key). Add LIFI_API_KEY, ZEROX_API_KEY,'
-  )
-  console.log(
-    '     and/or ONEINCH_API_KEY and drop ALLOW_BAD_DEBT_ONLY to enable swap-liquidations.'
-  )
-}
+console.log('  1. Each bot needs a funded key + a real RPC before it can broadcast. Mainnet also')
+console.log('     needs the Executor deployed (pnpm --filter @repo/contracts run deploy:executor).')
+console.log('  2. Venue keys enable venues (ZEROX_API_KEY / ONEINCH_API_KEY / LIFI_API_KEY, or')
+console.log(
+  '     ENABLE_LIFI=true keyless). A bad-debt-only chain discovers positions and realizes'
+)
+console.log('     pure bad debt but never swap-liquidates — rerun with venue inputs to arm it.')
+console.log('  3. Mainnet markets are fail-closed until listed: the bot idles at markets: 0 rather')
+console.log('     than erroring, so provisioning ahead of listing is safe.')
 
-// FAILED/TIMEOUT signal a real build or platform problem; a bot CRASH pre-config is expected.
-process.exitCode = botStatus === 'FAILED' || botStatus === 'TIMEOUT' ? 1 : 0
+process.exitCode = [...botStatuses.values()].some(badStatus) ? 1 : 0

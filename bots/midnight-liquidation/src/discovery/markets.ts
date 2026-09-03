@@ -1,11 +1,14 @@
 import type { Logger } from '@repo/bot-kit'
+import type { FetchPage } from '@repo/utils'
 import type { Address, Hex } from 'viem'
 
-import { delay, fetchWithRetry, tryCatch } from '@repo/utils'
+import { collectPages, delay, fetchWithRetry, tryCatch } from '@repo/utils'
 import createClient from 'openapi-fetch'
 import { isAddress, isHex } from 'viem'
 
 import type { components, paths } from '../generated/midnight-api'
+
+import { InvalidConfigError } from '../invalid-config.error'
 
 // Response shapes from `GET /v0/midnight/markets` (the seed script imports these too). The spec types
 // ids/addresses as plain strings; we brand the fields the codebase consumes as viem `Hex`/`Address`
@@ -46,6 +49,21 @@ type FetchLike = (request: Request) => Promise<Response>
 const REQUEST_TIMEOUT_MS = 5_000
 
 /**
+ * Page size requested from the markets endpoint. Sent explicitly rather than relying on the server's
+ * default, which is not ours to control and which the generated spec does not document at all (it
+ * says only "Maximum number of items to return"). Verified accepted by the live endpoint. The walk
+ * follows the cursor either way — this only trades round-trips.
+ */
+const PAGE_LIMIT = 100
+
+/**
+ * Runaway-cursor backstop for the whitelist walk, NOT an expected limit — the listed set is a handful
+ * of markets. Reaching it means the whitelist was truncated, which is fail-closed under-inclusion
+ * (listed markets silently dropped out of scope), so it logs loud via `markets.max_pages`.
+ */
+const MAX_MARKET_PAGES = 50
+
+/**
  * The markets-list operation path — a literal key of the generated {@link paths}, so `client.GET(PATH)`
  * is type-checked against the spec. The runtime base URL is derived by stripping this suffix from the
  * configured endpoint URL.
@@ -84,16 +102,31 @@ export function createListedMarketFilter(deps: {
   let listed = new Set<string>()
   let updatedAt: number | null = null
 
-  async function fetchListed(): Promise<ApiMarket[]> {
+  // Rows are branded to {@link ApiMarket} here, at the parse boundary, rather than after the walk:
+  // this is where the response shape is actually known. `refresh` still validates every field it
+  // consumes (`isHex` / `isAddress`) before trusting it.
+  const fetchPage: FetchPage<ApiMarket> = async cursor => {
     const body = await fetchWithRetry(
       () =>
         client.GET(PATH, {
-          params: { query: { listed: 'true' } },
+          params: {
+            query: { listed: 'true', limit: PAGE_LIMIT, ...(cursor ? { cursor } : {}) }
+          },
           signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS)
         }),
       { label: 'markets', sleep }
     )
-    return Array.isArray(body.data) ? (body.data as ApiMarket[]) : []
+    const nextCursor =
+      typeof body.cursor === 'string' && body.cursor.length > 0 ? body.cursor : null
+    return { cursor: nextCursor, data: Array.isArray(body.data) ? (body.data as ApiMarket[]) : [] }
+  }
+
+  const fetchListed = async (): Promise<ApiMarket[]> => {
+    const { rows, pages, truncated } = await collectPages(fetchPage, { maxPages: MAX_MARKET_PAGES })
+    if (truncated) {
+      deps.logger.warn('markets.max_pages', { pages, cap: MAX_MARKET_PAGES, rows: rows.length })
+    }
+    return rows
   }
 
   async function refresh(): Promise<void> {
@@ -194,7 +227,9 @@ export function createUnionListedMarketFilter(deps: {
   now?: () => number
 }): UnionListedMarketFilter {
   if (deps.filters.length === 0) {
-    throw new Error('createUnionListedMarketFilter requires at least one markets source')
+    throw new InvalidConfigError(
+      'createUnionListedMarketFilter requires at least one markets source'
+    )
   }
   const now = deps.now ?? (() => Date.now())
   const ageOf = (filter: ListedMarketFilter) => {

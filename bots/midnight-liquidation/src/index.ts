@@ -13,7 +13,6 @@ import {
   createRunner,
   createSigner,
   DEFAULT_MAX_DATA_BYTES,
-  DEFAULT_MAX_GAS_LIMIT,
   initialFees,
   railwayContext,
   simulateLiquidationExec
@@ -33,12 +32,8 @@ import { getBlockNumber, readContract } from 'viem/actions'
 import type { Market } from './execution/encode-call'
 import type { LiquidationPlan } from './sizing/plan'
 
-import { loadConfig } from './config'
-import {
-  LISTED_MARKETS_MAX_AGE_MS,
-  SETTLED_COOLDOWN_BLOCKS,
-  TOKEN_PRICES_REFRESH_MS
-} from './constants'
+import { BLOCK_POLL_MS, loadConfig } from './config'
+import { LISTED_MARKETS_MAX_AGE_MS, TOKEN_PRICES_REFRESH_MS } from './constants'
 import {
   createApiCandidateSource,
   discoverBorrowers,
@@ -74,7 +69,8 @@ async function main() {
       chainId: config.chainId,
       targets: [config.executooorAddress],
       maxFeePerGasWei: config.maxFeeWei,
-      maxGasLimit: DEFAULT_MAX_GAS_LIMIT,
+      maxSpendWei: config.maxSpendWei,
+      maxGasLimit: config.maxGasLimit,
       maxDataBytes: DEFAULT_MAX_DATA_BYTES
     },
     logger
@@ -324,8 +320,15 @@ async function main() {
     syncNonce: signer.syncNonce,
     getConsumedNonce: signer.consumedNonce,
     maxFeeWei: config.maxFeeWei,
+    maxSpendWei: config.maxSpendWei,
     logger,
-    settledCooldownBlocks: SETTLED_COOLDOWN_BLOCKS,
+    // From the chain's tuning row rather than bot-kit's Base-shaped defaults: the block-denominated
+    // three would otherwise mean 6x their intended wall-clock on a 12s chain, and `maxBumpAttempts`
+    // is sized against how fast that chain's basefee climbs.
+    settledCooldownBlocks: config.tuning.settledCooldownBlocks,
+    stuckBlocks: config.tuning.stuckBlocks,
+    maxBumpAttempts: config.tuning.maxBumpAttempts,
+    reconcileEveryBlocks: config.tuning.reconcileEveryBlocks,
     revertReason
   })
 
@@ -333,6 +336,7 @@ async function main() {
   const balanceMonitor = createBalanceMonitor({
     address: eoa,
     read: signer.balance,
+    everyBlocks: config.tuning.balanceEveryBlocks,
     logger
   })
   const heartbeatMonitor = createHeartbeatMonitor({
@@ -411,6 +415,7 @@ async function main() {
     getBlockNumber: () => getBlockNumber(client),
     tick,
     maintain,
+    intervalMs: BLOCK_POLL_MS,
     logger,
     revertReason
   })

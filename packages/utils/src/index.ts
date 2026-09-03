@@ -1,5 +1,6 @@
 export * from './helpers/addresses'
 export * from './helpers/bigint'
+export * from './helpers/collect-pages'
 export * from './helpers/deepFreeze'
 export * from './helpers/delay'
 export * from './helpers/deployless-batch-lens'

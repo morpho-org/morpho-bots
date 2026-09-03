@@ -460,7 +460,7 @@ describe('runTick', () => {
     // and the queue's — a stubbed submit cannot see it.
     const spy = spyLogger()
     const queue = createPendingQueue({
-      send: async () => ({ nonce: 7, txHash: `0x${'1'.repeat(64)}` }),
+      send: async () => ({ nonce: 7, txHash: `0x${'1'.repeat(64)}`, gas: 1_000_000n }),
       getReceipt: async () => null,
       getBaseFee: async () => 1n,
       maxFeeWei: 10n ** 18n,

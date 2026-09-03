@@ -76,6 +76,70 @@ const sourceFilter = (opts: {
 // Source labels carry the path, so `https://<host>/v0/midnight/markets` labels as `<host>/v0/...`.
 const label = (host: string) => `${host}/v0/midnight/markets`
 
+describe('createListedMarketFilter pagination', () => {
+  // A truncated whitelist is fail-closed under-inclusion: the dropped markets stop being liquidated
+  // with no error anywhere. The server's page size is not ours to control, so the walk must follow
+  // the cursor rather than trusting one response to be complete.
+  it('follows the cursor across pages and whitelists markets from every page', async () => {
+    const cursors: (string | null)[] = []
+    const fetchImpl = async (request: Request) => {
+      const cursor = new URL(request.url).searchParams.get('cursor')
+      cursors.push(cursor)
+      if (cursor === null) return jsonResponse({ cursor: 'page-2', data: [market(LISTED)] })
+      return jsonResponse({ cursor: null, data: [market(SHARED)] })
+    }
+    const filter = createListedMarketFilter({
+      apiUrl: API_URL,
+      chainId: 8453,
+      logger: NOOP_LOGGER,
+      fetchImpl,
+      sleep: async () => {}
+    })
+    await filter.refresh()
+
+    expect(cursors).toEqual([null, 'page-2'])
+    expect(filter.isListed(LISTED)).toBe(true)
+    // Would be missing if the walk stopped at page one — the bug this guards.
+    expect(filter.isListed(SHARED)).toBe(true)
+    expect(filter.snapshot().markets).toBe(2)
+  })
+
+  it('sends an explicit page limit rather than relying on the server default', async () => {
+    let requested = ''
+    const filter = createListedMarketFilter({
+      apiUrl: API_URL,
+      chainId: 8453,
+      logger: NOOP_LOGGER,
+      fetchImpl: async request => {
+        requested = request.url
+        return jsonResponse({ cursor: null, data: [] })
+      },
+      sleep: async () => {}
+    })
+    await filter.refresh()
+
+    expect(new URL(requested).searchParams.get('limit')).toBe('100')
+  })
+
+  it('stops at the page cap and logs it loud rather than walking a runaway cursor', async () => {
+    const logger = capturingLogger()
+    const filter = createListedMarketFilter({
+      apiUrl: API_URL,
+      chainId: 8453,
+      logger: logger.logger,
+      // Never returns a null cursor — the runaway case the backstop exists for.
+      fetchImpl: async () => jsonResponse({ cursor: 'next', data: [market(LISTED)] }),
+      sleep: async () => {}
+    })
+    await filter.refresh()
+
+    const capped = logger.find('markets.max_pages')
+    expect(capped?.level).toBe('warn')
+    expect(capped?.fields.cap).toBe(50)
+    expect(capped?.fields.pages).toBe(50)
+  })
+})
+
 describe('createListedMarketFilter', () => {
   it('requests listed=true and whitelists only listed markets on the configured chain', async () => {
     let requested = ''

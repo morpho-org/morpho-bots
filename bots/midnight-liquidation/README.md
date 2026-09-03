@@ -1,6 +1,6 @@
 # Midnight Liquidation Bot
 
-Off-chain liquidator for Morpho Midnight markets on Base.
+Off-chain liquidator for Morpho Midnight markets, running on Base and Ethereum mainnet.
 
 The bot watches candidate borrowers, reads their live Midnight state, builds a liquidation plan,
 simulates the exact transaction it would send, and only broadcasts when the full Executor path
@@ -10,7 +10,12 @@ succeeds.
 
 This package is operational code, but it is still intentionally narrow:
 
-- Supported chain: Base (`CHAIN_ID=8453`).
+- Supported chains: Base (`CHAIN_ID=8453`) and Ethereum mainnet (`CHAIN_ID=1`). **One process per
+  chain** — the bot is single-chain by design; horizontal scale is one deployment per chain.
+- Each chain carries its own calibration (`TuningConfig` in `src/config.ts`): block-denominated
+  values are derived from a shared wall-clock intent through the chain's block time, and the fee /
+  economics values are set per chain. The fee/economics half is env-overridable (see **Per-chain
+  defaults**); the block-timing half is code-only, changed by editing the chain's row.
 - The markets the bot may touch come from the Midnight markets API (`listed=true`) as a **whitelist**:
   only listed markets are discovered, probed, and liquidated (fail-closed). There is no hand-maintained
   collateral list.
@@ -66,8 +71,8 @@ Environment variables:
 
 | Var                                                       | Required | Default                               | Purpose                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | --------------------------------------------------------- | -------- | ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `CHAIN_ID`                                                | yes      | —                                     | Must be `8453` for Base.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| `RPC_URL`                                                 | yes      | —                                     | Base RPC used for reads, simulation, and sends. Must be a full RPC that relays `eth_sendRawTransaction` — a read-only relay that acks sends without forwarding them to the sequencer would leave every tx unmined.                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `CHAIN_ID`                                                | yes      | —                                     | Must be in the chain map: `8453` (Base) or `1` (Ethereum mainnet). Selects the deployment address and the chain tuning row.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `RPC_URL`                                                 | yes      | —                                     | RPC for the configured chain, used for reads, simulation, and sends. Must be a full RPC that relays `eth_sendRawTransaction` — a read-only relay that acks sends without forwarding them to the sequencer would leave every tx unmined.                                                                                                                                                                                                                                                                                                                                                                                        |
 | `RPC_URL_FALLBACK`                                        | no       | —                                     | Optional fallback RPC for the signer's transport.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | `LIQUIDATOR_PRIVATE_KEY`                                  | yes      | —                                     | `0x`-prefixed 32-byte private key for the sender EOA.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | `EXECUTOOOR_ADDRESS`                                      | no       | derived                               | Override for the shared Executor address.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
@@ -82,8 +87,10 @@ Environment variables:
 | `ALLOW_BAD_DEBT_ONLY`                                     | no       | `false`                               | When no venue is enabled, the bot refuses to start unless this is `true` (it then discovers positions, realizes bad debt, and liquidates loan-as-collateral slots, which need no route; it never swap-liquidates, and an unwrap chain counts as a swap here).                                                                                                                                                                                                                                                                                                                                                                  |
 | `ZEROX_BASE_URL` / `ONEINCH_BASE_URL` / `LIFI_BASE_URL`   | no       | public                                | Optional venue API host overrides.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | `EXCLUDE_COLLATERALS`                                     | no       | —                                     | Comma-separated collateral addresses the bot must never seize/hold — skipped (no quote) even in a listed market.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| `MAX_FEE_GWEI`                                            | no       | `300`                                 | Hard max fee cap used by the pending transaction queue.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| `PRIORITY_FEE_GWEI`                                       | no       | `0.1`                                 | First-send tip. The bump path adds at most 1.42x (3 attempts × 12.5%) over ~15 blocks, so this value, not the ceiling, sets what the bot actually pays for inclusion. Must leave room for one bump under `MAX_FEE_GWEI`.                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `MAX_FEE_GWEI`                                            | no       | `300`                                 | Ceiling on the price of one gas unit — the headroom the bump ladder needs, not a bound on cost (that is `MAX_SPEND_ETH`). A value near the basefee makes the queue drop the tx and latch a nonce hole. Chain-independent.                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `MAX_GAS_LIMIT`                                           | no       | chain-dependent                       | Ceiling on a signed transaction's gas limit, enforced by the signing policy. Caps the units, not the cost. Tightened per chain because gas is the knowable factor, while `MAX_FEE_GWEI` must stay wide for the bump ladder. Must be at least `21000`. See **Per-chain defaults**.                                                                                                                                                                                                                                                                                                                                              |
+| `MAX_SPEND_ETH`                                           | no       | `0.5`                                 | Ceiling on `gas x maxFeePerGas` for one transaction, in ETH — the bound on what a single tx can cost, enforced by the signing policy and by the queue when it prices each bump. Neither `MAX_GAS_LIMIT` nor `MAX_FEE_GWEI` bounds cost alone. Chain-independent.                                                                                                                                                                                                                                                                                                                                                               |
+| `PRIORITY_FEE_GWEI`                                       | no       | chain-dependent                       | First-send tip — this value, not the ceiling, is what the bot actually pays for inclusion, since the bump ladder only escalates it 12.5% per attempt. Must leave room for one bump under `MAX_FEE_GWEI`. See **Per-chain defaults**.                                                                                                                                                                                                                                                                                                                                                                                           |
 | `LOG_LEVEL`                                               | no       | `info`                                | One of `debug`, `info`, `warn`, `error`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | `CACHE_DIR`                                               | no       | `.cache`                              | Soltag/deployless cache directory.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | `QUOTE_TIMEOUT_MS`                                        | no       | `2500`                                | Per-quote HTTP deadline (the firm quote runs inside the per-block tick).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
@@ -93,11 +100,11 @@ Environment variables:
 | `PROBE_LADDER`                                            | no       | `0.01,0.1,1,10,100,1000,10000,100000` | Comma-separated log-scaled probe sizes in **USD**, converted per-collateral to base units against the token price (whole collateral tokens for a collateral the price source cannot price). Fixed and deliberately wide — decades from \$0.01 to \$100k bracket every real seize size on any collateral, so `select` interpolates rather than clamping.                                                                                                                                                                                                                                                                        |
 | `HTTP_MAX_RETRIES`                                        | no       | `2`                                   | Retries on 429/5xx/network (honoring `Retry-After`) before a quote fails.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | `MAX_ROUTE_IMPACT_BPS`                                    | no       | `500`                                 | Reject a venue's quoted output more than this far below the oracle reference (route-quality guard).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| `SEIZE_CAP_MARGIN_BPS`                                    | no       | `30`                                  | Headroom shaved off the on-chain repay cap when sizing a cap-binding seize, so a one-block oracle move can't trip the contract's RCF/debt check. `0` sizes right at the cap.                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `SEIZE_CAP_MARGIN_BPS`                                    | no       | chain-dependent                       | Headroom shaved off the on-chain repay cap when sizing a cap-binding seize, so a one-block oracle move can't trip the contract's RCF/debt check. `0` sizes right at the cap.                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | `HEADROOM_FLOOR_BPS`                                      | no       | `3`                                   | **Lower bound** on swap execution cost — the cheapest route you would ever expect, NOT a typical cost. A seize-exact plan's whole margin is the incentive `(lif - 1)/lif`, so a plan below this floor cannot fund its own repay by any route and is skipped as `plan.skipped` / `insufficient_headroom` before it costs a quote, a simulation or a gas estimate. Post-maturity the incentive ramps from zero over an hour, so this acts as a pure time gate: `3` suppresses roughly the first 25s on a 4.4%-maxLif tier. Set it too high and it blinds the earliest, most contested part of a maturity. `0` disables the gate. |
 | `MIN_SURPLUS_BPS`                                         | no       | `0`                                   | Surplus over break-even a quoted route's **expected** output must clear before the bot spends a simulation on it, in bps of the plan's contract-derived repay. `0` is pure break-even: both sides then come from the contract's own formula with no tuned value, so the gate can only reject plans that would have reverted anyway. It gates the expected output only — the min-out actually encoded in the swap calldata stays at break-even — so raising it buys margin against a route that underperforms its quote, not against oracle drift between simulation and inclusion.                                             |
 | `PENDLE_SLIPPAGE_BPS`                                     | no       | `50`                                  | Slippage for the Pendle PT → underlying unwrap hop (before the downstream venue sells).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| `BACKOFF_BASE_BLOCKS` / `BACKOFF_MAX_BLOCKS`              | no       | `2` / `64`                            | Exponential per-position cooldown (in blocks) after a failed quote/simulate, bounding API + RPC usage under a backlog. An economic refusal (`floor_unmet`, an unprofitable quote) never arms it, and neither does a send the chain itself declined — see [Broadcast And Pending Queue](#broadcast-and-pending-queue).                                                                                                                                                                                                                                                                                                          |
+| `BACKOFF_BASE_BLOCKS` / `BACKOFF_MAX_BLOCKS`              | no       | chain-dependent                       | Exponential per-position cooldown (in blocks) after a failed quote/simulate, bounding API + RPC usage under a backlog. An economic refusal (`floor_unmet`, an unprofitable quote) never arms it, and neither does a send the chain itself declined — see [Broadcast And Pending Queue](#broadcast-and-pending-queue).                                                                                                                                                                                                                                                                                                          |
 | `POSITION_LIQUIDATION_COOLDOWN_MS`                        | no       | `0`                                   | Opt-in per-position cooldown (ms) after a failed liquidation attempt; `0` disables it (re-attempt every tick).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | `BETTERSTACK_SOURCE_TOKEN` / `BETTERSTACK_INGESTING_HOST` | no       | —                                     | Opt-in log shipping; when both are set the bot's in-process loglayer transport ships structured logs to BetterStack (inert otherwise).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | `BETTERSTACK_HEARTBEAT_URL`                               | no       | —                                     | Optional Better Stack Uptime heartbeat URL, pinged every minute; failures only log a warning and never interrupt liquidations.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
@@ -114,10 +121,55 @@ RPC_URL_FALLBACK=https://base-mainnet-fallback.example
 LIQUIDATOR_PRIVATE_KEY=0x...
 ZEROX_API_KEY=...
 ONEINCH_API_KEY=...
-MAX_FEE_GWEI=300
+# Fee and economics knobs default from the chain's row in src/config.ts; set them only to override.
+# Every value below is already Base's default — shown for shape, not because it needs setting.
 PRIORITY_FEE_GWEI=0.1
 LOG_LEVEL=info
 ```
+
+### Per-chain defaults
+
+Several defaults are **chain-dependent**, resolved from the `CHAIN_ID` row before any env override is
+applied. Block counts come from one shared wall-clock intent divided by the chain's block time, so the
+same behaviour keeps the same timing on a ~2s and a ~12s chain.
+
+**Code-only** — no env var; retuned by editing the chain's row in `src/config.ts`:
+
+| Default                                       | Base (8453)  | Mainnet (1) | Why it differs                                     |
+| --------------------------------------------- | ------------ | ----------- | -------------------------------------------------- |
+| `settledCooldownBlocks` / `stuckBlocks`       | `20n` / `4n` | `3n` / `1n` | Same wall-clock intent, ~6x the block time.        |
+| `reconcileEveryBlocks` / `balanceEveryBlocks` | `3` / `30n`  | `1` / `5n`  | Same, for nonce reconciliation and the gas metric. |
+| `maxBumpAttempts`                             | `3`          | `6`         | Mainnet basefee can climb 12.5% per block.         |
+
+**Env-overridable** — the chain's row supplies the default, the env var wins:
+
+| Default                                      | Base (8453)  | Mainnet (1)  | Why it differs                                      |
+| -------------------------------------------- | ------------ | ------------ | --------------------------------------------------- |
+| `PRIORITY_FEE_GWEI`                          | `0.1`        | `2`          | Base tips are nominal; mainnet's are a real market. |
+| `MAX_GAS_LIMIT`                              | `15000000`   | `3000000`    | Caps gas units; tightened where fees are real.      |
+| `SEIZE_CAP_MARGIN_BPS`                       | `30`         | `60`         | One block of oracle drift is ~6x longer on mainnet. |
+| `BACKOFF_BASE_BLOCKS` / `BACKOFF_MAX_BLOCKS` | `2n` / `64n` | `1n` / `11n` | Same wall-clock intent, ~6x the block time.         |
+
+`MAX_FEE_GWEI` is deliberately **not** per-chain (`300` on both). It bounds the price of a gas unit,
+not the cost of a transaction, and it is the headroom the bump ladder escalates into: the queue drops
+a tx — latching a nonce hole — once a bumped `maxFeePerGas` would exceed it, so a tight ceiling
+shortens the ladder exactly when congestion makes it matter. That is why it cannot double as a spend
+limit. `test/config.test.ts` pins the basefee each chain completes its full ladder at, in both the
+flat and the maximum-rise regime, driving bot-kit's own fee functions rather than restating them.
+
+`MAX_SPEND_ETH` is what actually bounds cost, also **not** per-chain (`0.5` on both, since it is
+denominated in the gas token rather than in either chain's fee level). It caps `gas x maxFeePerGas`
+for a single transaction — the product is what leaves the wallet, and neither factor bounds it alone:
+15M gas at 300 gwei is 4.5 ETH. It is enforced twice, by the signing policy against the gas the node
+actually estimated, and by the pending queue, which prices each bump against it so an unaffordable
+bump retires the tx through the ordinary ceiling drop instead of a signing refusal. The default is
+sized to bound a runaway rather than to price a liquidation; calibrate it down once production
+`tx.confirmed` gas gives a distribution to calibrate against.
+
+`MIN_SURPLUS_BPS` is deliberately **not** per-chain: it stays at pure break-even (`0`) on both, where
+the gate compares two contract-derived quantities and can only reject plans that would have reverted
+on-chain. Raising it trades captured liquidations for margin and wants a measured basis distribution
+rather than a guess.
 
 ### Markets, venues, and probing
 
@@ -280,35 +332,43 @@ Useful options:
 
 ## Running With Docker Compose
 
-[docker-compose.yml](./docker-compose.yml) defines a single `bot` service (discovery is the remote
-API, so there is no database or indexer). It builds from the repo root so workspace packages resolve
-correctly.
+[docker-compose.yml](./docker-compose.yml) defines one service per chain — `bot-8453` and `bot-1`
+(discovery is the remote API, so there is no database or indexer). Both build from the repo root so
+workspace packages resolve correctly.
+
+Operator-facing RPC and venue vars are **chainId-suffixed**; inside each container the runtime env is
+unsuffixed, because each service runs exactly one chain.
 
 From `bots/midnight-liquidation`:
 
 ```sh
-export RPC_URL=https://base-mainnet.example
+export RPC_URL_8453=https://base-mainnet.example
+export RPC_URL_1=https://eth-mainnet.example
 export LIQUIDATOR_PRIVATE_KEY=0x...
-export ZEROX_API_KEY=...   # and/or ONEINCH_API_KEY
+export ZEROX_API_KEY_8453=...   # and/or ONEINCH_API_KEY_8453 / LIFI_API_KEY_8453
 docker compose up --build
 ```
+
+Run a single chain with `docker compose up --build bot-8453`.
 
 Optional variables:
 
 ```sh
 export EXECUTOOOR_ADDRESS=0x...
 export LOG_LEVEL=debug
+export RPC_URL_FALLBACK_8453=https://base-mainnet-fallback.example
+export ALLOW_BAD_DEBT_ONLY_1=true   # run a chain unarmed, with no venue key
 ```
 
 ## Deploying to Railway
 
-The bot runs as a single service on the Railway project `bot.liquidation.midnight` (discovery is the
-remote API — no Postgres or indexer service). [scripts/deploy-railway.ts](./scripts/deploy-railway.ts)
-provisions and deploys it idempotently from the [Railway CLI](https://docs.railway.com/guides/cli), so
-it runs the same locally or in CI.
+The bot runs as one service per chain on the Railway project `bot.liquidation.midnight` (discovery is
+the remote API — no Postgres or indexer service).
+[scripts/deploy-railway.ts](./scripts/deploy-railway.ts) provisions and deploys them idempotently from
+the [Railway CLI](https://docs.railway.com/guides/cli), so it runs the same locally or in CI.
 
-Railway service names are project-wide: production uses `bot`, while non-production environments use
-an environment prefix (for example, `staging-bot`).
+Railway service names are project-wide: production uses `bot-<chainId>` (`bot-8453`, `bot-1`), while
+non-production environments use an environment prefix (for example, `staging-bot-8453`).
 
 The [Dockerfile](./Dockerfile) is a single-stage Node image (pnpm installs, esbuild bundles, node runs);
 `RAILWAY_DOCKERFILE_PATH` points Railway at it and `railway up` runs from the repo root so the pnpm
@@ -321,26 +381,60 @@ environment and run the script:
 
 ```sh
 export RAILWAY_PROJECT_ID=...   # required: the Railway project to deploy to
-export RPC_URL=https://base-mainnet.example
-export LIQUIDATOR_PRIVATE_KEY=0x...
-# Optional: RAILWAY_ENVIRONMENT (defaults to production).
+export RPC_URL_8453=https://base-mainnet.example
+export RPC_URL_1=https://eth-mainnet.example
+export LIQUIDATOR_PRIVATE_KEY=0x...          # or per-chain LIQUIDATOR_PRIVATE_KEY_<chainId>
+export ZEROX_API_KEY=...                     # one venue credential covers every chain; suffix it
+                                             # (ZEROX_API_KEY_1) only to give a chain its own
+export ALLOW_BAD_DEBT_ONLY_1=true            # every chain needs a venue key or this opt-in, or the
+                                             # run is refused before it touches Railway
+# Optional: RAILWAY_ENVIRONMENT (defaults to production), RPC_URL_FALLBACK_<chainId>,
+# PRIORITY_FEE_GWEI_<chainId>, MAX_GAS_LIMIT_<chainId>, MAX_SPEND_ETH_<chainId>.
 pnpm --filter @morpho-org/midnight-liquidation run deploy:railway
 ```
 
 Secrets are read from the script's environment, piped to Railway via stdin (never argv), and never
-logged. The script fails loud if `RPC_URL` or `LIQUIDATOR_PRIVATE_KEY` is missing.
+logged. The script fails loud — before mutating any Railway state — if a chain's `RPC_URL_<chainId>`
+or private key is missing, or if a chain has no venue enabled and no `ALLOW_BAD_DEBT_ONLY_<chainId>`
+opt-in.
 
-Set `DEPLOY_ONLY=1` (or `true`) to re-ship the **already-provisioned** `bot` service from the current
-working tree without setting any secrets or variables — the mode the deploy CI uses (it holds no
-RPC/keys). In this mode `RPC_URL` and `LIQUIDATOR_PRIVATE_KEY` are not required.
+The venue posture is **synchronized** on every full run: `ENABLE_LIFI` / `ALLOW_BAD_DEBT_ONLY` are set
+explicitly, and each venue key and fee override is either set from this run's inputs or **deleted**
+when absent — so neither a stale opt-in nor a dropped key can linger from a previous run. A `CRASHED`
+deployment counts as a failed deploy, because the bot fails loud on a bad config.
+
+Set `DEPLOY_ONLY=1` (or `true`) to re-ship every **already-provisioned** `bot-<chainId>` service from
+the current working tree without setting any secrets or variables — the mode the deploy CI uses (it
+holds no RPC/keys). In this mode the RPC and key requirements do not apply.
+
+Mainnet needs the Executor deployed once before its service can boot (startup asserts it holds code):
+
+```sh
+RPC_URL=<mainnet> DEPLOYER_PRIVATE_KEY=0x... pnpm --filter @repo/contracts run deploy:executor
+```
+
+Provisioning mainnet ahead of any listed market is safe: the whitelist is fail-closed, so the bot
+idles at `markets.listed { markets: 0 }` rather than erroring, and starts working when markets list.
 
 ### Venue API keys
 
 There is no swap config file to upload anymore — venues are enabled by the presence of their API key
-(or `ENABLE_LIFI=true` for keyless LiFi). The deploy script uploads `LIFI_API_KEY`, `ZEROX_API_KEY`,
-and `ONEINCH_API_KEY` when they are present in its environment. Set `ENABLE_LIFI=true` manually in the
-Railway service only when you want keyless LiFi. With no venue enabled, the service will refuse to
-start unless `ALLOW_BAD_DEBT_ONLY=true`.
+(or `ENABLE_LIFI_<chainId>=true` for keyless LiFi). The deploy script uploads
+`LIFI_API_KEY_<chainId>`, `ZEROX_API_KEY_<chainId>`, and `ONEINCH_API_KEY_<chainId>` when they are
+present in its environment. Every per-chain input takes the `_<chainId>` suffix, and the split is by
+whether the value is genuinely the same on every chain:
+
+| Accepts an unsuffixed fallback                                                                                                        | Suffixed-only                                                          |
+| ------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| `ZEROX_API_KEY`, `ONEINCH_API_KEY`, `LIFI_API_KEY`, `ENABLE_LIFI` — one venue credential is honored on every chain the venue supports | `RPC_URL` — per chain by definition                                    |
+| `LIQUIDATOR_PRIVATE_KEY` — reusing one funded EOA across chains is intended                                                           | `PRIORITY_FEE_GWEI`, `MAX_GAS_LIMIT` — separately calibrated per chain |
+| `MAX_SPEND_ETH` — chain-independent by design, denominated in the gas token                                                           | `ALLOW_BAD_DEBT_ONLY` — arms a chain rather than crediting it          |
+
+Suffixing always wins over the unsuffixed name, so a chain that needs its own value can still have one.
+
+`ALLOW_BAD_DEBT_ONLY_<chainId>` is suffixed-only because it **arms** rather than narrows: with no
+venue enabled, that chain's service refuses to start without it, and runs — spending gas to realize
+bad debt — with it. It must name the chain it means.
 
 ## How It Works
 

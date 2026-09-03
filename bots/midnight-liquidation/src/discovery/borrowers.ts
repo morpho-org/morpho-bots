@@ -1,7 +1,8 @@
 import type { Logger } from '@repo/bot-kit'
+import type { CursorPage, FetchPage } from '@repo/utils'
 import type { Address, Hex } from 'viem'
 
-import { delay, fetchWithRetry } from '@repo/utils'
+import { collectPages, delay, fetchWithRetry } from '@repo/utils'
 import createClient from 'openapi-fetch'
 import { getAddress, isAddress, isHex } from 'viem'
 
@@ -10,20 +11,23 @@ import type { paths } from '../generated/markets-api'
 /** A candidate position to evaluate: a (market, borrower) pair the API flagged as at-risk. */
 export type BorrowerCandidate = { marketId: Hex; borrower: Address }
 
-/** One page of the cursor-paginated liquidation-candidates response: the raw rows plus the cursor. */
-export type CandidatePage = { cursor: string | null; data: readonly unknown[] }
+/**
+ * One page of the cursor-paginated liquidation-candidates response. Rows stay `unknown`: the shape is
+ * validated per row by {@link parseCandidate}, which is the only thing that reads them.
+ */
+export type CandidatePage = CursorPage<unknown>
 
 /**
  * Fetches one page of candidates given the previous page's cursor (`null` for the first page). It is
  * injected into {@link discoverBorrowers} so the pagination + row parsing is unit-testable without a
  * network; the runtime adapter that actually calls the endpoint is {@link createApiCandidateSource}.
  */
-export type FetchCandidatePage = (cursor: string | null) => Promise<CandidatePage>
+export type FetchCandidatePage = FetchPage<unknown>
 
 // Per-request tuning for the candidates endpoint: a short deadline. The retry policy lives in
 // `@repo/utils` (see {@link fetchWithRetry}).
 const REQUEST_TIMEOUT_MS = 5_000
-/** The endpoint's maximum page size — fewer round-trips than the default 20. */
+/** Page size requested explicitly; the spec documents no maximum and no default. Fewer round-trips. */
 const PAGE_LIMIT = 100
 
 /**
@@ -77,28 +81,21 @@ export async function discoverBorrowers(
   deps: { logger: Logger; maxPages?: number }
 ): Promise<BorrowerCandidate[]> {
   const maxPages = deps.maxPages ?? MAX_DISCOVERY_PAGES
+  const { rows, pages, truncated } = await collectPages(fetchPage, { maxPages })
+  if (truncated) {
+    deps.logger.warn('discover.max_pages', { pages, cap: maxPages, rows: rows.length })
+  }
+
   const seen = new Set<string>()
   const candidates: BorrowerCandidate[] = []
-  let cursor: string | null = null
-  let pages = 0
-
-  do {
-    const page = await fetchPage(cursor)
-    pages += 1
-    for (const row of page.data) {
-      const candidate = parseCandidate(row)
-      if (!candidate) continue
-      const key = `${candidate.marketId}:${candidate.borrower}`
-      if (seen.has(key)) continue
-      seen.add(key)
-      candidates.push(candidate)
-    }
-    cursor = page.cursor
-    if (cursor && pages >= maxPages) {
-      deps.logger.warn('discover.max_pages', { pages, cap: maxPages, collected: candidates.length })
-      break
-    }
-  } while (cursor)
+  for (const row of rows) {
+    const candidate = parseCandidate(row)
+    if (!candidate) continue
+    const key = `${candidate.marketId}:${candidate.borrower}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    candidates.push(candidate)
+  }
 
   return candidates
 }

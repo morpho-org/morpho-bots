@@ -13,6 +13,9 @@ const POLICY: Policy = {
   targets: [EXECUTOR],
   maxFeePerGasWei: 300_000_000_000n,
   maxGasLimit: 15_000_000n,
+  // Exactly the product of the two ceilings above, so it asserts what they already imply and the
+  // at-the-ceilings case below still passes. A budget that BINDS is exercised separately.
+  maxSpendWei: 15_000_000n * 300_000_000_000n,
   maxDataBytes: 64
 }
 
@@ -37,6 +40,24 @@ describe('evaluatePolicy', () => {
         POLICY,
         tx({ maxFeePerGas: 300_000_000_000n, gas: 15_000_000n, data: EXECUTOR_SELECTOR })
       )
+    ).toEqual({ ok: true })
+  })
+
+  // Neither ceiling alone bounds cost: a tx can sit under both and still be unaffordable, which is
+  // the whole reason the product is asserted rather than left implied.
+  it('denies on the product when both gas and fee are individually under their ceilings', () => {
+    const budgeted: Policy = { ...POLICY, maxSpendWei: 10n ** 17n } // 0.1 ETH
+    const overspend = tx({ gas: 10_000_000n, maxFeePerGas: 100_000_000_000n }) // 1 ETH
+
+    expect(evaluatePolicy(POLICY, overspend)).toEqual({ ok: true })
+    expect(evaluatePolicy(budgeted, overspend)).toMatchObject({ ok: false, check: 'spend' })
+  })
+
+  it('accepts a transaction exactly at the spend ceiling', () => {
+    const budgeted: Policy = { ...POLICY, maxSpendWei: 10n ** 17n }
+
+    expect(
+      evaluatePolicy(budgeted, tx({ gas: 1_000_000n, maxFeePerGas: 100_000_000_000n }))
     ).toEqual({ ok: true })
   })
 
@@ -107,6 +128,7 @@ describe('evaluatePolicy multicall envelope', () => {
     chainId: 8453,
     targets: [VAULT_A, VAULT_B],
     maxFeePerGasWei: 300_000_000_000n,
+    maxSpendWei: 5n * 10n ** 17n,
     maxGasLimit: 15_000_000n,
     maxDataBytes: 65_536,
     selector: toFunctionSelector('function multicall(bytes[])'),

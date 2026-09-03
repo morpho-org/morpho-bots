@@ -145,7 +145,7 @@ export function createSigner(options: {
     }
     try {
       const txHash = await sendTransaction(client, request)
-      return { nonce, txHash }
+      return { nonce, txHash, gas: request.gas ?? 0n }
     } catch (error) {
       if (req.nonce === undefined) nextNonce = Math.min(nextNonce ?? nonce, nonce)
       throw new TxSendError(error, nonce)

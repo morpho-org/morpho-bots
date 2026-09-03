@@ -10,11 +10,16 @@ import { EXECUTOR_SELECTOR, PolicyViolationError } from '../src/policy'
 import { createSigner } from '../src/signer'
 import { TxSendError } from '../src/tx-send.error'
 
+// The `eth_estimateGas` these tests mock (0x5208). The signer returns it so the queue can price its
+// own bump ladder against the spend ceiling.
+const STUB_GAS = 21_000n
+
 const EXECUTOR = `0x${'11'.repeat(20)}` as const
 const POLICY: Policy = {
   chainId: base.id,
   targets: [EXECUTOR],
   maxFeePerGasWei: 300_000_000_000n,
+  maxSpendWei: 5n * 10n ** 17n,
   maxGasLimit: 15_000_000n,
   maxDataBytes: 65_536
 }
@@ -65,7 +70,7 @@ describe('createSigner', () => {
       maxFeePerGas: 1_000_000_000n,
       maxPriorityFeePerGas: 1_000_000n
     })
-    expect(result).toEqual({ nonce: 5, txHash: TXHASH })
+    expect(result).toEqual({ nonce: 5, txHash: TXHASH, gas: STUB_GAS })
   })
 
   it('claims sequential nonces, and syncNonce re-reads the chain pending nonce over the cursor', async () => {
@@ -144,7 +149,7 @@ describe('createSigner', () => {
       maxPriorityFeePerGas: 1_000_000n
     }
     await expect(send(request)).rejects.toBeInstanceOf(TxSendError)
-    expect(await send(request)).toEqual({ nonce: 5, txHash: TXHASH })
+    expect(await send(request)).toEqual({ nonce: 5, txHash: TXHASH, gas: STUB_GAS })
     expect(rawNonces).toEqual([5, 5])
   })
 
@@ -209,7 +214,7 @@ describe('createSigner', () => {
       maxFeePerGas: 1_000_000_000n,
       maxPriorityFeePerGas: 1_000_000n
     })
-    expect(result).toEqual({ nonce: 5, txHash: TXHASH })
+    expect(result).toEqual({ nonce: 5, txHash: TXHASH, gas: STUB_GAS })
     expect(sends).toBe(1)
   })
 
@@ -244,7 +249,7 @@ describe('createSigner', () => {
         maxFeePerGas: 1_000_000_000n,
         maxPriorityFeePerGas: 1_000_000n
       })
-    ).toEqual({ nonce: 5, txHash: TXHASH })
+    ).toEqual({ nonce: 5, txHash: TXHASH, gas: STUB_GAS })
   })
 
   it('rejects a non-exec selector before broadcasting', async () => {

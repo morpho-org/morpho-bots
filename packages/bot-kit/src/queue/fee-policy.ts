@@ -54,8 +54,11 @@ const DEFAULT_PRIORITY_WEI = 10n ** 9n
 /**
  * First-send fees from the current base fee: `priorityFeeWei` (default 1 gwei) and a 2×-base-fee
  * headroom max, both clamped to the operator's `maxFeeWei` ceiling. A ceiling below the headroom
- * naturally underprices the first send, but the bump path tops out at 3 attempts of +12.5%, so
- * `priorityFeeWei` is effectively the whole bid and must be set to win, not escalated into. Pure.
+ * naturally underprices the first send, and because each bump adds only +12.5%, `priorityFeeWei` is
+ * effectively the whole bid and must be set to win rather than escalated into. Note the ceiling also
+ * caps how many bumps run at all: {@link bumpFees} drops once the bumped max exceeds `maxFeeWei`, so
+ * a ceiling close to `baseFee * 2` shortens the ladder regardless of the configured attempt count.
+ * Pure.
  */
 export function initialFees(
   baseFee: bigint,
