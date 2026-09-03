@@ -267,17 +267,17 @@ Every **position-scoped** event carries the position in one field, **`id`**, who
 group into one row per position with **no normalization in the query** (`GROUP BY id`). `tx.*` used to
 name the same string `label`; it does not any more. The full set:
 
-`plan.built`, `cooldown.skip`, `config.no_swap_path`, `quote.excluded_collateral`, `unwrap.failed`,
-`unwrap.resolved`, `unwrap.bad_route`, `unwrap.preview_reverted`, `unwrap.preview_zero`,
-`quote.floor_unmet`, `quote.ok`, `quote.failed`, `quote.route_quality_failed`, `probe.error`,
-`select.cold_default`, `select.ok`, `simulate.ok`, `simulate.revert`, `tx.send_aborted`,
-`tx.submit_failed`, `tx.sent`, `tx.bumped`, `tx.confirmed`, `tx.reverted`, `tx.dropped`,
-`tx.replace_failed`, `tx.onblock_error`, `nonce.sync_failed`, `queue.nonce_hole`.
+`plan.skipped`, `plan.built`, `cooldown.skip`, `config.no_swap_path`, `quote.excluded_collateral`,
+`unwrap.failed`, `unwrap.resolved`, `unwrap.bad_route`, `unwrap.preview_reverted`,
+`unwrap.preview_zero`, `quote.floor_unmet`, `quote.ok`, `quote.failed`, `quote.route_quality_failed`,
+`probe.error`, `select.cold_default`, `select.ok`, `simulate.ok`, `simulate.revert`,
+`tx.send_aborted`, `tx.submit_failed`, `tx.sent`, `tx.bumped`, `tx.confirmed`, `tx.reverted`,
+`tx.dropped`, `tx.replace_failed`, `tx.onblock_error`, `nonce.sync_failed`, `queue.nonce_hole`.
 
-`plan.built` also keeps `marketId` and `borrower` as human-readable extras — for reading a single
-line, not for grouping. A Blue market has exactly one collateral, so one position is one candidate:
-unlike `bots/midnight-liquidation`, `id` alone identifies a row and no candidate discriminator is
-emitted.
+`plan.skipped` and `plan.built` also keep `marketId` and `borrower` as human-readable extras — for
+reading a single line, not for grouping. A Blue market has exactly one collateral, so one position is
+one candidate: unlike `bots/midnight-liquidation`, `id` alone identifies a row and no candidate
+discriminator is emitted.
 
 Everything else is scoped to something other than a position and carries **no** `id`, by design —
 per tick (`discover.*`, `lens.read`, `tick.end`, `tick.error`, `block.new`), per venue pair

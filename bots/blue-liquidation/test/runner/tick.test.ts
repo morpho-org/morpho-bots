@@ -3,7 +3,7 @@ import type { CooldownStore } from '@repo/bot-kit'
 import type { QuoteOutcome, SwapPlan } from '@repo/swaps'
 import type { Address } from 'viem'
 
-import { createBackoff, createCooldownStore, createPendingQueue } from '@repo/bot-kit'
+import { createBackoff, createCooldownStore, createPendingQueue, TxSendError } from '@repo/bot-kit'
 import { lensKey } from '@repo/utils'
 import { getAddress } from 'viem'
 import { describe, expect, it } from 'vitest'
@@ -29,6 +29,18 @@ function spyLogger() {
   return { logger, events }
 }
 
+// The sums documented on TickCounters. Asserted rather than eyeballed so a new loop exit that forgets
+// its counter fails a test instead of silently dropping a position from the tally.
+const expectCounterIdentities = (c: Awaited<ReturnType<typeof runTick>>) => {
+  expect(c.pairs).toBeGreaterThanOrEqual(c.liquidatable)
+  expect(c.liquidatable).toBe(c.inflightSkipped + c.planSkipped + c.planned)
+  // One collateral per Blue market, so one position is one candidate and `planned` heads this sum.
+  expect(c.planned).toBe(
+    c.cooledDown + c.backoffSkipped + c.noSwapPath + c.quoteFailed + c.ok + c.reverted
+  )
+  expect(c.ok).toBe(c.submitted + c.notSent)
+}
+
 const BORROWER: Address = getAddress('0x1111111111111111111111111111111111111111')
 const LOAN: Address = getAddress('0x3333333333333333333333333333333333333333')
 const COLL: Address = getAddress('0x4444444444444444444444444444444444444444')
@@ -44,6 +56,7 @@ const PARAMS: MarketParams = {
   lltv: 86n * 10n ** 16n
 }
 const LABEL = lensKey(marketId(PARAMS), BORROWER)
+const POSITION_FIELDS = { id: LABEL, marketId: marketId(PARAMS), borrower: BORROWER }
 
 const SWAP_PLAN: SwapPlan = {
   steps: [
@@ -145,15 +158,20 @@ function runWith(opts: {
     inflightLabels: () => opts.inflight ?? new Set(),
     logger
   })
-  return result.then(counters => ({
-    counters,
-    backoff,
-    cooldown,
-    simulateCalls: () => simulateCalls,
-    submitCalls: () => submitCalls,
-    quoteCalls: () => quoteCalls,
-    events
-  }))
+  // Every tick that resolves must balance; the aborting case rejects and never gets here, which is
+  // the one path where the `ok` identity is legitimately short.
+  return result.then(counters => {
+    expectCounterIdentities(counters)
+    return {
+      counters,
+      backoff,
+      cooldown,
+      simulateCalls: () => simulateCalls,
+      submitCalls: () => submitCalls,
+      quoteCalls: () => quoteCalls,
+      events
+    }
+  })
 }
 
 describe('runTick', () => {
@@ -164,11 +182,13 @@ describe('runTick', () => {
     expect(counters).toEqual({
       pairs: 1,
       liquidatable: 1,
+      inflightSkipped: 0,
+      planSkipped: 0,
       planned: 1,
+      cooledDown: 0,
+      backoffSkipped: 0,
       noSwapPath: 0,
       quoteFailed: 0,
-      backoffSkipped: 0,
-      cooledDown: 0,
       ok: 1,
       reverted: 0,
       submitted: 1,
@@ -176,6 +196,31 @@ describe('runTick', () => {
     })
     expect(simulateCalls()).toBe(1)
     expect(submitCalls()).toBe(1)
+  })
+
+  it('emits tick.end with complete: true and the full counter bag', async () => {
+    const { counters, events } = await runWith({})
+    const end = events.find(e => e.event === 'tick.end')
+    expect(end?.level).toBe('info')
+    expect(end?.fields).toEqual({ ...counters, complete: true })
+  })
+
+  it('emits tick.end with complete: false when a submit aborts the tick', async () => {
+    // The real failure the queue documents for this path: a first send that claimed a nonce but
+    // produced no hash.
+    const { logger, events } = spyLogger()
+    await expect(
+      runWith({
+        spy: { logger, events },
+        submitWith: async () => {
+          throw new TxSendError('nonce claimed, no hash', 7)
+        }
+      })
+    ).rejects.toThrow('nonce claimed, no hash')
+    const end = events.find(e => e.event === 'tick.end')
+    // `ok === submitted + notSent` is intentionally short by one here: the throw lands after `ok` was
+    // counted and before either term is — which is exactly what `complete: false` flags.
+    expect(end?.fields).toMatchObject({ ok: 1, submitted: 0, notSent: 0, complete: false })
   })
 
   it('does not submit a reverting plan and backs the position off', async () => {
@@ -233,13 +278,21 @@ describe('runTick', () => {
   })
 
   it('skips a position already in flight without re-quoting, simulating, or submitting', async () => {
-    const { counters, quoteCalls, simulateCalls, submitCalls } = await runWith({
+    const { counters, quoteCalls, simulateCalls, submitCalls, events } = await runWith({
       inflight: new Set([LABEL])
     })
-    expect(counters).toMatchObject({ liquidatable: 1, planned: 0, submitted: 0 })
+    expect(counters).toMatchObject({
+      liquidatable: 1,
+      inflightSkipped: 1,
+      planSkipped: 0,
+      planned: 0,
+      submitted: 0
+    })
     expect(quoteCalls()).toBe(0)
     expect(simulateCalls()).toBe(0)
     expect(submitCalls()).toBe(0)
+    // Not a sizing skip: the queue narrates an in-flight label end to end already.
+    expect(events.some(e => e.event === 'plan.skipped')).toBe(false)
   })
 
   it('skips a non-liquidatable (healthy) pair without simulating or submitting', async () => {
@@ -257,13 +310,34 @@ describe('runTick', () => {
     expect(submitCalls()).toBe(0)
   })
 
-  it('skips a degenerate collateral-less position (plan returns null)', async () => {
-    const { counters, quoteCalls, submitCalls } = await runWith({
-      out: lensOut({ collateral: 0n })
+  describe('sizing skips', () => {
+    // The input → reason mapping is pinned in plan.test.ts; this covers the tick's side of it: the
+    // counter, the per-reason level, the id-keyed fields, and that a skip spends and suppresses nothing.
+    it.each([
+      [{ collateral: 0n }, 'no_collateral', 'info'],
+      [{ collateralPrice: 0n }, 'zero_price', 'warn'],
+      [{ borrowShares: 1n }, 'seize_rounds_to_zero', 'info']
+    ] as const)('reports %o as plan.skipped / %s at %s', async (overrides, reason, level) => {
+      const cooldown = createCooldownStore({ cooldownMs: 60_000 })
+      const { counters, quoteCalls, submitCalls, events, backoff } = await runWith({
+        cooldown,
+        out: lensOut(overrides)
+      })
+      expect(counters).toMatchObject({ liquidatable: 1, planSkipped: 1, planned: 0, submitted: 0 })
+      expect(quoteCalls()).toBe(0)
+      expect(submitCalls()).toBe(0)
+      const skipped = events.find(e => e.event === 'plan.skipped')
+      expect(skipped?.level).toBe(level)
+      expect(skipped?.fields).toEqual({ ...POSITION_FIELDS, reason })
+      expect(backoff.shouldSkip(LABEL, 100n)).toBe(false)
+      expect(cooldown.shouldSkip(LABEL)).toBe(false)
     })
-    expect(counters).toMatchObject({ liquidatable: 1, planned: 0, submitted: 0 })
-    expect(quoteCalls()).toBe(0)
-    expect(submitCalls()).toBe(0)
+
+    it('emits no plan.skipped for a planned position', async () => {
+      const { counters, events } = await runWith({})
+      expect(counters).toMatchObject({ planSkipped: 0, planned: 1 })
+      expect(events.some(e => e.event === 'plan.skipped')).toBe(false)
+    })
   })
 
   it('tolerates a discovery failure: logs discover.error and submits nothing', async () => {

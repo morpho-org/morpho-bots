@@ -5,6 +5,8 @@ import { formatEther } from 'viem'
 
 import type { Logger } from './logger'
 
+import { createBlockSampler } from './runner/block-cadence'
+
 /**
  * Default block cadence for the signer-balance metric. On ~2s Base blocks this ships roughly every
  * 60s — matching the daemon-era wall-clock cadence — so operators see EOA gas drain at a steady rate.
@@ -23,12 +25,10 @@ export function createBalanceMonitor(deps: {
   logger: Logger
   everyBlocks?: bigint
 }): { maybeLog: (blockNumber: bigint) => Promise<void> } {
-  const everyBlocks = deps.everyBlocks ?? BALANCE_EVERY_BLOCKS
-  let lastAt: bigint | null = null
+  const shouldLog = createBlockSampler(deps.everyBlocks ?? BALANCE_EVERY_BLOCKS)
   return {
     async maybeLog(blockNumber) {
-      if (lastAt !== null && blockNumber - lastAt < everyBlocks) return
-      lastAt = blockNumber
+      if (!shouldLog(blockNumber)) return
       const balance = await tryCatch(deps.read())
       if (balance.error) {
         deps.logger.warn('signer.balance_failed', {

@@ -13,7 +13,7 @@ import {
   mulDivUp,
   toAssetsUp
 } from '../../src/sizing/math'
-import { plan } from '../../src/sizing/plan'
+import { plan, planWithReason } from '../../src/sizing/plan'
 
 const LLTV = 86n * 10n ** 16n // 0.86e18
 
@@ -57,25 +57,25 @@ function seizeForFullDebt(input: PlanInput): bigint {
 }
 
 describe('plan — skip cases', () => {
-  it('skips a position with no debt', () => {
-    expect(plan(baseInput({ hasDebt: false }))).toBeNull()
+  it.each([
+    [{ hasDebt: false }, 'no_debt'],
+    [{ healthy: true }, 'healthy'],
+    // Degenerate pure bad debt: shares outstanding, nothing left to seize.
+    [{ collateral: 0n }, 'no_collateral'],
+    // A non-reverting zero price must skip rather than divide by zero.
+    [{ collateralPrice: 0n }, 'zero_price'],
+    // 1 share ≈ 1e-6 assets → seizeForFullDebt floors to 0.
+    [{ borrowShares: 1n }, 'seize_rounds_to_zero']
+  ] as const)('skips %o as %s', (overrides, reason) => {
+    expect(planWithReason(baseInput(overrides))).toEqual({ plan: null, reason })
   })
 
-  it('skips a healthy position', () => {
+  it('carries no reason on a sized outcome, and plan() is its projection', () => {
+    const outcome = planWithReason(baseInput())
+    expect(outcome.reason).toBeUndefined()
+    expect(outcome.plan).not.toBeNull()
+    expect(plan(baseInput())).toEqual(outcome.plan)
     expect(plan(baseInput({ healthy: true }))).toBeNull()
-  })
-
-  it('skips the degenerate pure-bad-debt case (collateral == 0)', () => {
-    expect(plan(baseInput({ collateral: 0n }))).toBeNull()
-  })
-
-  it('skips a zero-price oracle rather than dividing by zero', () => {
-    expect(plan(baseInput({ collateralPrice: 0n }))).toBeNull()
-  })
-
-  it('skips a dust position that sizes to zero seize', () => {
-    // Tiny debt vs the virtual-share offset → repaidAssetsFull floors to 0 → seize 0 → null.
-    expect(plan(baseInput({ borrowShares: 1n }))).toBeNull()
   })
 })
 
