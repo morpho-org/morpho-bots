@@ -1,3 +1,5 @@
+import type { MonitorOperationQueue } from '@repo/monitoring'
+
 import { describe, expect, test } from 'vitest'
 
 import type {
@@ -61,7 +63,7 @@ describe('QuoterBotService', () => {
     const failedReport = { ready: false, checks: [] }
     const setup: QuoterBotSetupMonitor = {
       runContinuously: async ({ onCycle }) => {
-        await onCycle?.(failedReport)
+        await onCycle?.(failedReport, { halting: true })
         return {
           status: 'halted',
           reason: 'setup-failed',
@@ -110,30 +112,18 @@ describe('QuoterBotService', () => {
     ])
   })
 
-  test('aborts writers before awaiting failed setup event delivery', async () => {
-    const failedReport = { ready: false, checks: [] }
-    let releaseEventDelivery: (() => void) | undefined
-    let markEventStarted: (() => void) | undefined
+  test('keeps writers running while the setup monitor tolerates an unready report', async () => {
+    const unreadyReport = { ready: false, checks: [] }
     let markWriterChecked: (() => void) | undefined
-    const eventDelivery = new Promise<void>(resolve => {
-      releaseEventDelivery = resolve
-    })
-    const eventStarted = new Promise<void>(resolve => {
-      markEventStarted = resolve
-    })
     const writerChecked = new Promise<void>(resolve => {
       markWriterChecked = resolve
     })
-    let writerObservedAbort = false
+    let writerObservedAbort: boolean | undefined
     const setup: QuoterBotSetupMonitor = {
-      runContinuously: async ({ onCycle }) => {
-        await onCycle?.(failedReport)
-        return {
-          status: 'halted',
-          reason: 'setup-failed',
-          cycles: 1,
-          lastReport: failedReport
-        }
+      runContinuously: async ({ signal, onCycle }) => {
+        await onCycle?.(unreadyReport, { halting: false })
+        await waitForAbort(signal)
+        return stoppedSetupReport
       }
     }
     const bootstrap: QuoterBotBootstrapMonitor = {
@@ -143,12 +133,74 @@ describe('QuoterBotService', () => {
           writerObservedAbort = signal.aborted
           markWriterChecked?.()
         })
+        await waitForAbort(signal)
         return stoppedBootstrapReport
       }
     }
     const ladder: QuoterBotLadderMonitor = {
       runContinuously: async ({ signal }) => {
         await waitForAbort(signal)
+        return stoppedLadderReport
+      }
+    }
+    const controller = new AbortController()
+    const running = new QuoterBotService(setup, bootstrap, ladder).runContinuously({
+      signal: controller.signal
+    })
+
+    await writerChecked
+    expect(writerObservedAbort).toBe(false)
+    controller.abort()
+
+    expect(await running).toMatchObject({ status: 'stopped', reason: 'signal' })
+  })
+
+  test('admits no writer cycle after a halting readiness report is delivered', async () => {
+    const failedReport = { ready: false, checks: [] }
+    const cycles: string[] = []
+    let releaseEventDelivery: (() => void) | undefined
+    let markEventStarted: (() => void) | undefined
+    const eventDelivery = new Promise<void>(resolve => {
+      releaseEventDelivery = resolve
+    })
+    const eventStarted = new Promise<void>(resolve => {
+      markEventStarted = resolve
+    })
+    const setup: QuoterBotSetupMonitor = {
+      runContinuously: async ({ onCycle }) => {
+        await onCycle?.(failedReport, { halting: true })
+        return {
+          status: 'halted',
+          reason: 'setup-failed',
+          cycles: 1,
+          lastReport: failedReport
+        }
+      }
+    }
+    const writer =
+      (name: string) =>
+      async ({
+        signal,
+        runOperation
+      }: {
+        signal: AbortSignal
+        runOperation?: MonitorOperationQueue
+      }) => {
+        if (!runOperation) throw new Error('missing operation queue')
+        await runOperation(async () => {
+          if (!signal.aborted) cycles.push(name)
+        })
+        return signal
+      }
+    const bootstrap: QuoterBotBootstrapMonitor = {
+      runContinuously: async parameters => {
+        await writer('bootstrap')(parameters)
+        return stoppedBootstrapReport
+      }
+    }
+    const ladder: QuoterBotLadderMonitor = {
+      runContinuously: async parameters => {
+        await writer('ladder')(parameters)
         return stoppedLadderReport
       }
     }
@@ -162,16 +214,16 @@ describe('QuoterBotService', () => {
     })
 
     await eventStarted
-    await writerChecked
-    expect(writerObservedAbort).toBe(true)
     releaseEventDelivery?.()
 
     expect(await running).toMatchObject({ status: 'halted', reason: 'workflow-halted' })
+    expect(cycles).toEqual([])
   })
 
-  test('serializes writer cycles and aborts peers before cleanup begins', async () => {
+  test('keeps peers quoting after a handled writer cycle failure', async () => {
     const events: string[] = []
     const failedResults = [{ status: 'failed', stage: 'make' }]
+    const controller = new AbortController()
     const setup: QuoterBotSetupMonitor = {
       runContinuously: async ({ signal }) => {
         await waitForAbort(signal)
@@ -184,6 +236,46 @@ describe('QuoterBotService', () => {
         await runOperation(async () => {
           events.push('bootstrap:cycle')
           await onCycle?.(failedResults)
+        })
+        await waitForAbort(signal)
+        return stoppedBootstrapReport
+      }
+    }
+    const ladder: QuoterBotLadderMonitor = {
+      runContinuously: async ({ signal, runOperation }) => {
+        if (!runOperation) throw new Error('missing operation queue')
+        await runOperation(async () => {
+          events.push(signal.aborted ? 'ladder:cycle-skipped' : 'ladder:cycle')
+          controller.abort()
+        })
+        await waitForAbort(signal)
+        return stoppedLadderReport
+      }
+    }
+
+    const report = await new QuoterBotService(setup, bootstrap, ladder).runContinuously({
+      signal: controller.signal
+    })
+
+    expect(events).toEqual(['bootstrap:cycle', 'ladder:cycle'])
+    expect(report).toMatchObject({ status: 'stopped', reason: 'signal' })
+  })
+
+  test('serializes writer cycles and aborts peers before cleanup begins', async () => {
+    const events: string[] = []
+    const haltedResults = [{ status: 'halted', stage: 'make' }]
+    const setup: QuoterBotSetupMonitor = {
+      runContinuously: async ({ signal }) => {
+        await waitForAbort(signal)
+        return stoppedSetupReport
+      }
+    }
+    const bootstrap: QuoterBotBootstrapMonitor = {
+      runContinuously: async ({ signal, onCycle, runOperation }) => {
+        if (!runOperation) throw new Error('missing operation queue')
+        await runOperation(async () => {
+          events.push('bootstrap:cycle')
+          await onCycle?.(haltedResults)
         })
         events.push(`bootstrap:cleanup-aborted:${signal.aborted}`)
         await runOperation(async () => {

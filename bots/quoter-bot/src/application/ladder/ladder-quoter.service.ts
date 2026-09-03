@@ -1,7 +1,7 @@
 import type { MonitorOperationQueue } from '@repo/monitoring'
 import type { Hex } from 'viem'
 
-import { cycleHasFailure, waitForMonitorInterval } from '@repo/monitoring'
+import { cycleHasFailure, cycleRequiresHalt, waitForMonitorInterval } from '@repo/monitoring'
 
 import type {
   LadderConfig,
@@ -27,6 +27,10 @@ import {
 } from '../../domain/ladder/ladder'
 import { LadderConfigurationError } from '../../domain/ladder/ladder-configuration.error'
 import { LadderAdapterError } from '../../infrastructure/ladder/ladder-adapter.error'
+import {
+  MARKET_FAILURE_BUDGET_CYCLES,
+  createMarketFailureBudget
+} from '../market-failure-budget.utils'
 import { marketObservationMatured } from '../market-maturity.utils'
 import { operatorErrorName } from '../operator-error-name.utils'
 import { LadderOwnershipCleanupError } from './ladder-ownership-cleanup.error'
@@ -204,7 +208,7 @@ export type LadderMonitorReport = {
     /** Confirmed cleanup cancellations, included only for verbose monitoring. */
     submittedTransactions?: readonly LadderSubmittedTransaction[]
   }
-  /** Last handled failed cycle, retained only when it caused the halt. */
+  /** Most recent cycle that contained a handled failure, cleared by any fully successful cycle. */
   lastCycle?: readonly LadderRunResult[]
   /** Sanitized unexpected cycle or output-writer error classification. */
   cycleErrorName?: string
@@ -264,6 +268,7 @@ export class LadderQuoterService {
       )
     }
 
+    const failureBudget = createMarketFailureBudget(MARKET_FAILURE_BUDGET_CYCLES)
     let cycles = 0
     let reason: LadderMonitorReport['reason'] = 'signal'
     let lastCycle: readonly LadderRunResult[] | undefined
@@ -286,9 +291,10 @@ export class LadderQuoterService {
         if (results === undefined) break
         cycles += 1
 
-        if (cycleHasFailure(results)) {
+        const budgetExhausted = failureBudget(results)
+        lastCycle = cycleHasFailure(results) ? results : undefined
+        if (cycleRequiresHalt(results) || budgetExhausted) {
           reason = 'cycle-failed'
-          lastCycle = results
           break
         }
       } catch (error) {

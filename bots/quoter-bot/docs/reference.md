@@ -95,10 +95,13 @@ ratifier, chain, market, reference, and active-offer observations still run agai
 maker address.
 
 `setup-check --monitor` runs the same complete read-only observation every minute and streams each
-report. A report containing only explicitly transient provider failures is retried up to two times;
-recovery emits only the successful report. An invariant failure, a mixed failure, or three transient
-attempts with no recovery emits `ready: false`, halts monitoring, includes that report in the terminal
-`setup-failed` record, and exits with code `1`. `SIGINT` or `SIGTERM` after successful checks lets an
+report. A report containing only explicitly transient provider failures is retried up to two
+times within the cycle; recovery emits only the successful report. An invariant or mixed failure
+emits `ready: false`, halts monitoring, includes that report in the terminal `setup-failed`
+record, and exits with code `1`. A transient-only report that survives its in-cycle retries is
+emitted as `ready: false` and retried on the next interval for up to ten consecutive cycles
+before halting the same way, because halting cancels every live offer and a provider outage
+must not cost the book. `SIGINT` or `SIGTERM` after successful checks lets an
 in-flight check finish and emits a final `{"status":"stopped","reason":"signal","cycles":N}` record
 with exit code `0`. Monitoring never signs, submits remediation, or performs shutdown cleanup. Add
 the root `--readonly` flag when private-key/maker agreement should be omitted.
@@ -533,8 +536,17 @@ one per failed workflow, so "which workflow half-broke?" is answerable from the 
 
 The heartbeat is process-level. `runContinuously` is fail-together — any workflow halt aborts its
 peers and the process exits — so one heartbeat covers all three workflows, but it proves liveness
-only and cannot prove a particular market was read or quoted. The per-market `cycle.completed` and
-`reference.observed` records are the positive anchors for that.
+only and cannot prove a particular market was read or quoted. Only an unrecoverable cycle halts:
+a handled per-market failure ships `cycle.completed` with `status: "failed"` and is retried on the
+next interval while its peers keep quoting. A failed market is not necessarily flat — a
+publication rejected before its replacement set is invalidated keeps the previous offers live — so
+the same
+market failing five consecutive cycles halts the bot, which cancels through shutdown cleanup rather
+than leaving quotes live at a drifting center. A bootstrap make-stage failure also ends that cycle
+for every market configured after it, so a persistently failing market starves the ones behind it
+until its budget runs out. A market can therefore be dark while the process is healthy and its
+heartbeat green: alert on the failed cycle records, not on liveness. The per-market
+`cycle.completed` and `reference.observed` records are the positive anchors for that.
 
 #### Known limits
 

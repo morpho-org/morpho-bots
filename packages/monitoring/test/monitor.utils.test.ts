@@ -1,6 +1,11 @@
 import { describe, expect, test } from 'vitest'
 
-import { createOperationQueue, cycleHasFailure, waitForMonitorInterval } from '../src/monitor.utils'
+import {
+  createOperationQueue,
+  cycleHasFailure,
+  cycleRequiresHalt,
+  waitForMonitorInterval
+} from '../src/monitor.utils'
 
 describe('waitForMonitorInterval', () => {
   test('resolves immediately when the signal is already aborted', async () => {
@@ -88,5 +93,18 @@ describe('cycleHasFailure', () => {
   test('reports success for empty or successful cycles', () => {
     expect(cycleHasFailure([])).toBe(false)
     expect(cycleHasFailure([{ status: 'published' }, { status: 'observed' }])).toBe(false)
+  })
+})
+
+describe('cycleRequiresHalt', () => {
+  test('requires a halt only for a halted result', () => {
+    expect(cycleRequiresHalt([{ status: 'halted' }])).toBe(true)
+    expect(cycleRequiresHalt([{ status: 'published' }, { status: 'halted' }])).toBe(true)
+  })
+
+  test('leaves a handled failure retryable on the next interval', () => {
+    expect(cycleRequiresHalt([{ status: 'failed' }])).toBe(false)
+    expect(cycleRequiresHalt([{ status: 'published' }, { status: 'failed' }])).toBe(false)
+    expect(cycleRequiresHalt([])).toBe(false)
   })
 })

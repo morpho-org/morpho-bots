@@ -146,10 +146,13 @@ ratifier, chain, market, reference, and active-offer observations still run agai
 maker address.
 
 `setup-check --monitor` runs the same complete read-only observation every minute and streams each
-report. A report containing only explicitly transient provider failures is retried up to two times;
-recovery emits only the successful report. An invariant failure, a mixed failure, or three transient
-attempts with no recovery emits `ready: false`, halts monitoring, includes that report in the terminal
-`setup-failed` record, and exits with code `1`. `SIGINT` or `SIGTERM` after successful checks lets an
+report. A report containing only explicitly transient provider failures is retried up to two
+times within the cycle; recovery emits only the successful report. An invariant or mixed failure
+emits `ready: false`, halts monitoring, includes that report in the terminal `setup-failed`
+record, and exits with code `1`. A transient-only report that survives its in-cycle retries is
+emitted as `ready: false` and retried on the next interval for up to ten consecutive cycles
+before halting the same way, because halting cancels every live offer and a provider outage
+must not cost the book. `SIGINT` or `SIGTERM` after successful checks lets an
 in-flight check finish and emits a final `{"status":"stopped","reason":"signal","cycles":N}` record
 with exit code `0`. Monitoring never signs, submits remediation, or performs shutdown cleanup. Add
 the root `--readonly` flag when private-key/maker agreement should be omitted.

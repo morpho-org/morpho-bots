@@ -32,7 +32,21 @@ const UNBOUNDED_ALLOWANCE_FLOOR = maxUint256 / 2n
 
 const SETUP_CHECK_MONITOR_INTERVAL_MS = 60_000
 const SETUP_CHECK_TRANSIENT_ATTEMPTS = 3
+
+/**
+ * Consecutive transient-only unready cycles tolerated before the monitor halts.
+ * @remarks Halting runs shutdown cleanup, which cancels every live offer, so a provider outage must
+ * not cost the whole book. Ten cycles is ten minutes at the default interval. Invariant failures
+ * ignore this budget and halt on the first cycle.
+ */
+const SETUP_CHECK_TRANSIENT_CYCLES = 10
 type SetupCheckStatus = 'passed' | 'failed' | 'warning' | 'not-required'
+
+/** Decision accompanying one emitted readiness report. */
+export type SetupCycleContext = {
+  /** Whether this report ends monitoring, decided before the report is emitted. */
+  halting: boolean
+}
 
 /** Read-only operator instruction or exact transaction description; never executed by the checker. */
 export type SetupRemediation =
@@ -239,14 +253,17 @@ export class SetupCheckService {
    * @param parameters - Shutdown signal, optional report writer, and testable positive interval.
    * @returns A terminal report containing the number of emitted setup observations.
    * @throws `SetupMonitorConfigurationError` when the requested interval is not a positive safe integer.
-   * @remarks Cycles never overlap. Explicitly transient provider-only failures receive three total
-   * read attempts before failed readiness is emitted and monitoring halts. Invariant and mixed
-   * failures halt immediately. No remediation, signing, transaction submission, or cleanup write
-   * is performed.
+   * @remarks The halt decision is made before the report is emitted and carried on the cycle
+   * context, so a supervisor can stop its writers without waiting for delivery. Cycles never
+   * overlap. Explicitly transient provider-only failures receive three total
+   * read attempts within a cycle, and an unready report built only from them is emitted and then
+   * retried on the next interval for up to ten consecutive cycles.
+   * Invariant and mixed failures halt immediately. No remediation, signing, transaction submission,
+   * or cleanup write is performed.
    */
   async runContinuously(parameters: {
     signal: AbortSignal
-    onCycle?: (report: SetupCheckReport) => void | Promise<void>
+    onCycle?: (report: SetupCheckReport, context: SetupCycleContext) => void | Promise<void>
     intervalMs?: number
   }): Promise<SetupCheckMonitorReport> {
     const intervalMs = parameters.intervalMs ?? SETUP_CHECK_MONITOR_INTERVAL_MS
@@ -255,6 +272,7 @@ export class SetupCheckService {
     }
 
     let cycles = 0
+    let transientCycles = 0
     let cycleErrorName: string | undefined
 
     while (!parameters.signal.aborted) {
@@ -262,9 +280,14 @@ export class SetupCheckService {
         const report = await this.checkWithTransientRetries(parameters.signal)
         if (parameters.signal.aborted) break
 
-        await parameters.onCycle?.(report)
+        const transientOnly = hasOnlyTransientProviderFailures(report)
+        transientCycles = transientOnly ? transientCycles + 1 : 0
+        const halting =
+          !report.ready && (!transientOnly || transientCycles >= SETUP_CHECK_TRANSIENT_CYCLES)
+
+        await parameters.onCycle?.(report, { halting })
         cycles += 1
-        if (!report.ready) {
+        if (halting) {
           return { status: 'halted', reason: 'setup-failed', cycles, lastReport: report }
         }
       } catch (error) {
