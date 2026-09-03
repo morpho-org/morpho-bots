@@ -1,6 +1,7 @@
 import type { Address, Hex } from 'viem'
 
 import { waitForMonitorInterval } from '@repo/monitoring'
+import { maxUint256 } from 'viem'
 
 import type { SupportedChainId } from '../../config/supported-chains.utils'
 
@@ -15,14 +16,23 @@ import {
   providerFailure,
   readOnlyMakerCheck,
   sameAddress,
-  setupResult
+  setupResult,
+  unsafeOffersStatus
 } from './setup-check.utils'
 import { SetupFailedError } from './setup-failed.error'
 import { SetupMonitorConfigurationError } from './setup-monitor-configuration.error'
 
+/**
+ * Allowance floor that readiness treats as unbounded. Exposure is bounded by maker funds, not by
+ * the approval, and FiatToken decrements even a `maxUint256` approval on every `transferFrom`, so
+ * readiness cannot compare against `maxUint256` itself.
+ * @see https://github.com/circlefin/stablecoin-evm/blob/master/contracts/v1/FiatTokenV1.sol
+ */
+const UNBOUNDED_ALLOWANCE_FLOOR = maxUint256 / 2n
+
 const SETUP_CHECK_MONITOR_INTERVAL_MS = 60_000
 const SETUP_CHECK_TRANSIENT_ATTEMPTS = 3
-type SetupCheckStatus = 'passed' | 'failed' | 'not-required'
+type SetupCheckStatus = 'passed' | 'failed' | 'warning' | 'not-required'
 
 /** Read-only operator instruction or exact transaction description; never executed by the checker. */
 export type SetupRemediation =
@@ -46,7 +56,7 @@ export type SetupCheck = {
     | 'reference'
     | 'offers'
     | 'position-health'
-  /** Whether the requirement passed, failed, or is intentionally outside the V0 scope. */
+  /** Whether the requirement passed, failed, warned without blocking readiness, or is outside V0 scope. */
   status: SetupCheckStatus
   /** Sanitized provider-derived value; URLs, credentials, and raw provider messages are excluded. */
   observed: unknown
@@ -107,8 +117,6 @@ export type SetupCheckConfig = {
   nativeReserve: bigint
   /** ERC-20 asset lent by every configured market. */
   loanAsset: Address
-  /** Minimum allowance granted to Midnight. */
-  maximumLendExposure: bigint
   /** Canonical SDK Ecrecover or Setter ratifier expected to authorize the maker. */
   ratifier: Address
   /** Non-empty set of Midnight market identifiers to validate concurrently. */
@@ -366,20 +374,20 @@ export class SetupCheckService {
         )
     const allowanceRequired = {
       spender: this.config.midnight,
-      minimum: this.config.maximumLendExposure
+      minimum: 'unbounded approval (type(uint256).max)'
     }
     const allowanceCheck = !allowance.ok
       ? providerFailure('loan-allowance', allowance.error, allowanceRequired)
       : setupResult(
           'loan-allowance',
           sameAddress(allowance.value.spender, this.config.midnight) &&
-            allowance.value.amount >= this.config.maximumLendExposure,
+            allowance.value.amount >= UNBOUNDED_ALLOWANCE_FLOOR,
           allowance.value,
           allowanceRequired,
           {
             to: this.config.loanAsset,
             functionName: 'approve',
-            args: [this.config.midnight, this.config.maximumLendExposure]
+            args: [this.config.midnight, maxUint256]
           }
         )
     const ratifierRequired = {
@@ -431,17 +439,15 @@ export class SetupCheckService {
               reference.value,
               referenceRequired
             )
-    const offersRequired = { unknownNamespaces: [], unknownMarketIds: [], invertedMarketIds: [] }
+    const offersRequired = { unknownMarketIds: [], invertedMarketIds: [] }
     const offersCheck = !offers.ok
       ? providerFailure('offers', offers.error, offersRequired)
-      : setupResult(
-          'offers',
-          offers.value.unknownNamespaces.length === 0 &&
-            offers.value.unknownMarketIds.length === 0 &&
-            offers.value.invertedMarketIds.length === 0,
-          offers.value,
-          offersRequired
-        )
+      : {
+          name: 'offers' as const,
+          status: unsafeOffersStatus(offers.value),
+          observed: offers.value,
+          required: offersRequired
+        }
     const positionCheck = !positionHealth.ok
       ? providerFailure('position-health', positionHealth.error, 'not-required for V0')
       : {

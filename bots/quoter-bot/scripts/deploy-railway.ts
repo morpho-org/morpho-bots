@@ -45,7 +45,6 @@ const requiredRuntimeVariableNames = [
   'MORPHO_API_BASE_URL',
   'MARKET_IDS',
   'NATIVE_RESERVE_WEI',
-  'MAXIMUM_LEND_EXPOSURE_ASSETS',
   'BOOTSTRAP_MARKETS',
   'LADDER_MARKETS'
 ] as const

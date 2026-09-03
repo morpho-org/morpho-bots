@@ -182,7 +182,6 @@ describe('createProductionBootstrapAdapters', () => {
         MARKET_IDS: marketId,
         REFERENCE_MARKET_ID: secondMarketId,
         NATIVE_RESERVE_WEI: '10',
-        MAXIMUM_LEND_EXPOSURE_ASSETS: '100',
         MORPHO_API_BASE_URL: 'https://api.example',
         ROUTER_API_BASE_URL: 'https://router.example',
         BOOTSTRAP_MARKETS: JSON.stringify([
@@ -227,7 +226,6 @@ describe('createProductionBootstrapAdapters', () => {
       MARKET_IDS: marketId,
       REFERENCE_MARKET_ID: secondMarketId,
       NATIVE_RESERVE_WEI: '10',
-      MAXIMUM_LEND_EXPOSURE_ASSETS: '100',
       MORPHO_API_BASE_URL: 'https://api.example',
       ROUTER_API_BASE_URL: 'https://router.example'
     })
@@ -755,8 +753,8 @@ describe('readBootstrapGroups', () => {
       }
     )
 
-    expect(bootstrapReservedLoanAssets(groups, [groupId])).toBe(100n)
-    expect(bootstrapReservedLoanAssets(groups, [groupId], new Set([groupId]))).toBe(0n)
+    expect(bootstrapReservedLoanAssets(groups)).toBe(100n)
+    expect(bootstrapReservedLoanAssets(groups, new Set([groupId]))).toBe(0n)
   })
 
   test('excludes durably owned sell-only groups from the loan-token cash reserve', async () => {
@@ -776,7 +774,7 @@ describe('readBootstrapGroups', () => {
     )
 
     expect(strategyBootstrapGroups(groups, [groupId, secondGroupId])).toEqual([])
-    expect(bootstrapReservedLoanAssets(groups, [groupId, secondGroupId])).toBe(0n)
+    expect(bootstrapReservedLoanAssets(groups)).toBe(0n)
   })
 
   test('passes the full distinct owned reserve in the actual makeLend argument shape', async () => {
@@ -803,7 +801,7 @@ describe('readBootstrapGroups', () => {
         validation: { apiUrl: 'https://api.example/v0/midnight' },
         loanToken,
         loanAssets: 100n,
-        reservedLoanAssets: bootstrapReservedLoanAssets(groups, [groupId, secondGroupId])
+        reservedLoanAssets: bootstrapReservedLoanAssets(groups)
       })
     )
 

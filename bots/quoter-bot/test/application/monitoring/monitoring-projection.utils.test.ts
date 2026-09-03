@@ -44,7 +44,11 @@ describe('createMonitoringProjection', () => {
   test('reports each failed readiness check without leaking its unknown-typed observation', () => {
     const events = createMonitoringProjection().setup(readyReport)
 
-    expect(events).toContainEqual({ event: 'setup.check-failed', check: 'native-balance' })
+    expect(events).toContainEqual({
+      event: 'setup.check-failed',
+      check: 'native-balance',
+      status: 'failed'
+    })
     expect(events).toContainEqual({
       event: 'cycle.completed',
       workflow: 'setup-check',
@@ -52,6 +56,30 @@ describe('createMonitoringProjection', () => {
     })
     expect(events.filter(event => event.event === 'setup.check-failed')).toHaveLength(1)
     expect(JSON.stringify(events)).not.toContain('required')
+  })
+
+  test('keeps a non-blocking warning off the failure discriminator', () => {
+    const warningReport: SetupCheckReport = {
+      ready: true,
+      checks: [
+        { name: 'offers', status: 'warning', observed: {}, required: {} },
+        { name: 'chain', status: 'passed', observed: 8453, required: 8453 }
+      ]
+    }
+
+    const events = createMonitoringProjection().setup(warningReport)
+
+    expect(events).toContainEqual({
+      event: 'setup.check-warning',
+      check: 'offers',
+      status: 'warning'
+    })
+    expect(events.filter(event => event.event === 'setup.check-failed')).toHaveLength(0)
+    expect(events).toContainEqual({
+      event: 'cycle.completed',
+      workflow: 'setup-check',
+      status: 'ready'
+    })
   })
 
   test('reports a spread rejection only for an actual cross-book rejection', () => {

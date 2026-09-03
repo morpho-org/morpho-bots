@@ -40,7 +40,9 @@ const route = (request: Request) => {
                 max_assets: '1',
                 offers: [
                   {
-                    market_id: MARKET_ID,
+                    // Unconfigured market: outside the bot's exposure model, so readiness must fail
+                    // rather than warn the way an unattributable group on a configured market does.
+                    market_id: `0x${'cd'.repeat(32)}`,
                     maker: ANVIL_DEFAULT_ACCOUNT.address,
                     buy: true,
                     tick: 100,

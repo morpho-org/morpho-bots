@@ -1,3 +1,5 @@
+import type { Hex } from 'viem'
+
 import { isAddress, isAddressEqual } from 'viem'
 
 import type { SafeProviderFailure } from './safe-provider.error'
@@ -229,6 +231,26 @@ export const setupResult = (
   required,
   ...(passed || !remediation ? {} : { remediation })
 })
+
+/**
+ * Grades inspected maker offers, separating unsafe books from unattributable groups.
+ * @param offers - Unknown namespaces, unconfigured markets, and crossed markets from one traversal.
+ * @returns `failed` for offers outside the bot's exposure model, `warning` for live groups it merely
+ * cannot attribute to itself, `passed` otherwise.
+ * @remarks Only markets drive readiness. Group ownership is a local durable record, so a redeploy
+ * onto a fresh filesystem orphans the bot's own live groups; halting on that cannot self-heal until
+ * every orphan expires. Downgrading to a warning is only safe because reservations count every live
+ * maker buy group rather than only attributed ones — see `ladderCashReservations` in
+ * `infrastructure/ladder/ladder-cash-reservation.utils.ts`.
+ */
+export const unsafeOffersStatus = (offers: {
+  unknownNamespaces: readonly string[]
+  unknownMarketIds: readonly Hex[]
+  invertedMarketIds: readonly Hex[]
+}): SetupCheck['status'] => {
+  if (offers.unknownMarketIds.length > 0 || offers.invertedMarketIds.length > 0) return 'failed'
+  return offers.unknownNamespaces.length > 0 ? 'warning' : 'passed'
+}
 
 /**
  * Builds a failed check from sanitized provider metadata.

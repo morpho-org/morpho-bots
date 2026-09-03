@@ -41,7 +41,6 @@ describe('ladder cash reservations', () => {
       ladderCashReservations({
         groups: [],
         publications: [publication],
-        bootstrapGroupIds: [bootstrapGroupId],
         bootstrapOffers: [
           {
             groupId: bootstrapGroupId,
@@ -62,7 +61,6 @@ describe('ladder cash reservations', () => {
       ladderCashReservations({
         groups: [],
         publications: [publication],
-        bootstrapGroupIds: [],
         bootstrapOffers: [],
         replacedGroupIds: new Set([ladderGroupId])
       })
@@ -81,11 +79,30 @@ describe('ladder cash reservations', () => {
           }
         ],
         publications: [publication],
-        bootstrapGroupIds: [],
         bootstrapOffers: [],
         replacedGroupIds: new Set(),
         ignoredGroupIds: new Set([ladderGroupId])
       })
     ).toEqual([])
+  })
+
+  test('reserves a live buy group the durable ownership store no longer attributes', () => {
+    const orphanGroupId: Hex = `0x${'44'.repeat(32)}`
+
+    expect(
+      ladderCashReservations({
+        groups: [
+          {
+            id: orphanGroupId,
+            maxAssets: 80n,
+            consumed: 10n,
+            offers: [{ marketId, maker, buy: true, tick: 1n }]
+          }
+        ],
+        publications: [],
+        bootstrapOffers: [],
+        replacedGroupIds: new Set()
+      })
+    ).toEqual([{ id: orphanGroupId, marketIds: [marketId], assets: 70n }])
   })
 })

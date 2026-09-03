@@ -105,7 +105,6 @@ export class ConfigService {
         midnight: addressValue(environment, 'MIDNIGHT_ADDRESS'),
         nativeReserve: unsignedBigIntValue(environment, 'NATIVE_RESERVE_WEI'),
         loanAsset: addressValue(environment, 'LOAN_ASSET_ADDRESS'),
-        maximumLendExposure: unsignedBigIntValue(environment, 'MAXIMUM_LEND_EXPOSURE_ASSETS'),
         ratifier: addressValue(environment, 'RATIFIER_ADDRESS'),
         marketIds,
         referenceMarketId: optionalBytes32Value(environment, 'REFERENCE_MARKET_ID')

@@ -17,7 +17,6 @@ const environment = {
   MARKET_IDS: `0x${'55'.repeat(32)}`,
   REFERENCE_MARKET_ID: `0x${'77'.repeat(32)}`,
   NATIVE_RESERVE_WEI: '10',
-  MAXIMUM_LEND_EXPOSURE_ASSETS: '100',
   MORPHO_API_BASE_URL: 'https://api.example',
   ROUTER_API_BASE_URL: 'https://router.example',
   V0_OFFER_GROUP_IDS: `0x${'66'.repeat(32)}`

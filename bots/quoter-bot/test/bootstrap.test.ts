@@ -4,6 +4,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
+import { maxUint256 } from 'viem'
 import { describe, expect, test, vi } from 'vitest'
 
 import type {
@@ -33,7 +34,6 @@ const environment = {
   MARKET_IDS: marketId,
   REFERENCE_MARKET_ID: referenceMarketId,
   NATIVE_RESERVE_WEI: '10',
-  MAXIMUM_LEND_EXPOSURE_ASSETS: '100',
   MORPHO_API_BASE_URL: 'https://api.example',
   ROUTER_API_BASE_URL: 'https://router.example'
 }
@@ -75,7 +75,7 @@ const readyState = (): SetupStateService => {
     getCode: async () => '0x1234',
     getDerivedMaker: async () => maker,
     getNativeBalance: async () => 10n,
-    getLoanAllowance: async () => ({ spender: midnight, amount: 100n }),
+    getLoanAllowance: async () => ({ spender: midnight, amount: maxUint256 }),
     getRatifier: async () => ({
       listed: true,
       deployed: true,
@@ -233,7 +233,7 @@ describe('createApplication', () => {
       const configPath = join(directory, 'operator.yaml')
       await writeFile(
         configPath,
-        `chain:\n  id: 8453\n  rpcUrl: https://rpc.example\n  archiveRpcUrl: https://archive.example\nidentity:\n  makerAddress: ${maker}\n  keyStorageMethod: keystore\n  keystorePath: /yaml/maker.json\n  ${yamlPasswordMode}\ncontracts:\n  midnightAddress: ${midnight}\n  loanAssetAddress: ${loanAsset}\n  ratifierAddress: ${ratifier}\napis:\n  morphoBaseUrl: https://api.example\n  routerBaseUrl: https://router.example\nmarkets:\n  allowlist: [${marketId}]\n  referenceMarketId: ${referenceMarketId}\nsetup:\n  nativeReserveWei: 10\n  maximumLendExposureAssets: 100\n`
+        `chain:\n  id: 8453\n  rpcUrl: https://rpc.example\n  archiveRpcUrl: https://archive.example\nidentity:\n  makerAddress: ${maker}\n  keyStorageMethod: keystore\n  keystorePath: /yaml/maker.json\n  ${yamlPasswordMode}\ncontracts:\n  midnightAddress: ${midnight}\n  loanAssetAddress: ${loanAsset}\n  ratifierAddress: ${ratifier}\napis:\n  morphoBaseUrl: https://api.example\n  routerBaseUrl: https://router.example\nmarkets:\n  allowlist: [${marketId}]\n  referenceMarketId: ${referenceMarketId}\nsetup:\n  nativeReserveWei: 10\n`
       )
       let password: string | undefined
       try {
@@ -1512,7 +1512,6 @@ markets:
   referenceMarketId: "${referenceMarketId}"
 setup:
   nativeReserveWei: "10"
-  maximumLendExposureAssets: "100"
 `
     try {
       await writeFile(join(directory, 'quoter-bot.yml'), configuration)

@@ -43,7 +43,6 @@ markets:
 
 setup:
   nativeReserveWei: '10000000000000000'
-  maximumLendExposureAssets: '10000000000'
   requestTimeoutMs: 10000
   transactionReceiptTimeoutMs: 180000
 

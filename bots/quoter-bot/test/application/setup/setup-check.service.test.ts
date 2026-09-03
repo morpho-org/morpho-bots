@@ -1,5 +1,6 @@
 import type { Hex } from 'viem'
 
+import { maxUint256 } from 'viem'
 import { describe, expect, test } from 'vitest'
 
 import { SafeProviderError } from '../../../src/application/setup/safe-provider.error'
@@ -30,7 +31,6 @@ const config: SetupCheckConfig = {
   midnight,
   nativeReserve: 10n,
   loanAsset,
-  maximumLendExposure: 100n,
   ratifier,
   marketIds: [marketId],
   referenceMarketId
@@ -43,7 +43,7 @@ const readyState = (): SetupStateService => {
     getCode: async () => '0x1234',
     getDerivedMaker: async () => maker,
     getNativeBalance: async () => 10n,
-    getLoanAllowance: async () => ({ spender: midnight, amount: 100n }),
+    getLoanAllowance: async () => ({ spender: midnight, amount: maxUint256 }),
     getRatifier: async () => ({
       listed: true,
       deployed: true,
@@ -591,7 +591,7 @@ describe('SetupCheckService', () => {
     }
     state.getLoanAllowance = async () => {
       reads.push('loan-allowance')
-      return { spender: midnight, amount: 100n }
+      return { spender: midnight, amount: maxUint256 }
     }
     state.getRatifier = async () => {
       reads.push('ratifier')
@@ -850,7 +850,7 @@ describe('SetupCheckService', () => {
     state.getCode = () => wait('code', '0x1234')
     state.getDerivedMaker = () => wait('maker', maker)
     state.getNativeBalance = () => wait('balance', 10n)
-    state.getLoanAllowance = () => wait('allowance', { spender: midnight, amount: 100n })
+    state.getLoanAllowance = () => wait('allowance', { spender: midnight, amount: maxUint256 })
     state.getRatifier = () =>
       wait('ratifier', {
         listed: true,
@@ -995,6 +995,69 @@ describe('SetupCheckService', () => {
     )
   })
 
+  test('keeps an unbounded approval ready after fills have decremented it', async () => {
+    const state = readyState()
+    state.getLoanAllowance = async () => ({
+      spender: midnight,
+      amount: maxUint256 - 26_780_747_345n
+    })
+
+    const report = await new SetupCheckService(state, config).check()
+
+    expect(report.checks.find(check => check.name === 'loan-allowance')?.status).toBe('passed')
+  })
+
+  test('fails any finite approval and remediates with an unbounded one', async () => {
+    const state = readyState()
+    state.getLoanAllowance = async () => ({ spender: midnight, amount: 16_000_000_000n })
+
+    const report = await new SetupCheckService(state, config).check()
+
+    expect(report.checks.find(check => check.name === 'loan-allowance')).toMatchObject({
+      status: 'failed',
+      remediation: { functionName: 'approve', args: [midnight, maxUint256] }
+    })
+  })
+
+  test('pins the unbounded floor at half of maxUint256', async () => {
+    const statusFor = async (amount: bigint) => {
+      const state = readyState()
+      state.getLoanAllowance = async () => ({ spender: midnight, amount })
+      const report = await new SetupCheckService(state, config).check()
+      return report.checks.find(check => check.name === 'loan-allowance')?.status
+    }
+
+    expect(await statusFor(maxUint256 / 2n)).toBe('passed')
+    expect(await statusFor(maxUint256 / 2n - 1n)).toBe('failed')
+  })
+
+  test('warns without blocking readiness when a live group cannot be attributed', async () => {
+    const state = readyState()
+    state.inspectOffers = async () => ({
+      unknownNamespaces: [`0x${'ab'.repeat(32)}`],
+      unknownMarketIds: [],
+      invertedMarketIds: []
+    })
+
+    const report = await new SetupCheckService(state, config).check()
+
+    expect(report.checks.find(check => check.name === 'offers')?.status).toBe('warning')
+    expect(report.ready).toBe(true)
+  })
+
+  test.each([
+    ['unknownMarketIds', { unknownMarketIds: [secondMarketId], invertedMarketIds: [] }],
+    ['invertedMarketIds', { unknownMarketIds: [], invertedMarketIds: [marketId] }]
+  ])('fails readiness for offers outside the exposure model via %s', async (_name, unsafe) => {
+    const state = readyState()
+    state.inspectOffers = async () => ({ unknownNamespaces: [], ...unsafe })
+
+    const report = await new SetupCheckService(state, config).check()
+
+    expect(report.checks.find(check => check.name === 'offers')?.status).toBe('failed')
+    expect(report.ready).toBe(false)
+  })
+
   test('reports every unsafe book property so the operator can remediate it', async () => {
     const state = readyState()
     state.getBook = async id => ({
@@ -1041,7 +1104,7 @@ describe('SetupCheckService', () => {
     expect(report.checks.find(check => check.name === 'loan-allowance')?.remediation).toEqual({
       to: loanAsset,
       functionName: 'approve',
-      args: [midnight, 100n]
+      args: [midnight, maxUint256]
     })
     expect(report.checks.find(check => check.name === 'ratifier')?.remediation).toBe(
       'authorize the configured maker with the selected ratifier'
