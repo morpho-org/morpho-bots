@@ -10,7 +10,7 @@ import {
   STUCK_BLOCKS
 } from '@repo/bot-kit'
 import { Executor } from '@repo/contracts'
-import { getAddress, parseGwei } from 'viem'
+import { getAddress, parseEther, parseGwei } from 'viem'
 import { base, mainnet, optimism } from 'viem/chains'
 import { describe, expect, it } from 'vitest'
 
@@ -57,8 +57,8 @@ const deps = { chainMap: CHAIN_MAP }
 
 // The values every shipped chain row must resolve to, end to end. Base's are exactly what the bot ran
 // with before it was multichain; mainnet's block counts are the same wall-clock intents at ~6x the
-// block time. `maxFeeWei` is identical on both — it is the bump ladder's headroom, not a spend bound,
-// which is `maxGasLimit`.
+// block time. `maxFeeWei` is identical on both — it is the bump ladder's headroom, and bounds the
+// price of a gas unit rather than the cost of a transaction, which is `maxSpendWei`.
 const SHIPPED_ROWS: Record<
   number,
   {
@@ -303,6 +303,29 @@ describe('loadConfig', () => {
 
   it('accepts a MAX_GAS_LIMIT at the intrinsic-gas floor', () => {
     expect(loadConfig(baseEnv({ MAX_GAS_LIMIT: '21000' }), deps).maxGasLimit).toBe(21_000n)
+  })
+
+  // The bound an operator actually cares about is the product; assert it is derived and enforced.
+  it('resolves MAX_SPEND_ETH to wei and defaults it chain-independently', () => {
+    expect(loadConfig(baseEnv({ CHAIN_ID: '8453' })).maxSpendWei).toBe(parseEther('0.5'))
+    expect(loadConfig(baseEnv({ CHAIN_ID: '1' })).maxSpendWei).toBe(parseEther('0.5'))
+    expect(loadConfig(baseEnv({ MAX_SPEND_ETH: '0.05' }), deps).maxSpendWei).toBe(
+      parseEther('0.05')
+    )
+  })
+
+  it.each(['0', '-1', 'abc'])('rejects a MAX_SPEND_ETH of %s', spend => {
+    expect(() => loadConfig(baseEnv({ MAX_SPEND_ETH: spend }), deps)).toThrow(
+      'MAX_SPEND_ETH must be a positive decimal'
+    )
+  })
+
+  // A budget too small to pay for the cheapest possible transaction denies every send, the same
+  // silent do-nothing failure MIN_GAS_LIMIT guards from the other side.
+  it('rejects a MAX_SPEND_ETH that cannot cover minimum gas at the configured tip', () => {
+    expect(() => loadConfig(baseEnv({ CHAIN_ID: '1', MAX_SPEND_ETH: '0.00000000001' }))).toThrow(
+      /cannot pay for 21000 gas/
+    )
   })
 
   it('throws when a required var is missing', () => {

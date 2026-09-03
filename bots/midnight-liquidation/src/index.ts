@@ -69,6 +69,7 @@ async function main() {
       chainId: config.chainId,
       targets: [config.executooorAddress],
       maxFeePerGasWei: config.maxFeeWei,
+      maxSpendWei: config.maxSpendWei,
       maxGasLimit: config.maxGasLimit,
       maxDataBytes: DEFAULT_MAX_DATA_BYTES
     },
@@ -319,6 +320,7 @@ async function main() {
     syncNonce: signer.syncNonce,
     getConsumedNonce: signer.consumedNonce,
     maxFeeWei: config.maxFeeWei,
+    maxSpendWei: config.maxSpendWei,
     logger,
     // From the chain's tuning row rather than bot-kit's Base-shaped defaults: the block-denominated
     // three would otherwise mean 6x their intended wall-clock on a 12s chain, and `maxBumpAttempts`

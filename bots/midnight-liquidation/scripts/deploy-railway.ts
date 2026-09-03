@@ -23,7 +23,7 @@
  *   - ALLOW_BAD_DEBT_ONLY[_<chainId>]=true — required for a chain with NO venue enabled; the bot
  *     fails loud at startup otherwise. Unsuffixed is honored: it only ever narrows a chain.
  *   - PRIORITY_FEE_GWEI[_<chainId>] / MAX_GAS_LIMIT[_<chainId>] (optional) — override the chain's
- *     built-in defaults from src/config.ts. MAX_GAS_LIMIT is the bound on spend per transaction.
+ *     built-in defaults from src/config.ts. MAX_SPEND_ETH bounds `gas * fee`, the cost of one tx.
  *
  *   RAILWAY_PROJECT_ID=… RPC_URL_8453=… RPC_URL_1=… LIQUIDATOR_PRIVATE_KEY=0x… \
  *     pnpm --filter @morpho-org/midnight-liquidation run deploy:railway
@@ -383,6 +383,7 @@ const chainSecrets = CHAINS.map(chain => {
     // Pushed only when the operator sets them, so an unset var leaves the in-code default in force.
     priorityFeeGwei: suffixed('PRIORITY_FEE_GWEI', chain.chainId),
     maxGasLimit: suffixed('MAX_GAS_LIMIT', chain.chainId),
+    maxSpendEth: suffixed('MAX_SPEND_ETH', chain.chainId),
     betterstackHeartbeatUrl: suffixed('BETTERSTACK_HEARTBEAT_URL', chain.chainId)
   }
 })
@@ -431,7 +432,8 @@ for (const chain of chainSecrets) {
   // dropping one from a run restores the chain's in-code default instead of leaving a stale value.
   const tunables: [string, string | undefined][] = [
     ['PRIORITY_FEE_GWEI', chain.priorityFeeGwei],
-    ['MAX_GAS_LIMIT', chain.maxGasLimit]
+    ['MAX_GAS_LIMIT', chain.maxGasLimit],
+    ['MAX_SPEND_ETH', chain.maxSpendEth]
   ]
   for (const [key, value] of tunables) {
     if (value) await setVar(chain.service, `${key}=${value}`)

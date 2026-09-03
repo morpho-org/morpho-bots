@@ -5,6 +5,7 @@ import { tryCatch } from '@repo/utils'
 
 import type { Logger } from '../logger'
 
+import { DEFAULT_MAX_SPEND_WEI } from '../policy'
 import {
   isExecutionRevert,
   revertReason as defaultRevertReason,
@@ -40,7 +41,7 @@ export type TxRequest = { to: Address; data: Hex }
  */
 export type SendTx = (
   request: TxRequest & { maxFeePerGas: bigint; maxPriorityFeePerGas: bigint; nonce?: number }
-) => Promise<{ nonce: number; txHash: Hex }>
+) => Promise<{ nonce: number; txHash: Hex; gas: bigint }>
 
 export type TxReceiptLite = { status: 'success' | 'reverted'; blockNumber: bigint }
 export type GetReceipt = (txHash: Hex) => Promise<TxReceiptLite | null>
@@ -105,6 +106,8 @@ type Pending = {
   submittedAtBlock: bigint
   maxFeePerGas: bigint
   maxPriorityFeePerGas: bigint
+  /** Gas the node estimated for this tx — the other half of what a bump is allowed to cost. */
+  gas: bigint
   attempt: number
 }
 
@@ -166,6 +169,7 @@ export function createPendingQueue({
   syncNonce,
   getConsumedNonce,
   maxFeeWei,
+  maxSpendWei = DEFAULT_MAX_SPEND_WEI,
   logger,
   settledCooldownBlocks = 0n,
   stuckBlocks = STUCK_BLOCKS,
@@ -180,7 +184,14 @@ export function createPendingQueue({
   syncNonce?: SyncNonce
   /** When set, every `reconcileEveryBlocks` blocks the queue drops tracked-but-consumed nonces. */
   getConsumedNonce?: GetConsumedNonce
+  /** Per-gas price ceiling the bump ladder escalates into. */
   maxFeeWei: bigint
+  /**
+   * Ceiling on `gas * maxFeePerGas` for one transaction, in wei. Bumps stop at whichever of this and
+   * `maxFeeWei` binds first, so pass the SAME value the signing policy holds — otherwise the ladder
+   * escalates into a fee the policy will refuse to sign.
+   */
+  maxSpendWei?: bigint
   logger: Logger
   /** Blocks a settled label stays in the backpressure set; 0n (default) disables the cooldown. */
   settledCooldownBlocks?: bigint
@@ -323,7 +334,7 @@ export function createPendingQueue({
         ...(selector ? { selector } : {})
       }
     }
-    const { nonce, txHash } = sent.data
+    const { nonce, txHash, gas } = sent.data
     pending.set(nonce, {
       nonce,
       txHash,
@@ -332,6 +343,7 @@ export function createPendingQueue({
       submittedAtBlock: args.blockNumber,
       maxFeePerGas: args.maxFeePerGas,
       maxPriorityFeePerGas: args.maxPriorityFeePerGas,
+      gas,
       attempt: 0
     })
     logger.info('tx.sent', {
@@ -351,6 +363,17 @@ export function createPendingQueue({
       leader: { action: 'resolve', result: await submitLocked(locked) }
     }))
 
+  // What this tx's bumps may reach: the fee ceiling, or the per-gas price its own spend budget
+  // affords, whichever binds. Applying the budget HERE means an unaffordable bump retires the entry
+  // through the ordinary `fee_ceiling` drop. The signing policy asserts the same product, but a
+  // denial there arrives as a generic send failure — it would spend every remaining bump attempt
+  // re-earning the same verdict before dropping anyway.
+  function bumpCeiling(entry: Pending): bigint {
+    if (entry.gas <= 0n) return maxFeeWei
+    const affordable = maxSpendWei / entry.gas
+    return affordable < maxFeeWei ? affordable : maxFeeWei
+  }
+
   async function replaceStuck(entry: Pending, blockNumber: bigint, baseFee: bigint): Promise<void> {
     if (entry.attempt >= maxBumpAttempts) {
       settle(entry, blockNumber)
@@ -367,7 +390,7 @@ export function createPendingQueue({
       maxFeePerGas: entry.maxFeePerGas,
       maxPriorityFeePerGas: entry.maxPriorityFeePerGas,
       baseFee,
-      maxFeeWei
+      maxFeeWei: bumpCeiling(entry)
     })
     if (result.kind === 'drop') {
       settle(entry, blockNumber)

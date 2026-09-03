@@ -17,18 +17,15 @@ import type {
 import { createPendingQueue } from '../../src/queue/pending-queue'
 import { TxSendError } from '../../src/tx-send.error'
 
+// Gas the signer reports back for a stub send; the spend ceiling is priced against it.
+const STUB_GAS = 1_000_000n
+
 // The cooldown the opted-in cases run with (mirrors midnight's SETTLED_COOLDOWN_BLOCKS tuning).
 const SETTLED_COOLDOWN_BLOCKS = 20n
 
 const REQUEST: TxRequest = {
   to: '0x0000000000000000000000000000000000000001' as Address,
   data: '0x' as Hex
-}
-const NOOP_LOGGER: Logger = {
-  debug: () => undefined,
-  info: () => undefined,
-  warn: () => undefined,
-  error: () => undefined
 }
 
 function hashOf(n: number): Hex {
@@ -57,6 +54,7 @@ function setup(
     getReceipt?: GetReceipt
     baseFee?: bigint
     maxFeeWei?: bigint
+    maxSpendWei?: bigint
     send?: SendTx
     /** `null` builds the queue WITHOUT a syncNonce hook (both bots wire one; kept for coverage). */
     syncNonce?: SyncNonce | null
@@ -72,13 +70,14 @@ function setup(
   const defaultSend: SendTx = async request => {
     sends.push(request)
     counter += 1
-    return { nonce: request.nonce ?? 7, txHash: hashOf(counter) }
+    return { nonce: request.nonce ?? 7, txHash: hashOf(counter), gas: STUB_GAS }
   }
   let syncNonceCalls = 0
   const defaultSyncNonce: SyncNonce = async () => {
     syncNonceCalls += 1
   }
   const getBaseFee: GetBaseFee = async () => opts.baseFee ?? 100n
+  const capture = captureLogger()
   const queue = createPendingQueue({
     send: opts.send ?? defaultSend,
     getReceipt: opts.getReceipt ?? (async () => null),
@@ -88,11 +87,13 @@ function setup(
     ...(opts.getConsumedNonce ? { getConsumedNonce: opts.getConsumedNonce } : {}),
     ...(opts.reconcileEveryBlocks ? { reconcileEveryBlocks: opts.reconcileEveryBlocks } : {}),
     maxFeeWei: opts.maxFeeWei ?? 10_000_000_000_000n,
-    logger: opts.logger ?? NOOP_LOGGER
+    ...(opts.maxSpendWei === undefined ? {} : { maxSpendWei: opts.maxSpendWei }),
+    logger: opts.logger ?? capture.logger
   })
   return {
     queue,
     sends,
+    events: capture.events,
     get syncNonceCalls() {
       return syncNonceCalls
     }
@@ -142,6 +143,46 @@ describe('createPendingQueue', () => {
     expect(sends[1]?.maxPriorityFeePerGas).toBe(1125n) // +12.5%
     expect(sends[1]?.maxFeePerGas).toBe(1325n) // max(1125, 2*100 + 1125)
     expect(queue.snapshot()[0]).toEqual({ nonce: 7, txHash: hashOf(2), attempt: 1 })
+  })
+
+  // The spend budget is what a tx may cost, so it has to be divided by that tx's own gas before it
+  // can be compared against a per-gas fee. Applying it here rather than at the signer is what makes
+  // an unaffordable bump a clean one-shot `fee_ceiling` drop.
+  it('stops the bump ladder at the spend budget, not just the fee ceiling', async () => {
+    // A budget of 1400 wei/gas x STUB_GAS sits far under the 1e9 fee ceiling, so the budget is what
+    // binds. From 1000/1000 at a basefee of 100 the ladder reaches 1325 (affordable), then 1490.
+    const { queue, events, sends } = setup({
+      baseFee: 100n,
+      maxFeeWei: 1_000_000_000n,
+      maxSpendWei: 1_400n * STUB_GAS
+    })
+    await submitOne(queue, 0n)
+
+    await queue.onBlock(5n)
+    expect(sends).toHaveLength(2) // 1325 wei/gas x 1e6 gas = 1.325e9 <= budget
+    expect(sends[1]?.maxFeePerGas).toBe(1325n)
+
+    await queue.onBlock(10n)
+    expect(sends).toHaveLength(2) // 1490 breaches the budget, so nothing is broadcast
+    expect(queue.size).toBe(0)
+    expect(events.some(e => e.event === 'tx.dropped' && e.fields?.reason === 'fee_ceiling')).toBe(
+      true
+    )
+  })
+
+  // Guards the pairing the queue and the signing policy must agree on: with a budget at or above the
+  // product of the two ceilings, the ladder is governed by `maxFeeWei` exactly as before.
+  it('leaves the ladder to the fee ceiling when the budget cannot bind', async () => {
+    const { queue, sends } = setup({
+      baseFee: 100n,
+      maxFeeWei: 1_000_000_000n,
+      maxSpendWei: 1_000_000_000n * STUB_GAS
+    })
+    await submitOne(queue, 0n)
+    await queue.onBlock(5n)
+
+    expect(sends).toHaveLength(2)
+    expect(sends[1]?.maxFeePerGas).toBe(1325n) // identical to the plain bump case
   })
 
   it('drops a tx after maxBumpAttempts bumps', async () => {
@@ -212,7 +253,7 @@ describe('createPendingQueue', () => {
     let calls = 0
     const send: SendTx = async request => {
       calls += 1
-      if (calls === 1) return { nonce: request.nonce ?? 7, txHash: hashOf(1) }
+      if (calls === 1) return { nonce: request.nonce ?? 7, txHash: hashOf(1), gas: STUB_GAS }
       throw new ExecutionRevertedError({}) // the re-broadcast reverts
     }
     const { queue } = setup({ send, logger })
@@ -227,7 +268,7 @@ describe('createPendingQueue', () => {
     let calls = 0
     const send: SendTx = async request => {
       calls += 1
-      if (calls === 1) return { nonce: request.nonce ?? 7, txHash: hashOf(1) }
+      if (calls === 1) return { nonce: request.nonce ?? 7, txHash: hashOf(1), gas: STUB_GAS }
       throw new Error('connection reset') // every replacement is a transient failure
     }
     const { queue } = setup({ send, logger })
@@ -247,7 +288,7 @@ describe('createPendingQueue', () => {
     let n = 0
     const send: SendTx = async request => {
       n += 1
-      return { nonce: request.nonce ?? n, txHash: hashOf(n) }
+      return { nonce: request.nonce ?? n, txHash: hashOf(n), gas: STUB_GAS }
     }
     const getReceipt: GetReceipt = async txHash => {
       if (txHash === hashOf(1)) throw new Error('rpc hiccup')
@@ -284,7 +325,7 @@ describe('createPendingQueue', () => {
     let n = 6
     const send: SendTx = async request => {
       n += 1
-      return { nonce: request.nonce ?? n, txHash: hashOf(n) } // distinct nonces → both tracked
+      return { nonce: request.nonce ?? n, txHash: hashOf(n), gas: STUB_GAS } // distinct nonces → both tracked
     }
     const ctx = setup({ send })
     await ctx.queue.submit({
@@ -498,7 +539,7 @@ describe('send-aborted latch', () => {
     const send: SendTx = async request => {
       calls += 1
       if (calls === 1) throw new TxSendError(new Error('rpc timeout after broadcast'), 7)
-      return { nonce: request.nonce ?? 7, txHash: hashOf(calls) }
+      return { nonce: request.nonce ?? 7, txHash: hashOf(calls), gas: STUB_GAS }
     }
     const { queue } = setup({ send })
     // First submit claims a nonce but fails hashless → rethrows and latches.
@@ -540,7 +581,7 @@ describe('nonce-hole latch', () => {
     const send: SendTx = async request => {
       sends.push(request)
       h += 1
-      return { nonce: request.nonce ?? nextNonce++, txHash: hashOf(h) }
+      return { nonce: request.nonce ?? nextNonce++, txHash: hashOf(h), gas: STUB_GAS }
     }
     let syncNonceCalls = 0
     const { logger, events } = captureLogger()
@@ -754,7 +795,7 @@ describe('submit serialization', () => {
       entered.push(index)
       await new Promise<void>(resolve => release.push(resolve))
       const nonce = request.nonce ?? cursor++
-      return { nonce, txHash: hashOf(nonce) }
+      return { nonce, txHash: hashOf(nonce), gas: STUB_GAS }
     }
     return { send, release, entered }
   }
@@ -841,7 +882,7 @@ describe('submit serialization', () => {
     const send: SendTx = async request => {
       calls += 1
       if (calls === 1) throw new TxSendError(new Error('broadcast lost'), 7)
-      return { nonce: request.nonce ?? 8, txHash: hashOf(8) }
+      return { nonce: request.nonce ?? 8, txHash: hashOf(8), gas: STUB_GAS }
     }
     const { queue } = setup({ send })
 

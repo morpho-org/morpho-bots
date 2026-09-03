@@ -78,6 +78,10 @@ export async function createApplication(
         selector: resolverSelector(),
         maxFeePerGasWei: config.maxFeeWei,
         maxGasLimit: DEFAULT_MAX_GAS_LIMIT,
+        // What a transaction can actually cost. Asserting the product of the two ceilings above
+        // changes nothing this bot could already do — it just states the bound instead of leaving it
+        // implied, and gives a single number to tighten once there is production gas data.
+        maxSpendWei: config.maxFeeWei * DEFAULT_MAX_GAS_LIMIT,
         maxDataBytes: DEFAULT_MAX_DATA_BYTES
       },
       logger
@@ -90,6 +94,7 @@ export async function createApplication(
       syncNonce: signer.syncNonce,
       getConsumedNonce: signer.consumedNonce,
       maxFeeWei: config.maxFeeWei,
+      maxSpendWei: config.maxFeeWei * DEFAULT_MAX_GAS_LIMIT,
       logger
     })
   }

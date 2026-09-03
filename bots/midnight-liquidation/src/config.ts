@@ -5,7 +5,7 @@ import type { Address, Chain, Hex } from 'viem'
 import { hasBumpHeadroom } from '@repo/bot-kit'
 import { Executor } from '@repo/contracts'
 import { tryCatch } from '@repo/utils'
-import { getAddress, isAddress, isHex, parseGwei } from 'viem'
+import { getAddress, isAddress, isHex, parseEther, parseGwei } from 'viem'
 import { base, mainnet } from 'viem/chains'
 
 import { InvalidConfigError } from './invalid-config.error'
@@ -100,7 +100,7 @@ export type TuningConfig = {
 type ChainDefaults = {
   /** `PRIORITY_FEE_GWEI` — first-send tip, as a decimal gwei string. */
   priorityFeeGwei: string
-  /** `MAX_GAS_LIMIT` — ceiling on a signed tx's gas limit; this bot's bound on spend per tx. */
+  /** `MAX_GAS_LIMIT` — ceiling on a signed tx's gas limit. Bounds spend only with `MAX_SPEND_ETH`. */
   maxGasLimit: bigint
   /** `SEIZE_CAP_MARGIN_BPS` — headroom shaved off the on-chain repay cap when sizing a seize. */
   seizeCapMarginBps: number
@@ -167,9 +167,10 @@ const CHAIN_MAP: Record<number, ChainConfig> = {
       // the bot sending at all. Sized against a p90 tip of ~2 gwei measured over ~1k blocks (basefee
       // ~0.2 gwei at the time); revisit against production inclusion data.
       priorityFeeGwei: '2',
-      // THE bound on spend per transaction. Gas is the predictable half of `gas x fee`, so it is the
-      // half worth capping: a liquidation exec sits well under this, while MAX_FEE_GWEI has to stay
-      // wide enough for the bump ladder to survive a congested basefee (see `maxBumpAttempts`).
+      // Caps the units, not the cost — `MAX_SPEND_ETH` bounds `gas x fee`. Tightened here because
+      // gas is the knowable factor: a liquidation exec sits well under this, while MAX_FEE_GWEI has
+      // to stay wide enough for the bump ladder to survive a congested basefee (see
+      // `maxBumpAttempts`), so it cannot be tightened to limit cost.
       maxGasLimit: 3_000_000n,
       // One-block oracle-drift headroom, and a mainnet block is ~6x the drift window of a Base one.
       seizeCapMarginBps: 60
@@ -181,9 +182,10 @@ const CHAIN_MAP: Record<number, ChainConfig> = {
 // Env table
 // ---------------------------------------------------------------------------
 const LOG_LEVELS = ['debug', 'info', 'warn', 'error'] as const
-// The fee ceiling is deliberately NOT per-chain. It is not a spend bound — `MAX_GAS_LIMIT` is — but
-// the headroom the bump ladder escalates into: `bumpFees` DROPS a tx once the bumped maxFeePerGas
-// would exceed it, and a drop latches a nonce hole that stops the bot sending at all.
+// The fee ceiling is deliberately NOT per-chain. It is not a bound on spend — `MAX_SPEND_ETH` is,
+// and only the product `gas * fee` ever was — but the headroom the bump ladder escalates into:
+// `bumpFees` DROPS a tx once the bumped maxFeePerGas would exceed it, and a drop latches a nonce
+// hole that stops the bot sending at all.
 //
 // It does not make the ladder unconditional, and how far the ladder reaches turns on what the basefee
 // does while a tx sits: a replacement's max is `max(prev * 1.125, 2*basefee + tip)`. Held flat, 300
@@ -198,6 +200,18 @@ const DEFAULT_MAX_FEE_GWEI = '300'
 // signing policy denies every prepared tx (`policy.ts` rejects `tx.gas > maxGasLimit`) while the
 // process stays up and healthy — a silent do-nothing bot. Fail at startup instead.
 const MIN_GAS_LIMIT = 21_000n
+
+// What one transaction may cost, end to end. Neither ceiling bounds spend on its own: `MAX_GAS_LIMIT`
+// caps the units and `MAX_FEE_GWEI` the price, and it is their PRODUCT that leaves the wallet — 15M
+// gas at 300 gwei is 4.5 ETH. That product is asserted directly, by the signing policy against the
+// gas the node actually estimated, and by the pending queue when it prices each bump.
+//
+// Chain-independent, because it is denominated in the gas token rather than in either chain's fee
+// level. Deliberately generous: it is sized to bound a runaway, not to price a liquidation, and sits
+// far above any plausible exec at either chain's real basefee. Calibrate down from production
+// `tx.confirmed` gas once there is a distribution to calibrate against — no measured exec-gas figure
+// exists yet, which is why this is a ceiling and not a budget.
+const DEFAULT_MAX_SPEND_ETH = '0.5'
 const PRIVATE_KEY_HEX_LENGTH = 66 // '0x' + 32 bytes
 
 // Borrower-candidate discovery defaults (the markets liquidation-candidates endpoint). The URL is a
@@ -345,7 +359,7 @@ export type Config = {
   midnight: Address
   /** Chain-specific runtime values threaded into the bot-kit runner, queue, and balance monitor. */
   tuning: TuningConfig
-  /** Ceiling on a signed tx's gas limit — the signing policy's bound on spend per transaction. */
+  /** Ceiling on a signed tx's gas limit, enforced by the signing policy. See `maxSpendWei`. */
   maxGasLimit: bigint
   rpcUrl: string
   rpcUrlFallback: string | undefined
@@ -367,6 +381,11 @@ export type Config = {
    */
   positionCooldownMs: number
   maxFeeWei: bigint
+  /**
+   * `MAX_SPEND_ETH` in wei — the ceiling on `gas * maxFeePerGas` for one transaction, and the only
+   * field here that bounds spend. `maxGasLimit` and `maxFeeWei` bound its two factors.
+   */
+  maxSpendWei: bigint
   /** First-send `maxPriorityFeePerGas`. See `PRIORITY_FEE_GWEI`. */
   priorityFeeWei: bigint
   logLevel: LogLevel
@@ -596,6 +615,21 @@ export function loadConfig(
     )
   }
 
+  // A budget under one gas unit at the fee ceiling could never admit any transaction, which would be
+  // the same silent do-nothing bot that MIN_GAS_LIMIT guards against from the other direction.
+  const maxSpendEth = env.MAX_SPEND_ETH?.trim() || DEFAULT_MAX_SPEND_ETH
+  if (!/^\d+(\.\d+)?$/.test(maxSpendEth) || Number(maxSpendEth) <= 0) {
+    throw new InvalidConfigError(
+      `MAX_SPEND_ETH must be a positive decimal, got: ${env.MAX_SPEND_ETH}`
+    )
+  }
+  const maxSpendWei = parseEther(maxSpendEth)
+  if (maxSpendWei < MIN_GAS_LIMIT * priorityFeeWei) {
+    throw new InvalidConfigError(
+      `MAX_SPEND_ETH (${maxSpendEth}) cannot pay for ${MIN_GAS_LIMIT} gas at PRIORITY_FEE_GWEI (${priorityFeeGwei})`
+    )
+  }
+
   // Enabled venues are inferred from which venue API keys are present — there is no per-collateral
   // routing file anymore. With no key present the bot can only discover positions and realize pure
   // bad debt (which needs no swap), never actually swap-liquidate — so that degraded posture must be
@@ -711,6 +745,7 @@ export function loadConfig(
       { min: 0 }
     ),
     maxFeeWei,
+    maxSpendWei,
     priorityFeeWei,
     logLevel
   }

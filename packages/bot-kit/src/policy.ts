@@ -11,6 +11,14 @@ export const EXECUTOR_SELECTOR = '0x00000001'
 /** Default gas-limit ceiling (matches the daemon-era signer policy default). */
 export const DEFAULT_MAX_GAS_LIMIT = 15_000_000n
 
+/**
+ * Default ceiling on `gas * maxFeePerGas` for one transaction, in wei (0.5 ETH). Generous by intent:
+ * it is meant to bound a runaway, not to price a transaction, and sits well above any plausible
+ * liquidation or reallocation exec at either chain's real fee level. Calibrate down from production
+ * `tx.confirmed` data. See {@link Policy.maxSpendWei}.
+ */
+export const DEFAULT_MAX_SPEND_WEI = 5n * 10n ** 17n
+
 /** Default calldata byte ceiling (matches the daemon-era signer policy default). */
 export const DEFAULT_MAX_DATA_BYTES = 65_536
 
@@ -33,8 +41,26 @@ export type Policy = {
   chainId: number
   /** Allowed target contracts; an empty list denies every transaction. */
   targets: readonly Address[]
+  /**
+   * Ceiling on a single gas unit's price. This is the bump ladder's headroom, NOT a bound on spend:
+   * what a transaction can cost is `gas * maxFeePerGas`, which {@link Policy.maxSpendWei} bounds.
+   * Lowering this to limit spend shortens the ladder instead — see {@link bumpFees}.
+   */
   maxFeePerGasWei: bigint
+  /** Ceiling on a signed tx's gas limit. Bounds spend only together with {@link Policy.maxSpendWei}. */
   maxGasLimit: bigint
+  /**
+   * THE bound on what one transaction can cost, in wei: `gas * maxFeePerGas` evaluated against the
+   * gas the node actually estimated, not the ceiling. Neither {@link Policy.maxGasLimit} nor
+   * {@link Policy.maxFeePerGasWei} bounds spend alone — their product is what an operator pays in
+   * the worst case, so it is asserted directly rather than left implied.
+   *
+   * Set it to `maxGasLimit * maxFeePerGasWei` to assert exactly what those two already imply; set it
+   * lower to make it bind. A queue built with the same value keeps the bump ladder inside it (see
+   * `createPendingQueue`), so a budget that binds truncates the ladder cleanly instead of surfacing
+   * here — a denial on a replacement would otherwise burn every bump attempt on the same verdict.
+   */
+  maxSpendWei: bigint
   maxDataBytes: number
   /** Allowed outer selector; defaults to Executor.exec_606BaXt. */
   selector?: Hex
@@ -58,6 +84,7 @@ export type PolicyCheck =
   | 'value'
   | 'maxFeePerGas'
   | 'gas'
+  | 'spend'
   | 'maxDataBytes'
   | 'selector'
   | 'data'
@@ -107,6 +134,10 @@ export function evaluatePolicy(policy: Policy, tx: PolicyTx): PolicyDecision {
   }
   if (tx.gas > policy.maxGasLimit) {
     return deny('gas', `gas ${tx.gas} exceeds policy ceiling`)
+  }
+  const spendWei = tx.gas * tx.maxFeePerGas
+  if (spendWei > policy.maxSpendWei) {
+    return deny('spend', `gas x maxFeePerGas ${spendWei} exceeds policy spend ceiling`)
   }
   const dataBytes = (tx.data.length - 2) / 2
   if (dataBytes > policy.maxDataBytes) {
