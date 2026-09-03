@@ -73,7 +73,6 @@ const environmentKeys = [
   'MARKET_IDS',
   'REFERENCE_MARKET_ID',
   'NATIVE_RESERVE_WEI',
-  'MAXIMUM_LEND_EXPOSURE_ASSETS',
   'MORPHO_API_BASE_URL',
   'ROUTER_API_BASE_URL',
   'V0_OFFER_GROUP_IDS',
@@ -98,12 +97,7 @@ const yamlKeys = {
   contracts: ['midnightAddress', 'loanAssetAddress', 'ratifierAddress'],
   apis: ['morphoBaseUrl', 'routerBaseUrl'],
   markets: ['allowlist', 'referenceMarketId', 'v0OfferGroupIds'],
-  setup: [
-    'nativeReserveWei',
-    'maximumLendExposureAssets',
-    'requestTimeoutMs',
-    'transactionReceiptTimeoutMs'
-  ],
+  setup: ['nativeReserveWei', 'requestTimeoutMs', 'transactionReceiptTimeoutMs'],
   bootstrap: [
     'marketId',
     'targetRate',
@@ -173,7 +167,6 @@ const rejectUnsafeYamlNodes = (document: ReturnType<typeof parseDocument>) => {
 const yamlIntegerEnvironmentKeys = new Set([
   'CHAIN_ID',
   'NATIVE_RESERVE_WEI',
-  'MAXIMUM_LEND_EXPOSURE_ASSETS',
   'REQUEST_TIMEOUT_MS',
   'TRANSACTION_RECEIPT_TIMEOUT_MS'
 ])
@@ -257,7 +250,6 @@ const yamlSource = (input: unknown, readOnly: boolean): ConfigurationSource => {
   })
   mapGroup('setup', {
     nativeReserveWei: 'NATIVE_RESERVE_WEI',
-    maximumLendExposureAssets: 'MAXIMUM_LEND_EXPOSURE_ASSETS',
     requestTimeoutMs: 'REQUEST_TIMEOUT_MS',
     transactionReceiptTimeoutMs: 'TRANSACTION_RECEIPT_TIMEOUT_MS'
   })
@@ -371,7 +363,6 @@ const yamlEnvironmentPaths: Partial<
   MARKET_IDS: ['markets', 'allowlist'],
   REFERENCE_MARKET_ID: ['markets', 'referenceMarketId'],
   NATIVE_RESERVE_WEI: ['setup', 'nativeReserveWei'],
-  MAXIMUM_LEND_EXPOSURE_ASSETS: ['setup', 'maximumLendExposureAssets'],
   MORPHO_API_BASE_URL: ['apis', 'morphoBaseUrl'],
   ROUTER_API_BASE_URL: ['apis', 'routerBaseUrl'],
   V0_OFFER_GROUP_IDS: ['markets', 'v0OfferGroupIds'],

@@ -121,7 +121,6 @@ describe('Cli', () => {
       MARKET_IDS: `0x${'55'.repeat(32)}`,
       REFERENCE_MARKET_ID: `0x${'77'.repeat(32)}`,
       NATIVE_RESERVE_WEI: '10',
-      MAXIMUM_LEND_EXPOSURE_ASSETS: '100',
       MORPHO_API_BASE_URL: `http://127.0.0.1:1/morpho?key=${markers[4]}`,
       ROUTER_API_BASE_URL: `http://127.0.0.1:1/router?key=${markers[5]}`,
       REQUEST_TIMEOUT_MS: '50'

@@ -346,7 +346,6 @@ unit; for six-decimal USDC, `101000000` is 101 USDC. No value is inferred from a
 | `REFERENCE_MARKET_ID`            | `markets.referenceMarketId`         | Required when the selected command has an active `variable_rate_avg` target. Must be a 0x-prefixed bytes32 Morpho Blue market ID.                                                                            |
 | `V0_OFFER_GROUP_IDS`             | `markets.v0OfferGroupIds`           | Optional comma-separated list of unique, explicitly strategy-owned bytes32 offer-group IDs; defaults to empty. Use it to adopt known pre-existing groups safely.                                             |
 | `NATIVE_RESERVE_WEI`             | `setup.nativeReserveWei`            | Required unsigned integer. Minimum maker native-token balance, in wei, required by readiness for transaction fees.                                                                                           |
-| `MAXIMUM_LEND_EXPOSURE_ASSETS`   | `setup.maximumLendExposureAssets`   | Required unsigned integer in raw loan-token units. Minimum maker allowance to Midnight required by readiness; it is not a strategy position cap.                                                             |
 | `REQUEST_TIMEOUT_MS`             | `setup.requestTimeoutMs`            | Optional provider-operation and aggregate pagination timeout in milliseconds. Defaults to `10000`; accepted range is `1` through `120000`.                                                                   |
 | `TRANSACTION_RECEIPT_TIMEOUT_MS` | `setup.transactionReceiptTimeoutMs` | Optional timeout for confirming an already-submitted transaction, in milliseconds. Defaults to `180000`; accepted range is `1` through `900000`.                                                             |
 | `BOOTSTRAP_MARKETS`              | `bootstrap`                         | Optional exact JSON array of position-bootstrap entries documented below; defaults to `[]` and replaces the complete YAML `bootstrap` list when supplied.                                                    |
@@ -590,10 +589,15 @@ and `ladder`; unknown keys at any level are rejected. Every supported key appear
 - `contracts`: `midnightAddress`, `loanAssetAddress`, `ratifierAddress`.
 - `apis`: `morphoBaseUrl`, `routerBaseUrl`.
 - `markets`: `allowlist`, `referenceMarketId`, `v0OfferGroupIds`.
-- `setup`: `nativeReserveWei`, `maximumLendExposureAssets`, `requestTimeoutMs`,
-  `transactionReceiptTimeoutMs`.
+- `setup`: `nativeReserveWei`, `requestTimeoutMs`, `transactionReceiptTimeoutMs`.
 - `bootstrap`: an ordered list of the exact per-market objects documented below.
 - `ladder`: an ordered list of the exact per-market objects documented below.
+
+`setup.maximumLendExposureAssets` was removed. Delete it from existing configuration files:
+unknown keys are rejected and the sanitized error does not name the offending key, so a stale entry
+crash-loops the bot at startup with no indication of which line is at fault. A stale
+`MAXIMUM_LEND_EXPOSURE_ASSETS` environment variable is inert and needs no action — the loader reads
+an allowlist and ignores anything outside it.
 
 Addresses and bytes32 IDs should be quoted YAML strings. Every integer field uses exact
 decimal-integer syntax: unsigned fields accept digits only, while `premiumBps`, `quotePremiumBps`,
@@ -612,6 +616,15 @@ Setup verifies all of the following from the typed configuration:
 
 - Configured chain identity and configured Midnight bytecode.
 - Native reserve, loan-token allowance, and ratifier readiness for the configured maker address.
+  The allowance check requires an unbounded (`type(uint256).max`) approval to Midnight: an ERC-20
+  allowance is a cumulative lifetime spend budget, not an outstanding-exposure cap, so a finite
+  approval is consumed by ordinary relending and fails readiness. Exposure is bounded by maker
+  wallet funds and the strategy's `targetMarketExposureAssets` / `maximumTotalExposureAssets`.
+- Active maker offers: an offer on an unconfigured market, or a crossed/inverted book, fails
+  readiness. A live offer group the bot cannot attribute to itself is reported as `warning` and
+  does not block readiness — group ownership is a local durable record, so redeploying onto a fresh
+  filesystem orphans the bot's own groups, and halting on that cannot recover until every orphan
+  expires. Exposure is derived from live on-chain groups either way.
 - Maker/private-key agreement in write mode; only this signer-identity check is `not-required` with
   `--readonly`. Maker identity is reduced to configured/derived/matches status and the address is
   never included in operator output.

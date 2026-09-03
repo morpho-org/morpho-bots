@@ -44,7 +44,11 @@ describe('createMonitoringProjection', () => {
   test('reports each failed readiness check without leaking its unknown-typed observation', () => {
     const events = createMonitoringProjection().setup(readyReport)
 
-    expect(events).toContainEqual({ event: 'setup.check-failed', check: 'native-balance' })
+    expect(events).toContainEqual({
+      event: 'setup.check-failed',
+      check: 'native-balance',
+      status: 'failed'
+    })
     expect(events).toContainEqual({
       event: 'cycle.completed',
       workflow: 'setup-check',

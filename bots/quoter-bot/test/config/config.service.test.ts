@@ -25,7 +25,6 @@ const environment = {
   MARKET_IDS: marketId,
   REFERENCE_MARKET_ID: referenceMarketId,
   NATIVE_RESERVE_WEI: '10',
-  MAXIMUM_LEND_EXPOSURE_ASSETS: '100',
   MORPHO_API_BASE_URL: 'https://api.example',
   ROUTER_API_BASE_URL: 'https://router.example',
   V0_OFFER_GROUP_IDS: groupId
@@ -66,7 +65,6 @@ describe('ConfigService', () => {
       midnight: environment.MIDNIGHT_ADDRESS,
       nativeReserve: 10n,
       loanAsset: environment.LOAN_ASSET_ADDRESS,
-      maximumLendExposure: 100n,
       ratifier: environment.RATIFIER_ADDRESS,
       marketIds: [marketId],
       referenceMarketId

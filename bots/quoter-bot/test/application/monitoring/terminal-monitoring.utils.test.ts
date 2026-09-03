@@ -21,7 +21,11 @@ describe('terminalMonitoringEvents', () => {
       reason: 'setup-failed',
       errorName: 'SetupFailedError'
     })
-    expect(events).toContainEqual({ event: 'setup.check-failed', check: 'loan-allowance' })
+    expect(events).toContainEqual({
+      event: 'setup.check-failed',
+      check: 'loan-allowance',
+      status: 'failed'
+    })
     expect(events).not.toContainEqual(expect.objectContaining({ check: 'chain' }))
   })
 

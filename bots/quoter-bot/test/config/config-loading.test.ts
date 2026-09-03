@@ -29,7 +29,6 @@ const environment = {
   MARKET_IDS: marketId,
   REFERENCE_MARKET_ID: referenceMarketId,
   NATIVE_RESERVE_WEI: '10',
-  MAXIMUM_LEND_EXPOSURE_ASSETS: '100',
   MORPHO_API_BASE_URL: 'https://api.env.example',
   ROUTER_API_BASE_URL: 'https://router.env.example'
 }
@@ -97,7 +96,6 @@ markets:
   v0OfferGroupIds: []
 setup:
   nativeReserveWei: "10"
-  maximumLendExposureAssets: "100"
   requestTimeoutMs: 10000
   transactionReceiptTimeoutMs: 180000
 bootstrap:

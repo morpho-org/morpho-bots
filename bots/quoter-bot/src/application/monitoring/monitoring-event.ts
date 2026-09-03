@@ -156,7 +156,7 @@ export type MonitoringEvent =
       operation: 'cancel' | 'ratify' | 'publish'
       txHash: Hex
     }
-  | { event: 'setup.check-failed'; check: string }
+  | { event: 'setup.check-failed'; check: string; status: 'failed' | 'warning' }
 
 /**
  * Event names that may be shipped to the log source.
