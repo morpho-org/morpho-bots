@@ -473,7 +473,8 @@ human-scaled: a consumer resolves decimals from the `loanAsset` address shipped 
 | `book.observed`                | A verbose ladder cycle observed post-check market state; one record per side, on every observed cycle                         | `marketId`, `side`, `state` (`quoting` \| `empty`), `rungs`, `totalAssets`, `bestRateBps?`, `worstRateBps?`, `centerRateBps?` (absent when no quote is active)                                                                                                         |
 | `offer.consumed`               | A group's monotonic `consumed` grew relative to the previous cycle                                                            | `marketId`, `side`, `consumedDeltaAssets`, `groupRateBps`, `remainingAssets`, `groupId` _(trace only)_                                                                                                                                                                 |
 | `transaction.settled`          | A submitted bootstrap or ladder transaction confirmed; `marketId` is absent for strategy-wide halt/invalidation cancellations | `workflow`, `marketId?`, `operation` (`cancel` \| `ratify` \| `publish`), `txHash` _(trace only)_                                                                                                                                                                      |
-| `setup.check-failed`           | One named readiness check failed; `observed`/`required` are typed `unknown` and are omitted                                   | `check`                                                                                                                                                                                                                                                                |
+| `setup.check-failed`           | One named readiness check failed, blocking readiness; `observed`/`required` are typed `unknown` and are omitted               | `check`, `status`                                                                                                                                                                                                                                                      |
+| `setup.check-warning`          | One named readiness check warned without blocking readiness; `observed`/`required` are likewise omitted                       | `check`, `status`                                                                                                                                                                                                                                                      |
 
 `bot.started`, `bot.stopped`, `bot.unexpected-error`, `heartbeat.failed`,
 `ladder.transaction-submitted`, `bootstrap.transaction-submitted`, and
@@ -537,8 +538,8 @@ only and cannot prove a particular market was read or quoted. The per-market `cy
 
 #### Known limits
 
-- **Verbose gating.** Everything beyond `cycle.completed`, `guardrail.halted`, `bot.failed`, and
-  `setup.check-failed` is projected from verbose diagnostics. Full shipping configuration
+- **Verbose gating.** Everything beyond `cycle.completed`, `guardrail.halted`, `bot.failed`,
+  `setup.check-failed`, and `setup.check-warning` is projected from verbose diagnostics. Full shipping configuration
   auto-enables `--verbose` for `start`, `bootstrap`, and `ladder`; an operator running those commands
   manually without `--verbose` gets far fewer records.
 - **Fill baseline.** `offer.consumed` is a cycle-over-cycle delta of monotonic per-group `consumed`,

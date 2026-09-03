@@ -385,15 +385,9 @@ export const createProductionBootstrapAdapters = (
     return {
       activeGroups: [...project(strategyBootstrapGroups(groups, ownedIds), true), ...pendingGroups],
       cashReservations: [
-        ...project(
-          strategyBootstrapGroups(
-            groups,
-            ladderPublications.flatMap(publication =>
-              publication.groups.map(group => group.groupId)
-            )
-          ),
-          false
-        ),
+        // Every live buy group, attributed or not: the caller removes this strategy's own active
+        // groups, so anything left still commits maker cash. See `ladderCashReservations`.
+        ...project(groups, false),
         ...pendingLadderBuyReservations(groups, ladderPublications).flatMap(reservation =>
           reservation.marketIds.map(marketId => ({
             id: reservation.id,

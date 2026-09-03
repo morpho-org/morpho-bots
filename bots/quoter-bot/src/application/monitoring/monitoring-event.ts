@@ -156,7 +156,8 @@ export type MonitoringEvent =
       operation: 'cancel' | 'ratify' | 'publish'
       txHash: Hex
     }
-  | { event: 'setup.check-failed'; check: string; status: 'failed' | 'warning' }
+  | { event: 'setup.check-failed'; check: string; status: 'failed' }
+  | { event: 'setup.check-warning'; check: string; status: 'warning' }
 
 /**
  * Event names that may be shipped to the log source.
@@ -184,7 +185,8 @@ const MONITORING_EVENT_NAMES = [
   'book.observed',
   'offer.consumed',
   'transaction.settled',
-  'setup.check-failed'
+  'setup.check-failed',
+  'setup.check-warning'
 ] as const satisfies readonly MonitoringEvent['event'][]
 
 type MissingFromAllowlist = Exclude<

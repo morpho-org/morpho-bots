@@ -574,7 +574,8 @@ no field is human-scaled — resolve decimals downstream from the `loanAsset` ad
 | `book.observed`                | A verbose ladder cycle observed post-check market state (both sides always)                               | `marketId`, `side`, `state`, `rungs`, `totalAssets`, `bestRateBps?`, `worstRateBps?`, `centerRateBps?`                                                                                                                                                                 |
 | `offer.consumed`               | A group's monotonic `consumed` grew since the previous cycle                                              | `marketId`, `side`, `consumedDeltaAssets`, `groupRateBps`, `remainingAssets`, `groupId` _(trace only)_                                                                                                                                                                 |
 | `transaction.settled`          | A submitted transaction confirmed; `marketId` is absent for strategy-wide halt/invalidation cancellations | `workflow`, `marketId?`, `operation`, `txHash` _(trace only)_                                                                                                                                                                                                          |
-| `setup.check-failed`           | One named setup check failed                                                                              | `check`                                                                                                                                                                                                                                                                |
+| `setup.check-failed`           | One named setup check failed, blocking readiness                                                          | `check`, `status`                                                                                                                                                                                                                                                      |
+| `setup.check-warning`          | One named setup check warned without blocking readiness                                                   | `check`, `status`                                                                                                                                                                                                                                                      |
 
 `txHash` and `groupId` are unbounded trace-only correlation fields: use them to join records, never
 as grouping dimensions. The safe dimensions are `workflow`, `marketId`, `side`, `status`, `stage`,
@@ -601,7 +602,8 @@ Absence alerts are scoped per market by `market.configured`, which names the mar
 
 **Known limits.**
 
-- Everything beyond `cycle.completed`, `guardrail.halted`, and `setup.check-failed` requires
+- Everything beyond `cycle.completed`, `guardrail.halted`, `setup.check-failed`, and
+  `setup.check-warning` requires
   `--verbose`. Full shipping configuration auto-enables it; running `start`, `bootstrap`, or `ladder`
   manually without `--verbose` yields far fewer records.
 - Fills are diffed from monotonic per-group `consumed`. A group first seen establishes a baseline and

@@ -270,8 +270,8 @@ export const bootstrapGroupRateBps = (parameters: {
  * @param groups - Canonical maker groups, which may contain one projection per offer market.
  * @param excludedGroupIds - Groups being replaced and therefore not reserved alongside the new offer.
  * @returns Aggregate remaining loan assets reserved by distinct live buy groups.
- * @remarks Attribution deliberately does not filter this total; see {@link ladderCashReservations}
- * for why exposure counts every live maker buy group.
+ * @remarks Attribution deliberately does not filter this total; see `ladderCashReservations` in
+ * `../ladder/ladder-cash-reservation.utils.ts` for why exposure counts every live maker buy group.
  */
 export const bootstrapReservedLoanAssets = (
   groups: readonly BootstrapRawGroup[],
