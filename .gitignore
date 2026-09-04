@@ -56,3 +56,6 @@ dist
 
 # TIB review session ids (local pointers into ~/.codex/sessions, not shared history)
 docs/decisions/*.sessions
+
+# Devin local overrides (not shared)
+.devin/config.local.json

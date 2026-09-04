@@ -101,6 +101,21 @@ remove a special case, delete a branch, make one thing behave like its neighbors
 reviewer's preference adds a diff and a merge risk and buys nothing. Drop those, say you dropped
 them, and say why.
 
+## Under Devin
+
+The loop works the same, with three model facts that decide whether it is worth anything:
+
+- The **clean-room agent** maps to `subagent_general`, which inherits the parent session's model —
+  which is what this loop wants, so do not pin it.
+- Never use `subagent_explore` for review. It runs on the cheap default model by design.
+- A **custom subagent with no `model:` pinned silently falls back to SWE-1.6**, a fast cheap model.
+  An unpinned reviewer still returns findings, they are just worse — and nothing announces it. Every
+  manifest in `.devin/agents/` pins `model:` for exactly this reason.
+
+Devin imports this repo's rules, skills, and commands via `read_config_from.claude` in
+`.devin/config.json`, but **not** `.claude/agents/` — hence the manifests, which carry only
+frontmatter and defer to `.claude/agents/<name>.md` for the instructions.
+
 ## Running the Codex reviewer
 
 ```sh

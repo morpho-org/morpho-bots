@@ -1,0 +1,8 @@
+{
+  // Pull the repo's canonical agent surfaces into Devin sessions: AGENTS.md rules (via the
+  // CLAUDE.md symlink), .claude/skills/**/SKILL.md (the review loop), .claude/commands/**/*.md,
+  // and .mcp.json servers. Subagents are NOT imported — see .devin/agents/.
+  "read_config_from": {
+    "claude": true
+  }
+}
