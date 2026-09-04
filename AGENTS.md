@@ -50,6 +50,8 @@ first rung that holds:
   caller.
 - Shared behavior belongs in `@repo/*`. No bot imports another bot.
 - Deletion over addition. No abstraction until a second real caller exists.
+- Default to no comment — names, types, and constants carry meaning better. One that earns its
+  place states the guarantee or the hazard in a line or two, never the algorithm.
 - Not lazy about: trust-boundary validation, on-chain safety, logs an operator can reconstruct the
   decision from, and anything explicitly asked for.
 

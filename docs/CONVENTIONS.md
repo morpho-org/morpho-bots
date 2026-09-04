@@ -28,15 +28,27 @@
 
 ### Comments and Documentation
 
-- **Self-Documenting Code**: Code should be self-explanatory through clear naming
-- **When to Comment**:
-  - Complex business logic that isn't immediately obvious
-  - Non-obvious workarounds or bug fixes
-  - Public API documentation (JSDoc for exported functions, particularly under `packages/`)
-- **When NOT to Comment**:
-  - Obvious code that describes what it does
-  - Redundant information already clear from code
-  - Commented-out code (remove it, use git history instead)
+Default to no comment, and keep the ones that survive pithy. Necessary and sufficient applies to
+prose as much as to code.
+
+- **Encode meaning in the code first** — signatures, names, named constants, types. A behavior only
+  visible in a comment is an API-design smell; fix the API instead.
+- **A comment justifies its existence, and runs to ~3 lines at most.** If it needs more, the code
+  needs restructuring or the explanation belongs in a TIB.
+- **TSDoc on exports** only where there is real nuance, complexity, or high fan-in. State the
+  guarantee or the hazard — never the algorithm, which the body already shows. Pithy is not absent:
+  `bots/quoter-bot`'s public surface is checked by `jsdoc:check`, and a docstring passes by naming
+  the contract, failures, and side effects in a sentence or two.
+- **One home per explanation.** Document a rule once at its canonical symbol and `{@link}` it from
+  everywhere else. Never restate the justification at each call site.
+- **Inline comments only for code that looks wrong without them** — a spec quirk, an upstream bug, a
+  workaround — and cite the external spec or upstream issue. No link usually means no comment:
+  encode the constraint in a named constant or a type.
+- **Never**: section-header comments, step numbering, restating a type signature in prose, narrating
+  a line that already reads as English, or commented-out code (git history holds it).
+- **Never the history of how the code got here** — ticket numbers, incident narratives, "the field
+  that used to be missing". Git blame and the PR carry provenance. Likewise no "when adding X, do Y"
+  checklists in code; that belongs in the PR description or docs.
 
 ### Function and Method Organization
 
