@@ -1,4 +1,5 @@
 import { SafeProviderError } from '../../application/setup/safe-provider.error'
+import { retryTransientProviderRead } from './provider-retry.utils'
 
 /** Stable HTTP provider identifiers safe to include in reports. */
 export type ProviderId = 'morpho-api' | 'router-api'
@@ -9,17 +10,7 @@ export type JsonRequest = (
   timeoutMs?: number
 ) => Promise<unknown>
 
-/**
- * Fetches and decodes JSON under a per-request timeout while redacting unsafe failure details.
- * @param url - Provider endpoint; it is used for the request but never copied into thrown metadata.
- * @param provider - Fixed provider identifier safe for reports.
- * @param timeoutMs - Abort timeout in milliseconds, defaulting to 10 seconds.
- * @returns Parsed JSON response value.
- * @throws `SafeProviderError` with allowlisted provider/status/context metadata on HTTP,
- * timeout, network, or JSON failures; raw URLs and response bodies are not exposed.
- * @remarks Performs one read-only HTTP GET and has no chain or filesystem side effects.
- */
-export const requestJson = async (url: string, provider: ProviderId, timeoutMs = 10_000) => {
+const attemptJson = async (url: string, provider: ProviderId, timeoutMs: number) => {
   const signal = AbortSignal.timeout(timeoutMs)
   try {
     const response = await fetch(url, { headers: { accept: 'application/json' }, signal })
@@ -44,3 +35,20 @@ export const requestJson = async (url: string, provider: ProviderId, timeoutMs =
     })
   }
 }
+
+/**
+ * Fetches and decodes JSON under a per-attempt timeout while redacting unsafe failure details.
+ * @param url - Provider endpoint; it is used for the request but never copied into thrown metadata.
+ * @param provider - Fixed provider identifier safe for reports.
+ * @param timeoutMs - Abort timeout applied to each attempt, defaulting to 10 seconds.
+ * @returns Parsed JSON response value.
+ * @throws `SafeProviderError` with allowlisted provider/status/context metadata on HTTP,
+ * timeout, network, or JSON failures; raw URLs and response bodies are not exposed.
+ * @remarks Performs read-only HTTP GETs and has no chain or filesystem side effects, so transient
+ * failures are retried by {@link retryTransientProviderRead} before the error reaches the caller.
+ */
+export const requestJson = async (url: string, provider: ProviderId, timeoutMs = 10_000) =>
+  retryTransientProviderRead(
+    remainingMs => attemptJson(url, provider, remainingMs ?? timeoutMs),
+    timeoutMs
+  )

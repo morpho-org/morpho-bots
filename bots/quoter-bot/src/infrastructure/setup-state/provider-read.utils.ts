@@ -3,6 +3,7 @@ import type { ProviderId, ProviderOperation, SafeProviderReadMetadata } from './
 import { SafeProviderError } from '../../application/setup/safe-provider.error'
 import { ProviderReadError } from './provider-read.error'
 import { ProviderResponseError } from './provider-response.error'
+import { retryTransientProviderRead } from './provider-retry.utils'
 
 const SAFE_NAMES = new Set<NonNullable<SafeProviderReadMetadata['name']>>([
   'AbortError',
@@ -73,10 +74,12 @@ export const executeProviderRead = async <Result>(
   operation: ProviderOperation,
   read: () => Promise<Result>
 ): Promise<Result> => {
-  try {
-    return await read()
-  } catch (error) {
-    if (error instanceof SafeProviderError || error instanceof ProviderResponseError) throw error
-    throw new ProviderReadError(provider, operation, safeReadMetadata(error))
-  }
+  return retryTransientProviderRead(async () => {
+    try {
+      return await read()
+    } catch (error) {
+      if (error instanceof SafeProviderError || error instanceof ProviderResponseError) throw error
+      throw new ProviderReadError(provider, operation, safeReadMetadata(error))
+    }
+  })
 }
