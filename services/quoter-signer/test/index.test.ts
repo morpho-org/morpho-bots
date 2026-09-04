@@ -23,6 +23,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { ChainReadTransport } from '../src/chain-read.utils'
 import type { KmsPublicKeyMaterial, KmsTransport } from '../src/kms-signer.utils'
+import type { NotImplementedSurface } from '../src/signing-not-implemented.error'
 
 import { createHandler, handler } from '../src/index'
 import { KMS_ATTESTATION_FRESHNESS_MS } from '../src/kms-signer.utils'
@@ -101,17 +102,16 @@ const stubRpc = () => {
   vi.stubEnv('QUOTER_SIGNER_RPC_URL', 'https://rpc.example')
 }
 
-const notImplementedEnvelope = {
+const notImplementedEnvelope = (surface: NotImplementedSurface) => ({
   contractVersion: 1,
   service: 'quoter-signer',
   approved: false,
   denial: {
     name: 'SigningNotImplementedError',
-    message:
-      'no signing surface is implemented in this quoter-signer build; every intent is denied',
+    message: `${surface} signing is not implemented in this quoter-signer build; the intent is denied`,
     retryable: false
   }
-}
+})
 
 /** Offer-set fixture relative to the real middleware clock, coherent for quote and ratify. */
 const buildOfferFixture = () => {
@@ -291,7 +291,7 @@ describe('handler', () => {
 
     const response = await handle({ ...revokeIntent, fees })
 
-    expect(response).toStrictEqual(notImplementedEnvelope)
+    expect(response).toStrictEqual(notImplementedEnvelope('break-glass-revoke'))
     expect(pendingNonce).not.toHaveBeenCalled()
     expect(getPublicKey).not.toHaveBeenCalled()
   })
@@ -460,7 +460,7 @@ describe('handler', () => {
       fees: revokeIntent.fees
     })
 
-    expect(response).toStrictEqual(notImplementedEnvelope)
+    expect(response).toStrictEqual(notImplementedEnvelope('setup-remediation'))
     expect(getPublicKey).not.toHaveBeenCalled()
   })
 
@@ -473,7 +473,7 @@ describe('handler', () => {
 
     const response = await handle({ ...revokeIntent, operation: { type: 'self-cancel', nonce: 4 } })
 
-    expect(response).toStrictEqual(notImplementedEnvelope)
+    expect(response).toStrictEqual(notImplementedEnvelope('self-cancel'))
     expect(getPublicKey).not.toHaveBeenCalled()
   })
 

@@ -385,7 +385,9 @@ const evaluateIntent = async (
   }
   // Setup remediation needs the remediation epochs and manifest-state reads of later increments;
   // self-cancel needs the recorded-transaction inventory. Both stay typed not-implemented.
-  if (intent.kind === 'setup-remediation') return { denial: new SigningNotImplementedError() }
+  if (intent.kind === 'setup-remediation') {
+    return { denial: new SigningNotImplementedError('setup-remediation') }
+  }
   if (intent.kind === 'quote') {
     let prepared: PreparedQuote
     try {
@@ -410,14 +412,16 @@ const evaluateIntent = async (
   }
   if (intent.kind === 'revoke') {
     const operation = intent.operation
-    if (operation.type === 'self-cancel') return { denial: new SigningNotImplementedError() }
+    if (operation.type === 'self-cancel') {
+      return { denial: new SigningNotImplementedError('self-cancel') }
+    }
     // Break-glass revocation must REPLACE every occupied nonce, never queue at the pending one —
     // "a next-unused-nonce revocation cannot preempt the pending stream" (TIB §5). That takeover
     // needs the recorded occupied-nonce inventory of the reservation-ledger increment, so the
     // surface stays honestly denied rather than signing a cleanup that waits behind the very
     // transactions it should displace. Routine revocation at the pending nonce is unaffected.
     if (policy.surface === 'break-glass-revoke') {
-      return { denial: new SigningNotImplementedError() }
+      return { denial: new SigningNotImplementedError('break-glass-revoke') }
     }
     const read = await readNonce(policy, chainRead)
     if ('denial' in read) return read
