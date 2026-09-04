@@ -25,6 +25,8 @@ export function composeQuoting(deps: {
   selector: VenueSelector
   chainId: number
   executor: Address
+  /** The liquidator EOA — see {@link QuoteParameters.initiatingEoa}. */
+  initiatingEoa: Address
   venues: readonly Venue[]
   baseUrls: Partial<Record<Venue, string>>
   maxRouteImpactBps: number

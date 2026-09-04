@@ -15,6 +15,7 @@ const TARGET = getAddress('0xaAaAaAaaAaAaAaaAaAAAAAAAAaaaAaAaAaaAaaAa')
 const COLLATERAL = getAddress('0x7777777777777777777777777777777777777777')
 const LOAN = getAddress('0x6666666666666666666666666666666666666666')
 const EXECUTOR = getAddress('0x1111111111111111111111111111111111111111')
+const EOA = getAddress('0x2222222222222222222222222222222222222222')
 
 const params: QuoteParameters = {
   chainId: 8453,
@@ -23,14 +24,19 @@ const params: QuoteParameters = {
   amountIn: 100n,
   slippageBps: 50, // 0.5%
   executor: EXECUTOR,
+  initiatingEoa: EOA,
   referenceAmountOut: 2000n,
   minAcceptableAmountOut: 1990n
 }
 
 function fakeClient(body: unknown) {
-  const calls: { searchParams?: Record<string, string> }[] = []
+  const calls: { venue: string; url: string; searchParams?: Record<string, string> }[] = []
   const client: RateLimitedClient = {
-    getJson: async <T>(args: { searchParams?: Record<string, string> }) => {
+    getJson: async <T>(args: {
+      venue: string
+      url: string
+      searchParams?: Record<string, string>
+    }) => {
       calls.push(args)
       return body as T
     }
@@ -57,15 +63,31 @@ describe('quoteOneInch', () => {
     // Reported, not reconstructed: the absolute floor we asked the router to enforce.
     expect(swap.minOutSource).toBe('venue')
 
-    // `minReturn` is an ABSOLUTE base-unit minimum, not a percentage; output goes to the Executor.
-    expect(calls[0]?.searchParams).toMatchObject({
+    // Exact, so a stray or missing search param fails here. `from` is the caller (the Executor) and
+    // `origin` the initiating EOA — 1inch's schema declares both, and they are NOT the same address.
+    expect(calls[0]?.url).toContain('/swap/v6.1/8453/swap')
+    expect(calls[0]?.searchParams).toStrictEqual({
       src: COLLATERAL,
       dst: LOAN,
       amount: '100',
       from: EXECUTOR,
+      origin: EOA,
       receiver: EXECUTOR,
-      minReturn: '1990'
+      minReturn: '1990',
+      disableEstimate: 'true'
     })
+  })
+
+  it('fails loud rather than quoting without an initiating EOA', async () => {
+    // `origin` is required by 1inch's schema, so a caller that did not thread the EOA must fail
+    // before the request — never silently omit it and let the rejection look like a no-route.
+    const { client, calls } = fakeClient({ dstAmount: '2000', tx: { to: ROUTER, data: '0xdef' } })
+    const error = await quoteOneInch(client, {}, { ...params, initiatingEoa: undefined }).catch(
+      e => e
+    )
+    expect(error).toBeInstanceOf(QuoteError)
+    expect((error as QuoteError).reason).toBe('api_error')
+    expect(calls).toHaveLength(0)
   })
 
   it('rejects a response whose tx.to is not the configured router', async () => {
@@ -110,8 +132,9 @@ describe('priceOneInch', () => {
     const quote = await priceOneInch(client, {}, priceParams)
 
     expect(quote.expectedAmountOut).toBe(2000n)
-    expect(calls[0]?.searchParams).toMatchObject({ src: COLLATERAL, dst: LOAN, amount: '100' })
-    expect(calls[0]?.searchParams?.from).toBeUndefined()
+    // The indicative probe has no taker, so neither `from` nor `origin` belongs on it.
+    expect(calls[0]?.url).toContain('/swap/v6.1/8453/quote')
+    expect(calls[0]?.searchParams).toStrictEqual({ src: COLLATERAL, dst: LOAN, amount: '100' })
   })
 
   it('throws no_route when there is no dstAmount', async () => {

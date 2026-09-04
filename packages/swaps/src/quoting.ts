@@ -316,6 +316,7 @@ async function firmQuoteVenue(args: {
   httpClient: RateLimitedClient
   chainId: number
   executor: Address
+  initiatingEoa: Address
   venueEntry: () => SwapConfigEntry
   tokenIn: Address
   amountIn: bigint
@@ -329,7 +330,7 @@ async function firmQuoteVenue(args: {
    */
   predictedAmountOut?: bigint
 }): Promise<FirmQuoteOutcome> {
-  const { httpClient, chainId, executor, venueEntry } = args
+  const { httpClient, chainId, executor, initiatingEoa, venueEntry } = args
   const { tokenIn, amountIn, steps, request, maxRouteImpactBps } = args
   const { loanToken, referenceAmountOut, minAcceptableAmountOut } = request
 
@@ -351,6 +352,7 @@ async function firmQuoteVenue(args: {
     slippageBps: slippageForFloor(askableFloor, denominator),
     minAcceptableAmountOut,
     executor,
+    initiatingEoa,
     referenceAmountOut,
     // The request's decimals describe the RAW collateral; after an unwrap they would mislabel
     // the underlying, so they are only forwarded on the direct (no-unwrap) path.
@@ -577,6 +579,8 @@ export function composeMultiVenueQuoting(deps: {
   httpClient: RateLimitedClient
   chainId: number
   executor: Address
+  /** The EOA that submits the liquidation — see {@link QuoteParameters.initiatingEoa}. */
+  initiatingEoa: Address
   /** Enabled venues, in deterministic default order (used when a pair has no cached probe yet). */
   venues: readonly Venue[]
   /** Optional per-venue API host overrides. */
@@ -614,6 +618,7 @@ export function composeMultiVenueQuoting(deps: {
     httpClient,
     chainId,
     executor,
+    initiatingEoa,
     venues,
     baseUrls,
     maxRouteImpactBps,
@@ -739,6 +744,7 @@ export function composeMultiVenueQuoting(deps: {
           httpClient: counted,
           chainId,
           executor,
+          initiatingEoa,
           venueEntry: () => entryFor(venue),
           tokenIn: resolution.token,
           amountIn: resolution.amountIn,

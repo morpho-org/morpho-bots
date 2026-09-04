@@ -32,6 +32,15 @@ export type QuoteParameters = TokenInDecimals & {
    */
   slippageBps: number
   executor: Address
+  /**
+   * The EOA that submits the liquidation — `tx.origin` at execution time, since the Executor is
+   * always called by it.
+   *
+   * Needed ONLY by venues whose API distinguishes the caller from the initiating EOA: 1inch's
+   * `origin` is defined that way and its v6.1 schema declares it required. Optional so every other
+   * venue and their callers/tests are unaffected; a venue that requires it fails loud.
+   */
+  initiatingEoa?: Address
   /** Oracle-priced expected output (no DEX slippage) — the no-route-quality reference. */
   referenceAmountOut: bigint
   /**

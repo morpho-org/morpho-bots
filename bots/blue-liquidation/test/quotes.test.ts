@@ -23,6 +23,7 @@ const COLLATERAL = getAddress('0x7777777777777777777777777777777777777777')
 const ORACLE = getAddress('0x8888888888888888888888888888888888888888')
 const IRM = getAddress('0x46415998764C29aB2a25CbeA6254146D50D22687')
 const EXECUTOR = getAddress('0x1111111111111111111111111111111111111111')
+const EOA = getAddress('0x2222222222222222222222222222222222222222')
 const TARGET = getAddress('0x5555555555555555555555555555555555555555')
 
 const PARAMS: MarketParams = {
@@ -130,6 +131,7 @@ function compose(
     selector,
     chainId: 8453,
     executor: EXECUTOR,
+    initiatingEoa: EOA,
     venues: overrides.venues ?? ['0x'],
     baseUrls: {},
     maxRouteImpactBps: 500,

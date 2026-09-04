@@ -169,6 +169,7 @@ async function main() {
     selector: venueSelector,
     chainId: config.chainId,
     executor: config.executooorAddress,
+    initiatingEoa: eoa,
     venues,
     baseUrls,
     maxRouteImpactBps: config.quoting.maxRouteImpactBps,

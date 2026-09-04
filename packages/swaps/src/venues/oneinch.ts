@@ -1,3 +1,5 @@
+import type { Address } from 'viem'
+
 import { getAddress, isAddressEqual, isHex } from 'viem'
 
 import type { RateLimitedClient } from '../http-client'
@@ -8,6 +10,13 @@ import { QuoteError } from '../types'
 
 /** The 1inch arm of the per-collateral swap config. */
 type OneInchEntry = { baseUrl?: string }
+
+function requireInitiatingEoa(params: QuoteParameters): Address {
+  if (!params.initiatingEoa) {
+    throw new QuoteError('api_error', '1inch: initiatingEoa is required to send origin')
+  }
+  return params.initiatingEoa
+}
 
 // Subset of the 1inch Classic Swap v6 `/swap` response we consume.
 type OneInchSwap = {
@@ -40,7 +49,10 @@ export async function quoteOneInch(
       dst: params.tokenOut,
       amount: params.amountIn.toString(),
       from: params.executor,
-      origin: params.executor,
+      // 1inch distinguishes the caller (`from`, the Executor) from the initiating EOA (`origin`).
+      // The v6.1 schema declares `origin` required, and a rejected request would surface as
+      // `no_route` — indistinguishable from a real one — so demand it rather than omit it.
+      origin: requireInitiatingEoa(params),
       receiver: params.executor,
       // `minReturn` is an ABSOLUTE base-unit minimum, unlike `slippage` which is a percentage the API
       // applies to its own quote. Asking for the absolute floor is what lets the returned bound be
