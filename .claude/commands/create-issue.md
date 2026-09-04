@@ -34,6 +34,11 @@ Apply the label(s) for the bot(s) or package(s) the work touches. Current surfac
 Kind labels (`Bug`, `Feature`, `Improvement`, `Documentation`, `Monitoring`, `Alerting`,
 `Integration`, `incident`) may be added alongside.
 
+**Provenance.** A ticket that exists because a review surfaced something and it was explicitly
+deferred gets `code-review` (the `Provenance` group), and its description links the originating PR
+or TIB. Provenance is not priority — the status already says "not now"; this says where it came
+from.
+
 Several packages have no label yet — `@repo/swaps`, `observability`, `offers`, `logging`,
 `contracts`, `utils`, and `services/quoter-signer` among them. If none fits the surface you are
 filing against, **say so to the user** rather than filing unlabelled or inventing a label. Do not

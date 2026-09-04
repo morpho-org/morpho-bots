@@ -289,6 +289,10 @@ the Bots team existed; it is no longer the destination for anything here.
   "Commit and PR titles" row in [`AGENTS.md`](../AGENTS.md).
 - Apply the label(s) for the bot(s) or package(s) the work touches, so the ticket is findable by
   surface. Labels are the routing mechanism here, not projects.
+- A ticket that exists because a review surfaced something and we chose not to act on it now gets
+  the **`Provenance > code-review`** label, and its description links the PR or TIB it came from.
+  The label records _where the ticket came from_; the status records that it is not being done yet.
+  Those are different facts — do not use one for the other.
 - **Do not assign a project.** The Linear agent does that.
 - `@morpho-org/viem-dlc` issues go to the Apps team's
   [Viem-dlc Backlog](https://linear.app/morpho-labs/project/viem-dlc-backlog-b1ad80c9ad02)

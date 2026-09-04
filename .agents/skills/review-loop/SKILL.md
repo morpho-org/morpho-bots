@@ -135,3 +135,6 @@ Deferred findings go to the **Bots** team per
 [`docs/GUIDANCE.md`](../../../docs/GUIDANCE.md) — conventional-commit title, labels for the bots or
 packages affected, no project. If no existing label fits the surface, flag the gap to the engineer
 rather than filing unlabelled or inventing one.
+
+Every ticket filed from this loop also carries **`code-review`** (the `Provenance` group) and links
+the PR or TIB it came from, so what the loop keeps punting stays auditable.
