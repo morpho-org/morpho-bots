@@ -79,6 +79,11 @@ const assertOfferWithinPolicy = (
   if (tick < BigInt(market.minTick) || tick > BigInt(market.maxTick)) {
     throw new IntentPolicyViolationError('price-bound', `${field}.tick`)
   }
+  // The pinned per-market spacing (the book's live on-chain spacing) is what the encoding stage
+  // hands the SDK; checking here names the exact field instead of a generic encoding denial.
+  if (tick % BigInt(market.tickSpacing) !== 0n) {
+    throw new IntentPolicyViolationError('tick-alignment', `${field}.tick`)
+  }
   if (BigInt(offer.continuousFeeCap) > BigInt(market.maxContinuousFeeCap)) {
     throw new IntentPolicyViolationError('continuous-fee-cap', `${field}.continuousFeeCap`)
   }
@@ -184,10 +189,10 @@ const assertOffersWithinPolicy = (
  * surface's pinned intent kind, the chain and maker pins, per-kind fee/gas ceilings (`protected`
  * on the break-glass surface, per-variant for setup remediation, `routine` otherwise), the
  * ratifier-mode coherence of root revocations, the remediation-variant allowlist, and — for quote
- * and ratify offer sets — the market allowlist, tick price bounds, offer field pins, reduce-only
- * side pins, continuous-fee-cap ceilings, freshness/start/maturity time windows, group coherence,
- * and the static per-market and maker-wide lend-exposure caps charged once per consumption
- * domain.
+ * and ratify offer sets — the market allowlist, tick price bounds and per-market tick-spacing
+ * alignment, offer field pins, reduce-only side pins, continuous-fee-cap ceilings,
+ * freshness/start/maturity time windows, group coherence, and the static per-market and
+ * maker-wide lend-exposure caps charged once per consumption domain.
  *
  * These are the checks decidable from deployment parameters and the middleware clock alone. The
  * independent-read properties (crossed books, PnL, snapshot fees, aggregate reservations, nonce

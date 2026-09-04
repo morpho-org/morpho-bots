@@ -139,7 +139,12 @@ type IntentBase = {
   readonly chainId: number
   /** Maker address the caller believes it is signing for; must equal the deployment pin. */
   readonly maker: Address
-  /** Caller-chosen idempotency key: retries with the same key return the stored artifacts. */
+  /**
+   * Caller-chosen idempotency key, reserved for the stored-artifact retry semantics of the
+   * reservation-ledger increment. Inert until then: a replayed key re-evaluates the intent and,
+   * for transaction kinds, signs again at the current pending nonce — so callers must invoke
+   * synchronously and never blind-retry a timed-out signing invocation.
+   */
   readonly idempotencyKey: string
 }
 

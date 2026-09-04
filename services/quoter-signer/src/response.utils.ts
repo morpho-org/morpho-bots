@@ -15,10 +15,13 @@ export type QuoterSignerDenial = {
 }
 
 /**
- * Fail-closed denial envelope: nothing was signed for this intent and `kms:Sign` was never
- * called. A denial does not imply zero KMS activity: an intent that passes every deterministic
- * check triggers (or reuses) the read-only `kms:GetPublicKey` custody attestation before it is
- * denied, and the container may have warmed that attestation up at cold start.
+ * Fail-closed denial envelope: nothing was signed *for delivery* — no signature, payload, or
+ * transaction bytes accompany a denial. A denial does not imply zero KMS activity: an intent that
+ * passes every deterministic check triggers (or reuses) the read-only `kms:GetPublicKey` custody
+ * attestation before it is denied, the container may have warmed that attestation up at cold
+ * start, and a post-sign assembly fault (`ArtifactEncodingFailedError`) denies an intent whose
+ * `kms:Sign` call already happened — that call is recorded on its own `middleware.kms_sign` log
+ * line, so the audit trail keeps artifact-level parity with CloudTrail either way.
  */
 export type QuoterSignerDenialResponse = {
   /** Wire-contract version of the envelope. */
@@ -105,10 +108,11 @@ export type QuoterSignerApprovalResult =
   | SetupRemediationApproval
 
 /**
- * Approval envelope: the intent passed every policy check and the middleware returns the
+ * Approval envelope: the intent passed every implemented check and the middleware returns the
  * signatures together with the exact payloads it encoded, so the caller broadcasts exactly what
- * was validated. Returned only after the signed artifacts are durably recorded; the current
- * fail-closed skeleton never produces it.
+ * was validated. The TIB-2026-08-12 durable artifact/inventory recording that must precede
+ * delivery is a later increment (see the reservation-ledger deferral in Addendum C/D); until it
+ * lands, the per-artifact `middleware.kms_sign` log line is the signing record.
  */
 export type QuoterSignerApprovalResponse = {
   /** Wire-contract version of the envelope. */
@@ -143,4 +147,20 @@ export const buildDenialResponse = (cause: {
   service: 'quoter-signer',
   approved: false,
   denial: { name: cause.name, message: cause.message, retryable: cause.retryable }
+})
+
+/**
+ * Builds the versioned approval envelope for one signed per-kind result.
+ * @param result - Per-kind signatures and middleware-encoded payloads; every field is
+ * middleware-derived (re-derived roots, verified signatures, canonical payload bytes) — nothing
+ * from the caller's object graph is echoed.
+ * @returns The versioned {@link QuoterSignerApprovalResponse} carrying `result`.
+ */
+export const buildApprovalResponse = (
+  result: QuoterSignerApprovalResult
+): QuoterSignerApprovalResponse => ({
+  contractVersion: QUOTER_SIGNER_CONTRACT_VERSION,
+  service: 'quoter-signer',
+  approved: true,
+  result
 })

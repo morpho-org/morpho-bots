@@ -1406,6 +1406,78 @@ routine.gas`. A missing or invalid document refuses to serve with a typed
   time-to-maturity, `maxContinuousFeeCap` defaulting to the protocol maximum so exit sells are
   never blocked by a governance fee raise, start-age sizing for Setter ratify retries).
 
+## Addendum D (2026-09-04) — encode-and-sign for the ladder create/move surfaces
+
+The fourth increment implements the canonical encode stages and the `kms:Sign` call for the
+intents the ladder create/move flow needs — quote, ratify, and the non-self-cancel revoke
+operations — on top of the attested digest-signing primitive that shipped with the custody layer:
+
+- **Canonical offer-tree re-derivation**
+  ([`offer-tree.utils.ts`](../../services/quoter-signer/src/offer-tree.utils.ts)): the middleware
+  builds every offer itself from the validated intent fields, the pinned maker, and the policy
+  market structs; reconstructs consumption groups from the intent's leaf order (offers sharing a
+  declared group must be contiguous, and a group id may appear in only one run); and denies the
+  set unless every content-addressed group id it derives equals the caller's declared id (check
+  `group-derivation`) — the §Addendum-C group-namespace resolution, now materialized. Quote sets
+  additionally pass a pre-sign publication-encodability preflight (the Mempool payload codec's
+  offer-struct rules), and the signature-free Setter publication encoding doubles as the same
+  preflight on the ratify path — in both cases an unpublishable set is the same named policy
+  denial with no KMS call. Ecrecover quotes sign the
+  SDK-derived EIP-712 tree digest (exactly one `kms:Sign` per approval) and return the tree
+  signature plus the encoded zero-value Mempool publication; Setter ratifications re-derive the
+  root and sign `setIsRootRatified(maker, root, true)`; both encode the publication payload with
+  the SDK's own ratifier-data and payload codecs, injecting each market's policy-pinned
+  `tickSpacing` so finer-spaced books encode their protocol-valid ticks.
+- **Transaction encoding and signing**
+  ([`transaction-encode.utils.ts`](../../services/quoter-signer/src/transaction-encode.utils.ts),
+  [`transaction-sign.utils.ts`](../../services/quoter-signer/src/transaction-sign.utils.ts)):
+  revocations encode exactly `setConsumed(group, MAX_OFFER_CAP, maker)` on the pinned singleton —
+  batches as one `multicall` whose inner calls the middleware builds itself, so no foreign
+  selector or nested multicall can appear — `cancelRoot(maker, root)`, or
+  `setIsRootRatified(maker, root, false)` on the pinned ratifier. Every maker transaction is a
+  zero-value EIP-1559 envelope with an explicitly pinned type, the policy chain id,
+  ceiling-checked caller fee fields, and the digest/serialization flow matching viem's own
+  account signing; the artifact returns the exact signed bytes, hash, nonce, and fee fields of
+  Addendum B's response DTOs.
+- **Independent pending-nonce read**: a new `QUOTER_SIGNER_RPC_URL` deployment parameter
+  addresses the middleware's own HTTP(S) endpoint
+  ([`rpc-config.utils.ts`](../../services/quoter-signer/src/rpc-config.utils.ts),
+  [`chain-read.utils.ts`](../../services/quoter-signer/src/chain-read.utils.ts)). Transaction
+  kinds sign only the maker's independently read pending nonce; every read first verifies the
+  endpoint's chain id against the policy pin (`RpcChainMismatchError`, terminal), and a failed or
+  malformed read is a typed retryable `RpcUnavailableError` with a `middleware.read_failed` line
+  and **no KMS call**. Quote intents need no endpoint.
+- **Policy document extensions** (still `policyVersion: 1`; no deployment served the earlier
+  shape, which now refuses to serve): a `contracts` block pins the Midnight singleton and Mempool
+  addresses, and each market entry carries the market's full immutable parameter struct
+  (`loanToken`, strictly-ascending `collateralParams`, `rcfThreshold`, `enterGate`,
+  `liquidatorGate`) plus its live on-chain `tickSpacing` (a divisor of the protocol default;
+  every offer tick must align to it — the deterministic checks name the violation as
+  `tick-alignment`). Parse-time validation re-derives the content-addressed market id from the
+  pinned struct through the SDK and refuses to serve on a mismatch, requires maturities to sit
+  exactly at 15:00:00 UTC inside the Mempool codec's safe-timestamp bound (an off-schedule
+  maturity could never publish, so the mis-pin refuses to serve rather than denying every
+  intent), and requires the ratifier, singleton, and Mempool pins to be three distinct contracts.
+- **Observability**: on top of the existing lines, each completed `Sign` call emits one
+  `middleware.kms_sign` record with the middleware-derived digest and the KMS request id — the
+  per-artifact CloudTrail join record, emitted immediately after the call so it exists even when
+  a later assembly stage fails (`ArtifactEncodingFailedError`) and, on the denial path, when the
+  completed call's response fails the DER/recovery verification (`KmsSigningFailedError` carries
+  the call's digest and request id for exactly this record) — and approvals emit
+  `middleware.intent_approved` with the re-derived root, nonce, transaction hash, and expected
+  KMS call count. A signing deployment's execution role now needs `kms:Sign` on the maker key;
+  withholding the grant keeps a deployment sign-inert while every denial path keeps serving.
+- **Still explicitly deferred**: `setup-remediation` and `self-cancel` remain
+  `SigningNotImplementedError` (they need the remediation epochs and the recorded-transaction
+  inventory), and the reservation ledger (aggregate signed exposure, signed-gas budgets, nonce
+  leases, occupied-nonce caps, native-balance admission, write-before-sign catalog persistence,
+  stored-artifact idempotency), the remaining independent-read properties (crossed books, PnL,
+  snapshot fees, position state, provider quorum), and the attestation registry are later
+  increments. The §Security production-enablement gates for quote/ratify signing are unchanged;
+  until those increments land, this build's approvals charge no durable reservation, the bot's
+  serialized make/pending queue remains the single routine nonce writer, and operators bound
+  exposure through the `kms:Sign` grant and the reviewed policy document.
+
 <!--
 TIB conventions:
 - Once accepted, do not substantively edit this TIB. If the decision needs to change,
