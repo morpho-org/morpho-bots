@@ -1,7 +1,7 @@
 ---
 name: documentor
 description: Drafts TIBs into docs/decisions/. The only role here that writes.
-model: opus
+model: fable
 allowed-tools:
   - read grep glob exec edit
 ---

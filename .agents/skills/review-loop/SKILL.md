@@ -112,6 +112,17 @@ The loop works the same, with three model facts that decide whether it is worth 
   An unpinned reviewer still returns findings, they are just worse — and nothing announces it. Every
   manifest in `.devin/agents/` pins `model:` for exactly this reason.
 
+**The model policy is by role, not by session:** Fable for anything touching a TIB, Opus otherwise.
+`documentor` is pinned to `fable`; `reviewer`, `protocol-engineer`, and `product-manager` to `opus`.
+Because the clean-room agent is a `subagent_general`, it inherits whatever the session runs on — so
+start a TIB session on Fable and the whole TIB path is Fable without any further wiring.
+
+If the session model contradicts that policy — drafting a TIB on Opus, say — **say so and let the
+engineer decide**. Do not edit `.devin/agents/` to match the model you happen to be running on.
+Those manifests declare intent; a session that rewrites them to mirror itself turns tracked config
+into a cache of a transient fact, dirties the tree on every run, and makes the committed state
+depend on who ran last.
+
 Devin imports this repo's rules, skills, and commands via `read_config_from.claude` in
 `.devin/config.json`, but **not** `.claude/agents/` — hence the manifests, which carry only
 frontmatter and defer to `.claude/agents/<name>.md` for the instructions.
