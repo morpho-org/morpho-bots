@@ -184,7 +184,7 @@ Options:
 If the user wants a ticket created:
 
 1. **Determine the appropriate team and project** based on:
-   - Which bot/package the changes are in (refer to Team IDs table in CLAUDE.md)
+   - Which bot/package the changes are in (refer to the Linear Teams table in docs/GUIDANCE.md)
    - The nature of the work (bug fix, feature, refactor, etc.)
 
 2. **Create the parent issue** using the Linear MCP tools with:

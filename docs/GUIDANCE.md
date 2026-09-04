@@ -254,3 +254,19 @@ If an RFC produces a decision, it should be distilled into a TIB at close.
 | **Default choice** | Yes — for architectural decisions | Yes — for all planned work    | Only when TIB alone isn't enough   |
 
 When in doubt, write a TIB. A Proposed TIB reviewed via PR is almost always sufficient.
+
+---
+
+## Linear Teams
+
+Team IDs for filing tickets and creating projects via the Linear MCP:
+
+| Team        | ID                                   | Key    | Scope                                      |
+| ----------- | ------------------------------------ | ------ | ------------------------------------------ |
+| **Curator** | c07ff95f-03b7-4bee-aa17-c7e04fda8845 | `CRTR` | Default team for all `morpho-bots` work    |
+| **Apps**    | cc8fe27e-f516-45e8-921e-69b0562c7792 | `APPS` | Cross-repo tasks shared with `morpho-apps` |
+
+Default to Curator. Use Apps only when the work genuinely spans both repos.
+
+Ticket titles follow the same `type(scope): description` convention as commits and PRs — see the
+"Commit and PR titles" row in [`AGENTS.md`](../AGENTS.md).

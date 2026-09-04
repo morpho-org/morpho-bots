@@ -26,7 +26,7 @@ IMPORTANT: Always follow these steps:
 
 - Fetch issue comments to capture team discussion, clarifications, and additional requirements
 - Use the branch name from Linear (available in issue details as branchName)
-- Follow the codebase conventions in docs/CONVENTIONS.md and CLAUDE.md
+- Follow the codebase conventions in docs/CONVENTIONS.md and AGENTS.md
 - Run lint and typecheck before committing
 - Follow the title convention for commit messages
 - Include Linear issue link in PR description
@@ -86,5 +86,5 @@ Execute the implementation plan for Linear issue {{issue_id}}:
 IMPORTANT:
 
 - Use the exact branch name from Linear's branchName field
-- Follow all conventions in docs/CONVENTIONS.md and CLAUDE.md
+- Follow all conventions in docs/CONVENTIONS.md and AGENTS.md
 - Ensure all tests pass before creating the PR

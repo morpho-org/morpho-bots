@@ -179,7 +179,7 @@ Review the provided PR thoroughly and interactively guide the user through each 
    **Agent Infrastructure**:
 
    When the PR modifies files in `.claude/` (commands, agents, skills, scripts, settings),
-   `CLAUDE.md`, or `docs/CONVENTIONS.md`:
+   `AGENTS.md`, or `docs/CONVENTIONS.md`:
    - **Prompt clarity**: Are instructions unambiguous? Could an LLM misinterpret a step or skip it?
      Flag vague instructions that rely on implicit knowledge.
    - **Context efficiency**: Does the change add content that is easily discoverable from the

@@ -30,7 +30,7 @@ if [ "${#first_line}" -gt "$max_len" ]; then
   exit 1
 fi
 
-# Keep `types` in sync with CLAUDE.md "Title convention" types list.
+# This hook is the authoritative types list; AGENTS.md summarizes it for humans.
 types='feat|fix|refactor|chore|docs|test|perf|ci'
 pattern="^(${types})\\([a-z0-9-]+\\): [a-z].+[^.]$"
 if ! printf '%s' "$first_line" | grep -Eq "$pattern"; then

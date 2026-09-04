@@ -1,0 +1,17 @@
+#!/usr/bin/env sh
+
+# Refuse a push whose destination is the default branch. Branch protection on the
+# remote already requires a PR and a signed commit; this catches the mistake locally,
+# before a rejected push, and applies to agents driving git as much as to people.
+#
+# Git feeds pre-push "<local ref> <local sha> <remote ref> <remote sha>" per ref on stdin.
+while read -r _local_ref _local_sha remote_ref _remote_sha; do
+  case "$remote_ref" in
+    refs/heads/main)
+      echo "pre-push: refusing to push to main. Branch, then open a PR." >&2
+      exit 1
+      ;;
+  esac
+done
+
+exit 0

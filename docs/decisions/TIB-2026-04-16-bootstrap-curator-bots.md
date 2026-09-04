@@ -314,6 +314,17 @@ The kill-switch architecture TIB ([TIB-2026-05-14](./TIB-2026-05-14-kill-switch-
 
 The Kill Switch Bot project is cancelled; we are no longer building it. Its architecture TIB ([TIB-2026-05-14](./TIB-2026-05-14-kill-switch-bot.md)) was never accepted and is now marked **Withdrawn**. The forward-looking references to the Kill Switch Bot elsewhere in this TIB — as the planned first bot and as the trigger for the public cut-over — are left intact as the historical record of the decision at the time and no longer reflect current plans.
 
+### 2026-09-03 — `AGENTS.md` becomes canonical; the meta-rules assumption is superseded
+
+**Author:** @haydenshively
+
+The Assumptions entry "**`CLAUDE.md` meta-rules preserved.** `CLAUDE.md` edits keep all meta-rules
+(self-verification, anti-rationalization, completion status) intact" no longer holds.
+[TIB-2026-09-03](./TIB-2026-09-03-agents-md-canonical-instruction-file.md) makes `AGENTS.md` the
+real file with `CLAUDE.md` and `.cursorrules` symlinked to it, cuts it from 301 lines to ~90, and
+deletes the anti-rationalization table outright (self-verification and completion status survive in
+compressed form). Nothing else in this TIB is affected.
+
 <!--
 TIB conventions:
 - Once accepted, do not substantively edit this TIB. If the decision needs to change,

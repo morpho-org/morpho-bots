@@ -266,7 +266,7 @@ CRTR-101 → CRTR-102 → CRTR-104 → CRTR-105 → ...
 - Issue descriptions must follow the `/create-issue` 3-section template (Context / References / Possible
   solution)
 - Issue titles must follow the title convention
-- Refer to the Team IDs table in CLAUDE.md to select the appropriate team based on scope
+- Refer to the Linear Teams table in docs/GUIDANCE.md to select the appropriate team based on scope
 - Create issues in dependency order so that `blockedBy` references are valid
 - If the document has no explicit phases, derive milestones from logical groupings and confirm with
   the user

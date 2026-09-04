@@ -6,18 +6,26 @@ Quick navigation for the morpho-bots documentation.
 
 ## Guides
 
+- [Agent Instructions](../AGENTS.md) — how to work in this repo (`CLAUDE.md` and `.cursorrules` symlink to it)
+- [Mission](./MISSION.md) — the North Star the repo is built toward
 - [Coding Conventions](./CONVENTIONS.md) — code style, patterns, best practices
 - [Documentation Guidance](./GUIDANCE.md) — when to write a TIB, TIB lifecycle, TIB vs Linear
+- [Docs Layout](./README.md) — how `docs/` is organized and how to add a TIB
 - [Official Docs Drafts](./official/README.md) — candidate pages for Morpho public documentation
 
 ---
 
 ## Bots
 
-| Bot                                                   | Description                               | Docs                                             |
-| ----------------------------------------------------- | ----------------------------------------- | ------------------------------------------------ |
-| [midnight-liquidation](../bots/midnight-liquidation/) | Liquidates eligible Midnight positions    | [README](../bots/midnight-liquidation/README.md) |
-| [blue-liquidation](../bots/blue-liquidation/)         | Liquidates eligible Morpho Blue positions | [README](../bots/blue-liquidation/README.md)     |
+| Bot                                                       | Description                                                | Docs                                                 |
+| --------------------------------------------------------- | ---------------------------------------------------------- | ---------------------------------------------------- |
+| [blue-liquidation](../bots/blue-liquidation/)             | Liquidates eligible Morpho Blue positions                  | [README](../bots/blue-liquidation/README.md)         |
+| [midnight-liquidation](../bots/midnight-liquidation/)     | Liquidates eligible Midnight positions                     | [README](../bots/midnight-liquidation/README.md)     |
+| [midnight-crossed-books](../bots/midnight-crossed-books/) | Resolves crossed Midnight order books                      | [README](../bots/midnight-crossed-books/README.md)   |
+| [quoter-bot](../bots/quoter-bot/)                         | Midnight maker: setup checks, bootstrap, ladder quoting    | [README](../bots/quoter-bot/README.md)               |
+| [vault-v1-reallocation](../bots/vault-v1-reallocation/)   | Reallocates liquidity across MetaMorpho (Vault V1) markets | [README](../bots/vault-v1-reallocation/README.md)    |
+| [vault-v2-reallocation](../bots/vault-v2-reallocation/)   | Reallocates liquidity across Morpho Vault V2 markets       | [README](../bots/vault-v2-reallocation/README.md)    |
+| kill-switch                                               | **Withdrawn** — project cancelled 2026-06-29, docs only    | [TIB](./decisions/TIB-2026-05-14-kill-switch-bot.md) |
 
 ---
 
@@ -60,6 +68,9 @@ _None yet — copy [`templates/DATA-FLOW.md`](./templates/DATA-FLOW.md) into a b
 - [TIB-2026-07-14: BetterStack log forwarding](./decisions/TIB-2026-07-14-betterstack-log-forwarding.md) — opt-in in-process log shipping: `@repo/bot-kit`'s loglayer logger ([packages/bot-kit/src/logger.ts](../packages/bot-kit/src/logger.ts)) ships structured logs to a per-bot BetterStack source when both `BETTERSTACK_SOURCE_TOKEN` and `BETTERSTACK_INGESTING_HOST` are set (partial config fails loud); inert otherwise — implemented. The addenda record dropping the earlier Vector side-car for this in-process transport
 - [TIB-2026-07-15: CI/CD deploy pipeline for Railway bots](./decisions/TIB-2026-07-15-ci-deploy-pipeline.md) — deploy-only GitHub Actions (`railway up`, secrets stay on Railway): `push:main` redeploys both bots to staging, `release-{bot}`-labelled merges ship to production + cut a CalVer tag; four scoped GitHub Environments, `push:main` chosen over `pull_request:closed` for the environment branch policy — implemented
 - [TIB-2026-08-04: Extract quoter-bot shared packages](./decisions/TIB-2026-08-04-extract-quoter-bot-shared-packages.md) — four standalone workspace packages extracted from the quoter-bot bot (`@repo/logging`, `@repo/observability`, `@repo/monitoring`, `@repo/offers`), deliberately not folded into `@repo/bot-kit`/`@repo/utils`; behavior-preserving, with the observability error-name projection now injected
+- [TIB-2026-07-07: Fork tests self-seed their liquidatable position](./decisions/TIB-2026-07-07-fork-self-seed-positions.md) — fork suites mint their own edge-of-liquidation position instead of depending on a live one — accepted
+- [TIB-2026-07-20: Migrate to pnpm](./decisions/TIB-2026-07-20-migrate-to-pnpm.md) — replaces the bun toolchain with pnpm workspaces, Node, and Vitest; the version catalog and `allowBuilds` default-deny come from here — proposed
+- [TIB-2026-09-03: AGENTS.md as the canonical instruction file](./decisions/TIB-2026-09-03-agents-md-canonical-instruction-file.md) — `AGENTS.md` becomes the real file with `CLAUDE.md`/`.cursorrules` symlinked to it, cut from 301 lines to ~90; records what was evicted, where it went, and the admission criteria for anything added back — accepted
 
 ## TIBs (Bot-scoped)
 
@@ -72,6 +83,20 @@ _None yet — copy [`templates/DATA-FLOW.md`](./templates/DATA-FLOW.md) into a b
 
 _Bot-scoped TIBs move under `packages/<bot>/docs/decisions/` once a bot lands; proposal TIBs for
 not-yet-built bots sit in `docs/decisions/` alongside their siblings._
+
+- [TIB-2026-05-14: Kill-switch bot](./decisions/TIB-2026-05-14-kill-switch-bot.md) — vault circuit breaker that nukes `supplyQueue` on oracle staleness/deviation — **withdrawn**, project cancelled 2026-06-29
+- [TIB-2026-05-28: Midnight liquidation bot — v0](./decisions/TIB-2026-05-28-midnight-liquidation-bot.md) — the original Midnight liquidator design — accepted, implemented
+- [TIB-2026-06-29: Midnight multi-venue swap support](./decisions/TIB-2026-06-29-midnight-multi-venue-swaps.md) — collateral unwinding across several DEX venues — proposed, implemented
+- [TIB-2026-07-27: Midnight ladder quoter-bot — v0](./decisions/TIB-2026-07-27-midnight-quoter-bot.md) — the maker bot's ladder quoting design — proposed
+- [TIB-2026-08-14: Quoter-bot Docker Hub publishing](./decisions/TIB-2026-08-14-quoter-bot-dockerhub-publishing.md) — `morphoorg/quoter-*` images on production release — proposed
+- [TIB-2026-08-14: Quoter-bot Helm chart](./decisions/TIB-2026-08-14-quoter-bot-helm-chart.md) — package-owned chart for Kubernetes self-hosting — proposed
+- [TIB-2026-08-14: Quoter-bot cross-book clearance](./decisions/TIB-2026-08-14-quoter-cross-book-clearance.md) — clearance and bound clamping — proposed
+- [TIB-2026-08-17: Vault V1 reallocation bot](./decisions/TIB-2026-08-17-vault-v1-reallocation-bot.md) — monorepo migration of the MetaMorpho reallocator — accepted
+- [TIB-2026-08-23: Quoter-bot monitoring event vocabulary](./decisions/TIB-2026-08-23-quoter-bot-monitoring-events.md) — the structured event names operators query on — proposed
+- [TIB-2026-08-25: Quoter-bot bootstrap maturity premium](./decisions/TIB-2026-08-25-quoter-bootstrap-maturity-premium.md) — proposed
+- [TIB-2026-08-25: Quoter-bot ladder maturity premium](./decisions/TIB-2026-08-25-quoter-ladder-maturity-premium.md) — proposed
+- [TIB-2026-08-25: Quoter-bot npm publishing](./decisions/TIB-2026-08-25-quoter-bot-npm-publishing.md) — `@morpho-org/quoter` on production release — proposed
+- [TIB-2026-08-28: Midnight loan-as-collateral](./decisions/TIB-2026-08-28-midnight-loan-as-collateral.md) — off-chain slot choice and the swap-free path — proposed
 
 ---
 

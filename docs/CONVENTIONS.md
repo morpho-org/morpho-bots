@@ -8,6 +8,13 @@
 - **Shared types at the top**: If a type or symbol is used by multiple functions in the same file, place it at the top of the file
 - **Avoid standalone type files**: Dedicated `.types.ts` files should generally be avoided. Only use them for pure type definitions that have no accompanying code (e.g., shared API response shapes, domain models referenced across many files). If a type has a related function, hook, or component, keep the type in that file instead.
 
+### Utility Isolation
+
+- **Utilities live apart from classes**: Utility functions belong in a different file from any
+  class — a focused `*.utils.ts` or a dedicated module. This constrains where _classes and
+  functions_ live, not where _types_ live: a type consumed by both a class file and its
+  `*.utils.ts` sibling stays in the class file and is imported by the utils file.
+
 ## Code Style and Best Practices
 
 ### General Code Style
@@ -35,6 +42,11 @@
 
 - **Function Length**: Keep functions focused and concise (ideally < 10 lines)
 - **Parameter Count**: Functions with more than 3 parameters should be refactored to accept ≤3 parameters, with the last one being a destructured object
+- **Arrow Constants**: Prefer declaring utilities as arrow constants (`export const helper = () => {}`)
+  over `function` declarations, so hoisting never masks a definition-order mistake. This is a
+  preference for new code, not a defect to churn — ~145 exported `function` declarations exist
+  today and are fine where they are. Overloaded signatures require `function` (see `tryCatch` in
+  `@repo/utils`)
 - **TypeScript Inference**: Omit type annotations TypeScript can infer (including return types)
 - **Pure Functions**: Prefer pure functions without side effects when possible
 - **Function Ordering**:
@@ -47,6 +59,14 @@
 
 - **Explicit Error Handling**: Handle errors explicitly, don't silently swallow them
 - **Type-Safe Errors**: Use typed error objects rather than throwing strings
+- **Typed Error Isolation**: Every expected domain, application, infrastructure, configuration, CLI,
+  provider, or tooling failure uses a named exported `Error` subclass. Put exactly one error class
+  in its own kebab-case `*.error.ts` file named for the class (`SetupFailedError` in
+  `setup-failed.error.ts`); those files hold only imports, supporting types, and that class. Do not
+  define error classes in services, utilities, configuration, CLI, or script files, and do not use
+  plain `Error` for an expected failure. A boundary wrapper may retain an unexpected third-party
+  error as `cause`, but operator-visible fields and messages must exclude credentials, URLs,
+  response bodies, and other untrusted data.
 - **Logging**: Log errors appropriately for debugging and monitoring. Prefer structured logs with
   enough context (bot name, operation, relevant inputs) that an operator can answer "what did the
   bot do and why?" a day later.
@@ -96,6 +116,7 @@
 ### Test Organization
 
 - **Centralized under `test/`**: Each bot / package keeps all tests in a top-level `test/` directory whose hierarchy mirrors `src/`. Shared test helpers live alongside the tests in the same `test/` tree.
+- **One file per module**: If a test file already exists for the module, add to it rather than creating a new one.
 
 ### Test File Naming
 
@@ -140,6 +161,9 @@ Avoid these patterns that produce tests that pass but verify nothing useful:
 
 ### External Library Patterns
 
+- **SDK first**: Inspect the installed package's real exports and how the repo already uses them,
+  then reuse `@morpho-org/midnight-sdk` and Morpho SDK helpers, entities, ABIs, types, and
+  constants wherever their semantics match. Never invent an export or a dependency.
 - **Re-export Pattern**: Internal packages re-export external dependencies so the bots import from
   a single, versioned surface.
 - **Lodash**: Import individual functions from `lodash-es/{fn}` instead of the barrel
@@ -156,7 +180,8 @@ Avoid these patterns that produce tests that pass but verify nothing useful:
 
 ## Web3 Integration
 
-- **Viem**: Bots use viem directly (no wagmi — there is no React surface).
+- **Viem**: Bots use viem directly. The only React surface in the repo is the quoter-bot
+  playground (`bots/quoter-bot/playground/`); bot runtimes have none.
 - **Multi-chain**: Each bot declares its supported chains in its own config.
 - **Viem Utilities**: Use `parseUnits`/`formatUnits` over raw `10n ** BigInt(decimals)` arithmetic;
   reserve raw BigInt only for math-heavy library code.
@@ -165,3 +190,5 @@ Avoid these patterns that produce tests that pass but verify nothing useful:
   `as Address` casts. For runtime normalization (checksumming), use `getAddress()` after an
   `isAddress` guard.
 - **Address Comparison**: Use `isAddressEqual` from viem, never `.toLowerCase()` comparisons.
+- **Hashing and byte size**: Use viem's `keccak256`, `size`, and `hexToBytes`/`bytesToHex` rather
+  than local equivalents.

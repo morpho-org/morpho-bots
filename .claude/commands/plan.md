@@ -78,7 +78,7 @@ Tell the user which mode you've chosen and why. If it's borderline, ask them.
 
 3. **Determine the project**: Based on the spec and which bot/package is affected, use your best
    judgement to determine the most appropriate Linear team and project. Refer to the Team IDs table
-   in CLAUDE.md for team mappings. If unclear, ask the user. For project mode: different issues may
+   in docs/GUIDANCE.md for team mappings. If unclear, ask the user. For project mode: different issues may
    belong to different teams/projects — assign each appropriately.
 
 4. **Create an implementation plan** that an AI agent can follow:
@@ -113,7 +113,7 @@ Follow **one** of the two paths below based on the planning scale determined in 
    - Create a main parent issue with the high-level spec and implementation plan
    - Create sub-issues for each independent task with more task specific detail
    - Link sub-issues to the parent
-   - Set the appropriate team (refer to Team IDs table in CLAUDE.md)
+   - Set the appropriate team (refer to the Linear Teams table in docs/GUIDANCE.md)
 
 #### Project Mode
 
@@ -133,7 +133,7 @@ Follow **one** of the two paths below based on the planning scale determined in 
    - Create or reuse a Linear project for the initiative
    - Create top-level issues for each workstream with full spec and implementation plan
    - Create sub-issues under each workstream issue
-   - Set the appropriate team for each issue (refer to Team IDs table in CLAUDE.md)
+   - Set the appropriate team for each issue (refer to the Linear Teams table in docs/GUIDANCE.md)
    - Add dependency notes in issue descriptions where workstreams depend on each other
 
 5. **Present a project summary** to the user showing:

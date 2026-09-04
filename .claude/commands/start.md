@@ -48,7 +48,7 @@ relevant options and include "Other (let them specify)" as a fallback.
 Use the Linear MCP tools to create the issue:
 
 ```
-Refer to the Team IDs table in CLAUDE.md to select the appropriate team based on scope.
+Refer to the Linear Teams table in docs/GUIDANCE.md to select the appropriate team based on scope.
 The default team for morpho-bots work is Curator (CRTR).
 ```
 
@@ -171,7 +171,7 @@ You're ready to start working!"
 ## Notes
 
 - Keep it lightweight - this is just task kickoff, not planning
-- Refer to the Team IDs table in CLAUDE.md to select the appropriate team based on scope
+- Refer to the Linear Teams table in docs/GUIDANCE.md to select the appropriate team based on scope
 - The `gitBranchName` field from Linear provides the properly formatted branch name
 - Always pull latest before branching (when basing off main)
 - In worktrees, avoid switching to the base branch (it may be checked out in another worktree).

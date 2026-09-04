@@ -84,7 +84,7 @@ When the user selects items:
 ### Projects First
 
 1. Create any selected projects using `mcp__linear__create_project` with the appropriate team
-   (refer to Team IDs table in CLAUDE.md)
+   (refer to the Linear Teams table in docs/GUIDANCE.md)
 2. Note the created project IDs for use in ticket creation
 
 ### Then Tickets
