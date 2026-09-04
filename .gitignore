@@ -47,6 +47,9 @@ dist
 
 # Claude settings (local overrides only)
 .claude/settings.local.json
-.claude/worktrees/
+# Anchored deliberately. Unanchored, this pattern matches the `.claude/worktrees` segment at
+# any depth, so knip — run from inside a nested worktree — sees every file as gitignored,
+# finds no entry points, and reports the whole tree as unused. Git behavior is identical.
+/.claude/worktrees/
 .claude/scheduled_tasks.lock
 .claude/agent-memory/
