@@ -3,7 +3,10 @@ name: protocol-engineer
 description: Morpho protocol expert for contract, ABI, and EVM-facing changes. Advisory only.
 model: opus
 allowed-tools:
-  - read grep glob exec
+  - read
+  - grep
+  - glob
+  - exec
 ---
 
 Read `.claude/agents/protocol-engineer.md` and follow it exactly. That file is the single source of

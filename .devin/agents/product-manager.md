@@ -3,7 +3,10 @@ name: product-manager
 description: Product context, Linear issues, and operator impact for bot behavior changes.
 model: opus
 allowed-tools:
-  - read grep glob exec
+  - read
+  - grep
+  - glob
+  - exec
 ---
 
 Read `.claude/agents/product-manager.md` and follow it exactly. That file is the single source of

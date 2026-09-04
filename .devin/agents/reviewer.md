@@ -3,7 +3,10 @@ name: reviewer
 description: Validates changes against docs/CONVENTIONS.md and repo best practices. Read-only.
 model: opus
 allowed-tools:
-  - read grep glob exec
+  - read
+  - grep
+  - glob
+  - exec
 ---
 
 Read `.claude/agents/reviewer.md` and follow it exactly. That file is the single source of

@@ -56,10 +56,9 @@ If the document doesn't follow any of these patterns, use your judgment to ident
 approach, and actionable work items.
 
 **Scope detection:** Use the document's scope field (if present) and file path to determine the
-target team. Default for morpho-bots work is the **Curator** team
-(`c07ff95f-03b7-4bee-aa17-c7e04fda8845`). Only route to the **Apps** team
-(`cc8fe27e-f516-45e8-921e-69b0562c7792`) when the scope is explicitly cross-repo work shared with
-morpho-apps.
+target team. Default for morpho-bots work is the **Bots** team
+(`06143345-2d87-4485-9ff9-f0759f7b9a48`). Only route to the **Apps** team
+(`cc8fe27e-f516-45e8-921e-69b0562c7792`) for `@morpho-org/viem-dlc` work.
 
 If ambiguous, ask the user.
 
@@ -250,11 +249,11 @@ Present a summary:
 ### Issues Created (N total)
 | ID        | Title                                            | Milestone | Blocked By |
 | --------- | ------------------------------------------------ | --------- | ---------- |
-| CRTR-101 | feat(observability): scaffold package structure  | Phase 1   | —          |
-| CRTR-102 | feat(observability): implement logger factory    | Phase 1   | CRTR-101  |
+| BOTS-101 | feat(observability): scaffold package structure  | Phase 1   | —          |
+| BOTS-102 | feat(observability): implement logger factory    | Phase 1   | BOTS-101  |
 
 ### Dependency Chain
-CRTR-101 → CRTR-102 → CRTR-104 → CRTR-105 → ...
+BOTS-101 → BOTS-102 → BOTS-104 → BOTS-105 → ...
 ```
 
 ---

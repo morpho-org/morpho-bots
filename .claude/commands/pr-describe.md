@@ -53,7 +53,8 @@ changes quickly.
    }'
 
    git diff --name-only "origin/$base...HEAD" -z \
-     | xargs -0 -I{} sh -c 'test -f "{}" && echo "{}"' | xargs tokei
+     | xargs -0 -n 1 sh -c 'test -f "$1" && printf "%s\\0" "$1"' sh \
+     | xargs -0 tokei
    ```
 
    Buckets are checked in order, so `test` wins over `src`, and a `.md` under `.claude/` counts as

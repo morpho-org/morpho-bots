@@ -89,7 +89,7 @@ No discussion beat. Go from synthesis straight to incorporate / drop / defer.
 
 ## Parameterization C — Responding to PR review
 
-Identical to B's own-pass-and-synthesize half, with two additions.
+First dispatch B's independent reviewer, then do B's own pass and synthesis, with two additions.
 
 **Resolve threads.** Acting on a thread includes resolving it, with a reply when the reply carries
 information — what changed, or why you disagreed. A thread you dropped still needs the reply saying

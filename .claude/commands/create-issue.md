@@ -95,7 +95,8 @@ Show the proposed ticket details and ask the user to confirm or edit:
 
 ```
 Title:       <generated title>
-Project:     <inferred project name> (<team identifier>)
+Team:        <Bots or Apps>
+Project:     omitted (unless this is `@morpho-org/viem-dlc`)
 Assignee:    <current user name> (you)
 Description:
 ---
@@ -161,16 +162,16 @@ No branch creation — this is backlog triage only.
 
 **User**: `/create-issue add retry-with-backoff to kill-switch deallocate calls`
 
-**Claude**: Routes to Curator Backlog (CRTR). Generates:
+**Claude**: Routes to Bots (BOTS). Generates:
 
 ```
 Title:    feat(kill-switch): add retry-with-backoff to deallocate calls
-Project:  Curator Backlog (CRTR)
+Project:  omitted
 Assignee: <current user name> (you)
 
 ## Context
 The kill-switch bot aborts the trigger loop on any transient RPC failure from the VaultV2
-deallocate call. Curator operators then have to re-run manually.
+deallocate call. Operators then have to re-run manually.
 
 ## References
 - bots/kill-switch/src/actions/deallocate.ts
@@ -189,19 +190,20 @@ Label? Priority?
 
 **User**: `/create-issue add bigint helpers to @repo/utils`
 
-**Claude**: Routes to Curator Backlog (CRTR).
+**Claude**: Routes to Bots (BOTS).
 
 ---
 
 **User**: `/create-issue align lint config with morpho-apps base rules`
 
-**Claude**: Routes to Apps Monorepo Backlog (APPS) — cross-repo shared config.
+**Claude**: Explains that shared configuration is a Morpho-owned dependency with mixed Linear
+conventions and asks the user where to file it.
 
 ---
 
 ## Notes
 
-- Always use the project ID (not just the name) when calling `mcp__linear__create_issue`
+- Omit `project` when calling `mcp__linear__create_issue`, except for `@morpho-org/viem-dlc`
 - The description must include all 3 sections — omit References only if genuinely none exist
 - Default priority for backlog items is Low (4)
 - Default assignee is the current user (resolved via `mcp__linear__get_user` with `query: "me"`) — only leave unassigned if the user explicitly asks

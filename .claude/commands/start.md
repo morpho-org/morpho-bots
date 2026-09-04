@@ -28,9 +28,8 @@ intent, not a full spec.
 
 Present the generated title and description, then ask the user to select:
 
-**Project** (required): Use your best judgement based on the task description and which bot/package
-is affected to suggest the most appropriate project from the team's Linear projects. Present
-relevant options and include "Other (let them specify)" as a fallback.
+**Labels** (optional): Infer the label for the affected bot or package. Ask the user to confirm or
+adjust it; if no existing label fits, say so rather than inventing one.
 
 **Priority** (optional):
 
@@ -49,15 +48,18 @@ Use the Linear MCP tools to create the issue:
 
 ```
 Refer to the Linear Teams table in docs/GUIDANCE.md to select the appropriate team based on scope.
-The default team for morpho-bots work is Curator (CRTR).
+Everything in this repo belongs to the Bots team (BOTS). Do not set a project: the Linear agent
+routes tickets by label. The only exception is `@morpho-org/viem-dlc`, which belongs to the Apps
+team and its Viem-dlc Backlog project.
 ```
 
 Use `mcp__linear__create_issue` with:
 
 - `title`: The generated title
 - `description`: The brief description
-- `team`: The team selected from the Team IDs table
-- `project`: The selected project name
+- `team`: Bots, unless this is an `@morpho-org/viem-dlc` ticket
+- `labels`: The confirmed affected-surface label(s), if available
+- `project`: Omit, except for `@morpho-org/viem-dlc`, which uses the Viem-dlc Backlog project
 - `priority`: The selected priority (if specified)
 - `assignee`: "me" (if they want to self-assign)
 
@@ -134,11 +136,10 @@ You're ready to start working!
 **Description**: Wrap the VaultV2 deallocate call site in the kill-switch bot with a
 retry-with-backoff helper so transient RPC failures don't abort the trigger.
 
-Which project should this be in? (based on scope, I'd suggest the Curator team's Kill Switch Bot
-project)
+Which label should this use? (based on scope, I'd suggest the Kill Switch Bot label)
 
-1. <suggested project> (Recommended)
-2. Other
+1. Kill Switch Bot (Recommended)
+2. Other (let me specify)
 
 Priority? (default: Normal)
 
@@ -153,8 +154,8 @@ Assign to yourself?"
 
 **Claude**: _Creates Linear issue, gets branch name_
 
-"Created Linear ticket: CRTR-2300 - feat(kill-switch): add retry-with-backoff to deallocate calls
-https://linear.app/morpho-labs/issue/CRTR-2300
+"Created Linear ticket: BOTS-2300 - feat(kill-switch): add retry-with-backoff to deallocate calls
+https://linear.app/morpho-labs/issue/BOTS-2300
 
 Which branch should I base the new branch off?
 
@@ -163,7 +164,7 @@ Which branch should I base the new branch off?
 
 **User**: "1"
 
-**Claude**: "Branch created: `feature/crtr-2300-feat-kill-switch-add-retry-with-backoff` Based off:
+**Claude**: "Branch created: `feature/bots-2300-feat-kill-switch-add-retry-with-backoff` Based off:
 main
 
 You're ready to start working!"

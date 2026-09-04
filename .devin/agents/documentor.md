@@ -3,7 +3,11 @@ name: documentor
 description: Drafts TIBs into docs/decisions/. The only role here that writes.
 model: fable
 allowed-tools:
-  - read grep glob exec edit
+  - read
+  - grep
+  - glob
+  - exec
+  - edit
 ---
 
 Read `.claude/agents/documentor.md` and follow it exactly. That file is the single source of
