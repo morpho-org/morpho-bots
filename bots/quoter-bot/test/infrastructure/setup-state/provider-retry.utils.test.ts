@@ -127,6 +127,18 @@ describe('retryTransientProviderRead', () => {
     expect(attempt.mock.calls).toEqual([[300], [50]])
   })
 
+  test('does not back off after a failed attempt consumes the aggregate timeout', async () => {
+    const error = providerError({ name: 'NetworkError', context: 'request' })
+    const attempt = vi.fn(async () => {
+      await new Promise(resolve => setTimeout(resolve, 300))
+      throw error
+    })
+
+    await expect(settle(retryTransientProviderRead(attempt, 300))).resolves.toEqual({ error })
+
+    expect(attempt).toHaveBeenCalledTimes(1)
+  })
+
   test('keeps each jittered backoff between half and the full exponential delay', async () => {
     vi.spyOn(Math, 'random').mockReturnValue(0.999_999)
     const error = providerError({ name: 'NetworkError', context: 'request' })

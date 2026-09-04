@@ -54,7 +54,11 @@ export const retryTransientProviderRead = async <Result>(
       lastError = error
       if (failures >= MAX_ATTEMPTS || !isTransientFailure(error)) throw error
       const backoffMs = backoffDelayMs(failures)
-      const delayMs = remainingMs === undefined ? backoffMs : Math.min(backoffMs, remainingMs)
+      const remainingAfterFailure =
+        deadline === undefined ? undefined : Math.floor(deadline - performance.now())
+      if (remainingAfterFailure !== undefined && remainingAfterFailure <= 0) throw error
+      const delayMs =
+        remainingAfterFailure === undefined ? backoffMs : Math.min(backoffMs, remainingAfterFailure)
       if (delayMs <= 0) throw error
       await delay(delayMs)
     }
