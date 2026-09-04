@@ -111,8 +111,10 @@ The loop works the same, with three model facts that decide whether it is worth 
 - A **custom subagent with no `model:` pinned silently falls back to SWE-1.6**, a fast cheap model.
   An unpinned reviewer still returns findings, they are just worse — and nothing announces it. Every
   manifest in `.devin/agents/` pins `model:` for exactly this reason.
-- **A misspelled pin fails just as silently.** `devin doctor` loads the profiles and reports zero
-  failures with a bogus `model:` value — verified with `model: fable`, which is not a valid slug.
+- **A misspelled pin fails just as silently.** `devin doctor` reports zero failures with a bogus
+  `model:` value — verified with `model: fable`, which is not a valid slug — and it passed just as
+  happily on an `allowed-tools:` written as one string instead of a YAML list. It checks that
+  profiles _load_, not that they say anything sensible.
   Only `opus`, `sonnet`/`claude`, `haiku`, `gemini`, `gpt`, `swe`, and `codex` are aliases; **Fable
   has none**, so it must be spelled out. Pin full slugs and check them against reality:
 
