@@ -89,7 +89,15 @@ No discussion beat. Go from synthesis straight to incorporate / drop / defer.
 
 ## Parameterization C — Responding to PR review
 
-First dispatch B's independent reviewer, then do B's own pass and synthesis, with two additions.
+**The independent pass has already happened — do not dispatch another by default.** It ran once
+after the implementation in B, and the findings you are now answering are themselves an independent
+review. Another round on a routine comment-fix buys nothing and costs a turnaround.
+
+Dispatch one at your discretion when the response stops being a fix and starts being an
+implementation: a redesign, a change on a funds-at-risk path, or enough new code that nobody has
+reviewed what you actually wrote. Say which reviewer ran, or that none did and why.
+
+Otherwise this is B's own-pass-and-synthesis half, with two additions.
 
 **Resolve threads.** Acting on a thread includes resolving it, with a reply when the reply carries
 information — what changed, or why you disagreed. A thread you dropped still needs the reply saying
