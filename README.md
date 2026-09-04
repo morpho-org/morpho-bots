@@ -7,7 +7,8 @@ This is a [pnpm workspaces](https://pnpm.io/workspaces) monorepo:
 
 - `bots/` — individual bot apps (one per bot); each keeps its own `docs/`
 - `packages/` — shared libraries (`@repo/bot-kit`, `@repo/swaps`, `@repo/contracts`,
-  `@repo/utils`, `@repo/typescript-config`)
+  `@repo/observability`, `@repo/monitoring`, `@repo/logging`, `@repo/offers`, `@repo/utils`,
+  `@repo/typescript-config`)
 - `services/` — deployable non-bot services (`quoter-signer`, the quoter-bot KMS signing
   policy middleware Lambda image)
 
@@ -35,8 +36,8 @@ pnpm test            # vitest projects plus Node playground suites
 ## Pointers
 
 - `docs/INDEX.md` — documentation discovery index (guides, bots, packages, TIBs)
-- `CLAUDE.md` — agent and contributor conventions (Strict Rules, agent team,
-  self-verification ritual)
+- `AGENTS.md` — agent and contributor instructions (`CLAUDE.md` and `.cursorrules` are
+  symlinks to it)
 - `docs/CONVENTIONS.md` — code organization, patterns, and style
 - `docs/GUIDANCE.md` — when to write a TIB, when to file a Linear ticket
 - `docs/decisions/` — TIBs (Technical Intent Briefs)

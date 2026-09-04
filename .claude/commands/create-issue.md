@@ -8,14 +8,41 @@ You are helping the user triage a backlog item. This is a lightweight flow to cr
 
 ---
 
-## Project Routing Table
+## Routing
 
-Use this table to determine the correct team and project based on scope:
+Everything in this repo goes to the **Bots** team (`06143345-2d87-4485-9ff9-f0759f7b9a48`, `BOTS`).
 
-| Scope                                              | Project               | Project ID                             | Team    | Team ID                                |
-| -------------------------------------------------- | --------------------- | -------------------------------------- | ------- | -------------------------------------- |
-| `bots/*`, `packages/*`, `@repo/*`, repo-wide infra | Curator Backlog       | `d2b6d657-c059-4d9b-8f55-aa98390ab81f` | Curator | `c07ff95f-03b7-4bee-aa17-c7e04fda8845` |
-| Cross-repo infra shared with `morpho-apps`         | Apps Monorepo Backlog | `1127eedb-8ef7-49e8-b8c7-9f9e2e47f9c8` | Apps    | `cc8fe27e-f516-45e8-921e-69b0562c7792` |
+**Do not set a project.** The Linear agent assigns projects; a project set here fights it. Labels
+are how tickets are routed by surface, not projects.
+
+The one exception: `@morpho-org/viem-dlc` issues go to the **Apps** team
+(`cc8fe27e-f516-45e8-921e-69b0562c7792`) in the **Viem-dlc Backlog** project
+(`6d884c18-7fcb-49c9-8809-0863e2d8607d`) — the only case where a project is set explicitly.
+
+Other Morpho-owned dependencies have mixed Linear conventions across teams. Do not file those
+automatically — surface them to the user and let them place the ticket.
+
+See [`docs/GUIDANCE.md`](../../docs/GUIDANCE.md) for the canonical table.
+
+## Labels
+
+Apply the label(s) for the bot(s) or package(s) the work touches. Current surface labels:
+
+`Blue Liquidation` · `Midnight Liquidation` · `Midnight Crossed Books` · `Midnight Quoter` ·
+`Vault V1 Reallocation` · `Vault V2 Reallocation` · `Bot Kit` · `agent` (anything under `.claude/`)
+
+Kind labels (`Bug`, `Feature`, `Improvement`, `Documentation`, `Monitoring`, `Alerting`,
+`Integration`, `incident`) may be added alongside.
+
+**Provenance.** A ticket that exists because a review surfaced something and it was explicitly
+deferred gets `code-review` (the `Provenance` group), and its description links the originating PR
+or TIB. Provenance is not priority — the status already says "not now"; this says where it came
+from.
+
+Several packages have no label yet — `@repo/swaps`, `observability`, `offers`, `logging`,
+`contracts`, `utils`, and `services/quoter-signer` among them. If none fits the surface you are
+filing against, **say so to the user** rather than filing unlabelled or inventing a label. Do not
+create labels yourself.
 
 ---
 
@@ -51,13 +78,11 @@ Check `$ARGUMENTS`:
 - If provided, use as the basis for the ticket
 - If empty, ask: _"What should go in the backlog? (brief description)"_
 
-### Step 2: Infer scope and route to project
+### Step 2: Infer scope and pick labels
 
-From the description, determine the target using the routing table above:
-
-- Mentions `bots/*`, `packages/*`, `@repo/*`, repo-wide infra → **Curator Backlog** (CRTR)
-- Mentions cross-repo infra shared with `morpho-apps` → **Apps Monorepo Backlog** (APPS)
-- If ambiguous, ask the user to pick from the two options above
+Team is **Bots** unless the ticket is about `@morpho-org/viem-dlc` (see Routing). From the
+description, determine which bot(s) or package(s) the work touches and pick the matching label(s).
+If no existing label fits, flag it rather than guessing.
 
 ### Step 3: Generate title + draft description
 
@@ -70,7 +95,8 @@ Show the proposed ticket details and ask the user to confirm or edit:
 
 ```
 Title:       <generated title>
-Project:     <inferred project name> (<team identifier>)
+Team:        <Bots or Apps>
+Project:     omitted (unless this is `@morpho-org/viem-dlc`)
 Assignee:    <current user name> (you)
 Description:
 ---
@@ -114,9 +140,9 @@ Use `mcp__linear__create_issue` with:
 
 - `title`
 - `description` (3-section template, formatted as markdown)
-- `team` (team ID from routing table)
-- `project` (project ID from routing table)
-- `labels` (label names as an array, e.g. `["Feature"]`)
+- `team` (Bots — or Apps for `viem-dlc`)
+- `labels` (label names as an array, e.g. `["Bot Kit", "Bug"]`) — surface label(s) plus optional kind
+- `project` — **omit**, except for `viem-dlc` tickets, which take the Viem-dlc Backlog project ID
 - `priority` (number 1–4)
 - `estimate` (number: 1, 2, 3, or 5 — omit if not specified)
 - `assignee` (defaults to the current user resolved in Step 4 via `mcp__linear__get_user` with `query: "me"`) — omit only if the user explicitly chose to leave it unassigned
@@ -136,16 +162,16 @@ No branch creation — this is backlog triage only.
 
 **User**: `/create-issue add retry-with-backoff to kill-switch deallocate calls`
 
-**Claude**: Routes to Curator Backlog (CRTR). Generates:
+**Claude**: Routes to Bots (BOTS). Generates:
 
 ```
 Title:    feat(kill-switch): add retry-with-backoff to deallocate calls
-Project:  Curator Backlog (CRTR)
+Project:  omitted
 Assignee: <current user name> (you)
 
 ## Context
 The kill-switch bot aborts the trigger loop on any transient RPC failure from the VaultV2
-deallocate call. Curator operators then have to re-run manually.
+deallocate call. Operators then have to re-run manually.
 
 ## References
 - bots/kill-switch/src/actions/deallocate.ts
@@ -164,19 +190,35 @@ Label? Priority?
 
 **User**: `/create-issue add bigint helpers to @repo/utils`
 
-**Claude**: Routes to Curator Backlog (CRTR).
+**Claude**: Routes to Bots (BOTS).
 
 ---
 
 **User**: `/create-issue align lint config with morpho-apps base rules`
 
-**Claude**: Routes to Apps Monorepo Backlog (APPS) — cross-repo shared config.
+**Claude**: Routes to Bots (BOTS) — it is work in this repo, whoever else shares the convention.
+No surface label covers repo-wide tooling, so it says so instead of inventing one:
+
+```
+Title:    chore(tooling): align lint config with morpho-apps base rules
+Team:     Bots (BOTS)
+Project:  omitted
+Labels:   none — no existing label covers repo-wide tooling. Add one, or file unlabelled?
+```
+
+---
+
+**User**: `/create-issue blue-sdk misreports accrued interest at maturity`
+
+**Claude**: Does not file. `@morpho-org/blue-sdk` is a Morpho-owned dependency, and those have
+mixed Linear conventions across teams — surfaces it and asks where it belongs. (`viem-dlc` is the
+one dependency with a settled answer: Apps, Viem-dlc Backlog.)
 
 ---
 
 ## Notes
 
-- Always use the project ID (not just the name) when calling `mcp__linear__create_issue`
+- Omit `project` when calling `mcp__linear__create_issue`, except for `@morpho-org/viem-dlc`
 - The description must include all 3 sections — omit References only if genuinely none exist
 - Default priority for backlog items is Low (4)
 - Default assignee is the current user (resolved via `mcp__linear__get_user` with `query: "me"`) — only leave unassigned if the user explicitly asks

@@ -1,0 +1,14 @@
+{
+  // Pull the repo's canonical agent surfaces into Devin sessions: AGENTS.md rules (via the
+  // CLAUDE.md symlink), .claude/skills/**/SKILL.md (the review loop), .claude/commands/**/*.md,
+  // and .mcp.json servers. Subagents are NOT imported — see .devin/agents/.
+  "read_config_from": {
+    "claude": true
+  },
+
+  // The review loop shells out to the Codex CLI for its independent, cross-vendor pass.
+  // Pre-approving it only grants this scope; everything else still follows Devin's defaults.
+  "permissions": {
+    "allow": ["Exec(codex)"]
+  }
+}

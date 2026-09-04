@@ -254,3 +254,50 @@ If an RFC produces a decision, it should be distilled into a TIB at close.
 | **Default choice** | Yes — for architectural decisions | Yes — for all planned work    | Only when TIB alone isn't enough   |
 
 When in doubt, write a TIB. A Proposed TIB reviewed via PR is almost always sufficient.
+
+---
+
+## Review Sessions
+
+Each TIB may have a `.sessions` file beside it — same directory as the TIB, same stem, whether that
+is the repo-wide `docs/decisions/` or a bot- or package-scoped one — recording the review session
+ids for that decision, one per line with a date and what the session covered. These are git-ignored
+by `**/docs/decisions/*.sessions`: they point into a local `~/.codex/sessions/` store, not into
+shared history.
+
+The point is continuity. The reviewer that argued about a spec is the best reviewer for the
+implementation that follows, because it will notice a drift from intent that a cold reviewer cannot.
+Best-effort by design — sessions expire and do not exist on another machine. When resume fails,
+re-prime a fresh reviewer with the TIB. See
+[`.agents/skills/review-loop/SKILL.md`](../.agents/skills/review-loop/SKILL.md).
+
+---
+
+## Linear Teams
+
+Team IDs for filing tickets via the Linear MCP:
+
+| Team     | ID                                   | Key    | Use for                                       |
+| -------- | ------------------------------------ | ------ | --------------------------------------------- |
+| **Bots** | 06143345-2d87-4485-9ff9-f0759f7b9a48 | `BOTS` | Everything in this repo. No exceptions below. |
+| **Apps** | cc8fe27e-f516-45e8-921e-69b0562c7792 | `APPS` | `@morpho-org/viem-dlc` issues only            |
+
+Everything related to this repo goes to **Bots**. The Curator team (`CRTR`) owned this work before
+the Bots team existed; it is no longer the destination for anything here.
+
+**Filing rules**
+
+- Ticket titles follow the same `type(scope): description` convention as commits and PRs — see the
+  "Commit and PR titles" row in [`AGENTS.md`](../AGENTS.md).
+- Apply the label(s) for the bot(s) or package(s) the work touches, so the ticket is findable by
+  surface. Labels are the routing mechanism here, not projects.
+- A ticket that exists because a review surfaced something and we chose not to act on it now gets
+  the **`Provenance > code-review`** label, and its description links the PR or TIB it came from.
+  The label records _where the ticket came from_; the status records that it is not being done yet.
+  Those are different facts — do not use one for the other.
+- **Do not assign a project.** The Linear agent does that.
+- `@morpho-org/viem-dlc` issues go to the Apps team's
+  [Viem-dlc Backlog](https://linear.app/morpho-labs/project/viem-dlc-backlog-b1ad80c9ad02)
+  (`6d884c18-7fcb-49c9-8809-0863e2d8607d`) — the one case where a project _is_ set explicitly.
+- Other Morpho-owned dependencies have mixed Linear conventions. Do not file those automatically;
+  surface them to the user instead.

@@ -7,6 +7,26 @@ Act as a product manager to refine specs and create Linear tickets.
 You are acting as a Product Manager. Your job is to plan work at the appropriate scale — from a
 single issue to a full project with many workstreams.
 
+### Before you present anything
+
+Even for a straightforward feature or bug fix, run the satisficing check first:
+
+1. **Is the plan necessary and sufficient** for the stated intent and constraints? Not the most
+   complete plan — the smallest one that fully serves the intent. Cut every step that serves
+   something nobody asked for.
+2. **Are the intent and constraints themselves clear?** If not, say which part is ambiguous and
+   what turns on it.
+3. **Would a reframe of the intent or the constraints give a neater, more ergonomic outcome?** This
+   is the highest-value thing you can notice. Surface it _before_ building on the original framing,
+   not after the plan is written.
+
+Raise the doubt as prose, with enough context for the engineer to decide. Do not collapse a real
+design question into a short multiple-choice — one-line options discard exactly the context that
+makes the question answerable. Concise, but not thin.
+
+The same discipline, plus independent review, applies to TIBs and implementations — see
+[`.agents/skills/review-loop/SKILL.md`](../../.agents/skills/review-loop/SKILL.md).
+
 ### Phase 1: Context Gathering Interview
 
 Before creating any plan, interview the user to fully understand their intent. The user will
@@ -78,7 +98,7 @@ Tell the user which mode you've chosen and why. If it's borderline, ask them.
 
 3. **Determine the project**: Based on the spec and which bot/package is affected, use your best
    judgement to determine the most appropriate Linear team and project. Refer to the Team IDs table
-   in CLAUDE.md for team mappings. If unclear, ask the user. For project mode: different issues may
+   in docs/GUIDANCE.md for team mappings. If unclear, ask the user. For project mode: different issues may
    belong to different teams/projects — assign each appropriately.
 
 4. **Create an implementation plan** that an AI agent can follow:
@@ -113,7 +133,7 @@ Follow **one** of the two paths below based on the planning scale determined in 
    - Create a main parent issue with the high-level spec and implementation plan
    - Create sub-issues for each independent task with more task specific detail
    - Link sub-issues to the parent
-   - Set the appropriate team (refer to Team IDs table in CLAUDE.md)
+   - Set the appropriate team (refer to the Linear Teams table in docs/GUIDANCE.md)
 
 #### Project Mode
 
@@ -133,7 +153,7 @@ Follow **one** of the two paths below based on the planning scale determined in 
    - Create or reuse a Linear project for the initiative
    - Create top-level issues for each workstream with full spec and implementation plan
    - Create sub-issues under each workstream issue
-   - Set the appropriate team for each issue (refer to Team IDs table in CLAUDE.md)
+   - Set the appropriate team for each issue (refer to the Linear Teams table in docs/GUIDANCE.md)
    - Add dependency notes in issue descriptions where workstreams depend on each other
 
 5. **Present a project summary** to the user showing:

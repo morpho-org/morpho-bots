@@ -48,22 +48,24 @@ Apply each focus area to the diff:
 2. **TypeScript correctness** — strict flags are on (`noImplicitReturns`,
    `noUncheckedIndexedAccess`). Flag `any`, unsafe casts, missing return types on exported
    functions, and undefined-index access.
-3. **Web3 safety & correctness** — ABI usage from `@repo/abis`, correct function names and args,
+3. **Web3 safety & correctness** — ABI usage from `@repo/contracts` or the installed Morpho /
+   Midnight SDKs (never a hand-written fragment or an invented export), correct function names and args,
    approvals before writes where required, simulation before on-chain writes, BigInt precision,
    token decimals, approval-reset patterns (USDT et al.). Flag hardcoded addresses or magic
    numbers that belong in chain config.
 4. **Shared package reuse & hoisting** — for every new utility or helper in the diff, check if it
-   already exists in `@repo/utils` or `@repo/abis`. Flag as `must-fix` if an exact match exists, or
-   `suggestion` if a close match could be adapted. If the new code is general-purpose and not
-   tied to a specific bot's domain, suggest hoisting it into the appropriate shared package
-   (`@repo/utils` for pure utilities, `@repo/abis` for ABI-adjacent helpers).
+   already exists in `@repo/utils`, `@repo/bot-kit`, `@repo/swaps`, or an installed SDK. Flag as
+   `must-fix` if an exact match exists, or `suggestion` if a close match could be adapted. If the
+   new code is general-purpose and not tied to a specific bot's domain, suggest hoisting it into
+   the appropriate shared package (`@repo/utils` for pure utilities, `@repo/bot-kit` for runtime
+   seams, `@repo/contracts` for ABI-adjacent helpers).
 5. **Testing quality** — new TypeScript behavior has a `{module}.test.ts` under the workspace's
    `test/` tree mirroring `src/` and uses Vitest. The playground's JavaScript harness uses Node
    `*.test.mjs` suites. Tests are non-vacuous (they actually fail if the implementation breaks). No
    mocking of on-chain behavior where a viem test client / anvil would give real evidence.
-6. **Agent infrastructure** — if the diff touches `CLAUDE.md`, `.claude/`, `.mcp.json`, editor
-   configs, or agent definitions, mirror the change across any documented counterpart
-   (`AGENTS.md`, `.cursorrules`) and flag inconsistencies.
+6. **Agent infrastructure** — if the diff touches `AGENTS.md`, `.claude/`, `.mcp.json`, editor
+   configs, or agent definitions, check that `CLAUDE.md` and `.cursorrules` are still symlinks to
+   `AGENTS.md` (they carry no content of their own) and flag inconsistencies.
 
 ## TIB consideration
 
@@ -81,7 +83,7 @@ Use: `cp docs/templates/TIB.md docs/decisions/TIB-YYYY-MM-DD-short-slug.md`
 
 Present findings as a flat list. Each finding includes:
 
-- **File path + line number**: full path, e.g. `packages/kill-switch/src/trigger.ts:42`
+- **File path + line number**: full path, e.g. `bots/blue-liquidation/src/liquidate.ts:42`
 - **What's wrong**: concrete, specific description
 - **How to fix it**: exact suggestion the invoking agent can act on
 - **Severity**: `must-fix` (would block a PR) or `suggestion` (nice to have)
@@ -89,11 +91,11 @@ Present findings as a flat list. Each finding includes:
 Example:
 
 ```
-must-fix — packages/kill-switch/src/trigger.ts:42
+must-fix — bots/blue-liquidation/src/liquidate.ts:42
 Uses `any` type for market parameter.
-Fix: Replace `any` with `Market` from `@/lib/modules/market/types`.
+Fix: Replace `any` with `Market` from `@morpho-org/blue-sdk`.
 
-suggestion — packages/kill-switch/src/trigger.ts:58
+suggestion — bots/blue-liquidation/src/liquidate.ts:58
 `parseTokenAmount` looks like a generic bigint helper that could live in `@repo/utils`.
 Fix: Move the helper into `@repo/utils` and import it here.
 ```

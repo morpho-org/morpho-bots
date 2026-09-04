@@ -146,7 +146,7 @@ Treat this list as a checklist and report which items applied.
 
 ### Step 6: Validate
 
-Per [CLAUDE.md](../../CLAUDE.md), once the merge looks coherent run the validation suite scoped to the
+Per [AGENTS.md](../../AGENTS.md), once the merge looks coherent run the validation suite scoped to the
 affected packages — a merge is exactly the kind of change where regressions hide in untouched code:
 
 ```bash
@@ -179,7 +179,7 @@ Do not commit a merge that doesn't typecheck.
    git commit --no-edit   # or: git commit  to add a body describing manual resolutions
    ```
 
-3. Report with a clear completion status (per CLAUDE.md):
+3. Report with a clear completion status (per AGENTS.md):
    - Commits pulled in from main (count + one-line summary of their intent).
    - Files with **textual** conflicts and how each was resolved.
    - **Semantic** edits made beyond conflicts (the hidden-risk items) — call these out explicitly,

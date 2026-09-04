@@ -26,7 +26,51 @@ changes quickly.
    - Use `git diff <base-branch>...HEAD` to see the full diff of changes
    - If the base branch is not `main`, fetch it first: `git fetch origin <base-branch>`
 
-2. **Analyze the changes**:
+2. **Measure the change.** Bucket the changed files and sum the diff, then get the code-vs-prose
+   split. Both go in the description.
+
+   ```sh
+   base=$(gh pr view --json baseRefName -q .baseRefName 2>/dev/null || echo main)
+   git fetch -q origin "$base"
+
+   git diff --numstat "origin/$base...HEAD" | awk '
+   function bucket(p) {
+     if (p ~ /(^|\/)test\// || p ~ /\.test\.(ts|mjs)$/)                 return "test"
+     if (p ~ /^docs\// || p ~ /\.md$/)                                  return "docs"
+     if (p ~ /^\./ || p ~ /Dockerfile/ || p ~ /docker-compose/ ||
+         p ~ /(^|\/)helm\// || p ~ /\.ya?ml$/ || p ~ /^knip\.json$/)     return "ci"
+     return "src"
+   }
+   $1 == "-" { next }
+   { b = bucket($3); add[b] += $1; del[b] += $2; files[b]++ }
+   END {
+     printf "| Area | Files | + | − | Net |\n|---|---:|---:|---:|---:|\n"
+     split("src test docs ci", o, " ")
+     for (i = 1; i <= 4; i++) { b = o[i]
+       if (files[b]) printf "| `%s` | %d | +%d | −%d | %+d |\n", b, files[b], add[b], del[b], add[b]-del[b]
+       ta += add[b]; td += del[b]; tf += files[b] }
+     printf "| **total** | **%d** | **+%d** | **−%d** | **%+d** |\n", tf, ta, td, ta-td
+   }'
+
+   git diff --name-only "origin/$base...HEAD" -z \
+     | xargs -0 -r -n 1 sh -c 'test -f "$1" && printf "%s\\0" "$1"' sh \
+     | xargs -0 -r tokei
+   ```
+
+   `-r` is load-bearing, not decoration. GNU `xargs` runs its command once even with empty input,
+   and `tokei` with no paths scans the whole repository — so a deleted-only PR would otherwise
+   report the repo's totals as the size of the diff. BSD/macOS `xargs` already behaves this way and
+   accepts `-r` as a no-op, so the flag is portable. When the pipeline produces no output the change
+   is deleted-only: say so and report the split as zero rather than dropping the line.
+
+   Buckets are checked in order, so `test` wins over `src`, and a `.md` under `.claude/` counts as
+   `docs` rather than `ci`. Renames (`-` in numstat) are skipped.
+
+   `tokei` counts Markdown prose as _comments_, not code — so a 600-line docs PR honestly reports
+   near-zero code. Quote its code line when the split is interesting; skip it when the PR is
+   ordinary source.
+
+3. **Analyze the changes**:
    - Understand the scope and purpose of the changes
    - Identify the main components/features affected
    - Note any significant refactoring, bug fixes, or new features
@@ -101,18 +145,25 @@ Present the description in a format that's easy to copy:
 ## PR Description (copy below)
 
 ```markdown
-## Summary
+[Intent, 1–3 sentences. What this is for and why it exists — not a list of files.
+Lead with the reason a reviewer should care.]
 
-[2-4 sentence summary]
+## Changes
 
-## Key Changes
+[Tight bullets. One line each. Group by area, not by commit.]
 
-[Bulleted list of changes]
+## Size
+
+[The bucket table from Step 1.2]
 
 ## Test Plan
 
-[Manual testing checklist]
+[Only if there is something a reviewer must do by hand. Omit the section entirely
+when the suite covers it — an empty checklist is noise.]
 ````
+
+**Concise, then more concise.** Intent up front, no preamble, no restating the diff in prose. If a
+bullet does not change what a reviewer looks at, cut it.
 
 ---
 
@@ -158,6 +209,17 @@ If the user confirms:
 - If no PR exists, offer to create one instead
 - **Always check the PR's base branch** - it may not be `main`
 
+### Assignee
+
+Assign the person who kicked the work off — in practice the authenticated `gh` user, since the agent
+runs on their token:
+
+```sh
+gh pr edit --add-assignee @me     # or --assignee @me at create time
+```
+
+If the PR was opened by CI or another agent, `@me` is wrong — name the human explicitly instead.
+
 ### Formatting Guidelines
 
 - Use **bold** for component/area names in the key changes section
@@ -184,7 +246,7 @@ Options:
 If the user wants a ticket created:
 
 1. **Determine the appropriate team and project** based on:
-   - Which bot/package the changes are in (refer to Team IDs table in CLAUDE.md)
+   - Which bot/package the changes are in (refer to the Linear Teams table in docs/GUIDANCE.md)
    - The nature of the work (bug fix, feature, refactor, etc.)
 
 2. **Create the parent issue** using the Linear MCP tools with:

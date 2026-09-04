@@ -305,6 +305,11 @@ Addressing N unresolved review comment(s), P conversation comment(s), M CI failu
 
 ### Step 4: Address each item
 
+> This step is **Parameterization C** of
+> [`.agents/skills/review-loop/SKILL.md`](../../.agents/skills/review-loop/SKILL.md) — follow it
+> there rather than working from a summary here. It carries the order, the entropy bar that governs
+> which findings are worth acting on, and the thread-resolution rule.
+
 > **Important**: Always resolve merge conflicts first. The `git merge` command requires a clean
 > working tree, so it must run before any uncommitted file edits from review comment, conversation
 > comment, or CI failure fixes.

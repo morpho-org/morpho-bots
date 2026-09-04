@@ -22,6 +22,12 @@ surface), pnpm-based monorepos, and Morpho protocol code paths.
 
 Review the provided PR thoroughly and interactively guide the user through each finding.
 
+> Reviewing your _own_ implementation before handing it over is a different job — see the
+> implementation parameterization of
+> [`.agents/skills/review-loop/SKILL.md`](../../.agents/skills/review-loop/SKILL.md), which runs an
+> independent Codex reviewer in the background (resuming the TIB's session where one exists) while
+> you do the readability pass. This command is the interactive review of a PR that already exists.
+
 ### Review Process
 
 1. **Fetch PR Details**: Get the PR diff and metadata using `gh pr view` and `gh pr diff`.
@@ -179,7 +185,7 @@ Review the provided PR thoroughly and interactively guide the user through each 
    **Agent Infrastructure**:
 
    When the PR modifies files in `.claude/` (commands, agents, skills, scripts, settings),
-   `CLAUDE.md`, or `docs/CONVENTIONS.md`:
+   `AGENTS.md`, or `docs/CONVENTIONS.md`:
    - **Prompt clarity**: Are instructions unambiguous? Could an LLM misinterpret a step or skip it?
      Flag vague instructions that rely on implicit knowledge.
    - **Context efficiency**: Does the change add content that is easily discoverable from the

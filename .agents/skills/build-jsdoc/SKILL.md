@@ -32,20 +32,20 @@ be understood from the public contract.
 
 `.agents/skills/build-jsdoc/SKILL.md` is canonical. `.claude/skills` is required exposure and must be
 a real symlink to `../.agents/skills`; never create a divergent file or directory copy under
-`.claude`. Preserve the existing `.claude` directory and create only its `skills` entry. `AGENTS.md`
-points to `CLAUDE.md`, so edit `CLAUDE.md` once and preserve the link.
+`.claude`. Preserve the existing `.claude` directory and create only its `skills` entry. `CLAUDE.md` and
+`.cursorrules` point to `AGENTS.md`, so edit `AGENTS.md` once and preserve the links.
 
 Verify before editing:
 
 ```sh
 test -L .claude/skills
 test "$(readlink .claude/skills)" = ../.agents/skills
-readlink AGENTS.md
+readlink CLAUDE.md .cursorrules
 stat .agents/skills .claude AGENTS.md CLAUDE.md
 ```
 
 Completion criterion: `.claude/skills` exists as mode `120000`, reads `../.agents/skills`, resolves to
-the canonical tree, and `AGENTS.md` resolves to `CLAUDE.md`.
+the canonical tree, and `CLAUDE.md` and `.cursorrules` resolve to `AGENTS.md`.
 
 ## Install and Build
 
@@ -148,4 +148,4 @@ URL, default runtime environment, raw provider response, or generated source-map
 - [ ] Generated output is ignored and absent from `git status`.
 - [ ] Public docs explain failure, side-effect, timeout/deadline, and concurrency behavior where relevant.
 - [ ] Independent checks still run concurrently through `Promise.all` where possible.
-- [ ] `.claude/skills` is a real `../.agents/skills` symlink and `AGENTS.md` resolves to `CLAUDE.md`.
+- [ ] `.claude/skills` is a real `../.agents/skills` symlink and `CLAUDE.md` and `.cursorrules` resolve to `AGENTS.md`.
