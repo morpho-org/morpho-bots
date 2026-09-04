@@ -259,9 +259,11 @@ When in doubt, write a TIB. A Proposed TIB reviewed via PR is almost always suff
 
 ## Review Sessions
 
-Each TIB may have a sibling `docs/decisions/<tib-stem>.sessions` file recording the review session
-ids for that decision — one per line, with a date and what the session covered. These are
-git-ignored: they point into a local `~/.codex/sessions/` store, not into shared history.
+Each TIB may have a `.sessions` file beside it — same directory as the TIB, same stem, whether that
+is the repo-wide `docs/decisions/` or a bot- or package-scoped one — recording the review session
+ids for that decision, one per line with a date and what the session covered. These are git-ignored
+by `**/docs/decisions/*.sessions`: they point into a local `~/.codex/sessions/` store, not into
+shared history.
 
 The point is continuity. The reviewer that argued about a spec is the best reviewer for the
 implementation that follows, because it will notice a drift from intent that a cold reviewer cannot.

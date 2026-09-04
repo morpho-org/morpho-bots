@@ -48,10 +48,11 @@ so and exit — do not force a TIB where none is needed.
 
 TIBs are a conversation, not a one-shot generation. Follow this flow:
 
-> **Before the draft is presented as done**, run the TIB parameterization of
-> [`.agents/skills/review-loop/SKILL.md`](../../.agents/skills/review-loop/SKILL.md): the satisficing
-> self-check, then a clean-room agent and a Codex reviewer in parallel, then dedupe → synthesize →
-> discuss → decide. Record the reviewer's session id in a `.sessions` file sitting beside the TIB
+> **Before the draft is presented as done**, run **Parameterization A** of
+> [`.agents/skills/review-loop/SKILL.md`](../../.agents/skills/review-loop/SKILL.md), which states
+> its own order and the two agents it dispatches.
+>
+> Record the reviewer's session id in a `.sessions` file sitting beside the TIB
 > — same directory, same stem, whether that is `docs/decisions/` or a bot- or package-scoped
 > `docs/decisions/` — so the implementation review can resume the same reviewer.
 
