@@ -17,11 +17,16 @@ export const MARKET_FAILURE_BUDGET_CYCLES = 5
 export const createMarketFailureBudget = (limit: number) => {
   const consecutiveFailures = new Map<Hex, number>()
 
-  return (results: readonly { marketId: Hex; status: string }[]) => {
+  return (
+    results: readonly { marketId: Hex; status: string }[],
+    unresolvedMarkets = new Set<Hex>()
+  ) => {
     let exhausted = false
     for (const result of results) {
       const failures =
-        result.status === 'failed' ? (consecutiveFailures.get(result.marketId) ?? 0) + 1 : 0
+        result.status === 'failed' || unresolvedMarkets.has(result.marketId)
+          ? (consecutiveFailures.get(result.marketId) ?? 0) + 1
+          : 0
       consecutiveFailures.set(result.marketId, failures)
       if (failures >= limit) exhausted = true
     }

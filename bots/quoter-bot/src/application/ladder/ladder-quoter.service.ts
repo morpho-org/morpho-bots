@@ -269,6 +269,7 @@ export class LadderQuoterService {
     }
 
     const failureBudget = createMarketFailureBudget(MARKET_FAILURE_BUDGET_CYCLES)
+    const unresolvedPublicationMarkets = new Set<Hex>()
     let cycles = 0
     let reason: LadderMonitorReport['reason'] = 'signal'
     let lastCycle: readonly LadderRunResult[] | undefined
@@ -291,7 +292,14 @@ export class LadderQuoterService {
         if (results === undefined) break
         cycles += 1
 
-        const budgetExhausted = failureBudget(results)
+        for (const result of results) {
+          if (result.status === 'failed' && result.stage === 'reconcile') {
+            unresolvedPublicationMarkets.add(result.marketId)
+          } else if (result.status === 'applied' || result.status === 'logged') {
+            unresolvedPublicationMarkets.delete(result.marketId)
+          }
+        }
+        const budgetExhausted = failureBudget(results, unresolvedPublicationMarkets)
         lastCycle = cycleHasFailure(results) ? results : undefined
         if (cycleRequiresHalt(results) || budgetExhausted) {
           reason = 'cycle-failed'

@@ -273,6 +273,31 @@ describe('LadderQuoterService', () => {
     })
   })
 
+  test('keeps a rejected publication charged while its reservation is observed as active', async () => {
+    const subject = harness()
+    let failures = 0
+    const reconcile = vi.fn(async parameters => {
+      if (failures === 0) {
+        failures += 1
+        if (parameters.desired) subject.liveDesired.set(parameters.marketId, parameters.desired)
+        throw new RangeError('publication confirmation unavailable')
+      }
+    })
+    subject.make.reconcile = reconcile
+
+    const report = await subject.service.runContinuously({
+      signal: new AbortController().signal,
+      intervalMs: 1
+    })
+
+    expect(report).toMatchObject({
+      status: 'halted',
+      reason: 'cycle-failed',
+      cycles: MARKET_FAILURE_BUDGET_CYCLES
+    })
+    expect(reconcile).toHaveBeenCalledTimes(MARKET_FAILURE_BUDGET_CYCLES)
+  })
+
   test('stops monitoring on a halted cycle and still cleans owned groups', async () => {
     const subject = harness()
     subject.failMarket(marketId)

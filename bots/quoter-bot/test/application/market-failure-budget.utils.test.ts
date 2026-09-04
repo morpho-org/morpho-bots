@@ -24,6 +24,14 @@ describe('createMarketFailureBudget', () => {
     expect(budget([{ marketId: first, status: 'failed' }])).toBe(false)
   })
 
+  test('retains a count while a failed publication remains unresolved', () => {
+    const budget = createMarketFailureBudget(2)
+    const unresolvedMarkets = new Set([first])
+
+    expect(budget([{ marketId: first, status: 'failed' }], unresolvedMarkets)).toBe(false)
+    expect(budget([{ marketId: first, status: 'observed' }], unresolvedMarkets)).toBe(true)
+  })
+
   test('counts each market separately', () => {
     const budget = createMarketFailureBudget(2)
 
