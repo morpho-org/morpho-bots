@@ -53,7 +53,8 @@ dispatch both agents in parallel.
 whole thing you are trying to avoid). Omit the model override so it inherits the orchestrating
 model. Hand it a succinct statement of _the problem_ and nothing else — no draft, no proposed
 solution, no ticket. If work already in the tree would reveal your hand, give it a worktree from the
-merge-base under `.claude/worktrees/`, and never name the TIB path.
+merge-base under `~/Developer/curator-bots-wt/` — never nested inside the repo, which breaks knip
+for whoever works there — and never name the TIB path.
 
 Tell it explicitly that it may up-level the question rather than answer it as posed: "decline to
 implement", "this dissolves if we reframe it as X", "fold this into some other issue later" are all

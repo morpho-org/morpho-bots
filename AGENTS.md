@@ -71,8 +71,10 @@ is not a status.
 
 ## Traps
 
-- **Worktrees** go in `.claude/worktrees/` (gitignored and knip-ignored) or outside the repo.
-  Anywhere else inside it, knip walks the copy and false-fails the pre-commit hook.
+- **Worktrees go outside the repo** — `~/Developer/curator-bots-wt/`. Run from inside one nested
+  under `.claude/worktrees/`, `pnpm knip` false-fails on ~29 files and buries real findings;
+  `knip.json`'s `.claude/**` ignore only protects runs started from the repo root. `git worktree
+move` an inherited one out rather than reaching for `--no-verify`.
 - **Stacked PRs here are real GitHub stacks** — restack with `gh stack`. Merging `main` into a child
   wedges CI and GitHub keeps reporting the PR dirty.
 - **Log field names are a public interface.** BetterStack dashboards parse fields like `label` as
