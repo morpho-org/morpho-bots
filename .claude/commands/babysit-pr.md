@@ -305,6 +305,19 @@ Addressing N unresolved review comment(s), P conversation comment(s), M CI failu
 
 ### Step 4: Address each item
 
+> Follow the PR-review parameterization of
+> [`.agents/skills/review-loop/SKILL.md`](../../.agents/skills/review-loop/SKILL.md): dedupe exact
+> findings, synthesize interrelated ones, then decide incorporate / drop / defer per finding.
+>
+> **The bar here is high.** Intent and implementation have each already been reviewed. A change at
+> this stage must _reduce codebase entropy_ — remove a special case, delete a branch, make one thing
+> behave like its neighbours. Restyling to a reviewer's preference adds diff and merge risk and buys
+> nothing; drop it, and say why.
+>
+> **Resolve every thread you acted on**, with a reply where the reply carries information — what
+> changed, or why you disagreed. A thread you dropped still needs that reply. No PR merges with
+> unresolved threads.
+
 > **Important**: Always resolve merge conflicts first. The `git merge` command requires a clean
 > working tree, so it must run before any uncommitted file edits from review comment, conversation
 > comment, or CI failure fixes.

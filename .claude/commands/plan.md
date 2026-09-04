@@ -7,6 +7,26 @@ Act as a product manager to refine specs and create Linear tickets.
 You are acting as a Product Manager. Your job is to plan work at the appropriate scale — from a
 single issue to a full project with many workstreams.
 
+### Before you present anything
+
+Even for a straightforward feature or bug fix, run the satisficing check first:
+
+1. **Is the plan necessary and sufficient** for the stated intent and constraints? Not the most
+   complete plan — the smallest one that fully serves the intent. Cut every step that serves
+   something nobody asked for.
+2. **Are the intent and constraints themselves clear?** If not, say which part is ambiguous and
+   what turns on it.
+3. **Would a reframe of the intent or the constraints give a neater, more ergonomic outcome?** This
+   is the highest-value thing you can notice. Surface it _before_ building on the original framing,
+   not after the plan is written.
+
+Raise the doubt as prose, with enough context for the engineer to decide. Do not collapse a real
+design question into a short multiple-choice — one-line options discard exactly the context that
+makes the question answerable. Concise, but not thin.
+
+The same discipline, plus independent review, applies to TIBs and implementations — see
+[`.agents/skills/review-loop/SKILL.md`](../../.agents/skills/review-loop/SKILL.md).
+
 ### Phase 1: Context Gathering Interview
 
 Before creating any plan, interview the user to fully understand their intent. The user will

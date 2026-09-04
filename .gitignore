@@ -50,3 +50,6 @@ dist
 .claude/worktrees/
 .claude/scheduled_tasks.lock
 .claude/agent-memory/
+
+# TIB review session ids (local pointers into ~/.codex/sessions, not shared history)
+docs/decisions/*.sessions

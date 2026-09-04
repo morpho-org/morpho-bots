@@ -257,6 +257,20 @@ When in doubt, write a TIB. A Proposed TIB reviewed via PR is almost always suff
 
 ---
 
+## Review Sessions
+
+Each TIB may have a sibling `docs/decisions/<tib-stem>.sessions` file recording the review session
+ids for that decision — one per line, with a date and what the session covered. These are
+git-ignored: they point into a local `~/.codex/sessions/` store, not into shared history.
+
+The point is continuity. The reviewer that argued about a spec is the best reviewer for the
+implementation that follows, because it will notice a drift from intent that a cold reviewer cannot.
+Best-effort by design — sessions expire and do not exist on another machine. When resume fails,
+re-prime a fresh reviewer with the TIB. See
+[`.agents/skills/review-loop/SKILL.md`](../.agents/skills/review-loop/SKILL.md).
+
+---
+
 ## Linear Teams
 
 Team IDs for filing tickets via the Linear MCP:

@@ -9,6 +9,7 @@ Quick navigation for the morpho-bots documentation.
 - [Agent Instructions](../AGENTS.md) — how to work in this repo (`CLAUDE.md` and `.cursorrules` symlink to it)
 - [Mission](./MISSION.md) — the North Star the repo is built toward
 - [Coding Conventions](./CONVENTIONS.md) — code style, patterns, best practices
+- [Review Loop](../.agents/skills/review-loop/SKILL.md) — the satisficing self-check, and how TIBs, implementations, and PR-review responses get independently reviewed
 - [Documentation Guidance](./GUIDANCE.md) — when to write a TIB, TIB lifecycle, TIB vs Linear
 - [Docs Layout](./README.md) — how `docs/` is organized and how to add a TIB
 - [Official Docs Drafts](./official/README.md) — candidate pages for Morpho public documentation

@@ -22,6 +22,12 @@ surface), pnpm-based monorepos, and Morpho protocol code paths.
 
 Review the provided PR thoroughly and interactively guide the user through each finding.
 
+> Reviewing your _own_ implementation before handing it over is a different job — see the
+> implementation parameterization of
+> [`.agents/skills/review-loop/SKILL.md`](../../.agents/skills/review-loop/SKILL.md), which runs an
+> independent Codex reviewer in the background (resuming the TIB's session where one exists) while
+> you do the readability pass. This command is the interactive review of a PR that already exists.
+
 ### Review Process
 
 1. **Fetch PR Details**: Get the PR diff and metadata using `gh pr view` and `gh pr diff`.

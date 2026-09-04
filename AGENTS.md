@@ -41,6 +41,10 @@ first rung that holds:
 4. Can it be one line?
 5. Only then, write the minimum that works.
 
+- Before presenting a plan, a TIB, or a proposal: is it necessary and sufficient for the stated
+  intent and constraints? Then question the intent and constraints themselves — if a reframe would
+  give a neater outcome, say so before building on the original framing. Put real design questions
+  in prose with enough context to decide on; a four-option multiple choice throws that context away.
 - Fix the root cause, not the reported path. The ticket names one symptom; grep the other callers of
   whatever you change, because one guard in the shared function is a smaller diff than one per
   caller.
@@ -57,6 +61,9 @@ is not a status.
 - `pnpm --filter <pkg> run typecheck`, then root `pnpm lint`, `pnpm format`, `pnpm knip`,
   `pnpm test`. Run them when the work is ready, not after every edit.
 - Non-trivial new behavior leaves one runnable check behind, under `test/` mirroring `src/`.
+- Get an independent review before calling it done — see
+  [`.agents/skills/review-loop/SKILL.md`](./.agents/skills/review-loop/SKILL.md) for TIBs,
+  implementations, and PR-review responses.
 - Stop when you are out of hypotheses, not after some number of tries, and say what you tried and
   what is blocking.
 - Close with **DONE**, **DONE_WITH_CONCERNS**, **BLOCKED**, or **NEEDS_CONTEXT**, then what changed,
