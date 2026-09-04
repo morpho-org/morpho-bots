@@ -259,14 +259,25 @@ When in doubt, write a TIB. A Proposed TIB reviewed via PR is almost always suff
 
 ## Linear Teams
 
-Team IDs for filing tickets and creating projects via the Linear MCP:
+Team IDs for filing tickets via the Linear MCP:
 
-| Team        | ID                                   | Key    | Scope                                      |
-| ----------- | ------------------------------------ | ------ | ------------------------------------------ |
-| **Curator** | c07ff95f-03b7-4bee-aa17-c7e04fda8845 | `CRTR` | Default team for all `morpho-bots` work    |
-| **Apps**    | cc8fe27e-f516-45e8-921e-69b0562c7792 | `APPS` | Cross-repo tasks shared with `morpho-apps` |
+| Team     | ID                                   | Key    | Use for                                       |
+| -------- | ------------------------------------ | ------ | --------------------------------------------- |
+| **Bots** | 06143345-2d87-4485-9ff9-f0759f7b9a48 | `BOTS` | Everything in this repo. No exceptions below. |
+| **Apps** | cc8fe27e-f516-45e8-921e-69b0562c7792 | `APPS` | `@morpho-org/viem-dlc` issues only            |
 
-Default to Curator. Use Apps only when the work genuinely spans both repos.
+Everything related to this repo goes to **Bots**. The Curator team (`CRTR`) owned this work before
+the Bots team existed; it is no longer the destination for anything here.
 
-Ticket titles follow the same `type(scope): description` convention as commits and PRs — see the
-"Commit and PR titles" row in [`AGENTS.md`](../AGENTS.md).
+**Filing rules**
+
+- Ticket titles follow the same `type(scope): description` convention as commits and PRs — see the
+  "Commit and PR titles" row in [`AGENTS.md`](../AGENTS.md).
+- Apply the label(s) for the bot(s) or package(s) the work touches, so the ticket is findable by
+  surface. Labels are the routing mechanism here, not projects.
+- **Do not assign a project.** The Linear agent does that.
+- `@morpho-org/viem-dlc` issues go to the Apps team's
+  [Viem-dlc Backlog](https://linear.app/morpho-labs/project/viem-dlc-backlog-b1ad80c9ad02)
+  (`6d884c18-7fcb-49c9-8809-0863e2d8607d`) — the one case where a project _is_ set explicitly.
+- Other Morpho-owned dependencies have mixed Linear conventions. Do not file those automatically;
+  surface them to the user instead.
