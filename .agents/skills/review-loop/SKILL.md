@@ -17,14 +17,14 @@ the Engine in a caller, point at it.
 
 ## The Engine
 
-**1. Self-check before anything else.** Is what you are about to present _necessary and sufficient_
+**1. Self-check before anything else.** Is what you are about to do _necessary and sufficient_
 for the stated intent and constraints — no more, no less? Then look at the intent and constraints
 themselves. If either is unclear, say so. If a reframe of either would produce a neater, more
 ergonomic outcome, say that too, before building on the original framing.
 
 Surface that doubt as prose the engineer can act on. Do not compress a real design question into a
 short multiple-choice question: options with one-line labels throw away the context that makes the
-choice decidable. Be concise, but concise is not the same as thin.
+choice decidable. Concise but not thin.
 
 **2. Dispatch reviewers in the background.** Which ones depends on the parameterization.
 
@@ -47,7 +47,7 @@ will not know which findings still apply.
 
 The bar is higher than for a plan: a TIB is a persistent record of intent written _before_
 implementation, so a framing error here is expensive later. Run the Engine's self-check, then
-dispatch both agents in parallel.
+dispatch these agents in parallel:
 
 **Clean-room agent** — a fresh subagent (never `fork`; a fork inherits your context, which is the
 whole thing you are trying to avoid). Omit the model override so it inherits the orchestrating
@@ -89,25 +89,31 @@ No discussion beat. Go from synthesis straight to incorporate / drop / defer.
 
 ## Parameterization C — Responding to PR review
 
-**The independent pass has already happened — do not dispatch another by default.** It ran once
-after the implementation in B, and the findings you are now answering are themselves an independent
-review. Another round on a routine comment-fix buys nothing and costs a turnaround.
+B and C are the same loop with the ordering inverted. **B implements, then asks for review and reads
+it. C reads the review, implements, and only sometimes asks for another.**
 
-Dispatch one at your discretion when the response stops being a fix and starts being an
-implementation: a redesign, a change on a funds-at-risk path, or enough new code that nobody has
-reviewed what you actually wrote. Say which reviewer ran, or that none did and why.
+By the time you are here, at least one round of implementation and review has already completed, and
+the findings in front of you _are_ that independent pass. So C does not start at the top — it starts
+at the Engine's **step 4**:
 
-Otherwise this is B's own-pass-and-synthesis half, with two additions.
+1. **Dedupe, synthesize, decide.** Engine step 4, applied to the findings you already have. Look for
+   the reframe that dissolves several findings at once before you write several patches.
+2. **Implement** whatever you decided to incorporate.
+3. **Dispatch a reviewer only if something substantial changed.** The clearest signal is that the
+   TIB or the plan itself took edits — if the intent moved, then nobody has reviewed the thing you
+   now have. A round of ordinary comment-fixes does not qualify. Say which reviewer ran, or that
+   none did and why.
+
+**Entropy governs all of C.** By this point the intent and the implementation have each been through
+review, so a change at this stage has to _reduce codebase entropy_ — remove a special case, delete a
+branch, make one thing behave like its neighbours. Restyling to a reviewer's preference adds a diff
+and a merge risk and buys nothing. That bar applies to every decision in step 1, to whether step 2
+is worth doing at all, and to how much new surface step 3 is being asked to cover. Drop what does
+not clear it, say you dropped it, and say why.
 
 **Resolve threads.** Acting on a thread includes resolving it, with a reply when the reply carries
 information — what changed, or why you disagreed. A thread you dropped still needs the reply saying
 so. **No PR merges with unresolved threads.**
-
-**The bar is high, and it is entropy.** By this point the intent and the implementation have each
-been through multiple review rounds. A change at this stage has to _reduce codebase entropy_ —
-remove a special case, delete a branch, make one thing behave like its neighbors. Restyling to a
-reviewer's preference adds a diff and a merge risk and buys nothing. Drop those, say you dropped
-them, and say why.
 
 ## Under Devin
 
