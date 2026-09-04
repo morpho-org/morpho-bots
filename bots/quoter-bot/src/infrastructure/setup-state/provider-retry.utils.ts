@@ -1,7 +1,5 @@
 import { delay } from '@repo/utils'
 
-import { SafeProviderError } from '../../application/setup/safe-provider.error'
-
 const MAX_ATTEMPTS = 3
 const BASE_DELAY_MS = 500
 const MAX_DELAY_MS = 4_000
@@ -10,10 +8,13 @@ const RETRYABLE_STATUSES = new Set([408, 429])
 const SERVER_ERROR_MINIMUM_STATUS = 500
 
 const isTransientFailure = (error: unknown) => {
-  if (!(error instanceof SafeProviderError)) return false
-  const { name, status } = error.failure
+  if (typeof error !== 'object' || error === null || !('failure' in error)) return false
+  const { failure } = error
+  if (typeof failure !== 'object' || failure === null) return false
+  const { name, status } = failure as { name?: unknown; status?: unknown }
+  if (typeof name !== 'string') return false
   if (name === 'TimeoutError' || name === 'NetworkError') return true
-  if (status === undefined) return false
+  if (typeof status !== 'number') return false
   return RETRYABLE_STATUSES.has(status) || status >= SERVER_ERROR_MINIMUM_STATUS
 }
 
@@ -25,23 +26,37 @@ const backoffDelayMs = (failures: number) => {
 
 /**
  * Re-runs an idempotent read-only provider request while its failures look transient.
- * @param attempt - Deferred read-only request; it is invoked at most three times and must be safe
- * to repeat, since no attempt is cancelled or compensated.
+ * @param attempt - Deferred read-only request receiving the remaining aggregate timeout when one is
+ * configured; it is invoked at most three times and must be safe to repeat, since no attempt is
+ * cancelled or compensated.
+ * @param timeoutMs - Optional aggregate deadline shared by attempts and backoff waits.
  * @returns The first successful attempt's value.
  * @throws The final attempt's error unchanged — a sanitized `SafeProviderError` for provider
  * failures — so callers keep today's halt behavior and operator-visible metadata. Non-transient
  * failures (any error that is not a timeout, network fault, or HTTP 408/429/5xx `SafeProviderError`)
  * are rethrown immediately without a retry.
- * @remarks Waits a half-jittered exponential backoff between attempts (500 ms base, 4 s cap), so
- * the worst-case added latency stays around 1.5 s and well inside the monitor cycle interval.
+ * @remarks Waits a half-jittered exponential backoff between attempts (500 ms base, 4 s cap). An
+ * aggregate deadline shortens the final wait and prevents a further attempt after it expires.
  */
-export const retryTransientProviderRead = async <Result>(attempt: () => Promise<Result>) => {
+export const retryTransientProviderRead = async <Result>(
+  attempt: (remainingMs?: number) => Promise<Result>,
+  timeoutMs?: number
+) => {
+  const deadline = timeoutMs === undefined ? undefined : performance.now() + timeoutMs
+  let lastError: unknown
   for (let failures = 1; ; failures += 1) {
+    const remainingMs =
+      deadline === undefined ? undefined : Math.floor(deadline - performance.now())
+    if (remainingMs !== undefined && remainingMs <= 0) throw lastError
     try {
-      return await attempt()
+      return await attempt(remainingMs)
     } catch (error) {
+      lastError = error
       if (failures >= MAX_ATTEMPTS || !isTransientFailure(error)) throw error
-      await delay(backoffDelayMs(failures))
+      const backoffMs = backoffDelayMs(failures)
+      const delayMs = remainingMs === undefined ? backoffMs : Math.min(backoffMs, remainingMs)
+      if (delayMs <= 0) throw error
+      await delay(delayMs)
     }
   }
 }

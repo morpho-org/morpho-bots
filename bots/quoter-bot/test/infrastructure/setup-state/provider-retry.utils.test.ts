@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 import type { SafeProviderFailure } from '../../../src/application/setup/safe-provider.error'
 
 import { SafeProviderError } from '../../../src/application/setup/safe-provider.error'
+import { ProviderReadError } from '../../../src/infrastructure/setup-state/provider-read.error'
 import { retryTransientProviderRead } from '../../../src/infrastructure/setup-state/provider-retry.utils'
 
 const providerError = (failure: Omit<SafeProviderFailure, 'kind' | 'provider'>) =>
@@ -37,6 +38,20 @@ describe('retryTransientProviderRead', () => {
     ],
     ['a network fault', providerError({ name: 'NetworkError', context: 'request' })]
   ])('retries after %s and returns the eventual success', async (_label, error) => {
+    const attempt = vi.fn<() => Promise<string>>()
+    attempt.mockRejectedValueOnce(error).mockResolvedValueOnce('recovered')
+
+    await expect(settle(retryTransientProviderRead(attempt))).resolves.toEqual({
+      value: 'recovered'
+    })
+    expect(attempt).toHaveBeenCalledTimes(2)
+  })
+
+  test('retries a sanitized RPC timeout and returns the eventual success', async () => {
+    const error = new ProviderReadError('rpc', 'chain-id', {
+      name: 'TimeoutError',
+      code: 'ETIMEDOUT'
+    })
     const attempt = vi.fn<() => Promise<string>>()
     attempt.mockRejectedValueOnce(error).mockResolvedValueOnce('recovered')
 
@@ -99,6 +114,17 @@ describe('retryTransientProviderRead', () => {
     await vi.advanceTimersByTimeAsync(1)
     expect(attempt).toHaveBeenCalledTimes(3)
     await expect(pending).resolves.toBe('failed')
+  })
+
+  test('limits attempts and backoff to one aggregate timeout', async () => {
+    vi.spyOn(Math, 'random').mockReturnValue(0)
+    const error = providerError({ name: 'NetworkError', context: 'request' })
+    const attempt = vi.fn<() => Promise<string>>().mockRejectedValue(error)
+
+    await expect(settle(retryTransientProviderRead(attempt, 300))).resolves.toEqual({ error })
+
+    expect(attempt).toHaveBeenCalledTimes(2)
+    expect(attempt.mock.calls).toEqual([[300], [50]])
   })
 
   test('keeps each jittered backoff between half and the full exponential delay', async () => {

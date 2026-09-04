@@ -48,4 +48,7 @@ const attemptJson = async (url: string, provider: ProviderId, timeoutMs: number)
  * failures are retried by {@link retryTransientProviderRead} before the error reaches the caller.
  */
 export const requestJson = async (url: string, provider: ProviderId, timeoutMs = 10_000) =>
-  retryTransientProviderRead(() => attemptJson(url, provider, timeoutMs))
+  retryTransientProviderRead(
+    remainingMs => attemptJson(url, provider, remainingMs ?? timeoutMs),
+    timeoutMs
+  )
