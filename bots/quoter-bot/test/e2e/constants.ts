@@ -39,5 +39,4 @@ export const MARKET = {
 } as const
 
 export const MAKER_USDC_BALANCE = parseUnits('1000000', 6)
-export const MAXIMUM_LEND_EXPOSURE = parseUnits('100000', 6)
 export const NATIVE_RESERVE = parseEther('1')

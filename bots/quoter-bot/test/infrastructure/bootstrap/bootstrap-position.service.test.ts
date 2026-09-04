@@ -317,4 +317,27 @@ describe('MidnightBootstrapPositionService', () => {
     expect(position.maturityTimestamp).toBe(1_000n)
     expect(position.observedTimestamp).toBe(1_200n)
   })
+
+  test('counts an unattributed live buy group toward reserved cash and exposure', async () => {
+    const orphanGroup: Hex = `0x${'66'.repeat(32)}`
+    const service = new MidnightBootstrapPositionService(
+      {
+        readPositions: async () => [{ marketId, credit: 0n, debt: 0n }],
+        readCashBalance: async () => 100n,
+        readMarketContinuousFeeCap: async () => 17n,
+        readMarketMaturity: async () => ({ maturityTimestamp: 2_000n, observedTimestamp: 1_000n }),
+        readGroupInventory: async () => ({
+          activeGroups: [],
+          cashReservations: [{ id: orphanGroup, marketId, assets: 30n, rateBps: 500n }]
+        })
+      },
+      maker
+    )
+
+    const position = await service.readPosition(marketId)
+
+    expect(position.cashBalance).toBe(70n)
+    expect(position.marketExposure).toBe(30n)
+    expect(position.totalExposure).toBe(30n)
+  })
 })

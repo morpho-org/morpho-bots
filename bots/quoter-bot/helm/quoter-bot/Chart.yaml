@@ -7,7 +7,7 @@ description: >-
   Morpho Midnight maker bot: validates Base and Midnight setup, bootstraps target lending
   positions, and maintains two-sided rate ladders from one long-running container.
 type: application
-version: 0.1.0
+version: 0.2.0
 # Default image tag. The Docker Hub repository morphoorg/quoter publishes `latest` plus one
 # immutable tag per release commit hash; pin a commit tag through `image.tag` for reproducible
 # deployments.

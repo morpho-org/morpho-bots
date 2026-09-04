@@ -266,27 +266,21 @@ export const bootstrapGroupRateBps = (parameters: {
     : 0n
 
 /**
- * Totals the unfilled cash reserve of every distinct explicitly owned buy group.
+ * Totals the unfilled cash reserve of every distinct live buy group.
  * @param groups - Canonical maker groups, which may contain one projection per offer market.
- * @param ownedGroupIds - Durable explicit ownership candidates for this strategy.
  * @param excludedGroupIds - Groups being replaced and therefore not reserved alongside the new offer.
- * @returns Aggregate remaining loan assets reserved by distinct owned buy groups.
+ * @returns Aggregate remaining loan assets reserved by distinct live buy groups.
+ * @remarks Attribution deliberately does not filter this total; see `ladderCashReservations` in
+ * `../ladder/ladder-cash-reservation.utils.ts` for why exposure counts every live maker buy group.
  */
 export const bootstrapReservedLoanAssets = (
   groups: readonly BootstrapRawGroup[],
-  ownedGroupIds: readonly Hex[],
   excludedGroupIds: ReadonlySet<Hex> = new Set()
 ) => {
-  const ownedGroups = new Set(ownedGroupIds)
   return [
     ...new Map(
       groups
-        .filter(
-          group =>
-            ownedGroups.has(group.id) &&
-            !excludedGroupIds.has(group.id) &&
-            group.offers.some(offer => offer.buy)
-        )
+        .filter(group => !excludedGroupIds.has(group.id) && group.offers.some(offer => offer.buy))
         .map(group => [group.id, group])
     ).values()
   ]
