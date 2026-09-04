@@ -43,7 +43,23 @@ export const createOperationQueue = (): MonitorOperationQueue => {
 /**
  * Detects whether a completed monitor cycle entered a handled failure or safety halt.
  * @param results - Ordered sanitized outcomes from one complete cycle.
- * @returns Whether monitoring must stop before another cycle begins.
+ * @returns Whether any entry of the cycle failed.
+ * @remarks Reports what happened, not what to do about it. A continuous monitor decides with
+ * {@link cycleRequiresHalt}; a one-shot command uses this to choose its exit code.
  */
 export const cycleHasFailure = (results: readonly { status: string }[]) =>
   results.some(result => result.status === 'failed' || result.status === 'halted')
+
+/**
+ * Detects whether a completed monitor cycle left onchain state too unproven to continue.
+ * @param results - Ordered sanitized outcomes from one complete cycle.
+ * @returns Whether monitoring must stop instead of retrying on the next interval.
+ * @remarks A `failed` entry is handled: the cycle classified it, recorded it, and left the market
+ * in a state the next cycle re-derives from live truth, so it can be retried while its peers keep
+ * quoting. It does **not** promise the market is flat — a publication rejected before its
+ * replacement set is invalidated leaves the previous offers live — so a caller that retries must
+ * bound how long it does so. `halted` means an invalidation or cleanup write itself failed, leaving
+ * live offers the bot can no longer account for, and is never retryable.
+ */
+export const cycleRequiresHalt = (results: readonly { status: string }[]) =>
+  results.some(result => result.status === 'halted')

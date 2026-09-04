@@ -10,6 +10,7 @@ import type {
 import type { BootstrapConfig } from '../../../src/domain/bootstrap/position-bootstrap'
 
 import { PositionBootstrapService } from '../../../src/application/bootstrap/position-bootstrap.service'
+import { MARKET_FAILURE_BUDGET_CYCLES } from '../../../src/application/market-failure-budget.utils'
 import { BootstrapConfigurationError } from '../../../src/domain/bootstrap/bootstrap-configuration.error'
 import { BootstrapAdapterError } from '../../../src/infrastructure/bootstrap/bootstrap-adapter.error'
 import { BootstrapMempoolValidationError } from '../../../src/infrastructure/bootstrap/bootstrap-mempool-validation.error'
@@ -147,11 +148,65 @@ describe('PositionBootstrapService', () => {
     expect(cleanup).toHaveBeenCalledTimes(1)
   })
 
-  test('stops monitoring on a handled failed cycle and still cleans owned groups', async () => {
+  test('retries a handled failed cycle instead of cancelling the book', async () => {
     const controller = new AbortController()
+    const { service, make } = setup()
+    const reconcile = vi.fn(async () => {
+      throw new Error('publication unavailable')
+    })
+    make.reconcile = reconcile
+    const cleanup = vi.fn(async () => 'logged' as const)
+    make.cleanup = cleanup
+    let observed = 0
+
+    const report = await service.runContinuously({
+      signal: controller.signal,
+      intervalMs: 1,
+      onCycle: () => {
+        observed += 1
+        if (observed === 2) controller.abort()
+      }
+    })
+
+    expect(report).toMatchObject({
+      status: 'stopped',
+      reason: 'signal',
+      cycles: 2,
+      cleanup: { status: 'logged' },
+      lastCycle: [{ status: 'failed', stage: 'make', errorName: 'UnknownError' }]
+    })
+    expect(reconcile).toHaveBeenCalledTimes(2)
+    expect(cleanup).toHaveBeenCalledTimes(1)
+  })
+
+  test('halts once one market exhausts its consecutive failure budget', async () => {
     const { service, make } = setup()
     make.reconcile = vi.fn(async () => {
       throw new Error('publication unavailable')
+    })
+    make.cleanup = vi.fn(async () => 'logged' as const)
+
+    const report = await service.runContinuously({
+      signal: new AbortController().signal,
+      intervalMs: 1
+    })
+
+    expect(report).toMatchObject({
+      status: 'halted',
+      reason: 'cycle-failed',
+      cycles: MARKET_FAILURE_BUDGET_CYCLES,
+      lastCycle: [{ status: 'failed', stage: 'make' }]
+    })
+  })
+
+  test('stops monitoring on a halted cycle and still cleans owned groups', async () => {
+    const controller = new AbortController()
+    const { service, positions, make } = setup()
+    positions.readPosition = vi.fn(async () => {
+      throw new TypeError('position unavailable')
+    })
+    make.reconcile = vi.fn(async () => {
+      throw new RangeError('invalidation reverted')
     })
     const cleanup = vi.fn(async () => 'logged' as const)
     make.cleanup = cleanup
@@ -166,7 +221,7 @@ describe('PositionBootstrapService', () => {
       reason: 'cycle-failed',
       cycles: 1,
       cleanup: { status: 'logged' },
-      lastCycle: [{ status: 'failed', stage: 'make', errorName: 'UnknownError' }]
+      lastCycle: [{ status: 'halted', stage: 'position-read' }]
     })
     expect(cleanup).toHaveBeenCalledTimes(1)
   })

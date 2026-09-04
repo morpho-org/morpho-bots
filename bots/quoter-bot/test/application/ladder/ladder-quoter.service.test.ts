@@ -13,6 +13,7 @@ import type {
 } from '../../../src/domain/ladder/ladder'
 
 import { LadderQuoterService } from '../../../src/application/ladder/ladder-quoter.service'
+import { MARKET_FAILURE_BUDGET_CYCLES } from '../../../src/application/market-failure-budget.utils'
 import { ladderMonitoringEvents } from '../../../src/application/monitoring/ladder-monitoring.utils'
 import { LadderAdapterError } from '../../../src/infrastructure/ladder/ladder-adapter.error'
 
@@ -230,8 +231,76 @@ describe('LadderQuoterService', () => {
     expect(subject.cleanup).toHaveBeenCalledTimes(1)
   })
 
-  test('stops monitoring on a handled failed cycle and still cleans owned groups', async () => {
+  test('retries a handled failed cycle instead of cancelling the book', async () => {
+    const controller = new AbortController()
     const subject = harness()
+    subject.failReconcile(marketId)
+    let observed = 0
+
+    const report = await subject.service.runContinuously({
+      signal: controller.signal,
+      intervalMs: 1,
+      onCycle: () => {
+        observed += 1
+        if (observed === 2) controller.abort()
+      }
+    })
+
+    expect(report).toMatchObject({
+      status: 'stopped',
+      reason: 'signal',
+      cycles: 2,
+      cleanup: { status: 'applied' },
+      lastCycle: [{ status: 'failed', stage: 'reconcile' }]
+    })
+    expect(subject.cleanup).toHaveBeenCalledTimes(1)
+  })
+
+  test('halts once one market exhausts its consecutive failure budget', async () => {
+    const subject = harness()
+    subject.failReconcile(marketId)
+
+    const report = await subject.service.runContinuously({
+      signal: new AbortController().signal,
+      intervalMs: 1
+    })
+
+    expect(report).toMatchObject({
+      status: 'halted',
+      reason: 'cycle-failed',
+      cycles: MARKET_FAILURE_BUDGET_CYCLES,
+      lastCycle: [{ status: 'failed', stage: 'reconcile' }]
+    })
+  })
+
+  test('keeps a rejected publication charged while its reservation is observed as active', async () => {
+    const subject = harness()
+    let failures = 0
+    const reconcile = vi.fn(async parameters => {
+      if (failures === 0) {
+        failures += 1
+        if (parameters.desired) subject.liveDesired.set(parameters.marketId, parameters.desired)
+        throw new RangeError('publication confirmation unavailable')
+      }
+    })
+    subject.make.reconcile = reconcile
+
+    const report = await subject.service.runContinuously({
+      signal: new AbortController().signal,
+      intervalMs: 1
+    })
+
+    expect(report).toMatchObject({
+      status: 'halted',
+      reason: 'cycle-failed',
+      cycles: MARKET_FAILURE_BUDGET_CYCLES
+    })
+    expect(reconcile).toHaveBeenCalledTimes(MARKET_FAILURE_BUDGET_CYCLES)
+  })
+
+  test('stops monitoring on a halted cycle and still cleans owned groups', async () => {
+    const subject = harness()
+    subject.failMarket(marketId)
     subject.failReconcile(marketId)
 
     const report = await subject.service.runContinuously({
@@ -244,7 +313,7 @@ describe('LadderQuoterService', () => {
       reason: 'cycle-failed',
       cycles: 1,
       cleanup: { status: 'applied' },
-      lastCycle: [{ status: 'failed', stage: 'reconcile' }]
+      lastCycle: [{ status: 'halted', stage: 'market-invalidation' }]
     })
     expect(subject.cleanup).toHaveBeenCalledTimes(1)
   })

@@ -1,7 +1,7 @@
 import type { MonitorOperationQueue } from '@repo/monitoring'
 import type { Hex } from 'viem'
 
-import { cycleHasFailure, waitForMonitorInterval } from '@repo/monitoring'
+import { cycleHasFailure, cycleRequiresHalt, waitForMonitorInterval } from '@repo/monitoring'
 import { zeroFloorSub } from '@repo/utils'
 
 import type {
@@ -30,6 +30,10 @@ import {
   validateBootstrapConfig
 } from '../../domain/bootstrap/position-bootstrap'
 import { BootstrapAdapterError } from '../../infrastructure/bootstrap/bootstrap-adapter.error'
+import {
+  MARKET_FAILURE_BUDGET_CYCLES,
+  createMarketFailureBudget
+} from '../market-failure-budget.utils'
 import { marketObservationMatured } from '../market-maturity.utils'
 import {
   adapterOperationField,
@@ -243,7 +247,7 @@ export type PositionBootstrapMonitorReport = {
     /** Confirmed cleanup cancellations, included only for verbose monitoring. */
     submittedTransactions?: readonly BootstrapSubmittedTransaction[]
   }
-  /** Last handled failed cycle, retained only when it caused the halt. */
+  /** Most recent cycle that contained a handled failure, cleared by any fully successful cycle. */
   lastCycle?: readonly BootstrapRunResult[]
   /** Sanitized unexpected cycle or output-writer error classification. */
   cycleErrorName?: string
@@ -299,6 +303,8 @@ export class PositionBootstrapService {
       )
     }
 
+    const failureBudget = createMarketFailureBudget(MARKET_FAILURE_BUDGET_CYCLES)
+    const unresolvedPublicationMarkets = new Set<Hex>()
     let cycles = 0
     let reason: PositionBootstrapMonitorReport['reason'] = 'signal'
     let lastCycle: readonly BootstrapRunResult[] | undefined
@@ -321,9 +327,17 @@ export class PositionBootstrapService {
         if (results === undefined) break
         cycles += 1
 
-        if (cycleHasFailure(results)) {
+        for (const result of results) {
+          if (result.status === 'failed' && result.stage === 'make') {
+            unresolvedPublicationMarkets.add(result.marketId)
+          } else if (result.status === 'applied' || result.status === 'logged') {
+            unresolvedPublicationMarkets.delete(result.marketId)
+          }
+        }
+        const budgetExhausted = failureBudget(results, unresolvedPublicationMarkets)
+        lastCycle = cycleHasFailure(results) ? results : undefined
+        if (cycleRequiresHalt(results) || budgetExhausted) {
           reason = 'cycle-failed'
-          lastCycle = results
           break
         }
       } catch (error) {

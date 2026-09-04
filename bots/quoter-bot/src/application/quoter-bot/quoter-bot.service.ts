@@ -1,26 +1,31 @@
 import type { MonitorOperationQueue } from '@repo/monitoring'
 
-import { createOperationQueue, cycleHasFailure } from '@repo/monitoring'
+import { createOperationQueue, cycleRequiresHalt } from '@repo/monitoring'
 
 import type { BootstrapTransactionSubmittedEvent } from '../bootstrap/position-bootstrap-verbose'
 import type { PositionBootstrapMonitorReport } from '../bootstrap/position-bootstrap.service'
 import type { LadderMonitorReport } from '../ladder/ladder-quoter.service'
 import type { LadderTransactionSubmittedEvent } from '../ladder/ladder-verbose'
-import type { SetupCheckMonitorReport, SetupCheckReport } from '../setup/setup-check.service'
+import type {
+  SetupCheckMonitorReport,
+  SetupCheckReport,
+  SetupCycleContext
+} from '../setup/setup-check.service'
 
 import { operatorErrorName } from '../operator-error-name.utils'
 
 /** Readiness monitor required by the combined quoter-bot lifecycle. */
 export interface QuoterBotSetupMonitor {
   /**
-   * Monitors complete setup readiness until shutdown or the first failed check.
+   * Monitors complete setup readiness until shutdown or a readiness failure it cannot retry.
+   * Each emitted report carries whether it is the one that ends monitoring.
    * @param parameters - Shared shutdown signal and completed-cycle observer.
    * @returns A sanitized terminal setup-monitor report.
    * @throws When monitor configuration is invalid before the lifecycle can start.
    */
   runContinuously(parameters: {
     signal: AbortSignal
-    onCycle?: (report: SetupCheckReport) => void | Promise<void>
+    onCycle?: (report: SetupCheckReport, context: SetupCycleContext) => void | Promise<void>
   }): Promise<SetupCheckMonitorReport>
 }
 
@@ -114,8 +119,10 @@ export class QuoterBotService {
    * @param parameters - Operator signal, tagged event observer, and verbose writer diagnostics.
    * @returns A combined report only after bootstrap and ladder shutdown cleanup have settled.
    * @remarks Writer workflows share one queue around each full read-decision-write cycle and
-   * cleanup. A handled cycle failure aborts peers before releasing that queue, while a rejection is
-   * reduced to an allowlisted name and cleanup still drains before the combined report resolves.
+   * cleanup. Only an unrecoverable cycle aborts the peers before releasing that queue, because
+   * stopping runs shutdown cleanup and cancels every live offer the bot owns; see
+   * `cycleRequiresHalt` in `@repo/monitoring`. A rejection is reduced to an allowlisted name and cleanup still
+   * drains before the combined report resolves.
    */
   async runContinuously(parameters: {
     signal: AbortSignal
@@ -151,8 +158,8 @@ export class QuoterBotService {
       .then(() =>
         this.setup.runContinuously({
           signal: controller.signal,
-          onCycle: async report => {
-            if (!report.ready) stopFromWorkflow()
+          onCycle: async (report, context) => {
+            if (context.halting) stopFromWorkflow()
             await parameters.onEvent?.({
               event: 'quoter-bot.cycle',
               workflow: 'setup-check',
@@ -172,7 +179,7 @@ export class QuoterBotService {
               workflow: 'bootstrap',
               results
             })
-            if (cycleHasFailure(results)) stopFromWorkflow()
+            if (cycleRequiresHalt(results)) stopFromWorkflow()
           },
           runOperation,
           verbose: parameters.verbose,
@@ -191,7 +198,7 @@ export class QuoterBotService {
               workflow: 'ladder',
               results
             })
-            if (cycleHasFailure(results)) stopFromWorkflow()
+            if (cycleRequiresHalt(results)) stopFromWorkflow()
           },
           runOperation,
           verbose: parameters.verbose,

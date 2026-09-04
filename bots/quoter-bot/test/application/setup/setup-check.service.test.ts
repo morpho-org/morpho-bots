@@ -161,6 +161,53 @@ describe('SetupCheckService', () => {
     expect(terminal).toEqual({ status: 'stopped', reason: 'signal', cycles: 1 })
   })
 
+  test('keeps monitoring while a transient provider outage spans consecutive cycles', async () => {
+    const controller = new AbortController()
+    const state = readyState()
+    state.getNativeBalance = async () => {
+      throw new SafeProviderError({
+        kind: 'provider-error',
+        provider: 'rpc',
+        name: 'TimeoutError',
+        code: 'REQUEST_TIMEOUT',
+        context: 'request'
+      })
+    }
+    const reports: SetupCheckReport[] = []
+
+    const terminal = await new SetupCheckService(state, config).runContinuously({
+      signal: controller.signal,
+      intervalMs: 1,
+      onCycle: report => {
+        reports.push(report)
+        if (reports.length === 3) controller.abort()
+      }
+    })
+
+    expect(reports.map(report => report.ready)).toEqual([false, false, false])
+    expect(terminal).toEqual({ status: 'stopped', reason: 'signal', cycles: 3 })
+  })
+
+  test('halts once a transient provider outage outlasts the tolerated cycles', async () => {
+    const state = readyState()
+    state.getNativeBalance = async () => {
+      throw new SafeProviderError({
+        kind: 'provider-error',
+        provider: 'rpc',
+        name: 'TimeoutError',
+        code: 'REQUEST_TIMEOUT',
+        context: 'request'
+      })
+    }
+
+    const terminal = await new SetupCheckService(state, config).runContinuously({
+      signal: new AbortController().signal,
+      intervalMs: 1
+    })
+
+    expect(terminal).toMatchObject({ status: 'halted', reason: 'setup-failed', cycles: 10 })
+  })
+
   test('reports readiness for configured markets without reading a block timestamp', async () => {
     // Regression: readiness derived maturity from a latest-block timestamp read, so an unrelated
     // RPC timestamp outage failed every configured market even though maturity is no longer a
