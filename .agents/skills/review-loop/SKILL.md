@@ -12,28 +12,33 @@ metadata:
 
 # Review Loop
 
-One procedure with three parameterizations. Everything below the Engine is a delta — do not restate
-the Engine in a caller, point at it.
+One procedure with three parameterizations. The pieces below are **named, not sequenced** — each
+parameterization states its own order, and they genuinely differ. Do not restate a piece inside a
+caller; point at it by name.
 
-## The Engine
+## The Pieces
 
-**1. Self-check before anything else.** Is what you are about to do _necessary and sufficient_
-for the stated intent and constraints — no more, no less? Then look at the intent and constraints
-themselves. If either is unclear, say so. If a reframe of either would produce a neater, more
-ergonomic outcome, say that too, before building on the original framing.
+**Self-check.** Is what you are about to do _necessary and sufficient_ for the stated intent and
+constraints — no more, no less? Then look at the intent and constraints themselves. If either is
+unclear, say so. If a reframe of either would produce a neater, more ergonomic outcome, say that
+too, before building on the original framing.
 
 Surface that doubt as prose the engineer can act on. Do not compress a real design question into a
 short multiple-choice question: options with one-line labels throw away the context that makes the
 choice decidable. Concise but not thin.
 
-**2. Dispatch reviewers in the background.** Which ones depends on the parameterization.
+**Independent review.** Dispatch reviewer(s) in the background. Which ones, and how many rounds,
+depends on the parameterization.
 
-**3. Do your own pass while they work — readability, concision, ergonomics.** Naming, ordering,
-what a reader hits first, what the shape of the thing implies. **Change nothing semantic until every
-reviewer has reported.** Semantic edits mid-flight invalidate the review you are waiting on and you
-will not know which findings still apply.
+**Own pass.** Readability, concision, ergonomics. Naming, ordering, what a reader hits first, what
+the shape of the thing implies.
 
-**4. When the findings land, in this order:**
+> The one hard coupling between pieces: **while a review is in flight, change nothing semantic.**
+> Semantic edits mid-flight invalidate the review you are waiting on, and you will not know which
+> findings still apply. This is a concurrency rule, not an ordering rule — it binds whenever those
+> two pieces overlap, in any parameterization.
+
+**Synthesis.** The one piece that _is_ internally ordered, because each part feeds the next:
 
 - **Deduplicate.** Two reviewers naming the same defect is one finding, with two votes. Say it once.
 - **Synthesize and dissolve.** Findings that look separate are often one root cause wearing several
@@ -45,9 +50,11 @@ will not know which findings still apply.
 
 ## Parameterization A — TIBs
 
+**Order: Self-check → Independent review → Own pass → Synthesis.**
+
 The bar is higher than for a plan: a TIB is a persistent record of intent written _before_
-implementation, so a framing error here is expensive later. Run the Engine's self-check, then
-dispatch these agents in parallel:
+implementation, so a framing error here is expensive later. After the self-check, dispatch these two
+agents in parallel:
 
 **Clean-room agent** — a fresh subagent (never `fork`; a fork inherits your context, which is the
 whole thing you are trying to avoid). Omit the model override so it inherits the orchestrating
@@ -71,13 +78,15 @@ failed run — weigh it accordingly.
 Then **keep the session**. It will review the implementation later, and it already holds the
 argument about this spec.
 
-**Discuss before deciding.** For a TIB, step 4 gains a beat between synthesis and decision: raise
-anything interesting to the engineer and talk about it. Do not demand decisions at this point — the
-purpose is to think together while the record is still cheap to change.
+**Discuss before deciding.** For a TIB only, Synthesis gains a beat between synthesize and decide:
+raise anything interesting to the engineer and talk about it. Do not demand decisions at this point
+— the purpose is to think together while the record is still cheap to change.
 
 ## Parameterization B — Implementations
 
-You implement first, per the plan or TIB. Then dispatch one reviewer and do your own pass while it
+**Order: implement → Independent review → Own pass → Synthesis.**
+
+You implement first, per the plan or TIB, then dispatch one reviewer and do your own pass while it
 works.
 
 **Review agent** — Codex, GPT Sol at high reasoning. Ask for correctness: bugs, regressions, and
@@ -85,21 +94,22 @@ whether the implementation actually respects the plan or TIB it claims to follow
 review session is still available, resume it rather than starting cold — it already knows the intent
 and will notice a drift from it that a fresh reviewer cannot.
 
-No discussion beat. Go from synthesis straight to incorporate / drop / defer.
+No discussion beat. Go from synthesize straight to decide.
 
 ## Parameterization C — Responding to PR review
+
+**Order: Synthesis → implement → Independent review, and only conditionally.**
 
 B and C are the same loop with the ordering inverted. **B implements, then asks for review and reads
 it. C reads the review, implements, and only sometimes asks for another.**
 
 By the time you are here, at least one round of implementation and review has already completed, and
-the findings in front of you _are_ that independent pass. So C does not start at the top — it starts
-at the Engine's **step 4**:
+the findings in front of you _are_ that independent pass. So C opens on Synthesis:
 
-1. **Dedupe, synthesize, decide.** Engine step 4, applied to the findings you already have. Look for
-   the reframe that dissolves several findings at once before you write several patches.
+1. **Synthesis**, applied to the findings you already have. Look for the reframe that dissolves
+   several findings at once before you write several patches.
 2. **Implement** whatever you decided to incorporate.
-3. **Dispatch a reviewer only if something substantial changed.** The clearest signal is that the
+3. **Independent review, only if something substantial changed.** The clearest signal is that the
    TIB or the plan itself took edits — if the intent moved, then nobody has reviewed the thing you
    now have. A round of ordinary comment-fixes does not qualify. Say which reviewer ran, or that
    none did and why.
@@ -107,8 +117,8 @@ at the Engine's **step 4**:
 **Entropy governs all of C.** By this point the intent and the implementation have each been through
 review, so a change at this stage has to _reduce codebase entropy_ — remove a special case, delete a
 branch, make one thing behave like its neighbours. Restyling to a reviewer's preference adds a diff
-and a merge risk and buys nothing. That bar applies to every decision in step 1, to whether step 2
-is worth doing at all, and to how much new surface step 3 is being asked to cover. Drop what does
+and a merge risk and buys nothing. That bar applies to which findings you act on, to whether you
+implement at all, and to how much new surface a fresh review would be asked to cover. Drop what does
 not clear it, say you dropped it, and say why.
 
 **Resolve threads.** Acting on a thread includes resolving it, with a reply when the reply carries
