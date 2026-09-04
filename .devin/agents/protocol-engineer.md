@@ -1,7 +1,7 @@
 ---
 name: protocol-engineer
 description: Morpho protocol expert for contract, ABI, and EVM-facing changes. Advisory only.
-model: opus
+model: claude-opus-5-high
 allowed-tools:
   - read
   - grep

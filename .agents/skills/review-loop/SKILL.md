@@ -111,11 +111,20 @@ The loop works the same, with three model facts that decide whether it is worth 
 - A **custom subagent with no `model:` pinned silently falls back to SWE-1.6**, a fast cheap model.
   An unpinned reviewer still returns findings, they are just worse — and nothing announces it. Every
   manifest in `.devin/agents/` pins `model:` for exactly this reason.
+- **A misspelled pin fails just as silently.** `devin doctor` loads the profiles and reports zero
+  failures with a bogus `model:` value — verified with `model: fable`, which is not a valid slug.
+  Only `opus`, `sonnet`/`claude`, `haiku`, `gemini`, `gpt`, `swe`, and `codex` are aliases; **Fable
+  has none**, so it must be spelled out. Pin full slugs and check them against reality:
+
+  ```sh
+  devin models list | grep -E "^  <slug>\b"
+  ```
 
 **The model policy is by role, not by session:** Fable for anything touching a TIB, Opus otherwise.
-`documentor` is pinned to `fable`; `reviewer`, `protocol-engineer`, and `product-manager` to `opus`.
-Because the clean-room agent is a `subagent_general`, it inherits whatever the session runs on — so
-start a TIB session on Fable and the whole TIB path is Fable without any further wiring.
+`documentor` pins `claude-fable-5-1-high`; `reviewer`, `protocol-engineer`, and `product-manager`
+pin `claude-opus-5-high`. Because the clean-room agent is a `subagent_general`, it inherits whatever
+the session runs on — so start a TIB session on Fable and the whole TIB path is Fable without any
+further wiring.
 
 If the session model contradicts that policy — drafting a TIB on Opus, say — **say so and let the
 engineer decide**. Do not edit `.devin/agents/` to match the model you happen to be running on.
@@ -130,10 +139,10 @@ frontmatter and defer to `.claude/agents/<name>.md` for the instructions.
 **Keep the independent pass non-Anthropic.** The reviewer is Codex on GPT Sol because it is a
 different vendor from whatever wrote the code; that independence is the point, not the model's
 ranking. A Devin session may have no `codex` binary and no `~/.codex/sessions/` — check before
-assuming. If it is unreachable, dispatch the `independent-reviewer` subagent (pinned to `codex`)
-rather than falling back to `reviewer`, which is Opus: an Opus session reviewed by an Opus subagent
-is not an independent pass, and nothing in the output will tell you that. Say which reviewer
-actually ran.
+assuming. If it is unreachable, dispatch the `independent-reviewer` subagent — pinned to
+`gpt-5-6-sol-high`, the same model the CLI path uses, so both routes review identically — rather
+than falling back to `reviewer`, which is Opus: an Opus session reviewed by an Opus subagent is not
+an independent pass, and nothing in the output will tell you that. Say which reviewer actually ran.
 
 ## Running the Codex reviewer
 

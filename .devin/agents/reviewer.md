@@ -1,7 +1,7 @@
 ---
 name: reviewer
 description: Validates changes against docs/CONVENTIONS.md and repo best practices. Read-only.
-model: opus
+model: claude-opus-5-high
 allowed-tools:
   - read
   - grep

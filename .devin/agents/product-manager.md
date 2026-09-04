@@ -1,7 +1,7 @@
 ---
 name: product-manager
 description: Product context, Linear issues, and operator impact for bot behavior changes.
-model: opus
+model: claude-opus-5-high
 allowed-tools:
   - read
   - grep

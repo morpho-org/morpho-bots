@@ -1,7 +1,7 @@
 ---
 name: independent-reviewer
 description: Cross-vendor correctness review. Fallback for the review loop when the Codex CLI is unreachable, so the independent pass stays non-Anthropic.
-model: codex
+model: gpt-5-6-sol-high
 allowed-tools:
   - read
   - grep
