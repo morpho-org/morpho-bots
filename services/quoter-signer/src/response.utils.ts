@@ -58,7 +58,12 @@ export type SignedTransactionArtifact = {
   readonly signedTransaction: Hex
   /** Transaction hash of the signed bytes. */
   readonly hash: Hex
-  /** Account nonce the signature commits to; the middleware leases it before signing. */
+  /**
+   * Account nonce the signature commits to — the maker's pending nonce, read through the
+   * middleware's own endpoint immediately before signing. The TIB's nonce lease (fencing
+   * concurrent signatures at one nonce) rides on the reservation ledger of a later increment;
+   * until it lands, the caller's serialized transaction queue remains the single routine writer.
+   */
   readonly nonce: number
   /** Fee fields the middleware actually signed after applying its ceilings. */
   readonly fees: IntentFees
