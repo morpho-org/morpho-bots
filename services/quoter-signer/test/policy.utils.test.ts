@@ -368,6 +368,46 @@ describe('parseQuoterSignerPolicy', () => {
       'duplicate'
     ],
     [
+      'a zero-address singleton pin',
+      JSON.stringify(
+        document({
+          contracts: {
+            midnight: '0x0000000000000000000000000000000000000000',
+            mempool: FIXTURE_MEMPOOL
+          }
+        })
+      ),
+      'contracts.midnight',
+      'zero-address'
+    ],
+    [
+      'a zero-address mempool pin',
+      JSON.stringify(
+        document({
+          contracts: {
+            midnight: FIXTURE_MIDNIGHT,
+            mempool: '0x0000000000000000000000000000000000000000'
+          }
+        })
+      ),
+      'contracts.mempool',
+      'zero-address'
+    ],
+    [
+      'a zero-address ratifier pin',
+      JSON.stringify(document({ ratifier: '0x0000000000000000000000000000000000000000' })),
+      'ratifier',
+      'zero-address'
+    ],
+    [
+      'a tick window containing no spacing-aligned tick',
+      JSON.stringify(
+        document({ markets: [market({ minTick: '1', maxTick: '3', tickSpacing: '4' })] })
+      ),
+      'markets[0].tickSpacing',
+      'incoherent-bounds'
+    ],
+    [
       'a missing total lend-exposure cap',
       JSON.stringify(document({ maxTotalLendExposureAssets: undefined })),
       'maxTotalLendExposureAssets',

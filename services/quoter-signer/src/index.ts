@@ -318,9 +318,11 @@ const readNonce = async (
  * stage maps unexpected faults onto its own typed denial so the handler can never throw and never
  * approves by accident. The chain reads run before any KMS activity, so a read failure is a typed
  * retryable denial with no KMS call; the attestation runs after every caller-decidable check, so
- * caller mistakes are answered without KMS traffic. Setup-remediation intents and self-cancel
- * revocations remain denied with the typed not-implemented cause: they require the recorded
- * transaction inventory and remediation epochs of later TIB-2026-08-12 increments.
+ * caller mistakes are answered without KMS traffic. Setup-remediation intents, self-cancel
+ * revocations, and the whole break-glass-revoke surface remain denied with the typed
+ * not-implemented cause: they require the recorded transaction inventory (which break-glass
+ * needs to replace occupied nonces instead of queueing at the pending one), the occupied-nonce
+ * enumeration, and the remediation epochs of later TIB-2026-08-12 increments.
  */
 const evaluateIntent = async (
   event: unknown,
@@ -409,6 +411,14 @@ const evaluateIntent = async (
   if (intent.kind === 'revoke') {
     const operation = intent.operation
     if (operation.type === 'self-cancel') return { denial: new SigningNotImplementedError() }
+    // Break-glass revocation must REPLACE every occupied nonce, never queue at the pending one —
+    // "a next-unused-nonce revocation cannot preempt the pending stream" (TIB §5). That takeover
+    // needs the recorded occupied-nonce inventory of the reservation-ledger increment, so the
+    // surface stays honestly denied rather than signing a cleanup that waits behind the very
+    // transactions it should displace. Routine revocation at the pending nonce is unaffected.
+    if (policy.surface === 'break-glass-revoke') {
+      return { denial: new SigningNotImplementedError() }
+    }
     const read = await readNonce(policy, chainRead)
     if ('denial' in read) return read
     const attested = await attestSigner(resolveSigner, kmsConfig, policy.maker)
@@ -664,9 +674,10 @@ export const createHandler = (dependencies: HandlerDependencies = {}): QuoterSig
  * injected, verifies every content-addressed group id, signs the EIP-712 tree digest — exactly
  * one `kms:Sign` call — and returns the tree signature plus the encoded zero-value Mempool
  * publication payload; a ratify re-validates the offer set, re-derives the root, and signs the
- * `setIsRootRatified(maker, root, true)` transaction; a revoke signs the exact allowlisted
- * group-consumption (`setConsumed(group, MAX_OFFER_CAP, maker)`, batched as one singleton
- * `multicall` built solely from such calls), `cancelRoot(maker, root)`, or
+ * `setIsRootRatified(maker, root, true)` transaction; a routine revoke signs the exact
+ * allowlisted group-consumption (`setConsumed(group, MAX_OFFER_CAP, maker)`, capped at the wire's
+ * group limit and batched as one singleton `multicall` built solely from such calls),
+ * `cancelRoot(maker, root)`, or
  * `setIsRootRatified(maker, root, false)` call. Transaction kinds commit to the maker's pending
  * nonce read through the middleware's own `QUOTER_SIGNER_RPC_URL` endpoint (chain id verified
  * against the policy pin on every read) and to caller-supplied fee fields already checked against
@@ -676,9 +687,10 @@ export const createHandler = (dependencies: HandlerDependencies = {}): QuoterSig
  * Everything else stays fail-closed with typed denials: malformed payloads, missing or invalid
  * policy/KMS/RPC configuration, out-of-policy intents (including group ids that do not re-derive
  * from the offer contents), chain-read failures (retryable, with no KMS call), custody drift,
- * KMS signing failures, and — still — setup-remediation intents and self-cancel revocations,
- * which require the recorded transaction inventory and remediation epochs of later TIB
- * increments. The reservation ledger, nonce leases, aggregate signed-exposure accounting, and
+ * KMS signing failures, and — still — setup-remediation intents, self-cancel revocations, and
+ * the break-glass-revoke surface, which require the recorded transaction inventory (break-glass
+ * cleanup must replace occupied nonces, never queue at the pending one) and remediation epochs of
+ * later TIB increments. The reservation ledger, nonce leases, aggregate signed-exposure accounting, and
  * independent book/PnL reads also remain later increments: passing this build's checks charges no
  * durable reservation. Each invocation emits the TIB's JSON log lines to stdout:
  * `middleware.intent_received`, then `middleware.kms_sign` per successful Sign call (derived

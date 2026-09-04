@@ -20,6 +20,7 @@ export type PolicyConfigurationReason =
   | 'collateral-order'
   | 'market-id-mismatch'
   | 'off-schedule'
+  | 'zero-address'
 
 /**
  * Signals that the middleware's deployment policy is missing or invalid, so the build refuses to

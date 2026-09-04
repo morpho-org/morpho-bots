@@ -6,7 +6,7 @@ import {
   MAX_CONTINUOUS_FEE,
   MAX_TICK
 } from '@morpho-org/midnight-sdk'
-import { getAddress, hexToBigInt, isAddress, isAddressEqual, isHex, size } from 'viem'
+import { getAddress, hexToBigInt, isAddress, isAddressEqual, isHex, size, zeroAddress } from 'viem'
 
 import type { UnsignedDecimal } from './intent.utils'
 
@@ -219,6 +219,17 @@ const addressValue = (value: unknown, field: string): Address => {
   return getAddress(text)
 }
 
+// A zero-address contract pin would make the encoders sign transactions or publications
+// targeting an address with no code — a no-op that still burns the maker nonce and fees while
+// the caller believes the cancellation or publication happened. Refuse to serve instead.
+const contractAddressValue = (value: unknown, field: string): Address => {
+  const address = addressValue(value, field)
+  if (isAddressEqual(address, zeroAddress)) {
+    throw new PolicyNotConfiguredError(field, 'zero-address')
+  }
+  return address
+}
+
 const bytes32Value = (value: unknown, field: string): Hex => {
   const text = stringValue(value, field)
   if (!isHex(text, { strict: true }) || text.length % 2 !== 0) {
@@ -388,10 +399,16 @@ const marketValue = (value: unknown, field: string, context: MarketContext): Pol
   if (BigInt(minTick) > BigInt(maxTick)) {
     throw new PolicyNotConfiguredError(`${field}.minTick`, 'incoherent-bounds')
   }
+  const tickSpacing = tickSpacingValue(record.tickSpacing, `${field}.tickSpacing`)
+  // The window must contain at least one spacing-aligned tick, or every offer on the market is
+  // deterministically denied — an apparently configured but dead entry, refused up front.
+  if ((BigInt(maxTick) / BigInt(tickSpacing)) * BigInt(tickSpacing) < BigInt(minTick)) {
+    throw new PolicyNotConfiguredError(`${field}.tickSpacing`, 'incoherent-bounds')
+  }
   const market: PolicyMarket = {
     marketId: bytes32Value(record.marketId, `${field}.marketId`),
     maturity: maturityValue(record.maturity, `${field}.maturity`),
-    tickSpacing: tickSpacingValue(record.tickSpacing, `${field}.tickSpacing`),
+    tickSpacing,
     loanToken: addressValue(record.loanToken, `${field}.loanToken`),
     collateralParams: collateralsValue(record.collateralParams, `${field}.collateralParams`),
     rcfThreshold: unsignedDecimalValue(record.rcfThreshold, `${field}.rcfThreshold`),
@@ -437,8 +454,8 @@ const contractsValue = (value: unknown, field: string): PolicyContracts => {
   if (value === undefined) throw new PolicyNotConfiguredError(field, 'missing')
   const record = plainObject(value, field)
   allowKeys(record, ['midnight', 'mempool'], field)
-  const midnight = addressValue(record.midnight, `${field}.midnight`)
-  const mempool = addressValue(record.mempool, `${field}.mempool`)
+  const midnight = contractAddressValue(record.midnight, `${field}.midnight`)
+  const mempool = contractAddressValue(record.mempool, `${field}.mempool`)
   // The singleton and the Mempool log contract are distinct deployments; one address filling both
   // roles is a mis-pinned document, not a servable configuration.
   if (isAddressEqual(midnight, mempool)) {
@@ -503,8 +520,9 @@ export const emergencyBump = (ceiling: bigint): bigint => {
  * strictly ascending by token, each market's pinned struct must re-derive its pinned `marketId`
  * through the SDK's content addressing, maturities must sit exactly at 15:00:00 UTC inside the
  * Mempool codec's safe-timestamp bound (an off-schedule maturity could never publish), tick
- * spacings must divide the protocol default, and the ratifier, singleton, and Mempool pins must
- * be three distinct contracts.
+ * spacings must divide the protocol default with at least one aligned tick inside the price
+ * bounds, and the ratifier, singleton, and Mempool pins must be three distinct non-zero
+ * contracts.
  * @param source - Raw `QUOTER_SIGNER_POLICY` environment value, or `undefined` when unset.
  * @returns The validated, normalized {@link QuoterSignerPolicy}.
  * @throws `PolicyNotConfiguredError` naming the first violating field and an allowlisted reason —
@@ -607,7 +625,7 @@ export const parseQuoterSignerPolicy = (source: string | undefined): QuoterSigne
   if (surface === 'setup-remediation' && remediations.length === 0) {
     throw new PolicyNotConfiguredError('remediations', 'empty')
   }
-  const ratifier = addressValue(record.ratifier, 'ratifier')
+  const ratifier = contractAddressValue(record.ratifier, 'ratifier')
   const contracts = contractsValue(record.contracts, 'contracts')
   // A ratifier pinned to the singleton or the Mempool would make the revoke and ratify encoders
   // target a contract without the ratifier functions — a mis-pinned document, refused up front.

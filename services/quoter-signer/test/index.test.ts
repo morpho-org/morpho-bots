@@ -272,25 +272,28 @@ describe('handler', () => {
     expect(getAddress(parsed.to!)).toBe(FIXTURE_MIDNIGHT)
   })
 
-  it('signs a break-glass revoke at emergency fees inside the protected ceiling', async () => {
+  it('still denies the break-glass surface: cleanup must replace occupied nonces', async () => {
     vi.spyOn(console, 'log').mockImplementation(() => {})
     stubPolicy({ surface: 'break-glass-revoke' })
     stubKms()
     stubRpc()
-    const handle = createHandler({ kms: fakeKms(), chainRead: chainReadFake() })
-    // Above every routine ceiling field, inside the protected ones: the emergency replacement
-    // window the protected/emergency-bump machinery exists for.
+    const getPublicKey = vi.fn(async () => publicKeyMaterial())
+    const pendingNonce = vi.fn(async () => 7)
+    const handle = createHandler({
+      kms: fakeKms(getPublicKey),
+      chainRead: chainReadFake({ pendingNonce }),
+      attestAtStartup: false
+    })
+    // Emergency-window fees (above routine, inside protected) pass the deterministic checks, but
+    // break-glass cleanup must replace occupied nonces — a pending-nonce signature would queue
+    // behind the very transactions it should displace — so the surface denies before any read.
     const fees = { maxFeePerGas: '5000000000', maxPriorityFeePerGas: '2000000000', gas: '500000' }
 
     const response = await handle({ ...revokeIntent, fees })
 
-    expect(response.approved).toBe(true)
-    if (!response.approved || response.result.kind !== 'revoke') throw new Error('unreachable')
-    expect(response.result.transaction.fees).toStrictEqual(fees)
-    const parsed = parseTransaction(response.result.transaction.signedTransaction)
-    expect(parsed.maxFeePerGas).toBe(5000000000n)
-    expect(parsed.maxPriorityFeePerGas).toBe(2000000000n)
-    expect(parsed.gas).toBe(500000n)
+    expect(response).toStrictEqual(notImplementedEnvelope)
+    expect(pendingNonce).not.toHaveBeenCalled()
+    expect(getPublicKey).not.toHaveBeenCalled()
   })
 
   it('records the kms_sign line even when the Sign response fails the recovery check', async () => {

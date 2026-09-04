@@ -1432,9 +1432,15 @@ operations — on top of the attested digest-signing primitive that shipped with
   ([`transaction-encode.utils.ts`](../../services/quoter-signer/src/transaction-encode.utils.ts),
   [`transaction-sign.utils.ts`](../../services/quoter-signer/src/transaction-sign.utils.ts)):
   revocations encode exactly `setConsumed(group, MAX_OFFER_CAP, maker)` on the pinned singleton —
-  batches as one `multicall` whose inner calls the middleware builds itself, so no foreign
+  batches capped at the wire's 80-group limit (a larger cleanup splits into multiple revokes
+  instead of one unboundedly large multicall whose caller-chosen gas limit could admit an
+  include-but-revert transaction that burns the nonce) and encoded as one `multicall` whose inner
+  calls the middleware builds itself, so no foreign
   selector or nested multicall can appear — `cancelRoot(maker, root)`, or
-  `setIsRootRatified(maker, root, false)` on the pinned ratifier. Every maker transaction is a
+  `setIsRootRatified(maker, root, false)` on the pinned ratifier. Only the routine-revoke surface
+  signs: break-glass cleanup must replace every occupied nonce rather than queue at the pending
+  one (§5), which needs the recorded occupied-nonce inventory, so the break-glass surface stays
+  denied not-implemented until that increment. Every maker transaction is a
   zero-value EIP-1559 envelope with an explicitly pinned type, the policy chain id,
   ceiling-checked caller fee fields, and the digest/serialization flow matching viem's own
   account signing; the artifact returns the exact signed bytes, hash, nonce, and fee fields of
@@ -1453,11 +1459,15 @@ operations — on top of the attested digest-signing primitive that shipped with
   (`loanToken`, strictly-ascending `collateralParams`, `rcfThreshold`, `enterGate`,
   `liquidatorGate`) plus its live on-chain `tickSpacing` (a divisor of the protocol default;
   every offer tick must align to it — the deterministic checks name the violation as
-  `tick-alignment`). Parse-time validation re-derives the content-addressed market id from the
+  `tick-alignment` — and the tick window must contain at least one aligned value, or the entry is
+  a dead configuration and refuses to serve). Parse-time validation re-derives the
+  content-addressed market id from the
   pinned struct through the SDK and refuses to serve on a mismatch, requires maturities to sit
   exactly at 15:00:00 UTC inside the Mempool codec's safe-timestamp bound (an off-schedule
   maturity could never publish, so the mis-pin refuses to serve rather than denying every
-  intent), and requires the ratifier, singleton, and Mempool pins to be three distinct contracts.
+  intent), and requires the ratifier, singleton, and Mempool pins to be three distinct non-zero
+  contracts — a zero pin would sign no-op transactions that burn the maker nonce while the caller
+  believes the revocation or publication happened.
 - **Observability**: on top of the existing lines, each completed `Sign` call emits one
   `middleware.kms_sign` record with the middleware-derived digest and the KMS request id — the
   per-artifact CloudTrail join record, emitted immediately after the call so it exists even when

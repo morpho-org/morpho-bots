@@ -17,11 +17,11 @@ attestation, the handler now canonically encodes and signs the intents the ladde
   exact zero-value Mempool publication payload.
 - **`ratify`** (Setter): the same full re-validation and root re-derivation, then the signed
   `setIsRootRatified(maker, root, true)` transaction plus the signature-free publication payload.
-- **`revoke`** (`consume-groups`, `cancel-root`, `unratify-root`): the exact allowlisted
-  zero-value call — `setConsumed(group, MAX_OFFER_CAP, maker)` on the pinned singleton (batches
-  as one `multicall` built solely from such calls), `cancelRoot(maker, root)` or
-  `setIsRootRatified(maker, root, false)` on the pinned ratifier — signed as one transaction
-  artifact.
+- **`revoke`** (`consume-groups`, `cancel-root`, `unratify-root`, on the routine-revoke
+  surface): the exact allowlisted zero-value call — `setConsumed(group, MAX_OFFER_CAP, maker)` on
+  the pinned singleton (at most 80 groups per intent, batched as one `multicall` built solely
+  from such calls), `cancelRoot(maker, root)` or `setIsRootRatified(maker, root, false)` on the
+  pinned ratifier — signed as one transaction artifact.
 
 Transaction-signing intents commit to the maker's **pending nonce read through the middleware's
 own RPC endpoint** (see [RPC endpoint](#rpc-endpoint-quoter_signer_rpc_url)); the endpoint's
@@ -36,9 +36,12 @@ attestation-read failures (`KmsUnavailableError`, retryable), custody drift
 (`KmsAttestationFailedError`), stale attestations (`KmsAttestationStaleError`, retryable), KMS
 signature-validation failures (`KmsSigningFailedError`), a `Sign` call that failed outright
 (`KmsSignOutcomeUnknownError`, non-retryable — the outcome is ambiguous), and post-validation
-assembly faults (`ArtifactEncodingFailedError`). **`setup-remediation` intents and `self-cancel`
-revocations are still denied with `SigningNotImplementedError`**: they need the recorded
-transaction inventory and remediation epochs of later TIB increments.
+assembly faults (`ArtifactEncodingFailedError`). **`setup-remediation` intents, `self-cancel`
+revocations, and the whole break-glass-revoke surface are still denied with
+`SigningNotImplementedError`**: they need the recorded transaction inventory and remediation
+epochs of later TIB increments — in particular, break-glass cleanup must _replace_ every
+occupied nonce, and a pending-nonce signature would queue behind the very transactions it should
+displace, so that surface stays honestly denied until the occupied-nonce inventory lands.
 
 Each invocation emits the TIB's JSON log lines to CloudWatch Logs: `middleware.intent_received`,
 then one `middleware.kms_sign` line per completed `Sign` call carrying the middleware-derived
@@ -83,8 +86,11 @@ the current pending nonce). The four kinds:
 - **`revoke`**: one constrained `operation` — `consume-groups` (non-empty group list, encoded as
   exact `setConsumed(group, MAX_OFFER_CAP, maker)` calls, batched as one policy-checked
   multicall), `cancel-root`, `unratify-root`, or `self-cancel` at a recorded nonce — plus `fees`.
-  Approval returns the signed transaction artifact. `self-cancel` parses but is still denied
-  not-implemented: it validates against the recorded-transaction inventory of a later increment.
+  `consume-groups` carries at most 80 groups per intent; larger cleanups split into multiple
+  revokes rather than one unboundedly large multicall whose caller-chosen gas limit could admit
+  an include-but-revert transaction. Approval returns the signed transaction artifact.
+  `self-cancel` parses but is still denied not-implemented: it validates against the
+  recorded-transaction inventory of a later increment.
 - **`setup-remediation`**: a deployment-manifest `remediation` variant id plus `fees`; the
   middleware reads current allowance/authorization state itself and encodes the exact pinned
   transaction. Approval returns the signed transaction artifact. Parses but is still denied
@@ -175,12 +181,15 @@ contract — unknown keys, unknown versions, and out-of-domain values refuse to 
 
 The `contracts` block pins the Midnight singleton (the group-consumption target and every market
 struct's `midnight` field) and the Mempool log contract (the zero-value publication target);
-neither ever comes from the caller or an address registry. Each market entry now carries the
+neither ever comes from the caller or an address registry, and both — like the ratifier — must be
+non-zero (a zero pin would sign no-op transactions that burn the maker nonce while the caller
+believes the cancellation or publication happened). Each market entry now carries the
 market's **full immutable parameter struct** — `loanToken`, the `collateralParams` list (strictly
 ascending by token, the unique order the protocol enforces at creation), `rcfThreshold`,
 `enterGate`, `liquidatorGate` — alongside its `maturity` and the book's live on-chain
-`tickSpacing` (1, 2, or 4 — it must divide the protocol default, and every offer tick must align
-to it). Parse-time validation re-derives the content-addressed market id from the struct fields
+`tickSpacing` (1, 2, or 4 — it must divide the protocol default, every offer tick must align to
+it, and the `minTick`/`maxTick` window must contain at least one aligned tick or the entry
+refuses to serve). Parse-time validation re-derives the content-addressed market id from the struct fields
 (plus the policy `chainId` and the pinned singleton) through the SDK and refuses to serve unless
 it equals the pinned `marketId`, and requires the maturity to sit exactly at 15:00:00 UTC inside
 the Mempool codec's safe-timestamp bound — an off-schedule maturity could never publish, so a
