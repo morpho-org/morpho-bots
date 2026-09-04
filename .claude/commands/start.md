@@ -28,8 +28,9 @@ intent, not a full spec.
 
 Present the generated title and description, then ask the user to select:
 
-**Labels** (optional): Infer the label for the affected bot or package. Ask the user to confirm or
-adjust it; if no existing label fits, say so rather than inventing one.
+**Labels**: Infer the label for the affected bot or package and ask the user to confirm or adjust
+it. Labels are how tickets are routed here, so a ticket normally carries one. If no existing label
+fits, say so and offer to file unlabelled — never invent a label.
 
 **Priority** (optional):
 
@@ -49,8 +50,8 @@ Use the Linear MCP tools to create the issue:
 ```
 Refer to the Linear Teams table in docs/GUIDANCE.md to select the appropriate team based on scope.
 Everything in this repo belongs to the Bots team (BOTS). Do not set a project: the Linear agent
-routes tickets by label. The only exception is `@morpho-org/viem-dlc`, which belongs to the Apps
-team and its Viem-dlc Backlog project.
+assigns those. The only exception is `@morpho-org/viem-dlc`, which belongs to the Apps team and its
+Viem-dlc Backlog project.
 ```
 
 Use `mcp__linear__create_issue` with:

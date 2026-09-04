@@ -196,8 +196,23 @@ Label? Priority?
 
 **User**: `/create-issue align lint config with morpho-apps base rules`
 
-**Claude**: Explains that shared configuration is a Morpho-owned dependency with mixed Linear
-conventions and asks the user where to file it.
+**Claude**: Routes to Bots (BOTS) — it is work in this repo, whoever else shares the convention.
+No surface label covers repo-wide tooling, so it says so instead of inventing one:
+
+```
+Title:    chore(tooling): align lint config with morpho-apps base rules
+Team:     Bots (BOTS)
+Project:  omitted
+Labels:   none — no existing label covers repo-wide tooling. Add one, or file unlabelled?
+```
+
+---
+
+**User**: `/create-issue blue-sdk misreports accrued interest at maturity`
+
+**Claude**: Does not file. `@morpho-org/blue-sdk` is a Morpho-owned dependency, and those have
+mixed Linear conventions across teams — surfaces it and asks where it belongs. (`viem-dlc` is the
+one dependency with a settled answer: Apps, Viem-dlc Backlog.)
 
 ---
 
