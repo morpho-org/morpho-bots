@@ -127,6 +127,14 @@ Devin imports this repo's rules, skills, and commands via `read_config_from.clau
 `.devin/config.json`, but **not** `.claude/agents/` — hence the manifests, which carry only
 frontmatter and defer to `.claude/agents/<name>.md` for the instructions.
 
+**Keep the independent pass non-Anthropic.** The reviewer is Codex on GPT Sol because it is a
+different vendor from whatever wrote the code; that independence is the point, not the model's
+ranking. A Devin session may have no `codex` binary and no `~/.codex/sessions/` — check before
+assuming. If it is unreachable, dispatch the `independent-reviewer` subagent (pinned to `codex`)
+rather than falling back to `reviewer`, which is Opus: an Opus session reviewed by an Opus subagent
+is not an independent pass, and nothing in the output will tell you that. Say which reviewer
+actually ran.
+
 ## Running the Codex reviewer
 
 ```sh
