@@ -11,7 +11,9 @@ import {
 import { privateKeyToAccount } from 'viem/accounts'
 import { describe, expect, it } from 'vitest'
 
+import type { ArtifactEncodingStage } from '../src/artifact-encoding-failed.error'
 import type { KmsMakerSigner } from '../src/kms-signer.utils'
+import type { MakerTransaction, MakerTransactionRequest } from '../src/transaction-sign.utils'
 
 import { createKmsMakerSigner } from '../src/kms-signer.utils'
 import {
@@ -56,11 +58,11 @@ const request = {
   nonce: 7,
   call: { to: FIXTURE_MIDNIGHT, data: '0x12345678' },
   fees
-} as const
+} as const satisfies MakerTransactionRequest
 
 describe('buildMakerTransaction', () => {
   it('pins the eip1559 envelope with zero value and the exact request fields', () => {
-    expect(buildMakerTransaction(request)).toStrictEqual({
+    const expected: MakerTransaction = {
       type: 'eip1559',
       chainId: 8453,
       nonce: 7,
@@ -70,7 +72,9 @@ describe('buildMakerTransaction', () => {
       gas: 90000n,
       maxFeePerGas: 2000000000n,
       maxPriorityFeePerGas: 1000000000n
-    })
+    }
+
+    expect(buildMakerTransaction(request)).toStrictEqual(expected)
   })
 })
 
@@ -108,6 +112,7 @@ describe('assembleSignedTransaction', () => {
 
   it('fails closed with the transaction stage when the signature cannot be parsed', async () => {
     const transaction = buildMakerTransaction(request)
+    const stage: ArtifactEncodingStage = 'transaction'
 
     expect(() =>
       assembleSignedTransaction(transaction, fees, {
@@ -115,11 +120,7 @@ describe('assembleSignedTransaction', () => {
         kmsRequestId: 'kms-req-2'
       })
     ).toThrowError(
-      expect.objectContaining({
-        name: 'ArtifactEncodingFailedError',
-        stage: 'transaction',
-        retryable: false
-      })
+      expect.objectContaining({ name: 'ArtifactEncodingFailedError', stage, retryable: false })
     )
   })
 })

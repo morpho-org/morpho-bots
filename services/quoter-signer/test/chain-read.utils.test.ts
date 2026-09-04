@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 
 import type { ChainReadTransport } from '../src/chain-read.utils'
+import type { RpcReadOperation } from '../src/rpc-unavailable.error'
 
 import { readMakerPendingNonce } from '../src/chain-read.utils'
 import { RpcChainMismatchError } from '../src/rpc-chain-mismatch.error'
@@ -15,6 +16,14 @@ const transport = (overrides: Partial<ChainReadTransport> = {}): ChainReadTransp
   pendingNonce: async () => 7,
   ...overrides
 })
+
+const expectUnavailable = async (attempt: Promise<unknown>, operation: RpcReadOperation) => {
+  await expect(attempt).rejects.toMatchObject({
+    name: 'RpcUnavailableError',
+    operation,
+    retryable: true
+  })
+}
 
 describe('readMakerPendingNonce', () => {
   it('verifies the chain id before trusting the pending nonce', async () => {
@@ -36,7 +45,7 @@ describe('readMakerPendingNonce', () => {
   })
 
   it('wraps a chain-id read fault as a retryable unavailable denial', async () => {
-    await expect(
+    await expectUnavailable(
       readMakerPendingNonce(
         config,
         expected,
@@ -45,12 +54,13 @@ describe('readMakerPendingNonce', () => {
             throw new Error('socket hang up')
           }
         })
-      )
-    ).rejects.toMatchObject({ name: 'RpcUnavailableError', operation: 'chain-id', retryable: true })
+      ),
+      'chain-id'
+    )
   })
 
   it('wraps a nonce read fault as a retryable unavailable denial', async () => {
-    await expect(
+    await expectUnavailable(
       readMakerPendingNonce(
         config,
         expected,
@@ -59,24 +69,18 @@ describe('readMakerPendingNonce', () => {
             throw new Error('socket hang up')
           }
         })
-      )
-    ).rejects.toMatchObject({
-      name: 'RpcUnavailableError',
-      operation: 'pending-nonce',
-      retryable: true
-    })
+      ),
+      'pending-nonce'
+    )
   })
 
   it.each([-1, 1.5, Number.MAX_SAFE_INTEGER + 1, Number.NaN])(
     'rejects the malformed provider nonce %s as unavailable',
     async nonce => {
-      await expect(
-        readMakerPendingNonce(config, expected, transport({ pendingNonce: async () => nonce }))
-      ).rejects.toMatchObject({
-        name: 'RpcUnavailableError',
-        operation: 'pending-nonce',
-        retryable: true
-      })
+      await expectUnavailable(
+        readMakerPendingNonce(config, expected, transport({ pendingNonce: async () => nonce })),
+        'pending-nonce'
+      )
     }
   )
 
