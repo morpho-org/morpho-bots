@@ -167,9 +167,16 @@ Resume with `codex exec resume <session-id> "<prompt>"`.
 
 ## Session records
 
-Every TIB gets a sibling `.sessions` file — `docs/decisions/<tib-stem>.sessions` — listing the
-review session ids for that decision, one per line with a date and what the session covered. These
-are git-ignored: they are local pointers into `~/.codex/sessions/`, not shared history.
+Every TIB gets a **sibling** `.sessions` file: same directory as the TIB, same stem. Derive it from
+the TIB's own path rather than assuming the repo root — TIBs are repo-wide
+(`docs/decisions/TIB-x.md` → `docs/decisions/TIB-x.sessions`) but also bot- and package-scoped
+(`bots/kill-switch/docs/decisions/TIB-y.md` → `bots/kill-switch/docs/decisions/TIB-y.sessions`).
+Anchoring to `docs/decisions/` would strand a scoped TIB's record away from the TIB, and the later
+implementation review would not find the sibling it was promised.
+
+Each file lists the review session ids for that decision, one per line with a date and what the
+session covered. They are git-ignored by `**/docs/decisions/*.sessions`, which is why that pattern
+is recursive: they are local pointers into `~/.codex/sessions/`, not shared history.
 
 Best-effort by design. Sessions expire, and they do not exist on another machine. When resume fails,
 re-prime a fresh reviewer with the TIB itself — that is a supported path, not a failure.

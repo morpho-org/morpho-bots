@@ -53,9 +53,15 @@ changes quickly.
    }'
 
    git diff --name-only "origin/$base...HEAD" -z \
-     | xargs -0 -n 1 sh -c 'test -f "$1" && printf "%s\\0" "$1"' sh \
-     | xargs -0 tokei
+     | xargs -0 -r -n 1 sh -c 'test -f "$1" && printf "%s\\0" "$1"' sh \
+     | xargs -0 -r tokei
    ```
+
+   `-r` is load-bearing, not decoration. GNU `xargs` runs its command once even with empty input,
+   and `tokei` with no paths scans the whole repository — so a deleted-only PR would otherwise
+   report the repo's totals as the size of the diff. BSD/macOS `xargs` already behaves this way and
+   accepts `-r` as a no-op, so the flag is portable. When the pipeline produces no output the change
+   is deleted-only: say so and report the split as zero rather than dropping the line.
 
    Buckets are checked in order, so `test` wins over `src`, and a `.md` under `.claude/` counts as
    `docs` rather than `ci`. Renames (`-` in numstat) are skipped.
