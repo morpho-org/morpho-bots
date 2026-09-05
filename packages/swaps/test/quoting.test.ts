@@ -18,6 +18,7 @@ const LOAN = getAddress('0x6666666666666666666666666666666666666666')
 const COLLATERAL = getAddress('0x7777777777777777777777777777777777777777')
 const UNDERLYING = getAddress('0x8888888888888888888888888888888888888888')
 const EXECUTOR = getAddress('0x1111111111111111111111111111111111111111')
+const EOA = getAddress('0x2222222222222222222222222222222222222222')
 
 // referenceAmountOut = amountIn = 1000 (i.e. an oracle price of exactly 1) — the route-quality
 // reference the maxRouteImpactBps floor is applied to.
@@ -193,6 +194,7 @@ function composeMulti(
     httpClient,
     chainId: 8453,
     executor: EXECUTOR,
+    initiatingEoa: EOA,
     venues,
     baseUrls: {},
     maxRouteImpactBps: 500, // floor = 950
