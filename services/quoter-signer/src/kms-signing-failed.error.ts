@@ -1,3 +1,5 @@
+import type { Hex } from 'viem'
+
 /** Allowlisted signature-rejection reasons carried by {@link KmsSigningFailedError}. */
 export type KmsSigningFailureReason =
   | 'digest-width'
@@ -24,10 +26,28 @@ export class KmsSigningFailedError extends Error {
   readonly retryable = false
 
   /**
+   * Middleware-derived digest of the `Sign` call that produced the rejected response, when the
+   * call reached KMS. Present exactly when a CloudTrail `Sign` event exists for the failure, so
+   * the handler can still emit the per-artifact `middleware.kms_sign` reconciliation record
+   * (TIB-2026-08-12 Observability) even though the signature is never released.
+   */
+  readonly digest?: Hex
+
+  /** KMS request id of that call, when the response carried a usable one. */
+  readonly kmsRequestId?: string
+
+  /**
    * Creates a sanitized signature rejection.
    * @param reason - Allowlisted verification step that failed.
+   * @param call - The completed KMS call's middleware-owned identifiers, when the failure
+   * happened after the `Sign` call succeeded; omitted for pre-call failures (`digest-width`).
    */
-  constructor(readonly reason: KmsSigningFailureReason) {
+  constructor(
+    readonly reason: KmsSigningFailureReason,
+    call?: { readonly digest?: Hex; readonly kmsRequestId?: string }
+  ) {
     super(`quoter-signer kms signature rejected: ${reason}`)
+    this.digest = call?.digest
+    this.kmsRequestId = call?.kmsRequestId
   }
 }

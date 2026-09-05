@@ -6,42 +6,54 @@ Lambda container image that will become the **only** `kms:Sign` principal on the
 validating structured intents (quote, ratify, revoke, setup remediation) against its own
 independent reads before signing anything.
 
-**Current status: fail-closed build with the v1 wire contract, the deterministic
-deployment-policy checks, and the KMS maker-key custody attestation plus digest-signing layer.**
-The handler implements no encode-and-sign surface and never calls `kms:Sign`, but it now enforces
-the typed request/response contract below at the invocation boundary, validates every well-formed
-intent against the deployment policy document (see
-[Deployment policy](#deployment-policy-quoter_signer_policy)), and — for intents that pass every
-deterministic check — attests the configured KMS maker key (see
-[KMS maker key](#kms-maker-key-quoter_signer_kms_key_id-quoter_signer_kms_region)). Payloads
-outside the contract are denied with a `MalformedIntentError`; when the policy document is missing
-or invalid the build refuses to serve with a `PolicyNotConfiguredError`; out-of-policy intents are
-denied with an `IntentPolicyViolationError` naming the violated check; missing or invalid KMS
-addressing refuses to serve with a `KmsNotConfiguredError`; a failed KMS call is denied with a
-retryable `KmsUnavailableError`; custody drift (wrong key shape, malformed public key, or a
-derived address that is not the policy maker) is denied with a `KmsAttestationFailedError`; and
-intents that pass every implemented stage are still denied with a `SigningNotImplementedError`:
+**Current status: encode-and-sign build for the ladder create/move surfaces.** On top of the v1
+wire contract, the deterministic deployment-policy checks, and the KMS maker-key custody
+attestation, the handler now canonically encodes and signs the intents the ladder flow needs:
 
-```json
-{
-  "contractVersion": 1,
-  "service": "quoter-signer",
-  "approved": false,
-  "denial": {
-    "name": "SigningNotImplementedError",
-    "message": "no signing surface is implemented in this quoter-signer build; every intent is denied",
-    "retryable": false
-  }
-}
-```
+- **`quote`** (Ecrecover): the offer tree is re-derived from the validated set with the pinned
+  maker and the policy-pinned market structs injected, every content-addressed consumption-group
+  id is verified against the offer contents, the EIP-712 tree digest is signed with exactly one
+  `kms:Sign` call, and the approval returns the re-derived root, the tree signature, and the
+  exact zero-value Mempool publication payload.
+- **`ratify`** (Setter): the same full re-validation and root re-derivation, then the signed
+  `setIsRootRatified(maker, root, true)` transaction plus the signature-free publication payload.
+- **`revoke`** (`consume-groups`, `cancel-root`, `unratify-root`, on the routine-revoke
+  surface): the exact allowlisted zero-value call — `setConsumed(group, MAX_OFFER_CAP, maker)` on
+  the pinned singleton (at most 80 groups per intent, batched as one `multicall` built solely
+  from such calls), `cancelRoot(maker, root)` or `setIsRootRatified(maker, root, false)` on the
+  pinned ratifier — signed as one transaction artifact.
 
-Each invocation also emits the TIB's `middleware.intent_received` / `middleware.intent_denied`
-JSON log lines to CloudWatch Logs — plus `middleware.kms_error` when the attestation stage fails —
-carrying only the allowlist-classified intent kind (`quote`, `ratify`, `revoke`,
-`setup-remediation`, or `unknown`), the denial class name, the violated policy check id on a
-policy denial, the failed KMS operation or attestation reason on a KMS denial, and the AWS request
-id — never caller-supplied data. The image is safe to deploy anywhere: `kms:Sign` is never called,
-so it can sign nothing.
+Transaction-signing intents commit to the maker's **pending nonce read through the middleware's
+own RPC endpoint** (see [RPC endpoint](#rpc-endpoint-quoter_signer_rpc_url)); the endpoint's
+chain id is verified against the policy pin on every read, and a read failure is a typed
+retryable denial with no KMS call. Everything else stays fail-closed with typed denials: payloads
+outside the contract (`MalformedIntentError`), a missing or invalid policy document
+(`PolicyNotConfiguredError`), out-of-policy intents including group ids that do not re-derive
+from the offer contents (`IntentPolicyViolationError` naming the violated check), missing or
+invalid KMS or RPC addressing (`KmsNotConfiguredError` / `RpcNotConfiguredError`), chain-read
+failures (`RpcUnavailableError`, retryable) and endpoint chain drift (`RpcChainMismatchError`),
+attestation-read failures (`KmsUnavailableError`, retryable), custody drift
+(`KmsAttestationFailedError`), stale attestations (`KmsAttestationStaleError`, retryable), KMS
+signature-validation failures (`KmsSigningFailedError`), a `Sign` call that failed outright
+(`KmsSignOutcomeUnknownError`, non-retryable — the outcome is ambiguous), and post-validation
+assembly faults (`ArtifactEncodingFailedError`). **`setup-remediation` intents, `self-cancel`
+revocations, and the whole break-glass-revoke surface are still denied with
+`SigningNotImplementedError`**: they need the recorded transaction inventory and remediation
+epochs of later TIB increments — in particular, break-glass cleanup must _replace_ every
+occupied nonce, and a pending-nonce signature would queue behind the very transactions it should
+displace, so that surface stays honestly denied until the occupied-nonce inventory lands.
+
+Each invocation emits the TIB's JSON log lines to CloudWatch Logs: `middleware.intent_received`,
+then one `middleware.kms_sign` line per completed `Sign` call carrying the middleware-derived
+digest and the **KMS request id** (the CloudTrail reconciliation join key — emitted immediately
+after the call, so the record exists even if a later assembly stage fails, and emitted on the
+denial path too when a completed `Sign` response fails the DER/recovery verification), and finally
+`middleware.intent_approved` (re-derived root, nonce, transaction hash, and the expected
+`kmsSignCalls` count, per kind) or `middleware.intent_denied`; `middleware.kms_error` and
+`middleware.read_failed` accompany the corresponding failures. Lines carry only the
+allowlist-classified intent kind, denial class names, check identifiers, and middleware-owned
+values — never caller-supplied data. Deploying the image without granting its execution role
+`kms:Sign` keeps it sign-inert: every signing attempt then fails closed at the KMS boundary.
 
 ## Wire contract (v1)
 
@@ -57,8 +69,9 @@ unknown kinds, and unknown contract versions are rejected outright — no best-e
 interpretation.
 
 Every intent carries `contractVersion: 1`, `kind`, `chainId`, `maker`, and a caller-chosen
-`idempotencyKey` (retries with the same key must return the stored artifacts once signing exists).
-The four kinds:
+`idempotencyKey` (inert in this build — stored-artifact retries ride on the reservation ledger of
+a later increment, so a replayed key today re-evaluates and, for transaction kinds, re-signs at
+the current pending nonce). The four kinds:
 
 - **`quote`** (Ecrecover): `offers` — 1..80 structured offers (at most 40 per side) over at most
   7 distinct markets, in
@@ -73,10 +86,15 @@ The four kinds:
 - **`revoke`**: one constrained `operation` — `consume-groups` (non-empty group list, encoded as
   exact `setConsumed(group, MAX_OFFER_CAP, maker)` calls, batched as one policy-checked
   multicall), `cancel-root`, `unratify-root`, or `self-cancel` at a recorded nonce — plus `fees`.
-  Approval returns the signed transaction artifact.
+  `consume-groups` carries at most 80 groups per intent; larger cleanups split into multiple
+  revokes rather than one unboundedly large multicall whose caller-chosen gas limit could admit
+  an include-but-revert transaction. Approval returns the signed transaction artifact.
+  `self-cancel` parses but is still denied not-implemented: it validates against the
+  recorded-transaction inventory of a later increment.
 - **`setup-remediation`**: a deployment-manifest `remediation` variant id plus `fees`; the
   middleware reads current allowance/authorization state itself and encodes the exact pinned
-  transaction. Approval returns the signed transaction artifact.
+  transaction. Approval returns the signed transaction artifact. Parses but is still denied
+  not-implemented: it requires the remediation epochs of a later increment.
 
 `fees` (`maxFeePerGas`, `maxPriorityFeePerGas`, `gas`) are caller-supplied liveness parameters
 only — the middleware enforces its own ceilings and budgets on top. Signed transaction artifacts
@@ -97,10 +115,11 @@ A complete well-formed revoke intent:
 }
 ```
 
-This build answers it with the `SigningNotImplementedError` denial above (once the deployment
-policy below is configured and the KMS maker key is configured and attested; without those, the
-answer is the `PolicyNotConfiguredError`, `KmsNotConfiguredError`, `KmsUnavailableError`, or
-`KmsAttestationFailedError` denial).
+A fully configured deployment (policy, KMS maker key with `kms:Sign` granted, RPC endpoint)
+answers it with the approval envelope — the signed `cancelRoot(maker, root)` transaction artifact
+at the maker's pending nonce. Without those, the answer is the corresponding typed denial
+(`PolicyNotConfiguredError`, `KmsNotConfiguredError`, `RpcNotConfiguredError`,
+`RpcUnavailableError`, `KmsUnavailableError`, or `KmsAttestationFailedError`).
 
 ## Deployment policy (`QUOTER_SIGNER_POLICY`)
 
@@ -118,11 +137,28 @@ contract — unknown keys, unknown versions, and out-of-domain values refuse to 
   "chainId": 8453,
   "maker": "0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A",
   "ratifier": "0xd6e70365C8E8DDa9a4ca662C07bbE663b017755E",
+  "contracts": {
+    "midnight": "0xAdedD8ab6dE832766Fedf0FaC4992E5C4D3EA18A",
+    "mempool": "0xdD6DCE32e21f7b020898a8258dA37355b4017993"
+  },
   "offerWindow": { "freshnessCeilingSeconds": "3600", "maxStartAgeSeconds": "900" },
   "markets": [
     {
       "marketId": "0x5555555555555555555555555555555555555555555555555555555555555555",
-      "maturity": "1800000000",
+      "maturity": "1800025200",
+      "tickSpacing": "4",
+      "loanToken": "0x0000000000000000000000000000000000006000",
+      "collateralParams": [
+        {
+          "token": "0x0000000000000000000000000000000000007000",
+          "lltv": "770000000000000000",
+          "liquidationCursor": "250000000000000000",
+          "oracle": "0x0000000000000000000000000000000000008000"
+        }
+      ],
+      "rcfThreshold": "0",
+      "enterGate": "0x0000000000000000000000000000000000000000",
+      "liquidatorGate": "0x0000000000000000000000000000000000000000",
       "minTick": "100",
       "maxTick": "5000",
       "maxContinuousFeeCap": "317097919",
@@ -142,6 +178,23 @@ contract — unknown keys, unknown versions, and out-of-domain values refuse to 
   ]
 }
 ```
+
+The `contracts` block pins the Midnight singleton (the group-consumption target and every market
+struct's `midnight` field) and the Mempool log contract (the zero-value publication target);
+neither ever comes from the caller or an address registry, and both — like the ratifier — must be
+non-zero (a zero pin would sign no-op transactions that burn the maker nonce while the caller
+believes the cancellation or publication happened). Each market entry now carries the
+market's **full immutable parameter struct** — `loanToken`, the `collateralParams` list (strictly
+ascending by token, the unique order the protocol enforces at creation), `rcfThreshold`,
+`enterGate`, `liquidatorGate` — alongside its `maturity` and the book's live on-chain
+`tickSpacing` (1, 2, or 4 — it must divide the protocol default, every offer tick must align to
+it, and the `minTick`/`maxTick` window must contain at least one aligned tick or the entry
+refuses to serve). Parse-time validation re-derives the content-addressed market id from the struct fields
+(plus the policy `chainId` and the pinned singleton) through the SDK and refuses to serve unless
+it equals the pinned `marketId`, and requires the maturity to sit exactly at 15:00:00 UTC inside
+the Mempool codec's safe-timestamp bound — an off-schedule maturity could never publish, so a
+mis-pinned document refuses to serve instead of denying every intent. The `marketId` shown above
+is a placeholder — use the real id and its real struct.
 
 Every field is required on every surface so one reviewed document serves all deployments of the
 shared image; `surface` is the only per-deployment difference and pins which intent kind the
@@ -170,10 +223,22 @@ once per consumption domain `(market, group, side, cap value)`, so per-book rung
 count once, against both the per-market and the maker-wide cap. Violations are denied with
 `IntentPolicyViolationError` naming the check; the denial log line carries the same check id.
 
-These are the deterministic checks only. The TIB's independent-read properties — crossed books,
-PnL, snapshot-derived market fees, aggregate reservations, nonce leases, and native-balance
-admission — land in later increments, so passing every current check still ends in the
-`SigningNotImplementedError` denial.
+An offer set that passes these checks is then **re-encoded canonically before signing**
+([`src/offer-tree.utils.ts`](./src/offer-tree.utils.ts)): the middleware builds every offer
+itself from the validated fields, the pinned maker, and the policy market structs; reconstructs
+the consumption groups from the intent's leaf order (offers sharing a declared group must be
+contiguous); and denies the set unless every content-addressed group id it derives equals the
+caller's declared id (`group-derivation`). Quote sets additionally pass a publication-encoding
+preflight — the Mempool payload codec's own offer-struct rules, such as 15:00:00-UTC maturities —
+before any KMS call (`offer-encoding` on rejection). What was validated is what is signed, by
+construction.
+
+The TIB's independent-read properties — crossed books, PnL, snapshot-derived market fees,
+aggregate signed-exposure reservations, nonce leases, signed-gas budgets, and native-balance
+admission — remain later increments: this build's approvals charge no durable reservation, and
+the production-enablement gates the TIB places on the quote/ratify surfaces (the PnL model,
+pinned provider quorum, indexed-block snapshots, write-before-sign catalog persistence) are
+unchanged. The pending-nonce read is the one independent read this increment adds.
 
 Operator guidance for the policy values (all fail closed, so a tight value halts quoting rather
 than leaking exposure — revocation stays the kill switch):
@@ -181,8 +246,8 @@ than leaking exposure — revocation stays the kill switch):
 - **Freshness sequencing**: today's ladder/bootstrap builders pin `expiry = market maturity`, so
   any freshness ceiling shorter than time-to-maturity denies their offers. That is the TIB's
   intended order — the bot-side builder change to `expiry = min(maturity, signedAt + freshness
-ceiling)` is a prerequisite of the same increment that enables quote/ratify signing — and is
-  irrelevant while this build signs nothing.
+ceiling)` is a prerequisite of turning the bot's quote/ratify flows onto this middleware, and
+  this build now enforces the ceiling on every quote/ratify intent it signs.
 - **Tick bounds**: a Midnight tick maps to a rate through time-to-maturity, so the tick for a
   fixed APR drifts upward as the market ages. Set `minTick`/`maxTick` as an envelope over the
   market's whole quoting horizon, not today's rate window.
@@ -192,6 +257,25 @@ ceiling)` is a prerequisite of the same increment that enables quote/ratify sign
 - **`maxStartAgeSeconds`**: offers carry the block timestamp at build time as `start`, and a
   Setter ratify re-presents the same offers later, so size this for block-timestamp lag plus
   build→invoke and ratify-retry latency.
+
+## RPC endpoint (`QUOTER_SIGNER_RPC_URL`)
+
+Transaction-signing intents (ratify and revoke) commit to an account nonce, and nonce ordering is
+policy-relevant: the middleware reads the maker's **current pending nonce independently** through
+its own HTTP(S) JSON-RPC endpoint — never from the caller — and signs only that nonce
+([`src/chain-read.utils.ts`](./src/chain-read.utils.ts), parsed by
+[`src/rpc-config.utils.ts`](./src/rpc-config.utils.ts)). Every read first verifies the endpoint's
+`eth_chainId` against the policy pin, so a repointed or misconfigured provider cannot feed
+another chain's account state into a signature that commits to the pinned chain
+(`RpcChainMismatchError`, terminal). A missing or non-HTTP(S) value refuses transaction signing
+with `RpcNotConfiguredError`; a failed or malformed read denies with the retryable
+`RpcUnavailableError` and the `middleware.read_failed` log line — always before any KMS call.
+Quote intents sign no maker transaction and never require the endpoint. The endpoint URL is never
+echoed in errors, responses, or logs.
+
+The TIB's nonce-lease fence (refusing a second routine signature at a non-terminal nonce) rides
+on the reservation ledger and is a later increment; until it lands, the bot's serialized
+make/pending queue remains the single routine writer, as it is today.
 
 ## KMS maker key (`QUOTER_SIGNER_KMS_KEY_ID`, `QUOTER_SIGNER_KMS_REGION`)
 
@@ -228,10 +312,10 @@ attestation registry with its manifest-pinned freshness window and scheduled ref
 alias/image/readiness validation are later increments. An unattested container still answers
 wire-contract and policy denials (that is fail-closed serving, not signing), and the guarantee
 this build does make is strict: the digest-signing primitive is reachable only behind a fresh
-attestation and refuses on its own to sign against a stale one, and since no encode-and-sign
-surface exists, nothing can be signed before, without, or against a stale attestation.
+attestation and refuses on its own to sign against a stale one, so nothing is ever signed
+before, without, or against a stale attestation.
 
-The same module carries the digest-signing primitive the TIB's encode stages will call
+The same module carries the digest-signing primitive the encode stages call
 (sign-what-you-encode, §2): `kms:Sign` with `MessageType: 'DIGEST'` and
 `SigningAlgorithm: 'ECDSA_SHA_256'` — issued against the resolved key ARN captured at attestation
 (never the configured alias, which could be repointed to an unattested key afterwards) on a
@@ -240,11 +324,14 @@ one middleware signing record; a `Sign` call that fails outright maps to the **n
 `KmsSignOutcomeUnknownError`, because the outcome is ambiguous — a signature may exist
 server-side — and blind invocation-level retry could mint a second signature for one artifact) — followed by a strict canonical DER parse, low-s
 normalization, a recovery check across both parities against the attested maker address, and
-capture of the KMS request id — the CloudTrail reconciliation join key each per-artifact signing
-record must log, so a `Sign` response without one (or with a blank one) is rejected rather than
-becoming an unreconcilable signature. **No intent reaches it yet**: until the encode stages land, every attested
-intent is still denied with `SigningNotImplementedError`, and the execution role needs
-`kms:GetPublicKey` on the maker key but must not hold `kms:Sign`.
+capture of the KMS request id — the CloudTrail reconciliation join key each per-artifact
+`middleware.kms_sign` record logs, so a `Sign` response without one (or with a blank one) is
+rejected rather than becoming an unreconcilable signature. **The encode stages now reach it**:
+quote, ratify, and non-self-cancel revoke intents that pass every earlier stage produce exactly
+one `Sign` call per artifact, so a signing deployment's execution role needs `kms:Sign` alongside
+`kms:GetPublicKey` on the maker key. A deployment that should stay sign-inert simply withholds
+the `kms:Sign` grant: every signing attempt then denies at the KMS boundary with
+`KmsSignOutcomeUnknownError` while attestation and every denial path keep working.
 
 ## Bot integration
 
@@ -308,8 +395,8 @@ complete revoke intent from the wire-contract section yields the `PolicyNotConfi
 denial — no policy document is configured — and re-running the container with
 `-e QUOTER_SIGNER_POLICY='<policy JSON>'` turns that into the policy checks plus the
 `KmsNotConfiguredError` denial: the KMS maker key is not configured, and without AWS credentials
-in the local container the attestation stage cannot succeed anyway — a fully attested
-`SigningNotImplementedError` denial needs the Lambda deployment below.
+and an RPC endpoint in the local container neither the attestation nor the nonce read can succeed
+anyway — a signed approval needs the Lambda deployment below.
 
 ## Publish to Docker Hub (maintainers)
 
@@ -345,8 +432,10 @@ docker push "$ACCOUNT.dkr.ecr.$REGION.amazonaws.com/quoter-signer:<commit-sha>"
 Create the function. Without KMS configuration an execution role with the
 `AWSLambdaBasicExecutionRole` managed policy (CloudWatch Logs only) is enough and every
 well-formed in-policy intent is denied with `KmsNotConfiguredError`; to exercise the custody
-attestation, additionally grant the execution role `kms:GetPublicKey` — and nothing else, in
-particular not `kms:Sign` — on the maker key and set the two KMS variables. The deployment policy
+attestation alone, additionally grant the execution role `kms:GetPublicKey` on the maker key and
+set the two KMS variables — withholding `kms:Sign` keeps the deployment sign-inert. **A signing
+deployment additionally grants `kms:Sign` on the maker key** and sets `QUOTER_SIGNER_RPC_URL`
+(required for ratify/revoke; quote signs without it). The deployment policy
 document rides in the function's environment; without it every well-formed intent is denied with
 `PolicyNotConfiguredError`. The policy is itself JSON, so pass the environment as a file
 (`--environment` shorthand cannot safely carry the nested commas and quotes) — with the document
@@ -354,7 +443,7 @@ from the Deployment policy section saved as `policy.json`:
 
 ```sh
 jq -n --arg policy "$(cat policy.json)" \
-  '{Variables: {QUOTER_SIGNER_POLICY: $policy, QUOTER_SIGNER_KMS_KEY_ID: "alias/<maker-key-alias>", QUOTER_SIGNER_KMS_REGION: "<region>"}}' > environment.json
+  '{Variables: {QUOTER_SIGNER_POLICY: $policy, QUOTER_SIGNER_KMS_KEY_ID: "alias/<maker-key-alias>", QUOTER_SIGNER_KMS_REGION: "<region>", QUOTER_SIGNER_RPC_URL: "https://<rpc-endpoint>"}}' > environment.json
 aws lambda create-function \
   --function-name quoter-signer \
   --package-type Image \
@@ -385,10 +474,13 @@ Expect a fail-closed denial envelope in `response.json` and the `middleware.inte
 
 Everything else in the TIB, in later increments: the mode-aware five-function deployment shape
 (setup/health, quote or ratify, routine revoke, break-glass revoke, setup remediation)
-instantiated from this one image, the invoke-only IAM chain that removes `kms:Sign` from the bot,
-the independent-read policy properties (crossed books, PnL, snapshot-derived fees and
-`continuousFeeCap`, canonical group and root re-derivation), the reservation ledger with its
-aggregate signed-exposure, signed-gas, and nonce-lease accounting, the canonical encode stages
-that feed the now-present attested KMS digest signer (sign-what-you-encode — the first stages to
-hold `kms:Sign`), and the bot-side intent ports that speak the wire contract above. Until then,
-deploying this image grants nothing beyond `kms:GetPublicKey` and signs nothing.
+instantiated from this one image, the invoke-only IAM chain that removes direct KMS access from
+the bot, the remaining independent-read policy properties (crossed books, PnL, snapshot-derived
+fees bounding `continuousFeeCap`, position state, pinned provider quorum), the reservation
+ledger with its aggregate signed-exposure, signed-gas, nonce-lease, and write-before-sign
+catalog accounting, the setup-remediation and self-cancel surfaces, the setup/health attestation
+registry, and the bot-side intent ports that speak the wire contract above. The TIB's
+production-enablement gates for quote/ratify signing (PnL model, provider quorum, indexed-block
+snapshots, catalog persistence, the bot-side freshness-aware builders) are unchanged by this
+increment; a production deployment controls exposure through the `kms:Sign` grant and the policy
+document it reviews.

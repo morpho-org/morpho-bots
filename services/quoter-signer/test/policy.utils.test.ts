@@ -10,48 +10,29 @@ import {
   RATIFIER_MODES,
   SIGNING_SURFACES
 } from '../src/policy.utils'
+import {
+  FIXTURE_MAKER as maker,
+  FIXTURE_MEMPOOL,
+  FIXTURE_MIDNIGHT,
+  FIXTURE_RATIFIER as ratifier,
+  fixtureCollateral,
+  fixtureMarketEntry,
+  fixturePolicyDocument,
+  fixtureProtectedCeiling as protectedCeiling,
+  fixtureRoutineCeiling as routineCeiling
+} from './policy-fixture'
 
 const bytes32 = (byte: string) => `0x${byte.repeat(32)}` as const
 
-const maker = '0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A'
-const ratifier = '0x4444444444444444444444444444444444444444'
+const market = (overrides: Record<string, unknown> = {}) => fixtureMarketEntry({}, overrides)
 
-const routineCeiling = {
-  maxFeePerGas: '3000000000',
-  maxPriorityFeePerGas: '1500000000',
-  gas: '400000'
-}
-
-const protectedCeiling = {
-  maxFeePerGas: '30000000000',
-  maxPriorityFeePerGas: '15000000000',
-  gas: '800000'
-}
-
-const market = (overrides: Record<string, unknown> = {}) => ({
-  marketId: bytes32('55'),
-  maturity: '1800000000',
-  minTick: '100',
-  maxTick: '5000',
-  maxContinuousFeeCap: '317097919',
-  maxLendExposureAssets: '20000000000',
-  ...overrides
-})
-
-const document = (overrides: Record<string, unknown> = {}) => ({
-  policyVersion: QUOTER_SIGNER_POLICY_VERSION,
-  surface: 'quote',
-  ratifierMode: 'ecrecover',
-  chainId: 8453,
-  maker,
-  ratifier,
-  offerWindow: { freshnessCeilingSeconds: '3600', maxStartAgeSeconds: '900' },
-  markets: [market()],
-  maxTotalLendExposureAssets: '30000000000',
-  feeCeilings: { routine: routineCeiling, protected: protectedCeiling },
-  remediations: [{ variant: 'loan-asset-approval', feeCeiling: routineCeiling }],
-  ...overrides
-})
+const document = (overrides: Record<string, unknown> = {}) =>
+  fixturePolicyDocument({
+    policyVersion: QUOTER_SIGNER_POLICY_VERSION,
+    surface: 'quote',
+    ratifierMode: 'ecrecover',
+    ...overrides
+  })
 
 const expectNotConfigured = (
   source: string | undefined,
@@ -248,11 +229,183 @@ describe('parseQuoterSignerPolicy', () => {
       'a duplicate market id differing only by case',
       JSON.stringify(
         document({
-          markets: [market({ marketId: bytes32('aa') }), market({ marketId: bytes32('AA') })]
+          markets: [
+            market(),
+            market({
+              marketId: `0x${String(market().marketId).slice(2).toUpperCase()}`
+            })
+          ]
         })
       ),
       'markets[1].marketId',
       'duplicate'
+    ],
+    [
+      'a market id that does not re-derive from the pinned struct',
+      JSON.stringify(document({ markets: [market({ marketId: bytes32('55') })] })),
+      'markets[0].marketId',
+      'market-id-mismatch'
+    ],
+    [
+      'a market maturity off the 15:00:00 UTC schedule',
+      JSON.stringify(document({ markets: [market({ maturity: '1800000000' })] })),
+      'markets[0].maturity',
+      'off-schedule'
+    ],
+    [
+      'a market maturity above the payload-codec safe-timestamp bound',
+      JSON.stringify(document({ markets: [market({ maturity: '1000000000054000' })] })),
+      'markets[0].maturity',
+      'out-of-range'
+    ],
+    [
+      'a missing market tick spacing',
+      JSON.stringify(document({ markets: [market({ tickSpacing: undefined })] })),
+      'markets[0].tickSpacing',
+      'missing'
+    ],
+    [
+      'a tick spacing that does not divide the protocol default',
+      JSON.stringify(document({ markets: [market({ tickSpacing: '3' })] })),
+      'markets[0].tickSpacing',
+      'out-of-range'
+    ],
+    [
+      'a zero tick spacing',
+      JSON.stringify(document({ markets: [market({ tickSpacing: '0' })] })),
+      'markets[0].tickSpacing',
+      'out-of-range'
+    ],
+    [
+      'a market struct field drifting from the pinned id',
+      JSON.stringify(document({ markets: [market({ rcfThreshold: '1' })] })),
+      'markets[0].marketId',
+      'market-id-mismatch'
+    ],
+    [
+      'a missing market loan token',
+      JSON.stringify(document({ markets: [market({ loanToken: undefined })] })),
+      'markets[0].loanToken',
+      'missing'
+    ],
+    [
+      'an empty market collateral list',
+      JSON.stringify(document({ markets: [market({ collateralParams: [] })] })),
+      'markets[0].collateralParams',
+      'empty'
+    ],
+    [
+      'an unknown collateral key',
+      JSON.stringify(
+        document({
+          markets: [market({ collateralParams: [{ ...fixtureCollateral, extra: true }] })]
+        })
+      ),
+      'markets[0].collateralParams[0]',
+      'unknown-key'
+    ],
+    [
+      'collaterals out of ascending token order',
+      JSON.stringify(
+        document({
+          markets: [
+            market({
+              collateralParams: [
+                { ...fixtureCollateral, token: '0x0000000000000000000000000000000000007001' },
+                fixtureCollateral
+              ]
+            })
+          ]
+        })
+      ),
+      'markets[0].collateralParams[1].token',
+      'collateral-order'
+    ],
+    [
+      'a duplicate collateral token',
+      JSON.stringify(
+        document({
+          markets: [market({ collateralParams: [fixtureCollateral, fixtureCollateral] })]
+        })
+      ),
+      'markets[0].collateralParams[1].token',
+      'collateral-order'
+    ],
+    [
+      'missing contract pins',
+      JSON.stringify(document({ contracts: undefined })),
+      'contracts',
+      'missing'
+    ],
+    [
+      'an unknown contracts key',
+      JSON.stringify(
+        document({
+          contracts: { midnight: FIXTURE_MIDNIGHT, mempool: FIXTURE_MEMPOOL, extra: true }
+        })
+      ),
+      'contracts',
+      'unknown-key'
+    ],
+    [
+      'a mempool pinned to the singleton address',
+      JSON.stringify(
+        document({ contracts: { midnight: FIXTURE_MIDNIGHT, mempool: FIXTURE_MIDNIGHT } })
+      ),
+      'contracts.mempool',
+      'duplicate'
+    ],
+    [
+      'a ratifier pinned to the singleton address',
+      JSON.stringify(document({ ratifier: FIXTURE_MIDNIGHT })),
+      'ratifier',
+      'duplicate'
+    ],
+    [
+      'a ratifier pinned to the mempool address',
+      JSON.stringify(document({ ratifier: FIXTURE_MEMPOOL })),
+      'ratifier',
+      'duplicate'
+    ],
+    [
+      'a zero-address singleton pin',
+      JSON.stringify(
+        document({
+          contracts: {
+            midnight: '0x0000000000000000000000000000000000000000',
+            mempool: FIXTURE_MEMPOOL
+          }
+        })
+      ),
+      'contracts.midnight',
+      'zero-address'
+    ],
+    [
+      'a zero-address mempool pin',
+      JSON.stringify(
+        document({
+          contracts: {
+            midnight: FIXTURE_MIDNIGHT,
+            mempool: '0x0000000000000000000000000000000000000000'
+          }
+        })
+      ),
+      'contracts.mempool',
+      'zero-address'
+    ],
+    [
+      'a zero-address ratifier pin',
+      JSON.stringify(document({ ratifier: '0x0000000000000000000000000000000000000000' })),
+      'ratifier',
+      'zero-address'
+    ],
+    [
+      'a tick window containing no spacing-aligned tick',
+      JSON.stringify(
+        document({ markets: [market({ minTick: '1', maxTick: '3', tickSpacing: '4' })] })
+      ),
+      'markets[0].tickSpacing',
+      'incoherent-bounds'
     ],
     [
       'a missing total lend-exposure cap',

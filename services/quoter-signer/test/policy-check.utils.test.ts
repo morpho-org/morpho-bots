@@ -12,56 +12,52 @@ import type { QuoterSignerPolicy } from '../src/policy.utils'
 import { IntentPolicyViolationError } from '../src/intent-policy-violation.error'
 import { assertIntentWithinPolicy } from '../src/policy-check.utils'
 import { parseQuoterSignerPolicy } from '../src/policy.utils'
+import {
+  FIXTURE_MAKER as maker,
+  FIXTURE_RATIFIER as ratifier,
+  fixtureMarketEntry,
+  fixtureMarketId,
+  fixtureMaturityAfter,
+  fixturePolicyDocument
+} from './policy-fixture'
 
 const bytes32 = (byte: string) => `0x${byte.repeat(32)}` as const
 
-const maker = '0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A'
-const ratifier = '0x4444444444444444444444444444444444444444'
 const zeroAddress = '0x0000000000000000000000000000000000000000'
-const marketA = bytes32('55')
-const marketB = bytes32('56')
 
-/** Fixed middleware clock every time-window vector is phrased against. */
-const now = 1_700_000_000n
+/**
+ * Fixed middleware clock every time-window vector is phrased against — chosen so that `now +
+ * 1800` is a 15:00:00 UTC timestamp, the only maturity schedule the policy parser accepts, which
+ * lets the expiry-after-maturity vector pin a maturity inside the freshness window.
+ */
+const now = 1_700_058_600n
 
-const routineCeiling = {
-  maxFeePerGas: '3000000000',
-  maxPriorityFeePerGas: '1500000000',
-  gas: '400000'
+const defaultMaturity = fixtureMaturityAfter(now)
+const loanTokenB = '0x0000000000000000000000000000000000006001'
+const marketA = fixtureMarketId({ maturity: defaultMaturity })
+const marketB = fixtureMarketId({ maturity: defaultMaturity, loanToken: loanTokenB })
+
+const marketEntry = (marketId: `0x${string}`, overrides: Record<string, unknown> = {}) => {
+  const maturity = typeof overrides.maturity === 'string' ? overrides.maturity : defaultMaturity
+  return fixtureMarketEntry(
+    {
+      maturity,
+      loanToken: marketId === marketB ? loanTokenB : undefined
+    },
+    overrides
+  )
 }
-
-const protectedCeiling = {
-  maxFeePerGas: '30000000000',
-  maxPriorityFeePerGas: '15000000000',
-  gas: '800000'
-}
-
-const marketEntry = (marketId: `0x${string}`, overrides: Record<string, unknown> = {}) => ({
-  marketId,
-  maturity: (now + 86_400n).toString(),
-  minTick: '100',
-  maxTick: '5000',
-  maxContinuousFeeCap: '317097919',
-  maxLendExposureAssets: '20000000000',
-  ...overrides
-})
 
 const policyFor = (overrides: Record<string, unknown> = {}): QuoterSignerPolicy =>
   parseQuoterSignerPolicy(
-    JSON.stringify({
-      policyVersion: 1,
-      surface: 'quote',
-      ratifierMode: 'ecrecover',
-      chainId: 8453,
-      maker,
-      ratifier,
-      offerWindow: { freshnessCeilingSeconds: '3600', maxStartAgeSeconds: '900' },
-      markets: [marketEntry(marketA), marketEntry(marketB)],
-      maxTotalLendExposureAssets: '30000000000',
-      feeCeilings: { routine: routineCeiling, protected: protectedCeiling },
-      remediations: [{ variant: 'loan-asset-approval', feeCeiling: routineCeiling }],
-      ...overrides
-    })
+    JSON.stringify(
+      fixturePolicyDocument({
+        surface: 'quote',
+        ratifierMode: 'ecrecover',
+        markets: [marketEntry(marketA), marketEntry(marketB)],
+        ...overrides
+      })
+    )
   )
 
 const fees: IntentFees = {
@@ -332,15 +328,27 @@ describe('assertIntentWithinPolicy', () => {
     ],
     [
       'an expiry one second past the market maturity',
-      quoteIntent([buyOffer({ expiry: (now + 3001n).toString() })]),
+      quoteIntent([
+        buyOffer({
+          marketId: fixtureMarketId({ maturity: (now + 1800n).toString() }),
+          expiry: (now + 1801n).toString()
+        })
+      ]),
       policyFor({
         markets: [
-          marketEntry(marketA, { maturity: (now + 3000n).toString() }),
+          marketEntry(marketA, { maturity: (now + 1800n).toString() }),
           marketEntry(marketB)
         ]
       }),
       'expiry-after-maturity',
       'offers[0].expiry'
+    ],
+    [
+      'a tick inside the price bounds but off the pinned tick spacing',
+      quoteIntent([buyOffer({ tick: '121' })]),
+      policyFor(),
+      'tick-alignment',
+      'offers[0].tick'
     ],
     [
       'one group spanning two markets',

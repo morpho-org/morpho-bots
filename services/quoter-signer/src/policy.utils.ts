@@ -1,7 +1,12 @@
 import type { Address, Hex } from 'viem'
 
-import { MAX_CONTINUOUS_FEE, MAX_TICK } from '@morpho-org/midnight-sdk'
-import { getAddress, hexToBigInt, isAddress, isHex, size } from 'viem'
+import {
+  DEFAULT_TICK_SPACING,
+  MarketUtils,
+  MAX_CONTINUOUS_FEE,
+  MAX_TICK
+} from '@morpho-org/midnight-sdk'
+import { getAddress, hexToBigInt, isAddress, isAddressEqual, isHex, size, zeroAddress } from 'viem'
 
 import type { UnsignedDecimal } from './intent.utils'
 
@@ -59,8 +64,38 @@ export type PolicyFeeCeiling = {
 }
 
 /**
- * One allowlisted Midnight market with its per-market policy parameters: the immutable maturity,
- * the tick price bounds, the continuous-fee-cap ceiling, and the lend-exposure cap charged by
+ * One collateral definition of an allowlisted market's immutable parameter struct. Entries must
+ * arrive strictly ascending by token — the unique order the protocol enforces at market creation
+ * — and are hashed as pinned when the encoding stage re-derives groups, roots, and the market id.
+ */
+export type PolicyCollateral = {
+  /** Collateral token address. */
+  readonly token: Address
+  /** WAD-scaled liquidation loan-to-value. */
+  readonly lltv: UnsignedDecimal
+  /** WAD-scaled liquidation cursor bounding the liquidation incentive factor. */
+  readonly liquidationCursor: UnsignedDecimal
+  /** Oracle address for this collateral. */
+  readonly oracle: Address
+}
+
+/**
+ * The deployment-pinned contract addresses the encoding stage targets. Both are policy pins, not
+ * caller data and not registry lookups: the Midnight singleton is the group-consumption target
+ * and every market struct's `midnight` field, and the Mempool log contract is the zero-value
+ * publication target the non-maker broadcaster submits to.
+ */
+export type PolicyContracts = {
+  /** Midnight singleton address. */
+  readonly midnight: Address
+  /** Midnight Mempool log contract address. */
+  readonly mempool: Address
+}
+
+/**
+ * One allowlisted Midnight market with its per-market policy parameters: the immutable market
+ * parameter struct (whose content-addressed hash must re-derive the pinned `marketId`), the tick
+ * price bounds, the continuous-fee-cap ceiling, and the lend-exposure cap charged by
  * exposure-increasing buy offers.
  */
 export type PolicyMarket = {
@@ -68,6 +103,22 @@ export type PolicyMarket = {
   readonly marketId: Hex
   /** Market maturity in unix seconds; offer expiries beyond it are denied. */
   readonly maturity: UnsignedDecimal
+  /**
+   * Tick spacing every offer tick must align to — the market's live on-chain spacing, pinned as
+   * a deployment parameter. Must divide the protocol `DEFAULT_TICK_SPACING`, so only 1, 2, or 4;
+   * a mis-pin denies offers rather than signing a misaligned tick.
+   */
+  readonly tickSpacing: UnsignedDecimal
+  /** Loan token address of the immutable market struct. */
+  readonly loanToken: Address
+  /** Collateral definitions of the immutable market struct, strictly ascending by token. */
+  readonly collateralParams: readonly PolicyCollateral[]
+  /** Recovery close factor threshold of the immutable market struct. */
+  readonly rcfThreshold: UnsignedDecimal
+  /** Entry gate address of the immutable market struct. */
+  readonly enterGate: Address
+  /** Liquidator gate address of the immutable market struct. */
+  readonly liquidatorGate: Address
   /** Inclusive lower tick bound; at least 0. */
   readonly minTick: UnsignedDecimal
   /** Inclusive upper tick bound; at most the protocol `MAX_TICK`. */
@@ -109,6 +160,8 @@ export type QuoterSignerPolicy = {
   readonly maker: Address
   /** The configured ratifier contract; every offer's `ratifier` field must equal it. */
   readonly ratifier: Address
+  /** Deployment-pinned Midnight singleton and Mempool addresses the encoding stage targets. */
+  readonly contracts: PolicyContracts
   /** Offer time-window policy applied from the middleware's own clock. */
   readonly offerWindow: {
     /** Maximum seconds between signing time and offer expiry; must be non-zero. */
@@ -166,6 +219,17 @@ const addressValue = (value: unknown, field: string): Address => {
   return getAddress(text)
 }
 
+// A zero-address contract pin would make the encoders sign transactions or publications
+// targeting an address with no code — a no-op that still burns the maker nonce and fees while
+// the caller believes the cancellation or publication happened. Refuse to serve instead.
+const contractAddressValue = (value: unknown, field: string): Address => {
+  const address = addressValue(value, field)
+  if (isAddressEqual(address, zeroAddress)) {
+    throw new PolicyNotConfiguredError(field, 'zero-address')
+  }
+  return address
+}
+
 const bytes32Value = (value: unknown, field: string): Hex => {
   const text = stringValue(value, field)
   if (!isHex(text, { strict: true }) || text.length % 2 !== 0) {
@@ -218,11 +282,116 @@ const feeCeilingValue = (value: unknown, field: string): PolicyFeeCeiling => {
   return { maxFeePerGas, maxPriorityFeePerGas, gas }
 }
 
-const marketValue = (value: unknown, field: string): PolicyMarket => {
+const collateralValue = (value: unknown, field: string): PolicyCollateral => {
+  const record = plainObject(value, field)
+  allowKeys(record, ['token', 'lltv', 'liquidationCursor', 'oracle'], field)
+  return {
+    token: addressValue(record.token, `${field}.token`),
+    lltv: unsignedDecimalValue(record.lltv, `${field}.lltv`),
+    liquidationCursor: unsignedDecimalValue(record.liquidationCursor, `${field}.liquidationCursor`),
+    oracle: addressValue(record.oracle, `${field}.oracle`)
+  }
+}
+
+const collateralsValue = (value: unknown, field: string): readonly PolicyCollateral[] => {
+  const entries = arrayValue(value, field)
+  if (entries.length === 0) throw new PolicyNotConfiguredError(field, 'empty')
+  const collaterals = entries.map((entry, index) => collateralValue(entry, `${field}[${index}]`))
+  collaterals.forEach((collateral, index) => {
+    const previous = collaterals[index - 1]
+    // Strictly ascending by token — the unique order the protocol enforces at market creation —
+    // so the reviewed document admits exactly one representation (and no duplicate tokens).
+    if (previous !== undefined && hexToBigInt(previous.token) >= hexToBigInt(collateral.token)) {
+      throw new PolicyNotConfiguredError(`${field}[${index}].token`, 'collateral-order')
+    }
+  })
+  return collaterals
+}
+
+/** Chain and contract pins the market entries are validated against. */
+type MarketContext = {
+  readonly chainId: number
+  readonly contracts: PolicyContracts
+}
+
+// The Mempool payload codec refuses off-schedule offers, so these are parse-time document rules:
+// maturities sit exactly at 15:00:00 UTC and inside the codec's safe-timestamp bound.
+const MATURITY_SCHEDULE_SECONDS = 86_400n
+const MATURITY_SCHEDULE_OFFSET = 54_000n
+const MAX_SAFE_TIMESTAMP_SECONDS = 1_000_000_000_000n - 1n
+
+const maturityValue = (value: unknown, field: string): UnsignedDecimal => {
+  const maturity = nonZeroDecimalValue(value, field)
+  if (BigInt(maturity) > MAX_SAFE_TIMESTAMP_SECONDS) {
+    throw new PolicyNotConfiguredError(field, 'out-of-range')
+  }
+  if (BigInt(maturity) % MATURITY_SCHEDULE_SECONDS !== MATURITY_SCHEDULE_OFFSET) {
+    throw new PolicyNotConfiguredError(field, 'off-schedule')
+  }
+  return maturity
+}
+
+const tickSpacingValue = (value: unknown, field: string): UnsignedDecimal => {
+  const spacing = nonZeroDecimalValue(value, field)
+  // Only divisors of the protocol default spacing exist on chain; anything else is a mis-pin
+  // that would deny every offer or admit misaligned ticks.
+  if (DEFAULT_TICK_SPACING % BigInt(spacing) !== 0n) {
+    throw new PolicyNotConfiguredError(field, 'out-of-range')
+  }
+  return spacing
+}
+
+const assertMarketIdCoherent = (
+  market: PolicyMarket,
+  field: string,
+  context: MarketContext
+): void => {
+  const { chainId, contracts } = context
+  let derived: Hex
+  try {
+    // SDK-first content addressing: MarketUtils.toId reproduces the protocol's IdLib.toId, so the
+    // pinned struct fields must hash to the pinned market id or the entry is internally wrong.
+    derived = MarketUtils.toId({
+      chainId: BigInt(chainId),
+      midnight: contracts.midnight,
+      loanToken: market.loanToken,
+      collateralParams: market.collateralParams.map(collateral => ({
+        token: collateral.token,
+        lltv: BigInt(collateral.lltv),
+        liquidationCursor: BigInt(collateral.liquidationCursor),
+        oracle: collateral.oracle
+      })),
+      maturity: BigInt(market.maturity),
+      rcfThreshold: BigInt(market.rcfThreshold),
+      enterGate: market.enterGate,
+      liquidatorGate: market.liquidatorGate
+    })
+  } catch {
+    throw new PolicyNotConfiguredError(`${field}.marketId`, 'market-id-mismatch')
+  }
+  if (hexToBigInt(derived) !== hexToBigInt(market.marketId)) {
+    throw new PolicyNotConfiguredError(`${field}.marketId`, 'market-id-mismatch')
+  }
+}
+
+const marketValue = (value: unknown, field: string, context: MarketContext): PolicyMarket => {
   const record = plainObject(value, field)
   allowKeys(
     record,
-    ['marketId', 'maturity', 'minTick', 'maxTick', 'maxContinuousFeeCap', 'maxLendExposureAssets'],
+    [
+      'marketId',
+      'maturity',
+      'tickSpacing',
+      'loanToken',
+      'collateralParams',
+      'rcfThreshold',
+      'enterGate',
+      'liquidatorGate',
+      'minTick',
+      'maxTick',
+      'maxContinuousFeeCap',
+      'maxLendExposureAssets'
+    ],
     field
   )
   const minTick = boundedDecimalValue(record.minTick, `${field}.minTick`, MAX_TICK)
@@ -230,9 +399,21 @@ const marketValue = (value: unknown, field: string): PolicyMarket => {
   if (BigInt(minTick) > BigInt(maxTick)) {
     throw new PolicyNotConfiguredError(`${field}.minTick`, 'incoherent-bounds')
   }
-  return {
+  const tickSpacing = tickSpacingValue(record.tickSpacing, `${field}.tickSpacing`)
+  // The window must contain at least one spacing-aligned tick, or every offer on the market is
+  // deterministically denied — an apparently configured but dead entry, refused up front.
+  if ((BigInt(maxTick) / BigInt(tickSpacing)) * BigInt(tickSpacing) < BigInt(minTick)) {
+    throw new PolicyNotConfiguredError(`${field}.tickSpacing`, 'incoherent-bounds')
+  }
+  const market: PolicyMarket = {
     marketId: bytes32Value(record.marketId, `${field}.marketId`),
-    maturity: nonZeroDecimalValue(record.maturity, `${field}.maturity`),
+    maturity: maturityValue(record.maturity, `${field}.maturity`),
+    tickSpacing,
+    loanToken: addressValue(record.loanToken, `${field}.loanToken`),
+    collateralParams: collateralsValue(record.collateralParams, `${field}.collateralParams`),
+    rcfThreshold: unsignedDecimalValue(record.rcfThreshold, `${field}.rcfThreshold`),
+    enterGate: addressValue(record.enterGate, `${field}.enterGate`),
+    liquidatorGate: addressValue(record.liquidatorGate, `${field}.liquidatorGate`),
     minTick,
     maxTick,
     maxContinuousFeeCap: boundedDecimalValue(
@@ -245,12 +426,18 @@ const marketValue = (value: unknown, field: string): PolicyMarket => {
       `${field}.maxLendExposureAssets`
     )
   }
+  assertMarketIdCoherent(market, field, context)
+  return market
 }
 
-const marketsValue = (value: unknown, field: string): readonly PolicyMarket[] => {
+const marketsValue = (
+  value: unknown,
+  field: string,
+  context: MarketContext
+): readonly PolicyMarket[] => {
   const entries = arrayValue(value, field)
   if (entries.length === 0) throw new PolicyNotConfiguredError(field, 'empty')
-  const markets = entries.map((entry, index) => marketValue(entry, `${field}[${index}]`))
+  const markets = entries.map((entry, index) => marketValue(entry, `${field}[${index}]`, context))
   // Viem-first bytes32 identity: numeric equality of the validated hex, not local string casing.
   const seen = new Set<bigint>()
   markets.forEach((market, index) => {
@@ -261,6 +448,20 @@ const marketsValue = (value: unknown, field: string): readonly PolicyMarket[] =>
     seen.add(key)
   })
   return markets
+}
+
+const contractsValue = (value: unknown, field: string): PolicyContracts => {
+  if (value === undefined) throw new PolicyNotConfiguredError(field, 'missing')
+  const record = plainObject(value, field)
+  allowKeys(record, ['midnight', 'mempool'], field)
+  const midnight = contractAddressValue(record.midnight, `${field}.midnight`)
+  const mempool = contractAddressValue(record.mempool, `${field}.mempool`)
+  // The singleton and the Mempool log contract are distinct deployments; one address filling both
+  // roles is a mis-pinned document, not a servable configuration.
+  if (isAddressEqual(midnight, mempool)) {
+    throw new PolicyNotConfiguredError(`${field}.mempool`, 'duplicate')
+  }
+  return { midnight, mempool }
 }
 
 const remediationValue = (value: unknown, field: string): PolicyRemediation => {
@@ -314,8 +515,14 @@ export const emergencyBump = (ceiling: bigint): bigint => {
  * object is rebuilt from validated values only. Cross-field deployment validation runs here too:
  * tick bounds must be coherent and within the protocol `MAX_TICK`, continuous-fee ceilings within
  * `MAX_CONTINUOUS_FEE`, the quote surface requires the Ecrecover mode and ratify the Setter mode,
- * and every protected fee ceiling must cover one complete {@link emergencyBump} of its routine
- * counterpart (with `protected.gas` at least `routine.gas`).
+ * every protected fee ceiling must cover one complete {@link emergencyBump} of its routine
+ * counterpart (with `protected.gas` at least `routine.gas`), collateral definitions must arrive
+ * strictly ascending by token, each market's pinned struct must re-derive its pinned `marketId`
+ * through the SDK's content addressing, maturities must sit exactly at 15:00:00 UTC inside the
+ * Mempool codec's safe-timestamp bound (an off-schedule maturity could never publish), tick
+ * spacings must divide the protocol default with at least one aligned tick inside the price
+ * bounds, and the ratifier, singleton, and Mempool pins must be three distinct non-zero
+ * contracts.
  * @param source - Raw `QUOTER_SIGNER_POLICY` environment value, or `undefined` when unset.
  * @returns The validated, normalized {@link QuoterSignerPolicy}.
  * @throws `PolicyNotConfiguredError` naming the first violating field and an allowlisted reason —
@@ -341,6 +548,7 @@ export const parseQuoterSignerPolicy = (source: string | undefined): QuoterSigne
       'chainId',
       'maker',
       'ratifier',
+      'contracts',
       'offerWindow',
       'markets',
       'maxTotalLendExposureAssets',
@@ -417,15 +625,23 @@ export const parseQuoterSignerPolicy = (source: string | undefined): QuoterSigne
   if (surface === 'setup-remediation' && remediations.length === 0) {
     throw new PolicyNotConfiguredError('remediations', 'empty')
   }
+  const ratifier = contractAddressValue(record.ratifier, 'ratifier')
+  const contracts = contractsValue(record.contracts, 'contracts')
+  // A ratifier pinned to the singleton or the Mempool would make the revoke and ratify encoders
+  // target a contract without the ratifier functions — a mis-pinned document, refused up front.
+  if (isAddressEqual(ratifier, contracts.midnight) || isAddressEqual(ratifier, contracts.mempool)) {
+    throw new PolicyNotConfiguredError('ratifier', 'duplicate')
+  }
   return {
     policyVersion: QUOTER_SIGNER_POLICY_VERSION,
     surface,
     ratifierMode,
     chainId,
     maker: addressValue(record.maker, 'maker'),
-    ratifier: addressValue(record.ratifier, 'ratifier'),
+    ratifier,
+    contracts,
     offerWindow,
-    markets: marketsValue(record.markets, 'markets'),
+    markets: marketsValue(record.markets, 'markets', { chainId, contracts }),
     maxTotalLendExposureAssets: unsignedDecimalValue(
       record.maxTotalLendExposureAssets,
       'maxTotalLendExposureAssets'
