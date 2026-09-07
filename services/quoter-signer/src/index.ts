@@ -567,10 +567,15 @@ const evaluateIntent = async (
     } else {
       // An explicit placement — break-glass only, self-cancel included, per the policy checks —
       // is signed only inside the independently read `[latest, pending]` window: below it the
-      // artifact could never be included, above it it would be a future-nonce stockpile.
+      // artifact could never be included, above it it would be a future-nonce stockpile. A
+      // self-cancel must additionally stay below `pending` — it replaces an in-flight
+      // transaction, so its slot must be occupied; the unused slot stays reserved for final
+      // revocations.
       const read = await readNonceWindow(policy, chainRead)
       if ('denial' in read) return read
-      if (operation.nonce < read.window.latest || operation.nonce > read.window.pending) {
+      const maxNonce =
+        operation.type === 'self-cancel' ? read.window.pending - 1 : read.window.pending
+      if (operation.nonce < read.window.latest || operation.nonce > maxNonce) {
         return { denial: new IntentPolicyViolationError('nonce-window', 'operation.nonce') }
       }
       nonce = operation.nonce

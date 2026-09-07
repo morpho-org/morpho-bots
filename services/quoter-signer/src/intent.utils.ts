@@ -114,9 +114,10 @@ export type IntentOffer = {
  * `nonce` with an empty zero-value self-send. Callers never supply targets, selectors, or
  * calldata, and an explicit `nonce` never widens what may be signed: policy accepts one only on
  * the operator-only break-glass surface — a routine displacement could out-bid a pending cleanup
- * and preserve exposure — and the middleware validates it against the independently read
- * `[latest, pending]` maker nonce window, so an operator can direct a replacement but never
- * obtain a future-nonce stockpile.
+ * and preserve exposure — and the middleware validates it against the independently read maker
+ * nonce window (`[latest, pending]` for revocations, `[latest, pending)` for a self-cancel,
+ * which must replace an in-flight transaction), so an operator can direct a replacement but
+ * never obtain a future-nonce stockpile.
  */
 export type RevokeOperation =
   | {

@@ -60,11 +60,14 @@ export const viemChainReadTransport: ChainReadTransport = {
     return rpcClient(config.url).getTransactionCount({ address: maker, blockTag: 'latest' })
   },
   async allowance(config, query) {
+    // Pending-state read: the nonce read counts in-flight transactions, so the allowance must
+    // see them too or a still-pending approval would pass the no-op check and be signed again.
     return rpcClient(config.url).readContract({
       address: query.token,
       abi: erc20Abi,
       functionName: 'allowance',
-      args: [query.owner, query.spender]
+      args: [query.owner, query.spender],
+      blockTag: 'pending'
     })
   }
 }
@@ -118,14 +121,15 @@ export const readMakerPendingNonce = async (
 /**
  * The maker's replaceable nonce window, read in one pass: `latest` is the first nonce not yet
  * mined (the lowest an explicit-nonce signature could still land at) and `pending` the first not
- * yet occupied by an in-flight transaction (the highest it may target without stockpiling a
- * future-nonce artifact). Explicit-nonce intents — self-cancel and break-glass placements — are
- * signed only inside `[latest, pending]`.
+ * yet occupied by an in-flight transaction. Explicit placements are signed only inside
+ * `[latest, pending]` — and a self-cancel only inside `[latest, pending)`: it replaces an
+ * in-flight transaction, so its slot must be occupied, while a revocation may also take the next
+ * unused slot for final cleanup without stockpiling a future-nonce artifact.
  */
 export type MakerNonceWindow = {
   /** Latest (mined) transaction count — the first nonce a signature could replace. */
   readonly latest: number
-  /** Pending transaction count — the next unused nonce, the window's inclusive upper bound. */
+  /** Pending transaction count — the next unused nonce, the window's upper bound. */
   readonly pending: number
 }
 
@@ -174,7 +178,9 @@ export const readMakerNonceWindow = async (
 /**
  * Reads one ERC-20 allowance of the maker through the middleware's own endpoint — the independent
  * allowance-state read the setup-remediation surface bases its no-op denial on — with the same
- * chain-id verification as every other read.
+ * chain-id verification as every other read. The production transport reads pending state, the
+ * same speculative view as the nonce read, so an approval still in flight already counts and a
+ * duplicate is denied instead of signed at the next nonce.
  * @param config - Validated RPC endpoint addressing.
  * @param expected - Policy-pinned chain id plus the manifest-pinned token/owner/spender triple.
  * @returns The current allowance.

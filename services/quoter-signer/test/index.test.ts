@@ -667,8 +667,8 @@ describe('handler', () => {
 
   it.each<[string, number, number, number]>([
     ['at exactly the pending count', 7, 5, 7],
-    ['inside an empty window where nothing is in flight', 5, 5, 5]
-  ])('approves a break-glass self-cancel %s', async (_description, nonce, latest, pending) => {
+    ['in an empty window where nothing is in flight', 5, 5, 5]
+  ])('approves a break-glass revocation %s', async (_description, nonce, latest, pending) => {
     vi.spyOn(console, 'log').mockImplementation(() => {})
     stubPolicy({ surface: 'break-glass-revoke' })
     stubKms()
@@ -681,13 +681,52 @@ describe('handler', () => {
       }),
       attestAtStartup: false
     })
+    const fees = { maxFeePerGas: '5000000000', maxPriorityFeePerGas: '2000000000', gas: '500000' }
 
-    const response = await handle({ ...revokeIntent, operation: { type: 'self-cancel', nonce } })
+    const response = await handle({
+      ...revokeIntent,
+      operation: { type: 'consume-groups', groups: [`0x${'66'.repeat(32)}`], nonce },
+      fees
+    })
 
     expect(response.approved).toBe(true)
     if (!response.approved || response.result.kind !== 'revoke') throw new Error('unreachable')
     expect(response.result.transaction.nonce).toBe(nonce)
   })
+
+  it.each<[string, number, number, number]>([
+    ['at the unused pending slot', 7, 5, 7],
+    ['in an empty window where nothing is in flight', 5, 5, 5]
+  ])(
+    'denies a break-glass self-cancel %s: nothing to replace',
+    async (_description, nonce, latest, pending) => {
+      const lines: string[] = []
+      vi.spyOn(console, 'log').mockImplementation((line: string) => {
+        lines.push(line)
+      })
+      stubPolicy({ surface: 'break-glass-revoke' })
+      stubKms()
+      stubRpc()
+      const getPublicKey = vi.fn(async () => publicKeyMaterial())
+      const handle = createHandler({
+        kms: fakeKms(getPublicKey),
+        chainRead: chainReadFake({
+          latestNonce: async () => latest,
+          pendingNonce: async () => pending
+        }),
+        attestAtStartup: false
+      })
+
+      const response = await handle({ ...revokeIntent, operation: { type: 'self-cancel', nonce } })
+
+      expect(response.approved).toBe(false)
+      expect(getPublicKey).not.toHaveBeenCalled()
+      const denied = lines
+        .map(line => JSON.parse(line) as Record<string, unknown>)
+        .find(event => event.event === 'middleware.intent_denied')
+      expect(denied).toMatchObject({ check: 'nonce-window', field: 'operation.nonce' })
+    }
+  )
 
   it('denies retryably before kms when the window moves between the two nonce reads', async () => {
     const lines: string[] = []

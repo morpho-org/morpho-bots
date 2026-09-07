@@ -1517,7 +1517,9 @@ independent chain reads alone, with the ledger-backed refinements still to come:
   retryable denial; the upper bound is a mempool snapshot whose transient drift is bounded by the
   maker's own in-flight artifacts, the same drift the routine pending read carries): below
   `latest` the artifact could never be included, above `pending` it would be the future-nonce
-  stockpile §1 forbids. This substitutes the window read for the recorded-transaction validation ("a
+  stockpile §1 forbids, and a self-cancel must stay below `pending` — it replaces an in-flight
+  transaction, so its slot must be occupied (`[latest, pending)`), while revocations keep the
+  inclusive bound for final cleanup at the next unused slot. This substitutes the window read for the recorded-transaction validation ("a
   self-cancel at a recorded nonce"), and that substitution is exactly why the routine surface
   does **not** get the operation yet: displacement is not inherently exposure reduction — an
   empty send that out-bids a pending root cancellation, group consumption, or remediation
@@ -1549,8 +1551,10 @@ independent chain reads alone, with the ledger-backed refinements still to come:
   `approve(spender, amount)` on the pinned token, all values from the reviewed document; a zero
   amount pins a revocation variant; token and spender must be non-zero and distinct from the
   maker EOA. The
-  middleware reads the current allowance itself and refuses to sign a transaction that would
-  re-set the live value (`remediation-state`), the §Setup-remediation independent-state read.
+  middleware reads the current allowance itself — at pending state, the same speculative view as
+  the nonce read, so an approval still in flight is not signed a second time at the next nonce —
+  and refuses to sign a transaction that would re-set the live value (`remediation-state`), the
+  §Setup-remediation independent-state read.
   The remediation epoch (exclusive signing window with drained routine leases) is deferred with
   the independent control plane: operator-only IAM on the surface plus the runbook rule "stop
   routine signing first" stand in, and a nonce race against routine signing is a liveness, not an

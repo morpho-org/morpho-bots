@@ -31,11 +31,15 @@ canonically encodes and signs all four kinds:
   routine transaction from a safety action needs the recorded-transaction inventory of a later
   increment. Every accepted explicit placement is validated against the independently read
   **`[latest, pending]` nonce window** — below it the artifact could never be included, above it
-  it would be a future-nonce stockpile, and both deny before any KMS call.
+  it would be a future-nonce stockpile — and a self-cancel must additionally stay below
+  `pending`: it replaces an in-flight transaction, so its slot must be occupied, while the
+  unused slot stays reserved for final revocations. Every violation denies before any KMS call.
 - **`setup-remediation`** (operator-only surface): the manifest-pinned ERC-20
   `approve(spender, amount)` with every value from the deployment policy, signed only after the
   middleware's own allowance read proves the transaction changes state — a re-approval of the
-  live allowance denies (`remediation-state`) instead of burning the nonce.
+  live allowance denies (`remediation-state`) instead of burning the nonce. The allowance is read
+  at pending state, the same speculative view as the nonce read, so an approval still in flight
+  already counts and is not signed a second time.
 
 Every transaction nonce is read or validated through the middleware's **own HTTPS RPC endpoint**
 (see [RPC endpoint](#rpc-endpoint-quoter_signer_rpc_url)) — the pending read for routine
@@ -114,8 +118,9 @@ its then-current placement). The four kinds:
   optional `nonce`, and explicit placement is **required on the break-glass surface, rejected on
   routine revocation** (`nonce-pin`) — `self-cancel` carries a required nonce, so it is
   break-glass-only until the recorded-transaction inventory lands. Every accepted explicit nonce
-  must sit inside the independently read `[latest, pending]` maker window (`nonce-window`).
-  Approval returns the signed transaction artifact.
+  must sit inside the independently read maker window (`nonce-window`) — `[latest, pending]` for
+  the contract operations, `[latest, pending)` for `self-cancel`, which must replace an in-flight
+  transaction. Approval returns the signed transaction artifact.
 - **`setup-remediation`**: a deployment-manifest `remediation` variant id plus `fees`; the
   middleware reads the current allowance itself and encodes the exact pinned
   `approve(spender, amount)` — a variant whose pinned allowance already holds is denied
