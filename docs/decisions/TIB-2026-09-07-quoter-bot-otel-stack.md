@@ -82,9 +82,11 @@ rule rather than growing `@repo/bot-kit` or `@repo/observability`), consumed by 
 2. **Undici auto-instrumentation with unconditional URL redaction.** Every outbound
    `fetch`/undici request becomes a client span and feeds the semconv
    `http.client.request.duration` histogram. The instrumentation's `startSpanHook` overrides every
-   URL-bearing attribute at span creation: `url.full` is reduced to its origin, `url.path` to
-   `[redacted]`, `url.query` to empty — RPC providers commonly embed API keys in the path, so
-   redaction is unconditional rather than per-host allowlisted. Failures need the same treatment:
+   URL-bearing attribute at span creation: `url.path` becomes `[redacted]`, `url.query` empty,
+   and `url.full`/`server.address` a classified origin whose subdomain labels collapse to
+   `[redacted]` (only the last two hostname labels, scheme, and port survive; IP literals and one-
+   or two-label hosts pass through) — RPC providers embed API keys in paths, queries, and even
+   hostname labels, so redaction is unconditional rather than per-host allowlisted. Failures need the same treatment:
    the instrumentation records `exception.message`/`exception.stacktrace` events and puts
    `error.message` into the span status, so a sanitizing span processor wraps the batch exporter
    and strips every `exception` event and status message on span end — failure identity survives

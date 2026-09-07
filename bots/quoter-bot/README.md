@@ -653,9 +653,11 @@ client span via `diagnostics_channel` instrumentation, with the semconv
 `http.client.request.duration` histogram recorded alongside. Under the combined `start` lifecycle
 the cycle span begins at enqueue, so wait behind the shared bootstrap/ladder mutation queue is
 part of the span — per-market work time remains `cycle.completed.durationMs`, making contention
-the difference between the two. Every URL-bearing span attribute is
-reduced to its origin (`url.full` keeps scheme and host; path and query are dropped
-unconditionally) because RPC provider URLs commonly embed API keys. Failures are sanitized the
+the difference between the two. Every URL-bearing attribute (`url.full`, `server.address`, on
+spans and the duration metric alike) is reduced to a classified origin: path and query are
+dropped and subdomain labels collapse to `[redacted]` (some providers encode keys as hostname
+labels), keeping only the last two hostname labels, the scheme, and the port — IP literals and
+one- or two-label hosts pass through. Failures are sanitized the
 same way: a span processor strips every `exception` event and status message before export, so a
 failed request or cycle span carries only an error status plus low-cardinality classifications
 (`error.type`, the allowlisted `errorName`) — raw error text never reaches the exporter. A cycle
