@@ -66,7 +66,7 @@ describe('quoter-signer response contract', () => {
     }
     const responses: readonly QuoterSignerResponse[] = [
       approval,
-      buildDenialResponse(new SigningNotImplementedError())
+      buildDenialResponse(new SigningNotImplementedError('break-glass-revoke'))
     ]
 
     expect(
@@ -75,7 +75,7 @@ describe('quoter-signer response contract', () => {
   })
 
   it.each<[QuoterSignerDenial['name'], () => QuoterSignerDenial & Error]>([
-    ['SigningNotImplementedError', () => new SigningNotImplementedError()],
+    ['SigningNotImplementedError', () => new SigningNotImplementedError('self-cancel')],
     ['MalformedIntentError', () => new MalformedIntentError('offers[0].maxAssets', 'out-of-range')]
   ])('maps a %s cause into the versioned denial envelope', (name, cause) => {
     const error = cause()

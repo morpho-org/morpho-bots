@@ -15,6 +15,7 @@ export type MalformedIntentReason =
   | 'empty'
   | 'too-many-offers'
   | 'too-many-markets'
+  | 'too-many-groups'
 
 /**
  * Signals that an invocation payload violates the versioned TIB-2026-08-12 wire contract, so the

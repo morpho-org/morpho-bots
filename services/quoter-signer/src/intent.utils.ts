@@ -29,6 +29,14 @@ export const MAX_INTENT_OFFERS_PER_SIDE = 40
 export const MAX_INTENT_MARKETS = 7
 
 /**
+ * Hard wire cap on groups per `consume-groups` revocation — the full two-sided wire-cap ladder's
+ * group count. A larger cleanup splits into multiple revoke intents (each at its own nonce)
+ * instead of one unboundedly large multicall whose caller-chosen gas limit could admit an
+ * include-but-revert transaction that burns the nonce while leaving every group live.
+ */
+export const MAX_REVOKE_GROUPS = 80
+
+/**
  * Canonical unsigned decimal integer string: base-10 digits with no sign, no leading zeros, and a
  * value within uint256 range (narrower where the protocol field is narrower, such as the uint128
  * offer caps). JSON cannot carry bigint, so every uint-range value on the wire — wei, assets,
@@ -110,7 +118,7 @@ export type RevokeOperation =
   | {
       /** Consume one or more maker-owned offer groups to their cap. */
       readonly type: 'consume-groups'
-      /** Offer-group ids (bytes32) to consume; must be non-empty. */
+      /** Offer-group ids (bytes32) to consume; non-empty, at most {@link MAX_REVOKE_GROUPS}. */
       readonly groups: readonly Hex[]
     }
   | {
@@ -139,7 +147,12 @@ type IntentBase = {
   readonly chainId: number
   /** Maker address the caller believes it is signing for; must equal the deployment pin. */
   readonly maker: Address
-  /** Caller-chosen idempotency key: retries with the same key return the stored artifacts. */
+  /**
+   * Caller-chosen idempotency key, reserved for the stored-artifact retry semantics of the
+   * reservation-ledger increment. Inert until then: a replayed key re-evaluates the intent and,
+   * for transaction kinds, signs again at the current pending nonce — so callers must invoke
+   * synchronously and never blind-retry a timed-out signing invocation.
+   */
   readonly idempotencyKey: string
 }
 
@@ -388,6 +401,9 @@ const revokeOperationValue = (value: unknown, field: string): RevokeOperation =>
     if (groups === undefined) throw new MalformedIntentError(`${field}.groups`, 'missing')
     if (!Array.isArray(groups)) throw new MalformedIntentError(`${field}.groups`, 'wrong-type')
     if (groups.length === 0) throw new MalformedIntentError(`${field}.groups`, 'empty')
+    if (groups.length > MAX_REVOKE_GROUPS) {
+      throw new MalformedIntentError(`${field}.groups`, 'too-many-groups')
+    }
     return {
       type,
       groups: groups.map((group, index) => bytes32Value(group, `${field}.groups[${index}]`))
