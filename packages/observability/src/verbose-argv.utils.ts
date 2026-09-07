@@ -16,19 +16,21 @@ const commandOf = (argv: readonly string[]) => {
 }
 
 /**
- * Enables a bot's safe verbose event stream only when BetterStack shipping is fully configured.
+ * Enables a bot's safe verbose event stream only when an observability sink is configured.
  * @param argv - CLI arguments without runtime or executable prefixes.
- * @param options - Verbose-capable command allowlist and the environment used only to detect
- * complete BetterStack shipping configuration.
+ * @param options - Verbose-capable command allowlist, the environment used only to detect
+ * complete BetterStack shipping configuration, and a caller-detected additional sink (for
+ * example an OpenTelemetry export opt-in) that also warrants the stream.
  * @returns A copied argument list, with `--verbose` added for allowlisted commands when needed.
  * @remarks Pure argument transformation; it performs no logging, shipping, or process mutation.
  */
 export const enhanceVerboseArgv = (
   argv: readonly string[],
-  options: { commands: readonly string[]; env?: Environment }
+  options: { commands: readonly string[]; env?: Environment; hasAdditionalSink?: boolean }
 ): readonly string[] => {
   const env = options.env ?? process.env
-  if (!hasShippingConfig(env) || argv.includes('--verbose')) return [...argv]
+  const sinkConfigured = hasShippingConfig(env) || options.hasAdditionalSink === true
+  if (!sinkConfigured || argv.includes('--verbose')) return [...argv]
   const command = commandOf(argv)
   if (command === undefined || !options.commands.includes(command)) return [...argv]
   return [...argv, '--verbose']

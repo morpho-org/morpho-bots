@@ -1,4 +1,10 @@
 # Runs the combined setup, bootstrap, and ladder monitor from the package-owned production image.
+#
+# The optional `otel` profile adds a local all-in-one OpenTelemetry backend (collector, Tempo,
+# Prometheus, Loki, Grafana):
+#   docker compose --profile otel up
+# with OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-lgtm:4318 in the environment, then open Grafana on
+# http://localhost:3000. Leaving the endpoint unset keeps bot telemetry disabled entirely.
 services:
   bot:
     build:
@@ -25,10 +31,23 @@ services:
       BETTERSTACK_SOURCE_TOKEN: ${BETTERSTACK_SOURCE_TOKEN:-}
       BETTERSTACK_INGESTING_HOST: ${BETTERSTACK_INGESTING_HOST:-}
       BETTERSTACK_HEARTBEAT_URL: ${BETTERSTACK_HEARTBEAT_URL:-}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: ${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:-}
+      OTEL_EXPORTER_OTLP_METRICS_ENDPOINT: ${OTEL_EXPORTER_OTLP_METRICS_ENDPOINT:-}
+      OTEL_EXPORTER_OTLP_HEADERS: ${OTEL_EXPORTER_OTLP_HEADERS:-}
       XDG_STATE_HOME: /state
     restart: unless-stopped
     volumes:
       - quoter-bot-state:/state
+
+  otel-lgtm:
+    image: grafana/otel-lgtm:0.32.1
+    profiles:
+      - otel
+    ports:
+      - '127.0.0.1:3000:3000' # Grafana UI
+      - '127.0.0.1:4318:4318' # OTLP/HTTP, for a bot running outside compose
+    restart: unless-stopped
 
 volumes:
   quoter-bot-state:

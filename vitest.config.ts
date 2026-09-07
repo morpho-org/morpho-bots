@@ -15,6 +15,7 @@ export default defineConfig({
       'packages/monitoring',
       'packages/observability',
       'packages/offers',
+      'packages/telemetry',
       'bots/blue-liquidation',
       'bots/vault-v1-reallocation',
       'bots/vault-v2-reallocation',

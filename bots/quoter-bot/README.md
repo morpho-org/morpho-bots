@@ -502,6 +502,8 @@ unit; for six-decimal USDC, `101000000` is 101 USDC. No value is inferred from a
 | `BETTERSTACK_SOURCE_TOKEN`       | —                                   | Optional Better Stack source token. Must be set together with `BETTERSTACK_INGESTING_HOST`; partial configuration emits `logship.misconfigured` and ships nothing.                                                                                                                                                                                                  |
 | `BETTERSTACK_INGESTING_HOST`     | —                                   | Optional Better Stack ingest host, with or without an `https://` prefix. Must be set together with `BETTERSTACK_SOURCE_TOKEN`.                                                                                                                                                                                                                                      |
 | `BETTERSTACK_HEARTBEAT_URL`      | —                                   | Optional HTTP(S) heartbeat URL pinged at startup and once per minute. Invalid URLs and ping failures are reported safely and never interrupt quoter-bot.                                                                                                                                                                                                            |
+| `OTEL_EXPORTER_OTLP_ENDPOINT`    | —                                   | Optional OTLP/HTTP base endpoint enabling OpenTelemetry trace and metric export. Unset disables telemetry entirely; the standard `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` / `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` variants enable one signal alone. The value may embed an access token and is never logged.                                                            |
+| `OTEL_EXPORTER_OTLP_HEADERS`     | —                                   | Optional comma-separated `key=value` request headers for the OTLP endpoint (typically authorization). Read by the exporter only and never logged.                                                                                                                                                                                                                   |
 
 There is no separate Mempool endpoint or API-key field. Books and cursor-paginated maker offer groups
 are read through `MORPHO_API_BASE_URL`. Ratifier identity is validated from the pinned Morpho SDK
@@ -634,6 +636,66 @@ Absence alerts are scoped per market by `market.configured`, which names the mar
 - `cycle.completed.durationMs` covers one market's check including the post-check verbose re-read.
   Under the combined `start` lifecycle the ladder and bootstrap writers share one mutation queue, so
   it can include queue wait.
+
+### OpenTelemetry observability
+
+Set `OTEL_EXPORTER_OTLP_ENDPOINT` (or a signal-specific
+`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` / `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT`) to export traces and
+metrics over OTLP/HTTP with JSON encoding — TIB-2026-09-07 records the design. Telemetry follows
+the same contract as Better Stack shipping: strictly opt-in (unset means nothing is registered and
+no telemetry code runs), strictly best-effort (no export failure can interrupt or halt quoting),
+and strictly sanitized. It is configured independently of `BETTERSTACK_*`; either sink alone
+auto-enables the safe `--verbose` event stream for `start`, `bootstrap`, and `ladder`.
+
+**Traces.** Every setup/bootstrap/ladder cycle runs inside a `quoter-bot.cycle` span tagged
+`workflow`, and every outbound `fetch`/undici request (RPC and Morpho API calls) becomes a child
+client span via `diagnostics_channel` instrumentation, with the semconv
+`http.client.request.duration` histogram recorded alongside. Every URL-bearing span attribute is
+reduced to its origin (`url.full` keeps scheme and host; path and query are dropped
+unconditionally) because RPC provider URLs commonly embed API keys. Failures are sanitized the
+same way: a span processor strips every `exception` event and status message before export, so a
+failed request or cycle span carries only an error status plus low-cardinality classifications
+(`error.type`, the allowlisted `errorName`) — raw error text never reaches the exporter. AWS KMS and quoter-signer Lambda calls use the AWS SDK's `node:http` stack, not
+undici, so they appear inside the cycle span's duration but not as child spans.
+
+**Metrics.** The `quoter_bot.*` instruments are derived from the same shipped monitoring records
+documented above, so the log stream and the metric stream can never disagree about what happened.
+Their attributes are restricted to the safe grouping dimensions listed above plus the derived
+`type` (guardrail event suffix) and `phase` (`submitted`/`settled`) discriminators; `txHash`,
+`groupId`, and `errorName` never become metric attributes. The semconv
+`http.client.request.duration` histogram is the one instrument outside that vocabulary, carrying
+the standard bounded HTTP client dimensions (method, status code, server address/port, URL
+scheme, class-of-error `error.type`) and never a path, query, or free-form text. `*_assets` and
+`*_bps` values are raw smallest-unit integers converted to floating point (magnitudes beyond 2^53
+lose precision but keep scale).
+
+| Instrument                                                             | Kind      | Source record                                                     |
+| ---------------------------------------------------------------------- | --------- | ----------------------------------------------------------------- |
+| `quoter_bot.cycles`                                                    | counter   | `cycle.completed`                                                 |
+| `quoter_bot.cycle.duration` (ms)                                       | histogram | `cycle.completed.durationMs`                                      |
+| `quoter_bot.failures`                                                  | counter   | `bot.failed`                                                      |
+| `quoter_bot.guardrail.events`                                          | counter   | `guardrail.*`, tagged `type`                                      |
+| `quoter_bot.transactions`                                              | counter   | `*.transaction-submitted` + `transaction.settled`, tagged `phase` |
+| `quoter_bot.offers.consumed` / `.consumed_assets`                      | counter   | `offer.consumed`                                                  |
+| `quoter_bot.setup.checks`                                              | counter   | `setup.check-failed` / `-warning`                                 |
+| `quoter_bot.reference.rate_bps` / `.target_rate_bps`                   | gauge     | `reference.observed`                                              |
+| `quoter_bot.position.*`                                                | gauge     | `position.observed`, one per field                                |
+| `quoter_bot.bootstrap.credit_assets` / `.credit_target_assets`         | gauge     | `bootstrap.progress`                                              |
+| `quoter_bot.book.*` (`rungs`, `total_assets`, `quoting`, `*_rate_bps`) | gauge     | `book.observed`                                                   |
+
+Every exported span and metric carries resource identity `service.name: quoter-bot`
+(`OTEL_SERVICE_NAME` overrides), `service.version`, and `chainId`. Metrics export every 60 s
+(`OTEL_METRIC_EXPORT_INTERVAL` overrides, in milliseconds); spans batch-export continuously; on
+shutdown both flush with a 10-second bound. Lifecycle is visible as `otel.started`,
+`otel.start-failed`, and `otel.shutdown-failed` records, and SDK-internal export errors surface as
+a rate-limited `otel.diagnostic` record carrying a classification token only — endpoint URLs and
+headers may embed credentials and are never logged.
+
+For a local stack, `docker compose --profile otel up` starts a bundled
+collector/Tempo/Prometheus/Loki/Grafana ([`grafana/otel-lgtm`](https://github.com/grafana/docker-otel-lgtm));
+point the bot at `http://otel-lgtm:4318` (from inside compose) or `http://127.0.0.1:4318` (from a
+local `start`) and open Grafana on `http://localhost:3000`. As with Better Stack, this repository
+does not provision or claim a deployed collector or dashboard.
 
 ### YAML schema
 

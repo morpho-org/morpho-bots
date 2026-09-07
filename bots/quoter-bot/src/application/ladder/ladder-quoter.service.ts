@@ -2,6 +2,7 @@ import type { MonitorOperationQueue } from '@repo/monitoring'
 import type { Hex } from 'viem'
 
 import { cycleHasFailure, cycleRequiresHalt, waitForMonitorInterval } from '@repo/monitoring'
+import { withActiveSpan } from '@repo/telemetry'
 
 import type {
   LadderConfig,
@@ -279,10 +280,18 @@ export class LadderQuoterService {
       try {
         const runCycle = async () => {
           if (parameters.signal.aborted) return undefined
-          const results = await this.runOnce({
-            verbose: parameters.verbose,
-            onTransactionSubmitted: parameters.onTransactionSubmitted
-          })
+          const results = await withActiveSpan(
+            {
+              name: 'quoter-bot.cycle',
+              attributes: { workflow: 'ladder' },
+              errorName: operatorErrorName
+            },
+            () =>
+              this.runOnce({
+                verbose: parameters.verbose,
+                onTransactionSubmitted: parameters.onTransactionSubmitted
+              })
+          )
           await parameters.onCycle?.(results)
           return results
         }
