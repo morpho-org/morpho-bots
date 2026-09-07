@@ -10,6 +10,8 @@ type SubmittedTransactionRecord = {
   marketId?: unknown
 }
 
+type BookRateField = 'bestRateBps' | 'worstRateBps' | 'centerRateBps'
+
 const asNumber = (value: unknown) => {
   if (typeof value === 'number' && Number.isFinite(value)) return value
   if (typeof value === 'bigint') return Number(value)
@@ -32,8 +34,10 @@ const definedAttributes = (attributes: Record<string, unknown>): Attributes => {
  * the monitoring-event contract allows plus the derived `type` and `phase` discriminators —
  * `txHash`, `groupId`, and `errorName` never become attributes. `*_assets` and `*_bps` values are
  * raw smallest-unit integers converted to floating point, so magnitudes beyond 2^53 lose
- * precision but keep scale. Observation never throws: a malformed record is dropped, because
- * telemetry must not interrupt quoting.
+ * precision but keep scale. Book rate gauges are observable and mirror only the latest record
+ * per market and side, so an empty book stops exporting rates rather than freezing stale ones.
+ * Observation never throws: a malformed record is dropped, because telemetry must not interrupt
+ * quoting.
  */
 export const createTelemetryRecordObserver = () => {
   const meter = metrics.getMeter('quoter-bot')
@@ -114,11 +118,38 @@ export const createTelemetryRecordObserver = () => {
   const bookGauges = {
     rungs: gauge('quoter_bot.book.rungs', 'Published rungs on one book side.'),
     totalAssets: gauge('quoter_bot.book.total_assets', 'Published assets on one book side.'),
-    quoting: gauge('quoter_bot.book.quoting', 'Whether one book side is actively quoting (0/1).'),
-    bestRateBps: gauge('quoter_bot.book.best_rate_bps', 'Best published rate on one book side.'),
-    worstRateBps: gauge('quoter_bot.book.worst_rate_bps', 'Worst published rate on one book side.'),
-    centerRateBps: gauge('quoter_bot.book.center_rate_bps', 'Ladder center rate on one book side.')
+    quoting: gauge('quoter_bot.book.quoting', 'Whether one book side is actively quoting (0/1).')
   }
+  // Rates exist only while a side quotes, and a synchronous gauge keeps exporting its last value
+  // after the book empties — a stale rate beside quoting=0. Each book.observed replaces the
+  // side's registry entry with exactly the rates it carries, so an empty book drops its rate
+  // data points instead of freezing them.
+  const bookRates = new Map<
+    string,
+    { attributes: Attributes; rates: Record<BookRateField, number | undefined> }
+  >()
+  const bookRateGauge = (name: string, description: string, field: BookRateField) =>
+    meter.createObservableGauge(name, { description }).addCallback(result => {
+      for (const { attributes, rates } of bookRates.values()) {
+        const value = rates[field]
+        if (value !== undefined) result.observe(value, attributes)
+      }
+    })
+  bookRateGauge(
+    'quoter_bot.book.best_rate_bps',
+    'Best published rate on one quoting book side.',
+    'bestRateBps'
+  )
+  bookRateGauge(
+    'quoter_bot.book.worst_rate_bps',
+    'Worst published rate on one quoting book side.',
+    'worstRateBps'
+  )
+  bookRateGauge(
+    'quoter_bot.book.center_rate_bps',
+    'Ladder center rate on one quoting book side.',
+    'centerRateBps'
+  )
 
   const observe = (record: MonitoringEvent | SubmittedTransactionRecord) => {
     if (record.event.endsWith('.transaction-submitted')) {
@@ -207,14 +238,14 @@ export const createTelemetryRecordObserver = () => {
         bookGauges.quoting.record(event.state === 'quoting' ? 1 : 0, attributes)
         const totalAssets = asNumber(event.totalAssets)
         if (totalAssets !== undefined) bookGauges.totalAssets.record(totalAssets, attributes)
-        for (const [field, instrument] of [
-          ['bestRateBps', bookGauges.bestRateBps],
-          ['worstRateBps', bookGauges.worstRateBps],
-          ['centerRateBps', bookGauges.centerRateBps]
-        ] as const) {
-          const value = asNumber(event[field])
-          if (value !== undefined) instrument.record(value, attributes)
-        }
+        bookRates.set(`${event.marketId}|${event.side}`, {
+          attributes,
+          rates: {
+            bestRateBps: asNumber(event.bestRateBps),
+            worstRateBps: asNumber(event.worstRateBps),
+            centerRateBps: asNumber(event.centerRateBps)
+          }
+        })
         return
       }
       case 'offer.consumed': {

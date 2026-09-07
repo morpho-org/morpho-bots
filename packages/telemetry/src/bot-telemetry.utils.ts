@@ -12,6 +12,7 @@ import { ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION } from '@opentelemetry/semantic
 import type { Environment } from './telemetry-config.utils'
 
 import { diagnosticErrorName } from './diagnostic-name.utils'
+import { withDeltaObservableGauges } from './metric-temporality.utils'
 import { withSpanSanitizer } from './span-sanitizer.utils'
 import { hasMetricExportConfig, hasTraceExportConfig } from './telemetry-config.utils'
 import { redactedUrlAttributes } from './url-redaction.utils'
@@ -134,7 +135,7 @@ export const startBotTelemetry = (options: {
           resource,
           readers: [
             new PeriodicExportingMetricReader({
-              exporter: new OTLPMetricExporter(),
+              exporter: withDeltaObservableGauges(new OTLPMetricExporter()),
               exportIntervalMillis: metricExportIntervalMs(env, options.logger)
             })
           ]

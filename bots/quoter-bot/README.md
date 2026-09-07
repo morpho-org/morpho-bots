@@ -667,7 +667,9 @@ Their attributes are restricted to the safe grouping dimensions listed above plu
 the standard bounded HTTP client dimensions (method, status code, server address/port, URL
 scheme, class-of-error `error.type`) and never a path, query, or free-form text. `*_assets` and
 `*_bps` values are raw smallest-unit integers converted to floating point (magnitudes beyond 2^53
-lose precision but keep scale).
+lose precision but keep scale). The book `*_rate_bps` gauges exist only while that side is
+quoting: an empty side drops its rate data points rather than freezing the last published rate,
+so a rate reading always sits beside `quoter_bot.book.quoting = 1`.
 
 | Instrument                                                             | Kind      | Source record                                                     |
 | ---------------------------------------------------------------------- | --------- | ----------------------------------------------------------------- |

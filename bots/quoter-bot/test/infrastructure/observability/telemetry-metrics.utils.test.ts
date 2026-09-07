@@ -7,6 +7,7 @@ import {
   MeterProvider,
   PeriodicExportingMetricReader
 } from '@opentelemetry/sdk-metrics'
+import { withDeltaObservableGauges } from '@repo/telemetry'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
 
 import { createTelemetryRecordObserver } from '../../../src/infrastructure/observability/telemetry-metrics.utils'
@@ -25,7 +26,14 @@ describe('createTelemetryRecordObserver', () => {
   beforeEach(() => {
     exporter = new InMemoryMetricExporter(AggregationTemporality.CUMULATIVE)
     provider = new MeterProvider({
-      readers: [new PeriodicExportingMetricReader({ exporter, exportIntervalMillis: 3_600_000 })]
+      readers: [
+        new PeriodicExportingMetricReader({
+          // The production wrapper is part of the behavior under test: without delta temporality
+          // for observable gauges, the SDK re-exports an emptied book's stale rates.
+          exporter: withDeltaObservableGauges(exporter),
+          exportIntervalMillis: 3_600_000
+        })
+      ]
     })
     metrics.setGlobalMeterProvider(provider)
   })
@@ -209,6 +217,54 @@ describe('createTelemetryRecordObserver', () => {
     expect(
       metricByName(collected, 'quoter_bot.bootstrap.credit_target_assets')?.dataPoints
     ).toEqual([{ attributes: { marketId: MARKET_ID }, value: 10_000_000 }])
+  })
+
+  test('an empty book drops its rate data points instead of freezing them', async () => {
+    const OTHER_MARKET_ID =
+      '0x6666666666666666666666666666666666666666666666666666666666666666' as const
+    const observer = createTelemetryRecordObserver()
+    observer.record({
+      event: 'book.observed',
+      marketId: MARKET_ID,
+      side: 'higher',
+      state: 'quoting',
+      rungs: 3,
+      totalAssets: 1_500_000_000n,
+      bestRateBps: 420n,
+      centerRateBps: 400n
+    })
+    observer.record({
+      event: 'book.observed',
+      marketId: OTHER_MARKET_ID,
+      side: 'lower',
+      state: 'quoting',
+      rungs: 2,
+      totalAssets: 500_000_000n,
+      centerRateBps: 380n
+    })
+    const beforeEmpty = await collect()
+    expect(metricByName(beforeEmpty, 'quoter_bot.book.best_rate_bps')?.dataPoints).toEqual([
+      { attributes: { marketId: MARKET_ID, side: 'higher' }, value: 420 }
+    ])
+
+    observer.record({
+      event: 'book.observed',
+      marketId: MARKET_ID,
+      side: 'higher',
+      state: 'empty',
+      rungs: 0,
+      totalAssets: 0n
+    })
+    exporter.reset()
+    const afterEmpty = await collect()
+    expect(metricByName(afterEmpty, 'quoter_bot.book.best_rate_bps')?.dataPoints ?? []).toEqual([])
+    expect(metricByName(afterEmpty, 'quoter_bot.book.center_rate_bps')?.dataPoints).toEqual([
+      { attributes: { marketId: OTHER_MARKET_ID, side: 'lower' }, value: 380 }
+    ])
+    expect(metricByName(afterEmpty, 'quoter_bot.book.quoting')?.dataPoints).toEqual([
+      { attributes: { marketId: MARKET_ID, side: 'higher' }, value: 0 },
+      { attributes: { marketId: OTHER_MARKET_ID, side: 'lower' }, value: 1 }
+    ])
   })
 
   test('never emits trace-only correlation fields or error names as attributes', async () => {
