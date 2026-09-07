@@ -119,7 +119,9 @@ describe('parseQuoterSignerIntent', () => {
 
   it.each<RevokeOperation>([
     { type: 'consume-groups', groups: [bytes32('11'), bytes32('22')] },
+    { type: 'consume-groups', groups: [bytes32('11')], nonce: 4 },
     { type: 'unratify-root', root: bytes32('33') },
+    { type: 'cancel-root', root: bytes32('33'), nonce: 0 },
     { type: 'self-cancel', nonce: 0 }
   ])('accepts the %j revoke operation', operation => {
     expect(parseQuoterSignerIntent({ ...revokeIntent, operation })).toStrictEqual({
@@ -347,6 +349,18 @@ describe('parseQuoterSignerIntent', () => {
       { ...revokeIntent, operation: { type: 'self-cancel', nonce: -1 } },
       'operation.nonce',
       'out-of-range'
+    ],
+    [
+      'a missing self-cancel nonce',
+      { ...revokeIntent, operation: { type: 'self-cancel' } },
+      'operation.nonce',
+      'missing'
+    ],
+    [
+      'a non-numeric placement nonce on a root cancellation',
+      { ...revokeIntent, operation: { type: 'cancel-root', root: bytes32('77'), nonce: '4' } },
+      'operation.nonce',
+      'wrong-type'
     ],
     [
       'a fractional self-cancel nonce',

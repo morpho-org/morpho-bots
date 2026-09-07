@@ -135,10 +135,30 @@ export type PolicyMarket = {
   readonly maxLendExposureAssets: UnsignedDecimal
 }
 
+/**
+ * The manifest-pinned transaction template of one setup-remediation variant. The middleware
+ * encodes the exact pinned call — callers never supply targets, spenders, amounts, or calldata
+ * (TIB-2026-08-12 setup remediation). This build's one action kind is the ERC-20 allowance
+ * approval; every other maintenance shape (authorizations, the native-balance sweep) is a later
+ * increment and cannot be expressed, so it cannot be signed.
+ */
+export type PolicyRemediationAction = {
+  /** Action discriminator; this build pins ERC-20 allowance approvals only. */
+  readonly type: 'erc20-approval'
+  /** Token contract the approval executes on. */
+  readonly token: Address
+  /** Exact spender granted the allowance. */
+  readonly spender: Address
+  /** Exact allowance value the transaction sets; `0` pins a revocation variant. */
+  readonly amount: UnsignedDecimal
+}
+
 /** One manifest-pinned setup-remediation variant this deployment accepts. */
 export type PolicyRemediation = {
   /** Deployment-manifest variant id callers may name. */
   readonly variant: string
+  /** Exact pinned transaction template the middleware encodes for this variant. */
+  readonly action: PolicyRemediationAction
   /** Fee/gas ceiling class for this variant's transaction. */
   readonly feeCeiling: PolicyFeeCeiling
 }
@@ -474,19 +494,58 @@ const contractsValue = (value: unknown, field: string): PolicyContracts => {
   return { midnight, mempool }
 }
 
-const remediationValue = (value: unknown, field: string): PolicyRemediation => {
+const remediationActionValue = (
+  value: unknown,
+  field: string,
+  maker: Address
+): PolicyRemediationAction => {
+  if (value === undefined) throw new PolicyNotConfiguredError(field, 'missing')
   const record = plainObject(value, field)
-  allowKeys(record, ['variant', 'feeCeiling'], field)
+  allowKeys(record, ['type', 'token', 'spender', 'amount'], field)
+  if (stringValue(record.type, `${field}.type`) !== 'erc20-approval') {
+    throw new PolicyNotConfiguredError(`${field}.type`, 'invalid-identifier')
+  }
+  const token = contractAddressValue(record.token, `${field}.token`)
+  const spender = contractAddressValue(record.spender, `${field}.spender`)
+  // The maker is the approving EOA: pinned as the token it would sign a codeless-target no-op
+  // that burns the nonce, and pinned as the spender a self-approval that grants nothing.
+  if (isAddressEqual(token, maker)) {
+    throw new PolicyNotConfiguredError(`${field}.token`, 'duplicate')
+  }
+  if (isAddressEqual(spender, maker)) {
+    throw new PolicyNotConfiguredError(`${field}.spender`, 'duplicate')
+  }
+  return {
+    type: 'erc20-approval',
+    token,
+    spender,
+    amount: unsignedDecimalValue(record.amount, `${field}.amount`)
+  }
+}
+
+const remediationValue = (value: unknown, field: string, maker: Address): PolicyRemediation => {
+  const record = plainObject(value, field)
+  allowKeys(record, ['variant', 'action', 'feeCeiling'], field)
   const variant = stringValue(record.variant, `${field}.variant`)
   if (!REMEDIATION_VARIANT_PATTERN.test(variant)) {
     throw new PolicyNotConfiguredError(`${field}.variant`, 'invalid-identifier')
   }
-  return { variant, feeCeiling: feeCeilingValue(record.feeCeiling, `${field}.feeCeiling`) }
+  return {
+    variant,
+    action: remediationActionValue(record.action, `${field}.action`, maker),
+    feeCeiling: feeCeilingValue(record.feeCeiling, `${field}.feeCeiling`)
+  }
 }
 
-const remediationsValue = (value: unknown, field: string): readonly PolicyRemediation[] => {
+const remediationsValue = (
+  value: unknown,
+  field: string,
+  maker: Address
+): readonly PolicyRemediation[] => {
   const entries = arrayValue(value, field)
-  const remediations = entries.map((entry, index) => remediationValue(entry, `${field}[${index}]`))
+  const remediations = entries.map((entry, index) =>
+    remediationValue(entry, `${field}[${index}]`, maker)
+  )
   const seen = new Set<string>()
   remediations.forEach((remediation, index) => {
     if (seen.has(remediation.variant)) {
@@ -562,8 +621,9 @@ const policyJsonText = (source: string): string => {
  * through the SDK's content addressing, maturities must sit exactly at 15:00:00 UTC inside the
  * Mempool codec's safe-timestamp bound (an off-schedule maturity could never publish), tick
  * spacings must divide the protocol default with at least one aligned tick inside the price
- * bounds, and the ratifier, singleton, and Mempool pins must be three distinct non-zero
- * contracts.
+ * bounds, the ratifier, singleton, and Mempool pins must be three distinct non-zero contracts,
+ * and every remediation action must pin non-zero token and spender contracts distinct from the
+ * maker EOA (either collision signs a no-op that burns the nonce).
  * @param source - Raw `QUOTER_SIGNER_POLICY` environment value, or `undefined` when unset.
  * @returns The validated, normalized {@link QuoterSignerPolicy}.
  * @throws `PolicyNotConfiguredError` naming the first violating field and an allowlisted reason —
@@ -662,7 +722,8 @@ export const parseQuoterSignerPolicy = (source: string | undefined): QuoterSigne
       'insufficient-protected-ceiling'
     )
   }
-  const remediations = remediationsValue(record.remediations, 'remediations')
+  const maker = addressValue(record.maker, 'maker')
+  const remediations = remediationsValue(record.remediations, 'remediations', maker)
   // A remediation deployment with nothing to permit is an empty policy — refuse to serve rather
   // than deny every otherwise valid variant as an intent violation.
   if (surface === 'setup-remediation' && remediations.length === 0) {
@@ -680,7 +741,7 @@ export const parseQuoterSignerPolicy = (source: string | undefined): QuoterSigne
     surface,
     ratifierMode,
     chainId,
-    maker: addressValue(record.maker, 'maker'),
+    maker,
     ratifier,
     contracts,
     offerWindow,

@@ -16,10 +16,12 @@ import {
   FIXTURE_MEMPOOL,
   FIXTURE_MIDNIGHT,
   FIXTURE_RATIFIER as ratifier,
+  FIXTURE_ZERO_ADDRESS as zeroAddress,
   fixtureCollateral,
   fixtureMarketEntry,
   fixturePolicyDocument,
   fixtureProtectedCeiling as protectedCeiling,
+  fixtureRemediationAction as action,
   fixtureRoutineCeiling as routineCeiling
 } from './policy-fixture'
 
@@ -33,6 +35,13 @@ const document = (overrides: Record<string, unknown> = {}) =>
     surface: 'quote',
     ratifierMode: 'ecrecover',
     ...overrides
+  })
+
+const remediationDocument = (actionOverride: Record<string, unknown>) =>
+  document({
+    remediations: [
+      { variant: 'loan-asset-approval', action: actionOverride, feeCeiling: routineCeiling }
+    ]
   })
 
 const expectNotConfigured = (
@@ -570,13 +579,63 @@ describe('parseQuoterSignerPolicy', () => {
       JSON.stringify(
         document({
           remediations: [
-            { variant: 'loan-asset-approval', feeCeiling: routineCeiling },
-            { variant: 'loan-asset-approval', feeCeiling: routineCeiling }
+            { variant: 'loan-asset-approval', action, feeCeiling: routineCeiling },
+            { variant: 'loan-asset-approval', action, feeCeiling: routineCeiling }
           ]
         })
       ),
       'remediations[1].variant',
       'duplicate'
+    ],
+    [
+      'a remediation variant without an action template',
+      JSON.stringify(
+        document({ remediations: [{ variant: 'loan-asset-approval', feeCeiling: routineCeiling }] })
+      ),
+      'remediations[0].action',
+      'missing'
+    ],
+    [
+      'an unknown remediation action kind',
+      JSON.stringify(remediationDocument({ ...action, type: 'native-balance-sweep' })),
+      'remediations[0].action.type',
+      'invalid-identifier'
+    ],
+    [
+      'an unknown remediation action key',
+      JSON.stringify(remediationDocument({ ...action, calldata: '0x' })),
+      'remediations[0].action',
+      'unknown-key'
+    ],
+    [
+      'a zero remediation token',
+      JSON.stringify(remediationDocument({ ...action, token: zeroAddress })),
+      'remediations[0].action.token',
+      'zero-address'
+    ],
+    [
+      'a zero remediation spender',
+      JSON.stringify(remediationDocument({ ...action, spender: zeroAddress })),
+      'remediations[0].action.spender',
+      'zero-address'
+    ],
+    [
+      'a remediation token pinned to the maker EOA',
+      JSON.stringify(remediationDocument({ ...action, token: maker })),
+      'remediations[0].action.token',
+      'duplicate'
+    ],
+    [
+      'a remediation spender pinned to the maker EOA',
+      JSON.stringify(remediationDocument({ ...action, spender: maker })),
+      'remediations[0].action.spender',
+      'duplicate'
+    ],
+    [
+      'a non-decimal remediation amount',
+      JSON.stringify(remediationDocument({ ...action, amount: '0x10' })),
+      'remediations[0].action.amount',
+      'invalid-decimal'
     ]
   ])('rejects %s', (_description, source, field, reason) => {
     expectNotConfigured(source, field, reason)

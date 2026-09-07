@@ -6,20 +6,23 @@ import {
   midnightAbi,
   setterRatifierAbi
 } from '@morpho-org/midnight-sdk'
-import { decodeFunctionData } from 'viem'
+import { decodeFunctionData, erc20Abi, getAddress } from 'viem'
 import { describe, expect, it } from 'vitest'
 
 import { parseQuoterSignerPolicy } from '../src/policy.utils'
 import {
   encodeConsumeGroupsCall,
   encodeRatifyRootCall,
-  encodeRevokeOperationCall
+  encodeRemediationActionCall,
+  encodeRevokeOperationCall,
+  encodeSelfCancelCall
 } from '../src/transaction-encode.utils'
 import {
   FIXTURE_MAKER,
   FIXTURE_MIDNIGHT,
   FIXTURE_RATIFIER,
-  fixturePolicyDocument
+  fixturePolicyDocument,
+  fixtureRemediationAction
 } from './policy-fixture'
 
 const bytes32 = (byte: string) => `0x${byte.repeat(32)}` as const
@@ -78,6 +81,24 @@ describe('encodeRevokeOperationCall', () => {
     expect(decodeFunctionData({ abi: setterRatifierAbi, data: call.data })).toStrictEqual({
       functionName: 'setIsRootRatified',
       args: [FIXTURE_MAKER, bytes32('77'), false]
+    })
+  })
+})
+
+describe('encodeSelfCancelCall', () => {
+  it('encodes the empty zero-calldata self-send targeting the pinned maker', () => {
+    expect(encodeSelfCancelCall(policy)).toStrictEqual({ to: FIXTURE_MAKER, data: '0x' })
+  })
+})
+
+describe('encodeRemediationActionCall', () => {
+  it('encodes approve(spender, amount) with the exact pinned values on the pinned token', () => {
+    const call = encodeRemediationActionCall(policy.remediations[0]!.action)
+
+    expect(call.to).toBe(getAddress(fixtureRemediationAction.token))
+    expect(decodeFunctionData({ abi: erc20Abi, data: call.data })).toStrictEqual({
+      functionName: 'approve',
+      args: [getAddress(fixtureRemediationAction.spender), BigInt(fixtureRemediationAction.amount)]
     })
   })
 })

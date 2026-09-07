@@ -11,15 +11,16 @@ import { ArtifactEncodingFailedError } from './artifact-encoding-failed.error'
 
 /**
  * The fields of one maker transaction the middleware is about to sign. Everything here is
- * middleware-owned by construction: the chain id is the policy pin, the nonce is the independent
- * pending-nonce read, the call was canonically encoded from the validated intent, the value is
- * always zero, and only the fee fields originate from the caller — as ceiling-checked liveness
- * parameters (TIB-2026-08-12).
+ * middleware-owned or middleware-validated by construction: the chain id is the policy pin, the
+ * nonce is the independent pending-nonce read (or, for break-glass placements, the explicit
+ * nonce validated against the independently read window), the call was canonically encoded from
+ * the validated intent, the value is always zero, and only the fee fields originate from the
+ * caller — as ceiling-checked liveness parameters (TIB-2026-08-12).
  */
 export type MakerTransactionRequest = {
   /** Policy-pinned EIP-155 chain id the signature commits to. */
   readonly chainId: number
-  /** Independently read pending nonce the signature commits to. */
+  /** Independently read or window-validated nonce the signature commits to. */
   readonly nonce: number
   /** Canonically encoded target and calldata. */
   readonly call: EncodedContractCall
@@ -29,8 +30,8 @@ export type MakerTransactionRequest = {
 
 /**
  * A maker transaction ready for canonical serialization: viem's EIP-1559 serializable shape with
- * the nonce required rather than optional, because every middleware transaction commits to the
- * independently read pending nonce.
+ * the nonce required rather than optional, because every middleware transaction commits to a
+ * middleware-read or middleware-validated nonce.
  */
 export type MakerTransaction = TransactionSerializableEIP1559 & { readonly nonce: number }
 

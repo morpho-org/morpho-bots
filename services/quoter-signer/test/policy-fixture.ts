@@ -98,6 +98,19 @@ export const fixtureProtectedCeiling = {
   gas: '800000'
 }
 
+/** Manifest-pinned remediation action shared across suites: one exact loan-asset approval. */
+export const fixtureRemediationAction: {
+  readonly type: 'erc20-approval'
+  readonly token: Address
+  readonly spender: Address
+  readonly amount: string
+} = {
+  type: 'erc20-approval',
+  token: FIXTURE_LOAN_TOKEN,
+  spender: '0x9999999999999999999999999999999999999999',
+  amount: '5000000000'
+}
+
 /** Builds one complete, parseable policy document with the shared pins and one coherent market. */
 export const fixturePolicyDocument = (
   overrides: Record<string, unknown> = {}
@@ -113,7 +126,13 @@ export const fixturePolicyDocument = (
   markets: [fixtureMarketEntry()],
   maxTotalLendExposureAssets: '30000000000',
   feeCeilings: { routine: fixtureRoutineCeiling, protected: fixtureProtectedCeiling },
-  remediations: [{ variant: 'loan-asset-approval', feeCeiling: fixtureRoutineCeiling }],
+  remediations: [
+    {
+      variant: 'loan-asset-approval',
+      action: fixtureRemediationAction,
+      feeCeiling: fixtureRoutineCeiling
+    }
+  ],
   ...overrides
 })
 

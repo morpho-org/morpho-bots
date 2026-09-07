@@ -1500,6 +1500,73 @@ operations — on top of the attested digest-signing primitive that shipped with
   serialized make/pending queue remains the single routine nonce writer, and operators bound
   exposure through the `kms:Sign` grant and the reviewed policy document.
 
+## Addendum E (2026-09-07) — remediation and cleanup surfaces from independent chain reads
+
+The fifth increment retires the middleware's last `SigningNotImplementedError` placeholders —
+`self-cancel`, `setup-remediation`, and the break-glass-revoke surface — so every v1 intent kind
+now reaches `kms:Sign` when in policy, ahead of (and without) the reservation-ledger increment.
+Each surface ships at the fidelity its safety argument supports from deployment pins and
+independent chain reads alone, with the ledger-backed refinements still to come:
+
+- **Self-cancel** (break-glass surface only): the middleware signs the exact empty zero-value
+  self-send — maker as target, empty calldata, the one replacement payload with no economic
+  action — at the operator-named nonce, validated against an independently read
+  **`[latest, pending]` maker nonce window** (both counts through `QUOTER_SIGNER_RPC_URL`, chain
+  id verified; the pending count is read before the monotonic latest count so the lower bound is
+  freshest — a nonce that mined between the reads is refused, and a window that moved is a
+  retryable denial; the upper bound is a mempool snapshot whose transient drift is bounded by the
+  maker's own in-flight artifacts, the same drift the routine pending read carries): below
+  `latest` the artifact could never be included, above `pending` it would be the future-nonce
+  stockpile §1 forbids. This substitutes the window read for the recorded-transaction validation ("a
+  self-cancel at a recorded nonce"), and that substitution is exactly why the routine surface
+  does **not** get the operation yet: displacement is not inherently exposure reduction — an
+  empty send that out-bids a pending root cancellation, group consumption, or remediation
+  _preserves_ exposure — and telling a replaceable routine transaction from a safety action needs
+  the recorded transaction inventory. §1's routine replacement exception (exact-payload bumps and
+  the routine self-cancel) therefore returns with the ledger increment; until then only the
+  operator, who already holds the stronger cleanup authority, can displace. The recorded-artifact
+  fence, append-only fee histories, and middleware-derived replacement bumps remain the ledger
+  increment; replacement bids are operator-priced within the protected ceilings, so an under-bid
+  is a liveness failure only.
+- **Break-glass-revoke surface**: no longer surface-denied. It signs the same four revoke
+  operations under the `protected` ceilings, and every operation **requires an explicit placement
+  nonce** (`nonce-pin`; self-cancel's is required by shape) validated against the same window —
+  the routine surface conversely rejects every explicit nonce and keeps signing only the
+  independent pending-nonce read. This
+  encodes §5's rule at this increment's fidelity: the middleware never claims that a
+  next-unused-nonce signature preempts the pending stream, and cleanup happens as
+  operator-directed same-nonce replacements (ascending over the occupied prefix, self-cancels
+  where no revocation target exists, final revocations at the pending nonce). Occupied-nonce
+  **enumeration stays with the operator** — the node's `[latest, pending)` set joined with the
+  caller's records and the `middleware.intent_approved` lines, which log every middleware-signed
+  nonce and hash — because the middleware records nothing yet and cannot see withheld artifacts;
+  the containment epoch, deny generation, lease drain, protected budget classes, and
+  middleware-enumerated preemption arrive with the ledger and independent-control-plane
+  increments. Until then the ordered drain/handoff runbook governs incidents, with this surface
+  as its signing primitive.
+- **Setup-remediation**: the policy manifest now pins each variant's **exact transaction
+  template** — this increment implements the `erc20-approval` action kind: exactly
+  `approve(spender, amount)` on the pinned token, all values from the reviewed document; a zero
+  amount pins a revocation variant; token and spender must be non-zero and distinct from the
+  maker EOA. The
+  middleware reads the current allowance itself and refuses to sign a transaction that would
+  re-set the live value (`remediation-state`), the §Setup-remediation independent-state read.
+  The remediation epoch (exclusive signing window with drained routine leases) is deferred with
+  the independent control plane: operator-only IAM on the surface plus the runbook rule "stop
+  routine signing first" stand in, and a nonce race against routine signing is a liveness, not an
+  authorization, hazard. The other action kinds — authorizations and the native-balance sweep
+  with its admission-band arithmetic — remain later increments and are unrepresentable in the
+  manifest until specified.
+
+Wire-contract note (still `contractVersion: 1`, additively): the three contract revoke
+operations gain the optional `nonce` field above; `self-cancel` keeps its required one. Policy
+note (still `policyVersion: 1`): `remediations[].action` is required, so the earlier
+variant-plus-ceiling-only shape refuses to serve — no deployment served it. The
+`SigningNotImplementedError` denial class is retired with its last producers; `nonce-pin`,
+`nonce-window`, and `remediation-state` join the named policy checks, and `latest-nonce` and
+`allowance` join the `middleware.read_failed` operations. The §Security production-enablement
+gates and every deferral listed in Addendum D that this addendum does not name are unchanged.
+
 <!--
 TIB conventions:
 - Once accepted, do not substantively edit this TIB. If the decision needs to change,

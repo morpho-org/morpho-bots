@@ -110,9 +110,13 @@ export type IntentOffer = {
  * group consumption is exactly `setConsumed(group, MAX_OFFER_CAP, maker)` on the Midnight
  * singleton (batches become one policy-checked multicall), root cancellation is exactly
  * `cancelRoot(maker, root)` on the Ecrecover ratifier or `setIsRootRatified(maker, root, false)`
- * on the Setter ratifier, and a self-cancel replaces the caller's own recorded pending
- * transaction at `nonce` with an empty zero-value self-send. Callers never supply targets,
- * selectors, or calldata.
+ * on the Setter ratifier, and a self-cancel replaces the maker's own in-flight transaction at
+ * `nonce` with an empty zero-value self-send. Callers never supply targets, selectors, or
+ * calldata, and an explicit `nonce` never widens what may be signed: policy accepts one only on
+ * the operator-only break-glass surface — a routine displacement could out-bid a pending cleanup
+ * and preserve exposure — and the middleware validates it against the independently read
+ * `[latest, pending]` maker nonce window, so an operator can direct a replacement but never
+ * obtain a future-nonce stockpile.
  */
 export type RevokeOperation =
   | {
@@ -120,23 +124,29 @@ export type RevokeOperation =
       readonly type: 'consume-groups'
       /** Offer-group ids (bytes32) to consume; non-empty, at most {@link MAX_REVOKE_GROUPS}. */
       readonly groups: readonly Hex[]
+      /** Explicit placement nonce — required on break-glass, rejected on routine revocation. */
+      readonly nonce?: number
     }
   | {
       /** Cancel one Ecrecover-ratified root. */
       readonly type: 'cancel-root'
       /** Offer-tree root (bytes32) to cancel. */
       readonly root: Hex
+      /** Explicit placement nonce — required on break-glass, rejected on routine revocation. */
+      readonly nonce?: number
     }
   | {
       /** Clear one Setter root ratification (defense in depth; group consumption is authoritative). */
       readonly type: 'unratify-root'
       /** Offer-tree root (bytes32) to un-ratify. */
       readonly root: Hex
+      /** Explicit placement nonce — required on break-glass, rejected on routine revocation. */
+      readonly nonce?: number
     }
   | {
-      /** Replace the caller's own recorded pending transaction with a zero-value self-cancel. */
+      /** Replace the maker's own in-flight transaction with a zero-value self-cancel. */
       readonly type: 'self-cancel'
-      /** Account nonce of the recorded pending transaction to cancel. */
+      /** Nonce of the transaction to cancel; a required placement, so break-glass-only for now. */
       readonly nonce: number
     }
 
@@ -150,7 +160,7 @@ type IntentBase = {
   /**
    * Caller-chosen idempotency key, reserved for the stored-artifact retry semantics of the
    * reservation-ledger increment. Inert until then: a replayed key re-evaluates the intent and,
-   * for transaction kinds, signs again at the current pending nonce — so callers must invoke
+   * for transaction kinds, signs again at its then-current placement — so callers must invoke
    * synchronously and never blind-retry a timed-out signing invocation.
    */
   readonly idempotencyKey: string
@@ -391,12 +401,17 @@ const offersValue = (value: unknown, field: string): readonly IntentOffer[] => {
   return offers
 }
 
+// Surface rules for an explicit placement nonce (required on break-glass, forbidden on routine)
+// are policy checks: the parser owns only the shape, so the field stays optional on the wire.
+const placementNonceValue = (value: unknown, field: string): { readonly nonce?: number } =>
+  value === undefined ? {} : { nonce: nonNegativeIntegerValue(value, field) }
+
 const revokeOperationValue = (value: unknown, field: string): RevokeOperation => {
   if (value === undefined) throw new MalformedIntentError(field, 'missing')
   const record = plainObject(value, field)
   const type = stringValue(record.type, `${field}.type`)
   if (type === 'consume-groups') {
-    allowKeys(record, ['type', 'groups'], field)
+    allowKeys(record, ['type', 'groups', 'nonce'], field)
     const groups = record.groups
     if (groups === undefined) throw new MalformedIntentError(`${field}.groups`, 'missing')
     if (!Array.isArray(groups)) throw new MalformedIntentError(`${field}.groups`, 'wrong-type')
@@ -406,12 +421,17 @@ const revokeOperationValue = (value: unknown, field: string): RevokeOperation =>
     }
     return {
       type,
-      groups: groups.map((group, index) => bytes32Value(group, `${field}.groups[${index}]`))
+      groups: groups.map((group, index) => bytes32Value(group, `${field}.groups[${index}]`)),
+      ...placementNonceValue(record.nonce, `${field}.nonce`)
     }
   }
   if (type === 'cancel-root' || type === 'unratify-root') {
-    allowKeys(record, ['type', 'root'], field)
-    return { type, root: bytes32Value(record.root, `${field}.root`) }
+    allowKeys(record, ['type', 'root', 'nonce'], field)
+    return {
+      type,
+      root: bytes32Value(record.root, `${field}.root`),
+      ...placementNonceValue(record.nonce, `${field}.nonce`)
+    }
   }
   if (type === 'self-cancel') {
     allowKeys(record, ['type', 'nonce'], field)

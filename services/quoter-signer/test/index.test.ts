@@ -12,6 +12,7 @@ import { secp256k1 } from '@noble/curves/secp256k1'
 import {
   bytesToHex,
   decodeFunctionData,
+  erc20Abi,
   getAddress,
   hexToBytes,
   parseTransaction,
@@ -23,7 +24,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { ChainReadTransport } from '../src/chain-read.utils'
 import type { KmsPublicKeyMaterial, KmsTransport } from '../src/kms-signer.utils'
-import type { NotImplementedSurface } from '../src/signing-not-implemented.error'
 
 import { createHandler, handler } from '../src/index'
 import { KMS_ATTESTATION_FRESHNESS_MS } from '../src/kms-signer.utils'
@@ -37,7 +37,8 @@ import {
   fixtureMarketEntry,
   fixtureMarketId,
   fixtureMaturityAfter,
-  fixturePolicyDocument
+  fixturePolicyDocument,
+  fixtureRemediationAction
 } from './policy-fixture'
 
 const privateKey = `0x${'11'.repeat(32)}` as const
@@ -74,6 +75,8 @@ const fakeKms = (
 const chainReadFake = (overrides: Partial<ChainReadTransport> = {}): ChainReadTransport => ({
   chainId: async () => 8453,
   pendingNonce: async () => 7,
+  latestNonce: async () => 5,
+  allowance: async () => 0n,
   ...overrides
 })
 
@@ -85,6 +88,16 @@ const revokeIntent = {
   idempotencyKey: 'revoke-1',
   operation: { type: 'cancel-root', root: `0x${'77'.repeat(32)}` },
   fees: { maxFeePerGas: '2000000000', maxPriorityFeePerGas: '1000000000', gas: '90000' }
+}
+
+const remediationIntent = {
+  contractVersion: 1,
+  kind: 'setup-remediation',
+  chainId: 8453,
+  maker,
+  idempotencyKey: 'remediation-1',
+  remediation: 'loan-asset-approval',
+  fees: revokeIntent.fees
 }
 
 const policyDocument = (overrides: Record<string, unknown> = {}) => fixturePolicyDocument(overrides)
@@ -101,17 +114,6 @@ const stubKms = () => {
 const stubRpc = () => {
   vi.stubEnv('QUOTER_SIGNER_RPC_URL', 'https://rpc.example')
 }
-
-const notImplementedEnvelope = (surface: NotImplementedSurface) => ({
-  contractVersion: 1,
-  service: 'quoter-signer',
-  approved: false,
-  denial: {
-    name: 'SigningNotImplementedError',
-    message: `${surface} signing is not implemented in this quoter-signer build; the intent is denied`,
-    retryable: false
-  }
-})
 
 /** Offer-set fixture relative to the real middleware clock, coherent for quote and ratify. */
 const buildOfferFixture = () => {
@@ -272,28 +274,72 @@ describe('handler', () => {
     expect(getAddress(parsed.to!)).toBe(FIXTURE_MIDNIGHT)
   })
 
-  it('still denies the break-glass surface: cleanup must replace occupied nonces', async () => {
+  it('approves a break-glass replacement at an explicit occupied nonce under protected fees', async () => {
     vi.spyOn(console, 'log').mockImplementation(() => {})
     stubPolicy({ surface: 'break-glass-revoke' })
     stubKms()
     stubRpc()
+    const latestNonce = vi.fn(async () => 5)
+    const handle = createHandler({
+      kms: fakeKms(),
+      chainRead: chainReadFake({ latestNonce }),
+      attestAtStartup: false
+    })
+    // Emergency-window fees: above the routine ceilings, inside the protected ones.
+    const fees = { maxFeePerGas: '5000000000', maxPriorityFeePerGas: '2000000000', gas: '500000' }
+
+    const response = await handle({
+      ...revokeIntent,
+      operation: { type: 'consume-groups', groups: [`0x${'66'.repeat(32)}`], nonce: 5 },
+      fees
+    })
+
+    expect(response.approved).toBe(true)
+    if (!response.approved || response.result.kind !== 'revoke') throw new Error('unreachable')
+    const artifact = response.result.transaction
+    expect(artifact.nonce).toBe(5)
+    expect(latestNonce).toHaveBeenCalledOnce()
+    const parsed = parseTransaction(artifact.signedTransaction)
+    expect(getAddress(parsed.to!)).toBe(FIXTURE_MIDNIGHT)
+    await expect(
+      recoverTransactionAddress({
+        serializedTransaction: artifact.signedTransaction as TransactionSerializedEIP1559
+      })
+    ).resolves.toBe(maker)
+  })
+
+  it('denies a break-glass operation without an explicit placement nonce, with no reads', async () => {
+    const lines: string[] = []
+    vi.spyOn(console, 'log').mockImplementation((line: string) => {
+      lines.push(line)
+    })
+    stubPolicy({ surface: 'break-glass-revoke' })
+    stubKms()
+    stubRpc()
     const getPublicKey = vi.fn(async () => publicKeyMaterial())
+    const chainId = vi.fn(async () => 8453)
     const pendingNonce = vi.fn(async () => 7)
     const handle = createHandler({
       kms: fakeKms(getPublicKey),
-      chainRead: chainReadFake({ pendingNonce }),
+      chainRead: chainReadFake({ chainId, pendingNonce }),
       attestAtStartup: false
     })
-    // Emergency-window fees (above routine, inside protected) pass the deterministic checks, but
-    // break-glass cleanup must replace occupied nonces — a pending-nonce signature would queue
-    // behind the very transactions it should displace — so the surface denies before any read.
     const fees = { maxFeePerGas: '5000000000', maxPriorityFeePerGas: '2000000000', gas: '500000' }
 
     const response = await handle({ ...revokeIntent, fees })
 
-    expect(response).toStrictEqual(notImplementedEnvelope('break-glass-revoke'))
+    expect(response.approved).toBe(false)
+    expect(!response.approved && response.denial).toMatchObject({
+      name: 'IntentPolicyViolationError',
+      retryable: false
+    })
+    expect(chainId).not.toHaveBeenCalled()
     expect(pendingNonce).not.toHaveBeenCalled()
     expect(getPublicKey).not.toHaveBeenCalled()
+    const denied = lines
+      .map(line => JSON.parse(line) as Record<string, unknown>)
+      .find(event => event.event === 'middleware.intent_denied')
+    expect(denied).toMatchObject({ check: 'nonce-pin', field: 'operation.nonce' })
   })
 
   it('records the kms_sign line even when the Sign response fails the recovery check', async () => {
@@ -443,37 +489,300 @@ describe('handler', () => {
     await expect(Payload.decode(response.result.publication.data)).resolves.toHaveLength(1)
   })
 
-  it('still denies setup-remediation intents with the typed not-implemented envelope', async () => {
-    vi.spyOn(console, 'log').mockImplementation(() => {})
+  it('approves a setup remediation as the exact pinned approval with audit lines', async () => {
+    const lines: string[] = []
+    vi.spyOn(console, 'log').mockImplementation((line: string) => {
+      lines.push(line)
+    })
     stubPolicy({ surface: 'setup-remediation' })
     stubKms()
-    const getPublicKey = vi.fn(async () => publicKeyMaterial())
-    const handle = createHandler({ kms: fakeKms(getPublicKey), attestAtStartup: false })
+    stubRpc()
+    const allowance = vi.fn(async () => 123n)
+    const handle = createHandler({ kms: fakeKms(), chainRead: chainReadFake({ allowance }) })
 
-    const response = await handle({
-      contractVersion: 1,
-      kind: 'setup-remediation',
-      chainId: 8453,
-      maker,
-      idempotencyKey: 'remediation-1',
-      remediation: 'loan-asset-approval',
-      fees: revokeIntent.fees
+    const response = await handle(remediationIntent, { awsRequestId: 'req-r' })
+
+    expect(response.approved).toBe(true)
+    if (!response.approved || response.result.kind !== 'setup-remediation') {
+      throw new Error('unreachable')
+    }
+    const artifact = response.result.transaction
+    expect(artifact.nonce).toBe(7)
+    expect(allowance).toHaveBeenCalledExactlyOnceWith(expect.anything(), {
+      token: FIXTURE_LOAN_TOKEN,
+      owner: maker,
+      spender: fixtureRemediationAction.spender
     })
-
-    expect(response).toStrictEqual(notImplementedEnvelope('setup-remediation'))
-    expect(getPublicKey).not.toHaveBeenCalled()
+    await expect(
+      recoverTransactionAddress({
+        serializedTransaction: artifact.signedTransaction as TransactionSerializedEIP1559
+      })
+    ).resolves.toBe(maker)
+    const parsed = parseTransaction(artifact.signedTransaction)
+    expect(getAddress(parsed.to!)).toBe(FIXTURE_LOAN_TOKEN)
+    expect(decodeFunctionData({ abi: erc20Abi, data: parsed.data! })).toStrictEqual({
+      functionName: 'approve',
+      args: [getAddress(fixtureRemediationAction.spender), BigInt(fixtureRemediationAction.amount)]
+    })
+    const events = lines.map(line => JSON.parse(line) as Record<string, unknown>)
+    expect(events).toStrictEqual([
+      {
+        event: 'middleware.intent_received',
+        intentKind: 'setup-remediation',
+        awsRequestId: 'req-r'
+      },
+      {
+        event: 'middleware.kms_sign',
+        intentKind: 'setup-remediation',
+        awsRequestId: 'req-r',
+        digest: expect.stringMatching(/^0x[0-9a-f]{64}$/),
+        kmsRequestId: 'kms-req-sign'
+      },
+      {
+        event: 'middleware.intent_approved',
+        intentKind: 'setup-remediation',
+        awsRequestId: 'req-r',
+        remediation: 'loan-asset-approval',
+        nonce: 7,
+        transactionHash: artifact.hash,
+        kmsSignCalls: 1
+      }
+    ])
   })
 
-  it('still denies self-cancel revocations with the typed not-implemented envelope', async () => {
+  it('denies a remediation whose pinned allowance already holds, with no kms traffic', async () => {
+    const lines: string[] = []
+    vi.spyOn(console, 'log').mockImplementation((line: string) => {
+      lines.push(line)
+    })
+    stubPolicy({ surface: 'setup-remediation' })
+    stubKms()
+    stubRpc()
+    const getPublicKey = vi.fn(async () => publicKeyMaterial())
+    const pendingNonce = vi.fn(async () => 7)
+    const allowance = vi.fn(async () => BigInt(fixtureRemediationAction.amount))
+    const handle = createHandler({
+      kms: fakeKms(getPublicKey),
+      chainRead: chainReadFake({ allowance, pendingNonce }),
+      attestAtStartup: false
+    })
+
+    const response = await handle(remediationIntent)
+
+    expect(response.approved).toBe(false)
+    expect(!response.approved && response.denial).toMatchObject({
+      name: 'IntentPolicyViolationError',
+      retryable: false
+    })
+    expect(getPublicKey).not.toHaveBeenCalled()
+    expect(pendingNonce).not.toHaveBeenCalled()
+    const denied = lines
+      .map(line => JSON.parse(line) as Record<string, unknown>)
+      .find(event => event.event === 'middleware.intent_denied')
+    expect(denied).toMatchObject({ check: 'remediation-state', field: 'remediation' })
+  })
+
+  it('denies retryably with read_failed and no kms traffic when the allowance read fails', async () => {
+    const lines: string[] = []
+    vi.spyOn(console, 'log').mockImplementation((line: string) => {
+      lines.push(line)
+    })
+    stubPolicy({ surface: 'setup-remediation' })
+    stubKms()
+    stubRpc()
+    const getPublicKey = vi.fn(async () => publicKeyMaterial())
+    const allowance = vi.fn(async () => {
+      throw new Error('execution reverted')
+    })
+    const handle = createHandler({
+      kms: fakeKms(getPublicKey),
+      chainRead: chainReadFake({ allowance }),
+      attestAtStartup: false
+    })
+
+    const response = await handle(remediationIntent)
+
+    expect(response.approved).toBe(false)
+    expect(!response.approved && response.denial).toMatchObject({
+      name: 'RpcUnavailableError',
+      retryable: true
+    })
+    expect(getPublicKey).not.toHaveBeenCalled()
+    const events = lines.map(line => JSON.parse(line) as Record<string, unknown>)
+    expect(events.find(event => event.event === 'middleware.read_failed')).toMatchObject({
+      intentKind: 'setup-remediation',
+      operation: 'allowance'
+    })
+  })
+
+  it('approves a break-glass self-cancel inside the live nonce window with audit lines', async () => {
+    const lines: string[] = []
+    vi.spyOn(console, 'log').mockImplementation((line: string) => {
+      lines.push(line)
+    })
+    stubPolicy({ surface: 'break-glass-revoke' })
+    stubKms()
+    stubRpc()
+    const handle = createHandler({ kms: fakeKms(), chainRead: chainReadFake() })
+
+    const response = await handle(
+      { ...revokeIntent, operation: { type: 'self-cancel', nonce: 5 } },
+      { awsRequestId: 'req-s' }
+    )
+
+    expect(response.approved).toBe(true)
+    if (!response.approved || response.result.kind !== 'revoke') throw new Error('unreachable')
+    const artifact = response.result.transaction
+    expect(artifact.nonce).toBe(5)
+    await expect(
+      recoverTransactionAddress({
+        serializedTransaction: artifact.signedTransaction as TransactionSerializedEIP1559
+      })
+    ).resolves.toBe(maker)
+    const parsed = parseTransaction(artifact.signedTransaction)
+    expect(getAddress(parsed.to!)).toBe(maker)
+    expect(parsed.data ?? '0x').toBe('0x')
+    expect(parsed.value ?? 0n).toBe(0n)
+    const events = lines.map(line => JSON.parse(line) as Record<string, unknown>)
+    expect(events).toStrictEqual([
+      { event: 'middleware.intent_received', intentKind: 'revoke', awsRequestId: 'req-s' },
+      {
+        event: 'middleware.kms_sign',
+        intentKind: 'revoke',
+        awsRequestId: 'req-s',
+        digest: expect.stringMatching(/^0x[0-9a-f]{64}$/),
+        kmsRequestId: 'kms-req-sign'
+      },
+      {
+        event: 'middleware.intent_approved',
+        intentKind: 'revoke',
+        awsRequestId: 'req-s',
+        operation: 'self-cancel',
+        nonce: 5,
+        transactionHash: artifact.hash,
+        kmsSignCalls: 1
+      }
+    ])
+  })
+
+  it.each<[string, number, number, number]>([
+    ['at exactly the pending count', 7, 5, 7],
+    ['inside an empty window where nothing is in flight', 5, 5, 5]
+  ])('approves a break-glass self-cancel %s', async (_description, nonce, latest, pending) => {
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    stubPolicy({ surface: 'break-glass-revoke' })
+    stubKms()
+    stubRpc()
+    const handle = createHandler({
+      kms: fakeKms(),
+      chainRead: chainReadFake({
+        latestNonce: async () => latest,
+        pendingNonce: async () => pending
+      }),
+      attestAtStartup: false
+    })
+
+    const response = await handle({ ...revokeIntent, operation: { type: 'self-cancel', nonce } })
+
+    expect(response.approved).toBe(true)
+    if (!response.approved || response.result.kind !== 'revoke') throw new Error('unreachable')
+    expect(response.result.transaction.nonce).toBe(nonce)
+  })
+
+  it('denies retryably before kms when the window moves between the two nonce reads', async () => {
+    const lines: string[] = []
+    vi.spyOn(console, 'log').mockImplementation((line: string) => {
+      lines.push(line)
+    })
+    stubPolicy({ surface: 'break-glass-revoke' })
+    stubKms()
+    stubRpc()
+    const getPublicKey = vi.fn(async () => publicKeyMaterial())
+    const handle = createHandler({
+      kms: fakeKms(getPublicKey),
+      // Transactions mined between the reads: pending reads 7, then latest reads 8.
+      chainRead: chainReadFake({ pendingNonce: async () => 7, latestNonce: async () => 8 }),
+      attestAtStartup: false
+    })
+
+    const response = await handle({ ...revokeIntent, operation: { type: 'self-cancel', nonce: 7 } })
+
+    expect(response.approved).toBe(false)
+    expect(!response.approved && response.denial).toMatchObject({
+      name: 'RpcUnavailableError',
+      retryable: true
+    })
+    expect(getPublicKey).not.toHaveBeenCalled()
+    const events = lines.map(line => JSON.parse(line) as Record<string, unknown>)
+    expect(events.find(event => event.event === 'middleware.read_failed')).toMatchObject({
+      intentKind: 'revoke',
+      operation: 'latest-nonce'
+    })
+  })
+
+  it.each<[string, number]>([
+    ['below the latest count', 4],
+    ['above the pending count', 8]
+  ])('denies a self-cancel %s with no kms traffic', async (_description, nonce) => {
+    const lines: string[] = []
+    vi.spyOn(console, 'log').mockImplementation((line: string) => {
+      lines.push(line)
+    })
+    stubPolicy({ surface: 'break-glass-revoke' })
+    stubKms()
+    stubRpc()
+    const getPublicKey = vi.fn(async () => publicKeyMaterial())
+    const handle = createHandler({
+      kms: fakeKms(getPublicKey),
+      chainRead: chainReadFake(),
+      attestAtStartup: false
+    })
+
+    const response = await handle({ ...revokeIntent, operation: { type: 'self-cancel', nonce } })
+
+    expect(response.approved).toBe(false)
+    expect(!response.approved && response.denial).toMatchObject({
+      name: 'IntentPolicyViolationError',
+      retryable: false
+    })
+    expect(getPublicKey).not.toHaveBeenCalled()
+    const denied = lines
+      .map(line => JSON.parse(line) as Record<string, unknown>)
+      .find(event => event.event === 'middleware.intent_denied')
+    expect(denied).toMatchObject({ check: 'nonce-window', field: 'operation.nonce' })
+  })
+
+  it.each<[string, Record<string, unknown>]>([
+    [
+      'a root cancellation carrying a nonce',
+      { type: 'cancel-root', root: `0x${'77'.repeat(32)}`, nonce: 7 }
+    ],
+    ['a self-cancel', { type: 'self-cancel', nonce: 6 }]
+  ])('denies %s on the routine surface before any read', async (_description, operation) => {
     vi.spyOn(console, 'log').mockImplementation(() => {})
     stubPolicy()
     stubKms()
+    stubRpc()
     const getPublicKey = vi.fn(async () => publicKeyMaterial())
-    const handle = createHandler({ kms: fakeKms(getPublicKey), attestAtStartup: false })
+    const chainId = vi.fn(async () => 8453)
+    const latestNonce = vi.fn(async () => 5)
+    const pendingNonce = vi.fn(async () => 7)
+    const handle = createHandler({
+      kms: fakeKms(getPublicKey),
+      chainRead: chainReadFake({ chainId, latestNonce, pendingNonce }),
+      attestAtStartup: false
+    })
 
-    const response = await handle({ ...revokeIntent, operation: { type: 'self-cancel', nonce: 4 } })
+    const response = await handle({ ...revokeIntent, operation })
 
-    expect(response).toStrictEqual(notImplementedEnvelope('self-cancel'))
+    expect(response.approved).toBe(false)
+    expect(!response.approved && response.denial).toMatchObject({
+      name: 'IntentPolicyViolationError',
+      retryable: false
+    })
+    expect(chainId).not.toHaveBeenCalled()
+    expect(latestNonce).not.toHaveBeenCalled()
+    expect(pendingNonce).not.toHaveBeenCalled()
     expect(getPublicKey).not.toHaveBeenCalled()
   })
 

@@ -3,17 +3,29 @@ import { describe, expect, it, vi } from 'vitest'
 import type { ChainReadTransport } from '../src/chain-read.utils'
 import type { RpcReadOperation } from '../src/rpc-unavailable.error'
 
-import { readMakerPendingNonce } from '../src/chain-read.utils'
+import {
+  readMakerAllowance,
+  readMakerNonceWindow,
+  readMakerPendingNonce
+} from '../src/chain-read.utils'
 import { RpcChainMismatchError } from '../src/rpc-chain-mismatch.error'
 import { RpcUnavailableError } from '../src/rpc-unavailable.error'
-import { FIXTURE_MAKER } from './policy-fixture'
+import { FIXTURE_LOAN_TOKEN, FIXTURE_MAKER, fixtureRemediationAction } from './policy-fixture'
 
 const config = { url: 'https://rpc.example' }
 const expected = { chainId: 8453, maker: FIXTURE_MAKER } as const
+const allowanceQuery = {
+  chainId: 8453,
+  token: FIXTURE_LOAN_TOKEN,
+  owner: FIXTURE_MAKER,
+  spender: fixtureRemediationAction.spender
+} as const
 
 const transport = (overrides: Partial<ChainReadTransport> = {}): ChainReadTransport => ({
   chainId: async () => 8453,
   pendingNonce: async () => 7,
+  latestNonce: async () => 5,
+  allowance: async () => 0n,
   ...overrides
 })
 
@@ -119,5 +131,127 @@ describe('readMakerPendingNonce', () => {
         })
       )
     ).rejects.toBeInstanceOf(RpcUnavailableError)
+  })
+})
+
+describe('readMakerNonceWindow', () => {
+  it('returns the latest and pending counts after verifying the chain id', async () => {
+    await expect(readMakerNonceWindow(config, expected, transport())).resolves.toStrictEqual({
+      latest: 5,
+      pending: 7
+    })
+  })
+
+  it('accepts an empty window where nothing is in flight', async () => {
+    await expect(
+      readMakerNonceWindow(config, expected, transport({ pendingNonce: async () => 5 }))
+    ).resolves.toStrictEqual({ latest: 5, pending: 5 })
+  })
+
+  it('fails closed terminally when the endpoint serves another chain, reading no counts', async () => {
+    const latestNonce = vi.fn(async () => 5)
+
+    await expect(
+      readMakerNonceWindow(config, expected, transport({ chainId: async () => 1, latestNonce }))
+    ).rejects.toBeInstanceOf(RpcChainMismatchError)
+    expect(latestNonce).not.toHaveBeenCalled()
+  })
+
+  it('wraps a latest-nonce read fault as a retryable unavailable denial', async () => {
+    await expectUnavailable(
+      readMakerNonceWindow(
+        config,
+        expected,
+        transport({
+          latestNonce: async () => {
+            throw new Error('socket hang up')
+          }
+        })
+      ),
+      'latest-nonce'
+    )
+  })
+
+  it('reads pending before latest so the window is a conservative intersection', async () => {
+    const order: string[] = []
+    const pendingNonce = vi.fn(async () => {
+      order.push('pending')
+      return 7
+    })
+    const latestNonce = vi.fn(async () => {
+      order.push('latest')
+      return 5
+    })
+
+    await readMakerNonceWindow(config, expected, transport({ pendingNonce, latestNonce }))
+
+    expect(order).toStrictEqual(['pending', 'latest'])
+  })
+
+  it('refuses a window that moved between the reads (latest above pending)', async () => {
+    await expectUnavailable(
+      readMakerNonceWindow(config, expected, transport({ pendingNonce: async () => 4 })),
+      'latest-nonce'
+    )
+  })
+
+  it.each([-1, 2.5, Number.MAX_SAFE_INTEGER + 1])(
+    'rejects the malformed latest count %s as unavailable',
+    async latest => {
+      await expectUnavailable(
+        readMakerNonceWindow(config, expected, transport({ latestNonce: async () => latest })),
+        'latest-nonce'
+      )
+    }
+  )
+})
+
+describe('readMakerAllowance', () => {
+  it('returns the allowance for the exact pinned triple after verifying the chain id', async () => {
+    const allowance = vi.fn(async () => 123n)
+
+    await expect(
+      readMakerAllowance(config, allowanceQuery, transport({ allowance }))
+    ).resolves.toBe(123n)
+    expect(allowance).toHaveBeenCalledExactlyOnceWith(config, {
+      token: FIXTURE_LOAN_TOKEN,
+      owner: FIXTURE_MAKER,
+      spender: fixtureRemediationAction.spender
+    })
+  })
+
+  it('fails closed terminally when the endpoint serves another chain, reading no allowance', async () => {
+    const allowance = vi.fn(async () => 0n)
+
+    await expect(
+      readMakerAllowance(config, allowanceQuery, transport({ chainId: async () => 1, allowance }))
+    ).rejects.toBeInstanceOf(RpcChainMismatchError)
+    expect(allowance).not.toHaveBeenCalled()
+  })
+
+  it('wraps an allowance read fault as a retryable unavailable denial', async () => {
+    await expectUnavailable(
+      readMakerAllowance(
+        config,
+        allowanceQuery,
+        transport({
+          allowance: async () => {
+            throw new Error('execution reverted')
+          }
+        })
+      ),
+      'allowance'
+    )
+  })
+
+  it('rejects a malformed provider allowance as unavailable', async () => {
+    await expectUnavailable(
+      readMakerAllowance(
+        config,
+        allowanceQuery,
+        transport({ allowance: async () => 5 as unknown as bigint })
+      ),
+      'allowance'
+    )
   })
 })

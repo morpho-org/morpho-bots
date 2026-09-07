@@ -36,13 +36,24 @@ export const MIN_GAS_PER_CONSUMED_GROUP = 30_000n
 export const MIN_CONSUME_GROUPS_BASE_GAS = 25_000n
 
 /**
- * Conservative worst-case execution gas for a single ratifier call — `cancelRoot` or
- * `setIsRootRatified` in either direction: intrinsic transaction gas, calldata, one cold
- * zero-to-nonzero storage write, and the event, rounded up. The same include-but-revert
- * reasoning as the batch floor: a limit above intrinsic but below execution would burn the
- * maker nonce without ratifying or revoking anything.
+ * Conservative worst-case execution gas for a single contract call — a ratifier `cancelRoot` or
+ * `setIsRootRatified` in either direction, or a remediation ERC-20 `approve`: intrinsic
+ * transaction gas, calldata, one cold zero-to-nonzero storage write, and the event, rounded up.
+ * The same include-but-revert reasoning as the batch floor: a limit above intrinsic but below
+ * execution would burn the maker nonce without ratifying, revoking, or approving anything. For
+ * the ratifier calls the middleware pins the target, so the bound is exact; for a remediation
+ * approve it is a floor for standard ERC-20 implementations only — a proxied or hooked token can
+ * cost more, and provisioning `fees.gas` for the pinned token's real cost is part of the
+ * manifest review (pre-sign simulation is a later increment).
  */
 export const MIN_CONTRACT_CALL_GAS = 50_000n
+
+/**
+ * Exact intrinsic gas of an empty zero-value self-send — the only execution a self-cancel ever
+ * performs. Below it the transaction is invalid and could never be included, so the artifact
+ * could not replace anything.
+ */
+export const MIN_SELF_CANCEL_GAS = 21_000n
 
 /**
  * A consumption batch whose gas limit cannot cover its own worst-case execution would be
@@ -56,10 +67,37 @@ const assertConsumeGroupsGasFloor = (fees: IntentFees, groups: number): void => 
   }
 }
 
-/** Flat execution floor for the single-call operations (ratify, cancel-root, unratify-root). */
+/** Flat execution floor for single-call operations (ratify, root revocations, remediation). */
 const assertContractCallGasFloor = (fees: IntentFees): void => {
   if (BigInt(fees.gas) < MIN_CONTRACT_CALL_GAS) {
     throw new IntentPolicyViolationError('gas-floor', 'fees.gas')
+  }
+}
+
+/** Intrinsic floor for the empty self-send; below it the artifact could never be included. */
+const assertSelfCancelGasFloor = (fees: IntentFees): void => {
+  if (BigInt(fees.gas) < MIN_SELF_CANCEL_GAS) {
+    throw new IntentPolicyViolationError('gas-floor', 'fees.gas')
+  }
+}
+
+/**
+ * The explicit-placement rule of the two revoke surfaces: break-glass cleanup must direct every
+ * placement itself — replacing occupied nonces, never silently queueing at the pending one
+ * (TIB-2026-08-12 §5) — so its operations require an explicit nonce, while routine revocation
+ * signs only the middleware's independent pending-nonce read and rejects one. Self-cancel
+ * carries a required nonce by shape, so this rule makes it operator-only for now: a routine
+ * displacement could out-bid a pending cleanup or remediation and *preserve* exposure, and
+ * telling a replaceable routine transaction from a safety action needs the recorded-transaction
+ * inventory of the ledger increment. The window validation of an accepted explicit nonce happens
+ * at the chain-read stage.
+ */
+const assertPlacementNonceWithinSurface = (
+  nonce: number | undefined,
+  surface: SigningSurface
+): void => {
+  if (surface === 'break-glass-revoke' ? nonce === undefined : nonce !== undefined) {
+    throw new IntentPolicyViolationError('nonce-pin', 'operation.nonce')
   }
 }
 
@@ -228,13 +266,14 @@ const assertOffersWithinPolicy = (
  * Enforces the deterministic TIB-2026-08-12 deployment-policy checks on one parsed intent: the
  * surface's pinned intent kind, the chain and maker pins, per-kind fee/gas ceilings (`protected`
  * on the break-glass surface, per-variant for setup remediation, `routine` otherwise), the
- * per-batch consumption gas floor (a batch whose gas limit cannot cover its own worst-case
- * execution would revert on inclusion, burning the nonce while every group stays live), the
- * ratifier-mode coherence of root revocations, the remediation-variant allowlist, and — for quote
- * and ratify offer sets — the market allowlist, tick price bounds and per-market tick-spacing
- * alignment, offer field pins, reduce-only side pins, continuous-fee-cap ceilings,
- * freshness/start/maturity time windows, group coherence, and the static per-market and
- * maker-wide lend-exposure caps charged once per consumption domain.
+ * per-shape gas floors (a limit that cannot cover the transaction's own worst-case execution
+ * would revert on inclusion — or, for the empty self-send, never be includable — burning the
+ * nonce without effect), the ratifier-mode coherence of root revocations, the explicit-placement
+ * nonce pin of the revoke surfaces, the remediation-variant allowlist, and — for quote and ratify
+ * offer sets — the market allowlist, tick price bounds and per-market tick-spacing alignment,
+ * offer field pins, reduce-only side pins, continuous-fee-cap ceilings, freshness/start/maturity
+ * time windows, group coherence, and the static per-market and maker-wide lend-exposure caps
+ * charged once per consumption domain.
  *
  * These are the checks decidable from deployment parameters and the middleware clock alone. The
  * independent-read properties (crossed books, PnL, snapshot fees, aggregate reservations, nonce
@@ -285,12 +324,13 @@ export const assertIntentWithinPolicy = (
       if (intent.operation.type === 'consume-groups') {
         assertConsumeGroupsGasFloor(intent.fees, intent.operation.groups.length)
       }
-      // Root cancellation and un-ratification are single ratifier calls under the flat floor;
-      // self-cancel (an empty self-send, denied not-implemented downstream) is deliberately
-      // exempt so the later increment can price it from its own shape.
       if (intent.operation.type === 'cancel-root' || intent.operation.type === 'unratify-root') {
         assertContractCallGasFloor(intent.fees)
       }
+      if (intent.operation.type === 'self-cancel') {
+        assertSelfCancelGasFloor(intent.fees)
+      }
+      assertPlacementNonceWithinSurface(intent.operation.nonce, policy.surface)
       return
     }
     case 'setup-remediation': {
@@ -299,6 +339,7 @@ export const assertIntentWithinPolicy = (
         throw new IntentPolicyViolationError('remediation-allowlist', 'remediation')
       }
       assertFeesWithinCeiling(intent.fees, remediation.feeCeiling, 'fees')
+      assertContractCallGasFloor(intent.fees)
       return
     }
   }
