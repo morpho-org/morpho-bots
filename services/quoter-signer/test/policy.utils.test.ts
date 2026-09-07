@@ -345,6 +345,23 @@ describe('parseQuoterSignerPolicy', () => {
       'collateral-order'
     ],
     [
+      'a collateral list above the protocol per-market maximum',
+      JSON.stringify(
+        document({
+          markets: [
+            market({
+              collateralParams: Array.from({ length: 129 }, (_ignored, index) => ({
+                ...fixtureCollateral,
+                token: `0x${(index + 1).toString(16).padStart(40, '0')}`
+              }))
+            })
+          ]
+        })
+      ),
+      'markets[0].collateralParams',
+      'out-of-range'
+    ],
+    [
       'a zero-address first collateral token',
       JSON.stringify(
         document({

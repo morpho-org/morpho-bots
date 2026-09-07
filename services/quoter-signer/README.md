@@ -27,9 +27,10 @@ Transaction-signing intents commit to the maker's **pending nonce read through t
 own HTTPS RPC endpoint** (see [RPC endpoint](#rpc-endpoint-quoter_signer_rpc_url)); the endpoint's
 chain id is verified against the policy pin on every read, and a read failure is a typed
 retryable denial with no KMS call. Quote and ratify intents additionally re-run the deterministic
-time-window checks on a fresh clock immediately before the `Sign` call, so an offer set that
-expires or ages out during the chain reads and attestation denies instead of becoming an
-unusable signed artifact. Everything else stays fail-closed with typed denials: payloads
+time-window checks on a fresh clock — demanding a 30-second remaining-lifetime margin for the
+`Sign` call, publication assembly, and delivery — immediately before signing, so an offer set
+that expires (or would expire in the caller's hands) during the pre-sign awaits denies instead
+of becoming an unusable signed artifact. Everything else stays fail-closed with typed denials: payloads
 outside the contract (`MalformedIntentError`), a missing or invalid policy document
 (`PolicyNotConfiguredError`), out-of-policy intents including group ids that do not re-derive
 from the offer contents (`IntentPolicyViolationError` naming the violated check), missing or
@@ -192,7 +193,7 @@ neither ever comes from the caller or an address registry, and both — like the
 non-zero (a zero pin would sign no-op transactions that burn the maker nonce while the caller
 believes the cancellation or publication happened). Each market entry now carries the
 market's **full immutable parameter struct** — `loanToken`, the `collateralParams` list (strictly
-ascending by non-zero token, the unique order the protocol enforces at creation), `rcfThreshold`,
+ascending by non-zero token and at most the protocol's 128 per-market entries, the order and cap the protocol enforces at creation), `rcfThreshold`,
 `enterGate`, `liquidatorGate` — alongside its `maturity` and the book's live on-chain
 `tickSpacing` (1, 2, or 4 — it must divide the protocol default, every offer tick must align to
 it, and the `minTick`/`maxTick` window must contain at least one aligned tick or the entry
@@ -265,9 +266,11 @@ ceiling)` is a prerequisite of turning the bot's quote/ratify flows onto this mi
   Setter ratify re-presents the same offers later, so size this for block-timestamp lag plus
   build→invoke and ratify-retry latency.
 - **Routine gas ceiling vs consumption batches**: a `consume-groups` intent must carry
-  `fees.gas ≥ 25,000 + 30,000 × groups` (a conservative worst-case execution floor; below it the
-  middleware denies with `gas-floor` rather than signing a transaction that would be included and
-  revert, burning the nonce). Size `feeCeilings.routine.gas` to cover the largest batch you plan
+  `fees.gas ≥ 25,000 + 30,000 × groups`, and every single-call transaction (ratify,
+  `cancel-root`, `unratify-root`) must carry `fees.gas ≥ 50,000` (conservative worst-case
+  execution floors; below them the middleware denies with `gas-floor` rather than signing a
+  transaction that would be included and revert, burning the nonce). Size
+  `feeCeilings.routine.gas` to cover the largest batch you plan
   to sign in one transaction — the full 80-group wire cap needs ~2.43M — or split cleanups into
   smaller revokes.
 

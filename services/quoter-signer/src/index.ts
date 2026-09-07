@@ -246,18 +246,31 @@ const signRevokeIntent = async (parameters: {
 }
 
 /**
+ * Seconds of remaining offer lifetime the pre-sign recheck demands beyond the fresh clock
+ * reading, covering the work the recheck itself cannot see: the KMS `Sign` call, publication
+ * assembly, response delivery, and the caller's broadcast hand-off. An offer expiring inside
+ * this margin would be signed into an artifact that is unusable (or, for a ratification,
+ * broadcastable only to waste the nonce) by the time the caller holds it.
+ */
+const PRE_SIGN_LIFETIME_MARGIN_SECONDS = 30n
+
+/**
  * Re-runs the deterministic policy checks on a fresh clock reading, for the offer-carrying kinds
  * whose time windows (expiry, start age) can cross a boundary during the pre-sign awaits — the
  * chain reads and the KMS custody attestation. A set that aged out of policy while those ran is
  * denied with the normal typed time-window violation instead of being signed into an artifact
  * the caller can no longer use. Returns `undefined` when the intent still passes.
+ * @param marginSeconds - Extra seconds of lifetime to demand beyond the clock reading; the
+ * initial intake check passes zero (its upper-bound checks stay authoritative), the pre-sign
+ * recheck passes {@link PRE_SIGN_LIFETIME_MARGIN_SECONDS} to cover signing and delivery.
  */
 const recheckIntentClock = (
   intent: QuoterSignerIntent,
-  policy: QuoterSignerPolicy
+  policy: QuoterSignerPolicy,
+  marginSeconds: bigint
 ): { readonly denial: QuoterSignerDenialCause } | undefined => {
   try {
-    assertIntentWithinPolicy(intent, policy, currentUnixSeconds())
+    assertIntentWithinPolicy(intent, policy, currentUnixSeconds() + marginSeconds)
     return undefined
   } catch (error) {
     // An unexpected evaluation fault is a middleware bug; it still denies, never approves.
@@ -382,7 +395,7 @@ const evaluateIntent = async (
           : new PolicyNotConfiguredError('policy', 'wrong-type')
     }
   }
-  const checked = recheckIntentClock(intent, policy)
+  const checked = recheckIntentClock(intent, policy, 0n)
   if (checked !== undefined) return checked
   let kmsConfig: KmsSignerConfig
   try {
@@ -413,9 +426,9 @@ const evaluateIntent = async (
     }
     const attested = await attestSigner(resolveSigner, kmsConfig, policy.maker)
     if ('denial' in attested) return attested
-    // Fresh-clock recheck after the awaits: an offer set that expired or aged out while the
-    // attestation ran denies here instead of becoming an unusable signed artifact.
-    const recheck = recheckIntentClock(intent, policy)
+    // Fresh-clock recheck after the awaits, with the signing/delivery margin: an offer set that
+    // expired — or will expire before the caller can use the artifact — denies here instead.
+    const recheck = recheckIntentClock(intent, policy, PRE_SIGN_LIFETIME_MARGIN_SECONDS)
     if (recheck !== undefined) return recheck
     try {
       return {
@@ -472,9 +485,9 @@ const evaluateIntent = async (
   if ('denial' in read) return read
   const attested = await attestSigner(resolveSigner, kmsConfig, policy.maker)
   if ('denial' in attested) return attested
-  // Fresh-clock recheck after the awaits: an offer set that expired or aged out while the nonce
-  // read and attestation ran denies here instead of becoming an unusable signed artifact.
-  const recheck = recheckIntentClock(intent, policy)
+  // Fresh-clock recheck after the awaits, with the signing/delivery margin: an offer set that
+  // expired — or will expire before the signed ratification can be used — denies here instead.
+  const recheck = recheckIntentClock(intent, policy, PRE_SIGN_LIFETIME_MARGIN_SECONDS)
   if (recheck !== undefined) return recheck
   try {
     return {

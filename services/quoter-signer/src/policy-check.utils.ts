@@ -36,6 +36,15 @@ export const MIN_GAS_PER_CONSUMED_GROUP = 30_000n
 export const MIN_CONSUME_GROUPS_BASE_GAS = 25_000n
 
 /**
+ * Conservative worst-case execution gas for a single ratifier call — `cancelRoot` or
+ * `setIsRootRatified` in either direction: intrinsic transaction gas, calldata, one cold
+ * zero-to-nonzero storage write, and the event, rounded up. The same include-but-revert
+ * reasoning as the batch floor: a limit above intrinsic but below execution would burn the
+ * maker nonce without ratifying or revoking anything.
+ */
+export const MIN_CONTRACT_CALL_GAS = 50_000n
+
+/**
  * A consumption batch whose gas limit cannot cover its own worst-case execution would be
  * included and revert: the maker nonce and fees burn while every group stays live. The ceilings
  * only bound gas from above, so this floor bounds it from below, per batch size.
@@ -43,6 +52,13 @@ export const MIN_CONSUME_GROUPS_BASE_GAS = 25_000n
 const assertConsumeGroupsGasFloor = (fees: IntentFees, groups: number): void => {
   const floor = MIN_CONSUME_GROUPS_BASE_GAS + MIN_GAS_PER_CONSUMED_GROUP * BigInt(groups)
   if (BigInt(fees.gas) < floor) {
+    throw new IntentPolicyViolationError('gas-floor', 'fees.gas')
+  }
+}
+
+/** Flat execution floor for the single-call operations (ratify, cancel-root, unratify-root). */
+const assertContractCallGasFloor = (fees: IntentFees): void => {
+  if (BigInt(fees.gas) < MIN_CONTRACT_CALL_GAS) {
     throw new IntentPolicyViolationError('gas-floor', 'fees.gas')
   }
 }
@@ -251,6 +267,7 @@ export const assertIntentWithinPolicy = (
     case 'ratify': {
       assertOffersWithinPolicy(intent.offers, policy, nowSeconds)
       assertFeesWithinCeiling(intent.fees, policy.feeCeilings.routine, 'fees')
+      assertContractCallGasFloor(intent.fees)
       return
     }
     case 'revoke': {
@@ -267,6 +284,12 @@ export const assertIntentWithinPolicy = (
       assertFeesWithinCeiling(intent.fees, ceiling, 'fees')
       if (intent.operation.type === 'consume-groups') {
         assertConsumeGroupsGasFloor(intent.fees, intent.operation.groups.length)
+      }
+      // Root cancellation and un-ratification are single ratifier calls under the flat floor;
+      // self-cancel (an empty self-send, denied not-implemented downstream) is deliberately
+      // exempt so the later increment can price it from its own shape.
+      if (intent.operation.type === 'cancel-root' || intent.operation.type === 'unratify-root') {
+        assertContractCallGasFloor(intent.fees)
       }
       return
     }

@@ -565,7 +565,7 @@ describe('handler', () => {
     })
   })
 
-  it('re-denies on a fresh clock when the offer set expires during the pre-sign awaits', async () => {
+  it('re-denies when the offer set would expire inside the pre-sign lifetime margin', async () => {
     vi.spyOn(console, 'log').mockImplementation(() => {})
     const { maturity, offers } = buildOfferFixture()
     stubPolicy({ surface: 'quote', markets: [fixtureMarketEntry({ maturity })] })
@@ -576,9 +576,10 @@ describe('handler', () => {
     const handle = createHandler({
       kms: {
         getPublicKey: async () => {
-          // The attestation await is where wall-clock time passes: jump past the offer expiry so
-          // only the fresh-clock recheck between attestation and Sign can catch it.
-          clock.mockReturnValue(baseMs + 1_801_000)
+          // The attestation await is where wall-clock time passes: land 29s BEFORE the offer
+          // expiry (base + 1800s), inside the 30s signing/delivery margin — only the margin-aware
+          // recheck between attestation and Sign can catch it.
+          clock.mockReturnValue(baseMs + 1_771_000)
           return publicKeyMaterial()
         },
         signDigest

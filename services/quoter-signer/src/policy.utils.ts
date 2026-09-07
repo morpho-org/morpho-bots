@@ -3,6 +3,7 @@ import type { Address, Hex } from 'viem'
 import {
   DEFAULT_TICK_SPACING,
   MarketUtils,
+  MAX_COLLATERALS,
   MAX_CONTINUOUS_FEE,
   MAX_TICK
 } from '@morpho-org/midnight-sdk'
@@ -297,6 +298,11 @@ const collateralValue = (value: unknown, field: string): PolicyCollateral => {
 const collateralsValue = (value: unknown, field: string): readonly PolicyCollateral[] => {
   const entries = arrayValue(value, field)
   if (entries.length === 0) throw new PolicyNotConfiguredError(field, 'empty')
+  // The protocol's permanent per-market collateral cap: a longer list hashes to an id no
+  // creatable market can carry, so the entry is a dead configuration and refuses to serve.
+  if (entries.length > Number(MAX_COLLATERALS)) {
+    throw new PolicyNotConfiguredError(field, 'out-of-range')
+  }
   const collaterals = entries.map((entry, index) => collateralValue(entry, `${field}[${index}]`))
   // Strictly ascending by token from the protocol's own zero baseline — the unique order (and
   // non-zero-token rule) `touchMarket` enforces at creation — so the reviewed document admits

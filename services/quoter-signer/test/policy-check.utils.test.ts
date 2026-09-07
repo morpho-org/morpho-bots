@@ -13,6 +13,7 @@ import { IntentPolicyViolationError } from '../src/intent-policy-violation.error
 import {
   assertIntentWithinPolicy,
   MIN_CONSUME_GROUPS_BASE_GAS,
+  MIN_CONTRACT_CALL_GAS,
   MIN_GAS_PER_CONSUMED_GROUP
 } from '../src/policy-check.utils'
 
@@ -176,6 +177,14 @@ describe('assertIntentWithinPolicy', () => {
       'an allowlisted remediation variant',
       remediationIntent('loan-asset-approval'),
       policyFor({ surface: 'setup-remediation' })
+    ],
+    [
+      'a root cancellation at exactly the single-call gas floor',
+      revokeIntent(
+        { type: 'cancel-root', root: bytes32('77') },
+        { ...fees, gas: MIN_CONTRACT_CALL_GAS.toString() }
+      ),
+      policyFor({ surface: 'routine-revoke' })
     ],
     [
       'a consume-groups batch at its exact per-batch gas floor',
@@ -426,6 +435,27 @@ describe('assertIntentWithinPolicy', () => {
         { ...fees, gas: (twoGroupGasFloor - 1n).toString() }
       ),
       policyFor({ surface: 'routine-revoke' }),
+      'gas-floor',
+      'fees.gas'
+    ],
+    [
+      'a root cancellation below the single-call gas floor',
+      revokeIntent({ type: 'cancel-root', root: bytes32('77') }, { ...fees, gas: '49999' }),
+      policyFor({ surface: 'routine-revoke' }),
+      'gas-floor',
+      'fees.gas'
+    ],
+    [
+      'a root un-ratification below the single-call gas floor',
+      revokeIntent({ type: 'unratify-root', root: bytes32('77') }, { ...fees, gas: '49999' }),
+      policyFor({ surface: 'routine-revoke', ratifierMode: 'setter' }),
+      'gas-floor',
+      'fees.gas'
+    ],
+    [
+      'a ratification below the single-call gas floor',
+      ratifyIntent([buyOffer()], { ...fees, gas: '49999' }),
+      policyFor({ surface: 'ratify', ratifierMode: 'setter' }),
       'gas-floor',
       'fees.gas'
     ],

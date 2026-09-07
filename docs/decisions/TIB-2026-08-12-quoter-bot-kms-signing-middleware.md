@@ -1423,8 +1423,9 @@ operations — on top of the attested digest-signing primitive that shipped with
   offer-struct rules), and the signature-free Setter publication encoding doubles as the same
   preflight on the ratify path — in both cases an unpublishable set is the same named policy
   denial with no KMS call. Both kinds also re-run the deterministic time-window checks on a fresh
-  clock immediately before the `Sign` call, so a set that expires or ages out during the chain
-  reads and attestation denies instead of yielding an unusable signed artifact. Ecrecover quotes sign the
+  clock immediately before the `Sign` call, demanding a 30-second remaining-lifetime margin for
+  signing, assembly, and delivery, so a set that expires — or would expire before the caller can
+  use the artifact — denies instead of yielding an unusable signature. Ecrecover quotes sign the
   SDK-derived EIP-712 tree digest (exactly one `kms:Sign` per approval) and return the tree
   signature plus the encoded zero-value Mempool publication; Setter ratifications re-derive the
   root and sign `setIsRootRatified(maker, root, true)`; both encode the publication payload with
@@ -1437,7 +1438,8 @@ operations — on top of the attested digest-signing primitive that shipped with
   batches capped at the wire's 80-group limit and additionally required to carry a gas limit
   covering the batch's conservative worst-case execution (`25,000 + 30,000 × groups`; below the
   floor the intent denies as `gas-floor`, since an include-but-revert transaction would burn the
-  nonce while leaving every group live) — encoded as one `multicall` whose inner
+  nonce while leaving every group live; single ratifier calls — ratify, `cancel-root`,
+  `unratify-root` — carry a flat 50,000 floor under the same reasoning) — encoded as one `multicall` whose inner
   calls the middleware builds itself, so no foreign
   selector or nested multicall can appear — `cancelRoot(maker, root)`, or
   `setIsRootRatified(maker, root, false)` on the pinned ratifier. Only the routine-revoke surface
@@ -1464,7 +1466,8 @@ operations — on top of the attested digest-signing primitive that shipped with
   itself rather than adding a mutable external store to the root of trust. A `contracts` block
   pins the Midnight singleton and Mempool
   addresses, and each market entry carries the market's full immutable parameter struct
-  (`loanToken`, strictly-ascending non-zero-token `collateralParams` — validated from the
+  (`loanToken`, strictly-ascending non-zero-token `collateralParams` capped at the protocol's 128
+  per-market entries — validated from the
   protocol's own zero baseline, so a zero first token refuses to serve — `rcfThreshold`, `enterGate`,
   `liquidatorGate`) plus its live on-chain `tickSpacing` (a divisor of the protocol default;
   every offer tick must align to it — the deterministic checks name the violation as
