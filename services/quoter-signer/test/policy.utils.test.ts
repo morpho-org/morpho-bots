@@ -16,10 +16,12 @@ import {
   FIXTURE_MEMPOOL,
   FIXTURE_MIDNIGHT,
   FIXTURE_RATIFIER as ratifier,
+  FIXTURE_ZERO_ADDRESS as zeroAddress,
   fixtureCollateral,
   fixtureMarketEntry,
   fixturePolicyDocument,
   fixtureProtectedCeiling as protectedCeiling,
+  fixtureRemediationAction as action,
   fixtureRoutineCeiling as routineCeiling
 } from './policy-fixture'
 
@@ -33,6 +35,13 @@ const document = (overrides: Record<string, unknown> = {}) =>
     surface: 'quote',
     ratifierMode: 'ecrecover',
     ...overrides
+  })
+
+const remediationDocument = (actionOverride: Record<string, unknown>) =>
+  document({
+    remediations: [
+      { variant: 'loan-asset-approval', action: actionOverride, feeCeiling: routineCeiling }
+    ]
   })
 
 const expectNotConfigured = (
@@ -570,15 +579,159 @@ describe('parseQuoterSignerPolicy', () => {
       JSON.stringify(
         document({
           remediations: [
-            { variant: 'loan-asset-approval', feeCeiling: routineCeiling },
-            { variant: 'loan-asset-approval', feeCeiling: routineCeiling }
+            { variant: 'loan-asset-approval', action, feeCeiling: routineCeiling },
+            { variant: 'loan-asset-approval', action, feeCeiling: routineCeiling }
           ]
         })
       ),
       'remediations[1].variant',
       'duplicate'
+    ],
+    [
+      'a remediation variant without an action template',
+      JSON.stringify(
+        document({ remediations: [{ variant: 'loan-asset-approval', feeCeiling: routineCeiling }] })
+      ),
+      'remediations[0].action',
+      'missing'
+    ],
+    [
+      'an unknown remediation action kind',
+      JSON.stringify(remediationDocument({ ...action, type: 'native-balance-sweep' })),
+      'remediations[0].action.type',
+      'invalid-identifier'
+    ],
+    [
+      'an unknown remediation action key',
+      JSON.stringify(remediationDocument({ ...action, calldata: '0x' })),
+      'remediations[0].action',
+      'unknown-key'
+    ],
+    [
+      'a zero remediation token',
+      JSON.stringify(remediationDocument({ ...action, token: zeroAddress })),
+      'remediations[0].action.token',
+      'zero-address'
+    ],
+    [
+      'a zero remediation spender',
+      JSON.stringify(remediationDocument({ ...action, spender: zeroAddress })),
+      'remediations[0].action.spender',
+      'zero-address'
+    ],
+    [
+      'a remediation token pinned to the maker EOA',
+      JSON.stringify(remediationDocument({ ...action, token: maker })),
+      'remediations[0].action.token',
+      'duplicate'
+    ],
+    [
+      'a remediation spender pinned to the maker EOA',
+      JSON.stringify(remediationDocument({ ...action, spender: maker })),
+      'remediations[0].action.spender',
+      'duplicate'
+    ],
+    [
+      'a non-decimal remediation amount',
+      JSON.stringify(remediationDocument({ ...action, amount: '0x10' })),
+      'remediations[0].action.amount',
+      'invalid-decimal'
+    ],
+    [
+      'a routine gas ceiling below the smallest cleanup transaction',
+      JSON.stringify(
+        document({
+          feeCeilings: { routine: { ...routineCeiling, gas: '54999' }, protected: protectedCeiling }
+        })
+      ),
+      'feeCeilings.routine.gas',
+      'incoherent-bounds'
+    ],
+    [
+      'a remediation gas ceiling below the single-call execution floor',
+      JSON.stringify(
+        document({
+          remediations: [
+            {
+              variant: 'loan-asset-approval',
+              action,
+              feeCeiling: { ...routineCeiling, gas: '49999' }
+            }
+          ]
+        })
+      ),
+      'remediations[0].feeCeiling.gas',
+      'incoherent-bounds'
+    ],
+    [
+      'a remediation max-fee ceiling the protected reserve cannot replace',
+      JSON.stringify(
+        document({
+          remediations: [
+            {
+              variant: 'loan-asset-approval',
+              action,
+              feeCeiling: { ...routineCeiling, maxFeePerGas: '26666666668' }
+            }
+          ]
+        })
+      ),
+      'remediations[0].feeCeiling.maxFeePerGas',
+      'insufficient-protected-ceiling'
+    ],
+    [
+      'a remediation priority ceiling the protected reserve cannot replace',
+      JSON.stringify(
+        document({
+          remediations: [
+            {
+              variant: 'loan-asset-approval',
+              action,
+              feeCeiling: {
+                ...routineCeiling,
+                maxFeePerGas: '20000000000',
+                maxPriorityFeePerGas: '13333333335'
+              }
+            }
+          ]
+        })
+      ),
+      'remediations[0].feeCeiling.maxPriorityFeePerGas',
+      'insufficient-protected-ceiling'
     ]
   ])('rejects %s', (_description, source, field, reason) => {
     expectNotConfigured(source, field, reason)
+  })
+
+  it('accepts a routine gas ceiling at exactly the smallest cleanup transaction', () => {
+    const parsed = parseQuoterSignerPolicy(
+      JSON.stringify(
+        document({
+          feeCeilings: { routine: { ...routineCeiling, gas: '55000' }, protected: protectedCeiling }
+        })
+      )
+    )
+    expect(parsed.feeCeilings.routine.gas).toBe('55000')
+  })
+
+  it('accepts a remediation ceiling covered by exactly one protected replacement bump', () => {
+    const parsed = parseQuoterSignerPolicy(
+      JSON.stringify(
+        document({
+          remediations: [
+            {
+              variant: 'loan-asset-approval',
+              action,
+              feeCeiling: {
+                maxFeePerGas: '26666666667',
+                maxPriorityFeePerGas: '13333333334',
+                gas: '120000'
+              }
+            }
+          ]
+        })
+      )
+    )
+    expect(parsed.remediations[0]?.feeCeiling.maxFeePerGas).toBe('26666666667')
   })
 })

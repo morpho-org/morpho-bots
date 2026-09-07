@@ -6,10 +6,10 @@ import {
   midnightAbi,
   setterRatifierAbi
 } from '@morpho-org/midnight-sdk'
-import { encodeFunctionData } from 'viem'
+import { encodeFunctionData, erc20Abi } from 'viem'
 
 import type { RevokeOperation } from './intent.utils'
-import type { QuoterSignerPolicy } from './policy.utils'
+import type { PolicyRemediationAction, QuoterSignerPolicy } from './policy.utils'
 
 /**
  * One canonically encoded zero-value contract call — the target and calldata the middleware
@@ -57,10 +57,40 @@ export const encodeConsumeGroupsCall = (
 }
 
 /**
- * A revoke operation this build's encoder supports — everything but `self-cancel`, which needs
- * the recorded-transaction validation of a later TIB increment.
+ * The revoke operations encoded as pinned contract calls — everything but `self-cancel`, whose
+ * empty self-send is encoded by {@link encodeSelfCancelCall} instead.
  */
 export type EncodableRevokeOperation = Exclude<RevokeOperation, { readonly type: 'self-cancel' }>
+
+/**
+ * Encodes the empty zero-value self-send of a self-cancel: the pinned maker as target with no
+ * calldata — the one replacement payload that carries no economic action, so it can displace an
+ * in-flight maker transaction while only spending its own intrinsic gas (TIB-2026-08-12 §1).
+ * @param policy - Parsed deployment policy supplying the maker pin.
+ * @returns The encoded empty call targeting the maker itself.
+ */
+export const encodeSelfCancelCall = (policy: QuoterSignerPolicy): EncodedContractCall => ({
+  to: policy.maker,
+  data: '0x'
+})
+
+/**
+ * Encodes one manifest-pinned remediation action: exactly `approve(spender, amount)` on the
+ * pinned token with the pinned values — nothing caller-supplied, so arbitrary calldata, foreign
+ * spenders, and caller-selected targets are unrepresentable (TIB-2026-08-12 setup remediation).
+ * @param action - Manifest-pinned action template from the validated policy document.
+ * @returns The encoded zero-value approval call targeting the pinned token.
+ */
+export const encodeRemediationActionCall = (
+  action: PolicyRemediationAction
+): EncodedContractCall => ({
+  to: action.token,
+  data: encodeFunctionData({
+    abi: erc20Abi,
+    functionName: 'approve',
+    args: [action.spender, BigInt(action.amount)]
+  })
+})
 
 /**
  * Encodes one revoke operation into its exact allowlisted call: group consumption on the pinned

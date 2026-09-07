@@ -10,12 +10,13 @@ import type {
 import type { QuoterSignerPolicy } from '../src/policy.utils'
 
 import { IntentPolicyViolationError } from '../src/intent-policy-violation.error'
+import { assertIntentWithinPolicy } from '../src/policy-check.utils'
 import {
-  assertIntentWithinPolicy,
   MIN_CONSUME_GROUPS_BASE_GAS,
   MIN_CONTRACT_CALL_GAS,
-  MIN_GAS_PER_CONSUMED_GROUP
-} from '../src/policy-check.utils'
+  MIN_GAS_PER_CONSUMED_GROUP,
+  MIN_SELF_CANCEL_GAS
+} from '../src/policy.utils'
 
 const twoGroupGasFloor = MIN_CONSUME_GROUPS_BASE_GAS + 2n * MIN_GAS_PER_CONSUMED_GROUP
 import { parseQuoterSignerPolicy } from '../src/policy.utils'
@@ -164,9 +165,14 @@ describe('assertIntentWithinPolicy', () => {
       policyFor({ surface: 'routine-revoke' })
     ],
     [
-      'root un-ratification on a Setter break-glass surface',
-      revokeIntent({ type: 'unratify-root', root: bytes32('77') }),
+      'root un-ratification at an explicit nonce on a Setter break-glass surface',
+      revokeIntent({ type: 'unratify-root', root: bytes32('77'), nonce: 5 }),
       policyFor({ surface: 'break-glass-revoke', ratifierMode: 'setter' })
+    ],
+    [
+      'group consumption at an explicit nonce on the break-glass surface',
+      revokeIntent({ type: 'consume-groups', groups: [bytes32('11')], nonce: 0 }),
+      policyFor({ surface: 'break-glass-revoke' })
     ],
     [
       'a self-cancel on the break-glass surface',
@@ -174,8 +180,21 @@ describe('assertIntentWithinPolicy', () => {
       policyFor({ surface: 'break-glass-revoke' })
     ],
     [
+      'a self-cancel at exactly the intrinsic gas floor',
+      revokeIntent(
+        { type: 'self-cancel', nonce: 7 },
+        { ...fees, gas: MIN_SELF_CANCEL_GAS.toString() }
+      ),
+      policyFor({ surface: 'break-glass-revoke' })
+    ],
+    [
       'an allowlisted remediation variant',
       remediationIntent('loan-asset-approval'),
+      policyFor({ surface: 'setup-remediation' })
+    ],
+    [
+      'a remediation at exactly the single-call gas floor',
+      remediationIntent('loan-asset-approval', { ...fees, gas: MIN_CONTRACT_CALL_GAS.toString() }),
       policyFor({ surface: 'setup-remediation' })
     ],
     [
@@ -487,6 +506,37 @@ describe('assertIntentWithinPolicy', () => {
       'operation.type'
     ],
     [
+      'an explicit placement nonce on the routine-revoke surface',
+      revokeIntent({ type: 'consume-groups', groups: [bytes32('11')], nonce: 7 }),
+      policyFor({ surface: 'routine-revoke' }),
+      'nonce-pin',
+      'operation.nonce'
+    ],
+    [
+      'a self-cancel on the routine-revoke surface',
+      revokeIntent({ type: 'self-cancel', nonce: 7 }),
+      policyFor({ surface: 'routine-revoke' }),
+      'nonce-pin',
+      'operation.nonce'
+    ],
+    [
+      'a break-glass root cancellation without an explicit placement nonce',
+      revokeIntent({ type: 'cancel-root', root: bytes32('77') }),
+      policyFor({ surface: 'break-glass-revoke' }),
+      'nonce-pin',
+      'operation.nonce'
+    ],
+    [
+      'a self-cancel below the intrinsic gas floor',
+      revokeIntent(
+        { type: 'self-cancel', nonce: 1 },
+        { ...fees, gas: (MIN_SELF_CANCEL_GAS - 1n).toString() }
+      ),
+      policyFor({ surface: 'break-glass-revoke' }),
+      'gas-floor',
+      'fees.gas'
+    ],
+    [
       'a remediation variant outside the manifest',
       remediationIntent('collateral-approval'),
       policyFor({ surface: 'setup-remediation' }),
@@ -499,6 +549,13 @@ describe('assertIntentWithinPolicy', () => {
       policyFor({ surface: 'setup-remediation' }),
       'fee-ceiling',
       'fees.maxFeePerGas'
+    ],
+    [
+      'a remediation below the single-call gas floor',
+      remediationIntent('loan-asset-approval', { ...fees, gas: '49999' }),
+      policyFor({ surface: 'setup-remediation' }),
+      'gas-floor',
+      'fees.gas'
     ]
   ])('denies %s', (_description, intent, policy, check, field) => {
     expectViolation(intent, policy, check, field)

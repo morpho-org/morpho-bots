@@ -26,6 +26,10 @@ export type IntentPolicyCheck =
   | 'total-lend-exposure-cap'
   | 'ratifier-mode-operation'
   | 'remediation-allowlist'
+  | 'remediation-state'
+  | 'nonce-pin'
+  | 'nonce-window'
+  | 'maker-code'
   | 'group-derivation'
   | 'offer-encoding'
   | 'internal-fault'
@@ -43,6 +47,10 @@ export class IntentPolicyViolationError extends Error {
   /**
    * Terminal for the payload as sent: deployment policy only changes through a redeploy, and
    * time-window denials call for rebuilding the offer set rather than replaying a stale intent.
+   * The state-dependent checks (`nonce-window`, `remediation-state`, `maker-code`) are the same
+   * doctrine: the caller re-derives the intent from fresh chain state — re-reading the window
+   * and re-choosing the placement, or running the reset variant first — rather than blind-replaying
+   * a payload the live state already refused.
    */
   readonly retryable = false
 

@@ -26,6 +26,40 @@ export const QUOTER_SIGNER_POLICY_VARIABLE = 'QUOTER_SIGNER_POLICY'
 export const QUOTER_SIGNER_POLICY_VERSION = 1
 
 /**
+ * Conservative worst-case execution gas for a single contract call — a ratifier `cancelRoot` or
+ * `setIsRootRatified` in either direction, or a remediation ERC-20 `approve`: intrinsic
+ * transaction gas, calldata, one cold zero-to-nonzero storage write, and the event, rounded up.
+ * The include-but-revert reasoning of the policy checks: a limit above intrinsic but below
+ * execution would burn the maker nonce without ratifying, revoking, or approving anything. For
+ * the ratifier calls the middleware pins the target, so the bound is exact; for a remediation
+ * approve it is a floor for standard ERC-20 implementations only — a proxied or hooked token can
+ * cost more, and provisioning `fees.gas` for the pinned token's real cost is part of the
+ * manifest review (pre-sign simulation is a later increment). Deployment validation also refuses
+ * a remediation variant whose gas ceiling sits below this floor: every intent it admits would
+ * deny, so the variant is a dead configuration discovered only when needed.
+ */
+export const MIN_CONTRACT_CALL_GAS = 50_000n
+
+/**
+ * Conservative worst-case execution gas per `setConsumed` inner call in a consumption batch: a
+ * cold zero-to-nonzero storage write (22,100), the consumption event, and the inner-call,
+ * memory, and calldata overhead, rounded up. Deliberately generous so a signed batch that fits
+ * the floor can execute; EVM gas repricings should revisit it (erring high only tightens the
+ * floor, never signs an inexecutable batch).
+ */
+export const MIN_GAS_PER_CONSUMED_GROUP = 30_000n
+
+/** Base transaction allowance under the same floor: intrinsic gas plus multicall dispatch. */
+export const MIN_CONSUME_GROUPS_BASE_GAS = 25_000n
+
+/**
+ * Exact intrinsic gas of an empty zero-value self-send — the only execution a self-cancel ever
+ * performs. Below it the transaction is invalid and could never be included, so the artifact
+ * could not replace anything.
+ */
+export const MIN_SELF_CANCEL_GAS = 21_000n
+
+/**
  * The five signing surfaces of the TIB-2026-08-12 mode-aware deployment shape. Each deployed
  * function pins exactly one surface in its own configuration — never from caller data — and the
  * surface decides which intent kind is accepted and which fee-ceiling class applies (`protected`
@@ -135,10 +169,30 @@ export type PolicyMarket = {
   readonly maxLendExposureAssets: UnsignedDecimal
 }
 
+/**
+ * The manifest-pinned transaction template of one setup-remediation variant. The middleware
+ * encodes the exact pinned call — callers never supply targets, spenders, amounts, or calldata
+ * (TIB-2026-08-12 setup remediation). This build's one action kind is the ERC-20 allowance
+ * approval; every other maintenance shape (authorizations, the native-balance sweep) is a later
+ * increment and cannot be expressed, so it cannot be signed.
+ */
+export type PolicyRemediationAction = {
+  /** Action discriminator; this build pins ERC-20 allowance approvals only. */
+  readonly type: 'erc20-approval'
+  /** Token contract the approval executes on. */
+  readonly token: Address
+  /** Exact spender granted the allowance. */
+  readonly spender: Address
+  /** Exact allowance value the transaction sets; `0` pins a revocation variant. */
+  readonly amount: UnsignedDecimal
+}
+
 /** One manifest-pinned setup-remediation variant this deployment accepts. */
 export type PolicyRemediation = {
   /** Deployment-manifest variant id callers may name. */
   readonly variant: string
+  /** Exact pinned transaction template the middleware encodes for this variant. */
+  readonly action: PolicyRemediationAction
   /** Fee/gas ceiling class for this variant's transaction. */
   readonly feeCeiling: PolicyFeeCeiling
 }
@@ -474,19 +528,58 @@ const contractsValue = (value: unknown, field: string): PolicyContracts => {
   return { midnight, mempool }
 }
 
-const remediationValue = (value: unknown, field: string): PolicyRemediation => {
+const remediationActionValue = (
+  value: unknown,
+  field: string,
+  maker: Address
+): PolicyRemediationAction => {
+  if (value === undefined) throw new PolicyNotConfiguredError(field, 'missing')
   const record = plainObject(value, field)
-  allowKeys(record, ['variant', 'feeCeiling'], field)
+  allowKeys(record, ['type', 'token', 'spender', 'amount'], field)
+  if (stringValue(record.type, `${field}.type`) !== 'erc20-approval') {
+    throw new PolicyNotConfiguredError(`${field}.type`, 'invalid-identifier')
+  }
+  const token = contractAddressValue(record.token, `${field}.token`)
+  const spender = contractAddressValue(record.spender, `${field}.spender`)
+  // The maker is the approving EOA: pinned as the token it would sign a codeless-target no-op
+  // that burns the nonce, and pinned as the spender a self-approval that grants nothing.
+  if (isAddressEqual(token, maker)) {
+    throw new PolicyNotConfiguredError(`${field}.token`, 'duplicate')
+  }
+  if (isAddressEqual(spender, maker)) {
+    throw new PolicyNotConfiguredError(`${field}.spender`, 'duplicate')
+  }
+  return {
+    type: 'erc20-approval',
+    token,
+    spender,
+    amount: unsignedDecimalValue(record.amount, `${field}.amount`)
+  }
+}
+
+const remediationValue = (value: unknown, field: string, maker: Address): PolicyRemediation => {
+  const record = plainObject(value, field)
+  allowKeys(record, ['variant', 'action', 'feeCeiling'], field)
   const variant = stringValue(record.variant, `${field}.variant`)
   if (!REMEDIATION_VARIANT_PATTERN.test(variant)) {
     throw new PolicyNotConfiguredError(`${field}.variant`, 'invalid-identifier')
   }
-  return { variant, feeCeiling: feeCeilingValue(record.feeCeiling, `${field}.feeCeiling`) }
+  return {
+    variant,
+    action: remediationActionValue(record.action, `${field}.action`, maker),
+    feeCeiling: feeCeilingValue(record.feeCeiling, `${field}.feeCeiling`)
+  }
 }
 
-const remediationsValue = (value: unknown, field: string): readonly PolicyRemediation[] => {
+const remediationsValue = (
+  value: unknown,
+  field: string,
+  maker: Address
+): readonly PolicyRemediation[] => {
   const entries = arrayValue(value, field)
-  const remediations = entries.map((entry, index) => remediationValue(entry, `${field}[${index}]`))
+  const remediations = entries.map((entry, index) =>
+    remediationValue(entry, `${field}[${index}]`, maker)
+  )
   const seen = new Set<string>()
   remediations.forEach((remediation, index) => {
     if (seen.has(remediation.variant)) {
@@ -557,13 +650,15 @@ const policyJsonText = (source: string): string => {
  * tick bounds must be coherent and within the protocol `MAX_TICK`, continuous-fee ceilings within
  * `MAX_CONTINUOUS_FEE`, the quote surface requires the Ecrecover mode and ratify the Setter mode,
  * every protected fee ceiling must cover one complete {@link emergencyBump} of its routine
- * counterpart (with `protected.gas` at least `routine.gas`), collateral definitions must arrive
+ * counterpart (with `protected.gas` at least `routine.gas`) and of every remediation variant's
+ * fee ceilings (remediation transactions are break-glass-preemptable), collateral definitions must arrive
  * strictly ascending by token, each market's pinned struct must re-derive its pinned `marketId`
  * through the SDK's content addressing, maturities must sit exactly at 15:00:00 UTC inside the
  * Mempool codec's safe-timestamp bound (an off-schedule maturity could never publish), tick
  * spacings must divide the protocol default with at least one aligned tick inside the price
- * bounds, and the ratifier, singleton, and Mempool pins must be three distinct non-zero
- * contracts.
+ * bounds, the ratifier, singleton, and Mempool pins must be three distinct non-zero contracts,
+ * and every remediation action must pin non-zero token and spender contracts distinct from the
+ * maker EOA (either collision signs a no-op that burns the nonce).
  * @param source - Raw `QUOTER_SIGNER_POLICY` environment value, or `undefined` when unset.
  * @returns The validated, normalized {@link QuoterSignerPolicy}.
  * @throws `PolicyNotConfiguredError` naming the first violating field and an allowlisted reason —
@@ -662,12 +757,51 @@ export const parseQuoterSignerPolicy = (source: string | undefined): QuoterSigne
       'insufficient-protected-ceiling'
     )
   }
-  const remediations = remediationsValue(record.remediations, 'remediations')
+  // One reviewed document serves every deployment of the shared image, so the routine gas
+  // ceiling must admit the smallest cleanup transaction (a one-group consumption; root
+  // operations and the self-cancel cost less) — and `protected ≥ routine` then guarantees the
+  // break-glass surface can always sign cleanup. A lower ceiling parses as configured but
+  // provides no usable transaction exactly when an incident needs one.
+  if (BigInt(routine.gas) < MIN_CONSUME_GROUPS_BASE_GAS + MIN_GAS_PER_CONSUMED_GROUP) {
+    throw new PolicyNotConfiguredError('feeCeilings.routine.gas', 'incoherent-bounds')
+  }
+  const maker = addressValue(record.maker, 'maker')
+  const remediations = remediationsValue(record.remediations, 'remediations', maker)
   // A remediation deployment with nothing to permit is an empty policy — refuse to serve rather
   // than deny every otherwise valid variant as an intent violation.
   if (surface === 'setup-remediation' && remediations.length === 0) {
     throw new PolicyNotConfiguredError('remediations', 'empty')
   }
+  // Remediation transactions are break-glass-preemptable like every maker transaction, so the
+  // protected reserve must cover one full replacement bump of every variant ceiling too — a
+  // variant admitting fees the protected class cannot out-bid would strand incident cleanup at
+  // that nonce.
+  remediations.forEach((remediation, index) => {
+    const ceiling = remediation.feeCeiling
+    // A gas ceiling below the single-call execution floor admits no signable intent: the
+    // variant is dead configuration and refuses to serve rather than failing during an incident.
+    if (BigInt(ceiling.gas) < MIN_CONTRACT_CALL_GAS) {
+      throw new PolicyNotConfiguredError(
+        `remediations[${index}].feeCeiling.gas`,
+        'incoherent-bounds'
+      )
+    }
+    if (BigInt(protectedCeiling.maxFeePerGas) < emergencyBump(BigInt(ceiling.maxFeePerGas))) {
+      throw new PolicyNotConfiguredError(
+        `remediations[${index}].feeCeiling.maxFeePerGas`,
+        'insufficient-protected-ceiling'
+      )
+    }
+    if (
+      BigInt(protectedCeiling.maxPriorityFeePerGas) <
+      emergencyBump(BigInt(ceiling.maxPriorityFeePerGas))
+    ) {
+      throw new PolicyNotConfiguredError(
+        `remediations[${index}].feeCeiling.maxPriorityFeePerGas`,
+        'insufficient-protected-ceiling'
+      )
+    }
+  })
   const ratifier = contractAddressValue(record.ratifier, 'ratifier')
   const contracts = contractsValue(record.contracts, 'contracts')
   // A ratifier pinned to the singleton or the Mempool would make the revoke and ratify encoders
@@ -680,7 +814,7 @@ export const parseQuoterSignerPolicy = (source: string | undefined): QuoterSigne
     surface,
     ratifierMode,
     chainId,
-    maker: addressValue(record.maker, 'maker'),
+    maker,
     ratifier,
     contracts,
     offerWindow,
