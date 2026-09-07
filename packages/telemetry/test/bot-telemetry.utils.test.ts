@@ -195,6 +195,25 @@ describe('startBotTelemetry', () => {
     expect(cycleSpan?.status?.message).toBeUndefined()
   })
 
+  test('a metric interval beyond the timer maximum falls back to the default', async () => {
+    const collector = await startCollector()
+    vi.stubEnv('OTEL_EXPORTER_OTLP_ENDPOINT', collector.origin)
+    vi.stubEnv('OTEL_METRIC_EXPORT_INTERVAL', '9999999999999')
+    const events: string[] = []
+    const logger = {
+      info: (event: string) => void events.push(event),
+      warn: (event: string) => void events.push(event)
+    }
+    const telemetry = startBotTelemetry({ serviceName: 'test-bot', logger })
+    try {
+      expect(telemetry.enabled).toBe(true)
+      expect(events).toContain('otel.invalid-metric-export-interval')
+    } finally {
+      await telemetry.shutdown()
+      await collector.close()
+    }
+  })
+
   test('shutdown is idempotent', async () => {
     const collector = await startCollector()
     vi.stubEnv('OTEL_EXPORTER_OTLP_ENDPOINT', collector.origin)

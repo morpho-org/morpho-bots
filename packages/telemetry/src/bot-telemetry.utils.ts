@@ -18,6 +18,8 @@ import { hasMetricExportConfig, hasTraceExportConfig } from './telemetry-config.
 import { redactedUrlAttributes } from './url-redaction.utils'
 
 const DEFAULT_METRIC_EXPORT_INTERVAL_MS = 60_000
+// Node clamps larger timer delays to 1 ms, which would turn a long cadence into a hot loop.
+const MAXIMUM_METRIC_EXPORT_INTERVAL_MS = 2_147_483_647
 const SHUTDOWN_TIMEOUT_MS = 10_000
 const DIAGNOSTIC_LOG_INTERVAL_MS = 60_000
 
@@ -47,7 +49,9 @@ const metricExportIntervalMs = (env: Environment, logger?: TelemetryLogger) => {
   const raw = env.OTEL_METRIC_EXPORT_INTERVAL?.trim()
   if (!raw) return DEFAULT_METRIC_EXPORT_INTERVAL_MS
   const parsed = Number(raw)
-  if (Number.isSafeInteger(parsed) && parsed > 0) return parsed
+  if (Number.isSafeInteger(parsed) && parsed > 0 && parsed <= MAXIMUM_METRIC_EXPORT_INTERVAL_MS) {
+    return parsed
+  }
   logger?.warn('otel.invalid-metric-export-interval')
   return DEFAULT_METRIC_EXPORT_INTERVAL_MS
 }
@@ -87,9 +91,10 @@ const bounded = async <Result>(task: Promise<Result>, timeoutMs: number) => {
  * @returns The enabled state and an idempotent flushing shutdown handle.
  * @remarks Telemetry is strictly opt-in and strictly best-effort: without a configured OTLP
  * endpoint nothing is registered, and no failure — during startup, export, or shutdown — ever
- * throws past this boundary or interrupts the bot. Traces and metrics register independently,
+ * throws past this boundary or interrupts the bot. Traces and metrics register independently —
  * each gated by the standard `OTEL_EXPORTER_OTLP_ENDPOINT` or its signal-specific variant, and
- * export over OTLP/HTTP with JSON encoding. Outbound undici/fetch requests are auto-instrumented
+ * each isolated at startup, so one signal's failed registration (reported as a per-signal
+ * `otel.start-failed`) never suppresses the other — and export over OTLP/HTTP with JSON encoding. Outbound undici/fetch requests are auto-instrumented
  * through `diagnostics_channel` (bundle-safe, unlike module patching) with every URL-bearing span
  * attribute reduced to its origin, because RPC URLs commonly embed credentials. SDK diagnostics
  * are reduced to a rate-limited sanitized classification; endpoint values are never logged.
@@ -112,6 +117,23 @@ export const startBotTelemetry = (options: {
   const noop = { enabled: false, shutdown: async () => {} }
   if (!tracesEnabled && !metricsEnabled) return noop
 
+  const startSignal = <Registered>(
+    signal: string,
+    start: () => Registered,
+    cleanup: () => void
+  ): Registered | undefined => {
+    try {
+      return start()
+    } catch (error) {
+      options.logger?.warn('otel.start-failed', {
+        signal,
+        errorName: diagnosticErrorName(error instanceof Error ? error.name : error)
+      })
+      cleanup()
+      return undefined
+    }
+  }
+
   try {
     installDiagnosticLogger(options.logger, options.now ?? Date.now)
     const serviceName = env.OTEL_SERVICE_NAME?.trim() || options.serviceName
@@ -126,34 +148,66 @@ export const startBotTelemetry = (options: {
     )
 
     const tracerProvider = tracesEnabled
-      ? new NodeTracerProvider({
-          resource,
-          spanProcessors: [withSpanSanitizer(new BatchSpanProcessor(new OTLPTraceExporter()))]
-        })
+      ? startSignal(
+          'traces',
+          () => {
+            const provider = new NodeTracerProvider({
+              resource,
+              spanProcessors: [withSpanSanitizer(new BatchSpanProcessor(new OTLPTraceExporter()))]
+            })
+            provider.register()
+            return provider
+          },
+          () => {
+            trace.disable()
+            context.disable()
+            propagation.disable()
+          }
+        )
       : undefined
-    tracerProvider?.register()
 
     const meterProvider = metricsEnabled
-      ? new MeterProvider({
-          resource,
-          readers: [
-            new PeriodicExportingMetricReader({
-              exporter: withDeltaObservableGauges(new OTLPMetricExporter()),
-              exportIntervalMillis: metricExportIntervalMs(env, options.logger)
+      ? startSignal(
+          'metrics',
+          () => {
+            const provider = new MeterProvider({
+              resource,
+              readers: [
+                new PeriodicExportingMetricReader({
+                  exporter: withDeltaObservableGauges(new OTLPMetricExporter()),
+                  exportIntervalMillis: metricExportIntervalMs(env, options.logger)
+                })
+              ]
             })
-          ]
-        })
+            metrics.setGlobalMeterProvider(provider)
+            return provider
+          },
+          () => metrics.disable()
+        )
       : undefined
-    if (meterProvider) metrics.setGlobalMeterProvider(meterProvider)
 
-    const undici = new UndiciInstrumentation({ startSpanHook: redactedUrlAttributes })
-    if (tracerProvider) undici.setTracerProvider(tracerProvider)
-    if (meterProvider) undici.setMeterProvider(meterProvider)
+    if (tracerProvider === undefined && meterProvider === undefined) {
+      diag.disable()
+      return noop
+    }
+
+    const undici = startSignal(
+      'instrumentation',
+      () => {
+        const instrumentation = new UndiciInstrumentation({
+          startSpanHook: redactedUrlAttributes
+        })
+        if (tracerProvider) instrumentation.setTracerProvider(tracerProvider)
+        if (meterProvider) instrumentation.setMeterProvider(meterProvider)
+        return instrumentation
+      },
+      () => {}
+    )
 
     options.logger?.info('otel.started', {
       serviceName,
-      traces: tracesEnabled,
-      metrics: metricsEnabled
+      traces: tracerProvider !== undefined,
+      metrics: meterProvider !== undefined
     })
 
     let stopped = false
@@ -166,7 +220,7 @@ export const startBotTelemetry = (options: {
           const shutdowns = [tracerProvider, meterProvider]
             .filter(provider => provider !== undefined)
             .map(provider => provider.shutdown())
-          undici.disable()
+          undici?.disable()
           const settled = await bounded(Promise.allSettled(shutdowns), SHUTDOWN_TIMEOUT_MS)
           const failure =
             settled === 'timeout'
@@ -196,6 +250,7 @@ export const startBotTelemetry = (options: {
     }
   } catch (error) {
     options.logger?.warn('otel.start-failed', {
+      signal: 'pipeline',
       errorName: diagnosticErrorName(error instanceof Error ? error.name : error)
     })
     trace.disable()

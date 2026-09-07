@@ -124,6 +124,14 @@ export class Cli {
     project: (projection: MonitoringProjection) => readonly unknown[]
   ) {
     await this.runtime.writeEvent?.(value)
+    await this.writeCycleRecords(project)
+  }
+
+  // One-shot commands emit only the derived records: their raw result is already the captured
+  // CLI output, so writing the cycle envelope as well would print it twice.
+  private async writeCycleRecords(
+    project: (projection: MonitoringProjection) => readonly unknown[]
+  ) {
     try {
       for (const event of project(this.monitoring)) await this.runtime.writeEvent?.(event)
     } catch {
@@ -221,16 +229,16 @@ export class Cli {
         return
       }
 
-      this.capture(
-        await withActiveSpan(
-          {
-            name: 'quoter-bot.cycle',
-            attributes: { workflow: 'setup-check' },
-            errorName: operatorErrorName
-          },
-          () => setupService.assertReady(this.signal)
-        )
+      const report = await withActiveSpan(
+        {
+          name: 'quoter-bot.cycle',
+          attributes: { workflow: 'setup-check' },
+          errorName: operatorErrorName
+        },
+        () => setupService.assertReady(this.signal)
       )
+      await this.writeCycleRecords(monitoring => monitoring.setup(report))
+      this.capture(report)
     })
 
     const bootstrapCommand = this.program
@@ -275,6 +283,9 @@ export class Cli {
         },
         () => bootstrapService.runOnce({ verbose, onTransactionSubmitted })
       )
+      if (Array.isArray(result)) {
+        await this.writeCycleRecords(monitoring => monitoring.bootstrap(result))
+      }
       if (Array.isArray(result) && cycleHasFailure(result)) {
         throw new PositionBootstrapHaltedError(result)
       }
@@ -323,6 +334,7 @@ export class Cli {
         },
         () => ladderService.runOnce({ verbose, onTransactionSubmitted })
       )
+      await this.writeCycleRecords(monitoring => monitoring.ladder(result))
       if (cycleHasFailure(result)) {
         throw new LadderCycleHaltedError(result)
       }

@@ -49,6 +49,25 @@ describe('enhanceVerboseArgv', () => {
     ])
   })
 
+  test('skips declared value-taking root options before the command', () => {
+    const valueOptions = ['--config', '-c', '--keystore', '--private-key']
+    expect(
+      enhanceVerboseArgv(['--keystore', './maker.json', 'start'], {
+        commands,
+        env: full,
+        valueOptions
+      })
+    ).toEqual(['--keystore', './maker.json', 'start', '--verbose'])
+    expect(
+      enhanceVerboseArgv(['--private-key', '0xaa', 'ladder'], {
+        commands,
+        env: {},
+        hasAdditionalSink: true,
+        valueOptions
+      })
+    ).toEqual(['--private-key', '0xaa', 'ladder', '--verbose'])
+  })
+
   test('an absent additional sink changes nothing', () => {
     expect(enhanceVerboseArgv(['start'], { commands, env: {}, hasAdditionalSink: false })).toEqual([
       'start'

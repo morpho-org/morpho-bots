@@ -11,6 +11,7 @@ import { VersionService } from './application/version.service'
 import { createApplication } from './bootstrap'
 import { resolveObservabilityChainId } from './config/observability-chain.utils'
 import {
+  QUOTER_BOT_ROOT_VALUE_OPTIONS,
   QUOTER_BOT_VERBOSE_COMMANDS,
   runQuoterBotEntrypoint
 } from './infrastructure/cli/quoter-bot-entrypoint'
@@ -82,7 +83,8 @@ try {
     enhanceVerboseArgv(process.argv.slice(2), {
       commands: QUOTER_BOT_VERBOSE_COMMANDS,
       env: process.env,
-      hasAdditionalSink: telemetry.enabled
+      hasAdditionalSink: telemetry.enabled,
+      valueOptions: QUOTER_BOT_ROOT_VALUE_OPTIONS
     }),
     {
       writeOut: value => console.log(value),
