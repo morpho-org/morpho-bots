@@ -9,6 +9,7 @@ import type {
 } from './policy.utils'
 
 import { IntentPolicyViolationError } from './intent-policy-violation.error'
+import { MIN_CONTRACT_CALL_GAS } from './policy.utils'
 
 /**
  * The one intent kind each signing surface accepts. Routine and break-glass revocation share the
@@ -34,19 +35,6 @@ export const MIN_GAS_PER_CONSUMED_GROUP = 30_000n
 
 /** Base transaction allowance under the same floor: intrinsic gas plus multicall dispatch. */
 export const MIN_CONSUME_GROUPS_BASE_GAS = 25_000n
-
-/**
- * Conservative worst-case execution gas for a single contract call — a ratifier `cancelRoot` or
- * `setIsRootRatified` in either direction, or a remediation ERC-20 `approve`: intrinsic
- * transaction gas, calldata, one cold zero-to-nonzero storage write, and the event, rounded up.
- * The same include-but-revert reasoning as the batch floor: a limit above intrinsic but below
- * execution would burn the maker nonce without ratifying, revoking, or approving anything. For
- * the ratifier calls the middleware pins the target, so the bound is exact; for a remediation
- * approve it is a floor for standard ERC-20 implementations only — a proxied or hooked token can
- * cost more, and provisioning `fees.gas` for the pinned token's real cost is part of the
- * manifest review (pre-sign simulation is a later increment).
- */
-export const MIN_CONTRACT_CALL_GAS = 50_000n
 
 /**
  * Exact intrinsic gas of an empty zero-value self-send — the only execution a self-cancel ever

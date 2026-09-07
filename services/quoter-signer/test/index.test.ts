@@ -498,7 +498,7 @@ describe('handler', () => {
     stubPolicy({ surface: 'setup-remediation' })
     stubKms()
     stubRpc()
-    const allowance = vi.fn(async () => 123n)
+    const allowance = vi.fn(async () => 0n)
     const handle = createHandler({ kms: fakeKms(), chainRead: chainReadFake({ allowance }) })
 
     const response = await handle(remediationIntent, { awsRequestId: 'req-r' })
@@ -549,6 +549,33 @@ describe('handler', () => {
         kmsSignCalls: 1
       }
     ])
+  })
+
+  it('denies a non-zero grant over a live non-zero allowance, with no kms traffic', async () => {
+    const lines: string[] = []
+    vi.spyOn(console, 'log').mockImplementation((line: string) => {
+      lines.push(line)
+    })
+    stubPolicy({ surface: 'setup-remediation' })
+    stubKms()
+    stubRpc()
+    const getPublicKey = vi.fn(async () => publicKeyMaterial())
+    // Live allowance is non-zero and differs from the pinned amount: reset-then-set is enforced.
+    const allowance = vi.fn(async () => 123n)
+    const handle = createHandler({
+      kms: fakeKms(getPublicKey),
+      chainRead: chainReadFake({ allowance }),
+      attestAtStartup: false
+    })
+
+    const response = await handle(remediationIntent)
+
+    expect(response.approved).toBe(false)
+    expect(getPublicKey).not.toHaveBeenCalled()
+    const denied = lines
+      .map(line => JSON.parse(line) as Record<string, unknown>)
+      .find(event => event.event === 'middleware.intent_denied')
+    expect(denied).toMatchObject({ check: 'remediation-state', field: 'remediation' })
   })
 
   it('denies a remediation whose pinned allowance already holds, with no kms traffic', async () => {

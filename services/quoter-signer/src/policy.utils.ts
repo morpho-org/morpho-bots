@@ -26,6 +26,21 @@ export const QUOTER_SIGNER_POLICY_VARIABLE = 'QUOTER_SIGNER_POLICY'
 export const QUOTER_SIGNER_POLICY_VERSION = 1
 
 /**
+ * Conservative worst-case execution gas for a single contract call — a ratifier `cancelRoot` or
+ * `setIsRootRatified` in either direction, or a remediation ERC-20 `approve`: intrinsic
+ * transaction gas, calldata, one cold zero-to-nonzero storage write, and the event, rounded up.
+ * The include-but-revert reasoning of the policy checks: a limit above intrinsic but below
+ * execution would burn the maker nonce without ratifying, revoking, or approving anything. For
+ * the ratifier calls the middleware pins the target, so the bound is exact; for a remediation
+ * approve it is a floor for standard ERC-20 implementations only — a proxied or hooked token can
+ * cost more, and provisioning `fees.gas` for the pinned token's real cost is part of the
+ * manifest review (pre-sign simulation is a later increment). Deployment validation also refuses
+ * a remediation variant whose gas ceiling sits below this floor: every intent it admits would
+ * deny, so the variant is a dead configuration discovered only when needed.
+ */
+export const MIN_CONTRACT_CALL_GAS = 50_000n
+
+/**
  * The five signing surfaces of the TIB-2026-08-12 mode-aware deployment shape. Each deployed
  * function pins exactly one surface in its own configuration — never from caller data — and the
  * surface decides which intent kind is accepted and which fee-ceiling class applies (`protected`
@@ -736,6 +751,14 @@ export const parseQuoterSignerPolicy = (source: string | undefined): QuoterSigne
   // that nonce.
   remediations.forEach((remediation, index) => {
     const ceiling = remediation.feeCeiling
+    // A gas ceiling below the single-call execution floor admits no signable intent: the
+    // variant is dead configuration and refuses to serve rather than failing during an incident.
+    if (BigInt(ceiling.gas) < MIN_CONTRACT_CALL_GAS) {
+      throw new PolicyNotConfiguredError(
+        `remediations[${index}].feeCeiling.gas`,
+        'incoherent-bounds'
+      )
+    }
     if (BigInt(protectedCeiling.maxFeePerGas) < emergencyBump(BigInt(ceiling.maxFeePerGas))) {
       throw new PolicyNotConfiguredError(
         `remediations[${index}].feeCeiling.maxFeePerGas`,

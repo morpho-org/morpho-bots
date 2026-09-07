@@ -637,9 +637,14 @@ const evaluateIntent = async (
     }
     const state = await readRemediationAllowance(policy, remediation, chainRead)
     if ('denial' in state) return state
-    // Re-approving the live allowance would burn the nonce and fees without changing state; the
-    // middleware's own read decides, so a caller cannot talk it into signing a no-op.
-    if (state.allowance === BigInt(remediation.action.amount)) {
+    // The middleware's own read decides what the live allowance admits, so a caller cannot talk
+    // it into signing a no-op or an unsafe transition: re-approving the live value would burn the
+    // nonce and fees without changing state, and a non-zero grant signs only from a zero live
+    // allowance — zero-first tokens revert on the direct transition (burning the nonce during
+    // remediation) and every ERC-20 carries the approval race, so reset-then-set is enforced
+    // rather than advised.
+    const amount = BigInt(remediation.action.amount)
+    if (state.allowance === amount || (amount !== 0n && state.allowance !== 0n)) {
       return { denial: new IntentPolicyViolationError('remediation-state', 'remediation') }
     }
     const read = await readNonce(policy, chainRead)

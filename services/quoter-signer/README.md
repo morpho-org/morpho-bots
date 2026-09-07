@@ -40,8 +40,9 @@ canonically encodes and signs all four kinds:
 - **`setup-remediation`** (operator-only surface): the manifest-pinned ERC-20
   `approve(spender, amount)` with every value from the deployment policy, signed only after the
   middleware's own allowance read proves the transaction changes state — a re-approval of the
-  live allowance denies (`remediation-state`) instead of burning the nonce. The allowance is read
-  at pending state, the same speculative view as the nonce read, so an approval still in flight
+  live allowance denies (`remediation-state`) instead of burning the nonce, and a non-zero grant
+  signs only from a zero live allowance (reset-then-set, enforced). The allowance is read at
+  pending state, the same speculative view as the nonce read, so an approval still in flight
   already counts and is not signed a second time.
 
 Every transaction nonce is read or validated through the middleware's **own HTTPS RPC endpoint**
@@ -245,8 +246,12 @@ one action kind is `erc20-approval` — `approve(spender, amount)` on `token`, e
 reviewed document, so arbitrary calldata, permit signatures, token transfers, wildcard spenders,
 and caller-selected targets are unrepresentable. A revocation variant pins `amount: "0"`. Token
 and spender must be non-zero and distinct from the maker EOA (either collision would sign a no-op
-that burns the nonce), and tokens that require resetting an allowance to zero before raising it
-are expressed as two variants (a reset variant and a set variant) invoked in sequence.
+that burns the nonce), each variant's gas ceiling must cover the 50,000 single-call execution
+floor (below it no intent could ever be signed — a dead variant refused at parse), and changing a
+live non-zero allowance always takes two variants invoked in sequence — a reset (`amount: "0"`)
+then a set — because the middleware refuses the direct non-zero-to-non-zero transition: zero-first
+tokens revert on it (burning the nonce mid-remediation) and every ERC-20 carries the approval
+race.
 
 Every field is required on every surface so one reviewed document serves all deployments of the
 shared image; `surface` is the only per-deployment difference and pins which intent kind the

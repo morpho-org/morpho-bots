@@ -638,6 +638,22 @@ describe('parseQuoterSignerPolicy', () => {
       'invalid-decimal'
     ],
     [
+      'a remediation gas ceiling below the single-call execution floor',
+      JSON.stringify(
+        document({
+          remediations: [
+            {
+              variant: 'loan-asset-approval',
+              action,
+              feeCeiling: { ...routineCeiling, gas: '49999' }
+            }
+          ]
+        })
+      ),
+      'remediations[0].feeCeiling.gas',
+      'incoherent-bounds'
+    ],
+    [
       'a remediation max-fee ceiling the protected reserve cannot replace',
       JSON.stringify(
         document({

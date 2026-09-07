@@ -1556,8 +1556,11 @@ independent chain reads alone, with the ledger-backed refinements still to come:
   maker EOA. The
   middleware reads the current allowance itself — at pending state, the same speculative view as
   the nonce read, so an approval still in flight is not signed a second time at the next nonce —
-  and refuses to sign a transaction that would re-set the live value (`remediation-state`), the
-  §Setup-remediation independent-state read.
+  and refuses to sign a transaction that would re-set the live value or grant a non-zero
+  allowance over a live non-zero one (`remediation-state`, the §Setup-remediation
+  independent-state read): reset-then-set is enforced, since zero-first tokens revert on the
+  direct transition and every ERC-20 carries the approval race. A variant whose gas ceiling sits
+  below the single-call execution floor refuses to serve at parse as dead configuration.
   The remediation epoch (exclusive signing window with drained routine leases) is deferred with
   the independent control plane: operator-only IAM on the surface plus the runbook rule "stop
   routine signing first" stand in, and a nonce race against routine signing is a liveness, not an
