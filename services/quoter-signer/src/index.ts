@@ -19,6 +19,7 @@ import type { EncodableRevokeOperation, EncodedContractCall } from './transactio
 import { ArtifactEncodingFailedError } from './artifact-encoding-failed.error'
 import {
   readMakerAllowance,
+  readMakerCode,
   readMakerNonceWindow,
   readMakerPendingNonce,
   viemChainReadTransport
@@ -443,6 +444,25 @@ const readNonceWindow = async (
   }
 }
 
+/** Reads the maker's account code, mapping faults onto the typed read-failure denials. */
+const readCode = async (
+  policy: QuoterSignerPolicy,
+  chainRead: ChainReadTransport
+): Promise<{ readonly code: Hex } | { readonly denial: QuoterSignerDenialCause }> => {
+  const rpc = resolveRpcConfig()
+  if ('denial' in rpc) return rpc
+  try {
+    const code = await readMakerCode(
+      rpc.config,
+      { chainId: policy.chainId, maker: policy.maker },
+      chainRead
+    )
+    return { code }
+  } catch (error) {
+    return chainReadDenial(error, 'maker-code')
+  }
+}
+
 /** Reads the remediation action's current allowance, mapping faults onto the typed denials. */
 const readRemediationAllowance = async (
   policy: QuoterSignerPolicy,
@@ -577,6 +597,16 @@ const evaluateIntent = async (
         operation.type === 'self-cancel' ? read.window.pending - 1 : read.window.pending
       if (operation.nonce < read.window.latest || operation.nonce > maxNonce) {
         return { denial: new IntentPolicyViolationError('nonce-window', 'operation.nonce') }
+      }
+      if (operation.type === 'self-cancel') {
+        // The empty self-send is a no-op only for a codeless maker: an EIP-7702 delegation
+        // designator would execute the delegated code in the maker's context, so a maker that is
+        // not provably codeless denies before any KMS call.
+        const makerCode = await readCode(policy, chainRead)
+        if ('denial' in makerCode) return makerCode
+        if (makerCode.code !== '0x') {
+          return { denial: new IntentPolicyViolationError('maker-code', 'maker') }
+        }
       }
       nonce = operation.nonce
     }

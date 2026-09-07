@@ -77,6 +77,7 @@ const chainReadFake = (overrides: Partial<ChainReadTransport> = {}): ChainReadTr
   pendingNonce: async () => 7,
   latestNonce: async () => 5,
   allowance: async () => 0n,
+  code: async () => '0x',
   ...overrides
 })
 
@@ -692,6 +693,32 @@ describe('handler', () => {
     expect(response.approved).toBe(true)
     if (!response.approved || response.result.kind !== 'revoke') throw new Error('unreachable')
     expect(response.result.transaction.nonce).toBe(nonce)
+  })
+
+  it('denies a self-cancel for a delegated maker with no kms traffic', async () => {
+    const lines: string[] = []
+    vi.spyOn(console, 'log').mockImplementation((line: string) => {
+      lines.push(line)
+    })
+    stubPolicy({ surface: 'break-glass-revoke' })
+    stubKms()
+    stubRpc()
+    const getPublicKey = vi.fn(async () => publicKeyMaterial())
+    const handle = createHandler({
+      kms: fakeKms(getPublicKey),
+      // An EIP-7702 delegation designator: the empty self-send would execute delegated code.
+      chainRead: chainReadFake({ code: async () => `0xef0100${'11'.repeat(20)}` }),
+      attestAtStartup: false
+    })
+
+    const response = await handle({ ...revokeIntent, operation: { type: 'self-cancel', nonce: 5 } })
+
+    expect(response.approved).toBe(false)
+    expect(getPublicKey).not.toHaveBeenCalled()
+    const denied = lines
+      .map(line => JSON.parse(line) as Record<string, unknown>)
+      .find(event => event.event === 'middleware.intent_denied')
+    expect(denied).toMatchObject({ check: 'maker-code', field: 'maker' })
   })
 
   it.each<[string, number, number, number]>([

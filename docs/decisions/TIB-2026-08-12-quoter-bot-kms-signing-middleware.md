@@ -1519,7 +1519,10 @@ independent chain reads alone, with the ledger-backed refinements still to come:
   `latest` the artifact could never be included, above `pending` it would be the future-nonce
   stockpile §1 forbids, and a self-cancel must stay below `pending` — it replaces an in-flight
   transaction, so its slot must be occupied (`[latest, pending)`), while revocations keep the
-  inclusive bound for final cleanup at the next unused slot. This substitutes the window read for the recorded-transaction validation ("a
+  inclusive bound for final cleanup at the next unused slot. A self-cancel additionally requires
+  a fresh maker code read to return empty: an EIP-7702 delegation designator would make the
+  empty self-send execute delegated code in the maker's context, so a maker that is not provably
+  codeless denies (`maker-code`) before KMS. This substitutes the window read for the recorded-transaction validation ("a
   self-cancel at a recorded nonce"), and that substitution is exactly why the routine surface
   does **not** get the operation yet: displacement is not inherently exposure reduction — an
   empty send that out-bids a pending root cancellation, group consumption, or remediation
@@ -1567,8 +1570,8 @@ operations gain the optional `nonce` field above; `self-cancel` keeps its requir
 note (still `policyVersion: 1`): `remediations[].action` is required, so the earlier
 variant-plus-ceiling-only shape refuses to serve — no deployment served it. The
 `SigningNotImplementedError` denial class is retired with its last producers; `nonce-pin`,
-`nonce-window`, and `remediation-state` join the named policy checks, and `latest-nonce` and
-`allowance` join the `middleware.read_failed` operations. The §Security production-enablement
+`nonce-window`, `maker-code`, and `remediation-state` join the named policy checks, and
+`latest-nonce`, `allowance`, and `maker-code` join the `middleware.read_failed` operations. The §Security production-enablement
 gates and every deferral listed in Addendum D that this addendum does not name are unchanged.
 
 <!--

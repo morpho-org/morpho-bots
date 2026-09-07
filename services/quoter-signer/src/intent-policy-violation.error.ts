@@ -29,6 +29,7 @@ export type IntentPolicyCheck =
   | 'remediation-state'
   | 'nonce-pin'
   | 'nonce-window'
+  | 'maker-code'
   | 'group-derivation'
   | 'offer-encoding'
   | 'internal-fault'

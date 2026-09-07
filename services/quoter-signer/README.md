@@ -33,7 +33,10 @@ canonically encodes and signs all four kinds:
   **`[latest, pending]` nonce window** — below it the artifact could never be included, above it
   it would be a future-nonce stockpile — and a self-cancel must additionally stay below
   `pending`: it replaces an in-flight transaction, so its slot must be occupied, while the
-  unused slot stays reserved for final revocations. Every violation denies before any KMS call.
+  unused slot stays reserved for final revocations. A self-cancel also requires a fresh code read
+  to prove the maker codeless (`maker-code`): with an EIP-7702 delegation designator the "empty"
+  self-send would execute the delegated code in the maker's context instead of being a no-op.
+  Every violation denies before any KMS call.
 - **`setup-remediation`** (operator-only surface): the manifest-pinned ERC-20
   `approve(spender, amount)` with every value from the deployment policy, signed only after the
   middleware's own allowance read proves the transaction changes state — a re-approval of the

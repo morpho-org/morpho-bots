@@ -5,6 +5,7 @@ import type { RpcReadOperation } from '../src/rpc-unavailable.error'
 
 import {
   readMakerAllowance,
+  readMakerCode,
   readMakerNonceWindow,
   readMakerPendingNonce
 } from '../src/chain-read.utils'
@@ -26,6 +27,7 @@ const transport = (overrides: Partial<ChainReadTransport> = {}): ChainReadTransp
   pendingNonce: async () => 7,
   latestNonce: async () => 5,
   allowance: async () => 0n,
+  code: async () => '0x',
   ...overrides
 })
 
@@ -252,6 +254,52 @@ describe('readMakerAllowance', () => {
         transport({ allowance: async () => 5 as unknown as bigint })
       ),
       'allowance'
+    )
+  })
+})
+
+describe('readMakerCode', () => {
+  it('returns the maker code after verifying the chain id', async () => {
+    const code = vi.fn(async () => `0xef0100${'11'.repeat(20)}` as const)
+
+    await expect(readMakerCode(config, expected, transport({ code }))).resolves.toBe(
+      `0xef0100${'11'.repeat(20)}`
+    )
+    expect(code).toHaveBeenCalledExactlyOnceWith(config, FIXTURE_MAKER)
+  })
+
+  it('fails closed terminally when the endpoint serves another chain, reading no code', async () => {
+    const code = vi.fn(async () => '0x' as const)
+
+    await expect(
+      readMakerCode(config, expected, transport({ chainId: async () => 1, code }))
+    ).rejects.toBeInstanceOf(RpcChainMismatchError)
+    expect(code).not.toHaveBeenCalled()
+  })
+
+  it('wraps a code read fault as a retryable unavailable denial', async () => {
+    await expectUnavailable(
+      readMakerCode(
+        config,
+        expected,
+        transport({
+          code: async () => {
+            throw new Error('socket hang up')
+          }
+        })
+      ),
+      'maker-code'
+    )
+  })
+
+  it('rejects a malformed provider code response as unavailable', async () => {
+    await expectUnavailable(
+      readMakerCode(
+        config,
+        expected,
+        transport({ code: async () => undefined as unknown as `0x${string}` })
+      ),
+      'maker-code'
     )
   })
 })

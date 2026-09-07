@@ -1,4 +1,4 @@
-import type { Address, PublicClient } from 'viem'
+import type { Address, Hex, PublicClient } from 'viem'
 
 import { createPublicClient, erc20Abi, http } from 'viem'
 
@@ -32,6 +32,8 @@ export type ChainReadTransport = {
   latestNonce(config: RpcConfig, maker: Address): Promise<number>
   /** Reads one ERC-20 allowance. */
   allowance(config: RpcConfig, query: AllowanceQuery): Promise<bigint>
+  /** Reads an account's code; empty (`0x`) for a plain EOA. */
+  code(config: RpcConfig, account: Address): Promise<Hex>
 }
 
 const rpcClients = new Map<string, PublicClient>()
@@ -69,6 +71,10 @@ export const viemChainReadTransport: ChainReadTransport = {
       args: [query.owner, query.spender],
       blockTag: 'pending'
     })
+  },
+  async code(config, account) {
+    const code = await rpcClient(config.url).getCode({ address: account, blockTag: 'pending' })
+    return code ?? '0x'
   }
 }
 
@@ -206,4 +212,36 @@ export const readMakerAllowance = async (
   // ERC-20 allowances are uint256; anything else is a malformed provider or transport response.
   if (typeof allowance !== 'bigint' || allowance < 0n) throw new RpcUnavailableError('allowance')
   return allowance
+}
+
+/**
+ * Reads the maker's account code through the middleware's own endpoint, with the same chain-id
+ * verification as every other read. The self-cancel path requires it to be empty before signing:
+ * an EIP-7702 delegation designator on the maker would make the "empty self-send" execute the
+ * delegated code in the maker's context instead of being an economic no-op, so a maker that is
+ * not provably codeless denies rather than signs. Like every pre-sign read this is a snapshot —
+ * a delegation landing after signing is out of scope until the ledger increment's recorded
+ * inventory.
+ * @param config - Validated RPC endpoint addressing.
+ * @param expected - Policy-pinned chain id and maker address the read is scoped to.
+ * @returns The maker's code; `0x` for a plain EOA.
+ * @throws `RpcUnavailableError` (retryable) when either read fails or returns a malformed value;
+ * `RpcChainMismatchError` (terminal) when the endpoint serves a different chain.
+ */
+export const readMakerCode = async (
+  config: RpcConfig,
+  expected: { readonly chainId: number; readonly maker: Address },
+  transport: ChainReadTransport = viemChainReadTransport
+): Promise<Hex> => {
+  await verifyChainId(config, expected.chainId, transport)
+  let code: Hex
+  try {
+    code = await transport.code(config, expected.maker)
+  } catch (error) {
+    throw new RpcUnavailableError('maker-code', { cause: error })
+  }
+  if (typeof code !== 'string' || !code.startsWith('0x')) {
+    throw new RpcUnavailableError('maker-code')
+  }
+  return code
 }
