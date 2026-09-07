@@ -50,14 +50,14 @@ describe('enhanceVerboseArgv', () => {
   })
 
   test('skips declared value-taking root options before the command', () => {
-    const valueOptions = ['--config', '-c', '--keystore', '--private-key']
+    const valueOptions = ['--config', '-c', '--keystore', '--password', '--private-key']
     expect(
-      enhanceVerboseArgv(['--keystore', './maker.json', 'start'], {
+      enhanceVerboseArgv(['--keystore', './maker.json', '--password', 'secret', 'start'], {
         commands,
         env: full,
         valueOptions
       })
-    ).toEqual(['--keystore', './maker.json', 'start', '--verbose'])
+    ).toEqual(['--keystore', './maker.json', '--password', 'secret', 'start', '--verbose'])
     expect(
       enhanceVerboseArgv(['--private-key', '0xaa', 'ladder'], {
         commands,

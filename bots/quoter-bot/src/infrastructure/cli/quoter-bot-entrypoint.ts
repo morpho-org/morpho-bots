@@ -39,6 +39,7 @@ export const QUOTER_BOT_ROOT_VALUE_OPTIONS = [
   '--config',
   '-c',
   '--keystore',
+  '--password',
   '--private-key'
 ] as const
 
