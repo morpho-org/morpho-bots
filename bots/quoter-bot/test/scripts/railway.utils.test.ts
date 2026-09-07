@@ -370,6 +370,7 @@ describe('Railway CLI output parsing', () => {
       OTEL_EXPORTER_OTLP_METRICS_ENDPOINT: ' ',
       OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: ' ',
       OTEL_METRIC_EXPORT_INTERVAL: ' ',
+      OTEL_SERVICE_NAME: ' ',
       REFERENCE_MARKET_ID: ' ',
       REFERENCE_RPC_URL: ' ',
       REQUEST_TIMEOUT_MS: '25000',

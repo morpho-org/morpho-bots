@@ -32,7 +32,8 @@ const optionalRuntimeVariableDefaults = [
   ['OTEL_EXPORTER_OTLP_TRACES_ENDPOINT', ' '],
   ['OTEL_EXPORTER_OTLP_METRICS_ENDPOINT', ' '],
   ['OTEL_EXPORTER_OTLP_HEADERS', ' '],
-  ['OTEL_METRIC_EXPORT_INTERVAL', ' ']
+  ['OTEL_METRIC_EXPORT_INTERVAL', ' '],
+  ['OTEL_SERVICE_NAME', ' ']
 ] as const
 
 const referenceVariableNames = new Set(['REFERENCE_RPC_URL', 'REFERENCE_MARKET_ID'])
