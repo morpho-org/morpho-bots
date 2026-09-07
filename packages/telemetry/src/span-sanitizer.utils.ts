@@ -10,6 +10,10 @@ const sanitizeEndedSpan = (span: EndedSpan) => {
   if (span.status.message !== undefined) {
     ;(span as { status: EndedSpan['status'] }).status = { code: span.status.code }
   }
+  const attributes = span.attributes as Record<string, unknown> | undefined
+  if (attributes?.['http.url'] !== undefined) {
+    attributes['http.url'] = attributes['url.full'] ?? '[redacted]'
+  }
 }
 
 /**
@@ -21,6 +25,8 @@ const sanitizeEndedSpan = (span: EndedSpan) => {
  * status — and provider errors can embed credentialed URLs and response bodies. Failure identity
  * survives as the error status code plus low-cardinality attributes (`errorName`, `error.type`);
  * the sanitized spans are mutated in place before delegation, so nothing unsanitized is buffered.
+ * A legacy `http.url` attribute (emitted by some instrumentation versions under semconv
+ * compatibility modes) is reduced to the already-redacted `url.full` origin as defense in depth.
  */
 export const withSpanSanitizer = (processor: SpanProcessor): SpanProcessor => ({
   forceFlush: () => processor.forceFlush(),

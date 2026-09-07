@@ -282,7 +282,8 @@ export class SetupCheckService {
           {
             name: 'quoter-bot.cycle',
             attributes: { workflow: 'setup-check' },
-            errorName: operatorErrorName
+            errorName: operatorErrorName,
+            failed: checked => !checked.ready
           },
           () => this.checkWithTransientRetries(parameters.signal)
         )

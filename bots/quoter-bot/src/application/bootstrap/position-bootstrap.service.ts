@@ -319,7 +319,8 @@ export class PositionBootstrapService {
             {
               name: 'quoter-bot.cycle',
               attributes: { workflow: 'bootstrap' },
-              errorName: operatorErrorName
+              errorName: operatorErrorName,
+              failed: cycleHasFailure
             },
             () =>
               this.runOnce({

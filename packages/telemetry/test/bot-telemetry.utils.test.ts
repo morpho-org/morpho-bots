@@ -175,6 +175,26 @@ describe('startBotTelemetry', () => {
     expect(payload).not.toContain('super-secret-key')
   })
 
+  test('a handled cycle failure flips the span status through the failed predicate', async () => {
+    const collector = await startCollector()
+    vi.stubEnv('OTEL_EXPORTER_OTLP_ENDPOINT', collector.origin)
+    const telemetry = startBotTelemetry({ serviceName: 'test-bot' })
+    try {
+      await withActiveSpan(
+        { name: 'quoter-bot.cycle', failed: result => result === 'halted' },
+        async () => 'halted'
+      )
+    } finally {
+      await telemetry.shutdown()
+      await collector.close()
+    }
+    const cycleSpan = exportedSpans(collector.requests).find(
+      span => span.name === 'quoter-bot.cycle'
+    )
+    expect(cycleSpan?.status?.code).toBe(2)
+    expect(cycleSpan?.status?.message).toBeUndefined()
+  })
+
   test('shutdown is idempotent', async () => {
     const collector = await startCollector()
     vi.stubEnv('OTEL_EXPORTER_OTLP_ENDPOINT', collector.origin)

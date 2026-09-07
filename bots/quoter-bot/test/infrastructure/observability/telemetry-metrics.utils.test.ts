@@ -85,8 +85,36 @@ describe('createTelemetryRecordObserver', () => {
       }
     ])
     const duration = metricByName(collected, 'quoter_bot.cycle.duration')?.dataPoints[0]
-    expect(duration?.attributes).toEqual({ workflow: 'ladder', status: 'applied' })
+    expect(duration?.attributes).toEqual({
+      workflow: 'ladder',
+      status: 'applied',
+      marketId: MARKET_ID
+    })
     expect(duration?.value).toMatchObject({ count: 1, sum: 1234 })
+  })
+
+  test('counts a batched submission sharing one hash as one transaction', async () => {
+    const observer = createTelemetryRecordObserver()
+    for (const groupId of ['0xaa', '0xbb', '0xcc']) {
+      observer.record({
+        event: 'offer-invalidation.transaction-submitted',
+        groupId,
+        txHash: '0xsamehash'
+      })
+    }
+    observer.record({
+      event: 'ladder.transaction-submitted',
+      operation: 'publish',
+      marketId: MARKET_ID,
+      txHash: '0xotherhash'
+    })
+    const submitted = metricByName(await collect(), 'quoter_bot.transactions')
+      ?.dataPoints.filter(dataPoint => dataPoint.attributes.phase === 'submitted')
+      .map(dataPoint => ({ workflow: dataPoint.attributes.workflow, value: dataPoint.value }))
+    expect(submitted).toEqual([
+      { workflow: 'offer-invalidation', value: 1 },
+      { workflow: 'ladder', value: 1 }
+    ])
   })
 
   test('maps guardrails, transactions, fills, and setup checks to counters', async () => {

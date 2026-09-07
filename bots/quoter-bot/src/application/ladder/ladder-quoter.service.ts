@@ -284,7 +284,8 @@ export class LadderQuoterService {
             {
               name: 'quoter-bot.cycle',
               attributes: { workflow: 'ladder' },
-              errorName: operatorErrorName
+              errorName: operatorErrorName,
+              failed: cycleHasFailure
             },
             () =>
               this.runOnce({

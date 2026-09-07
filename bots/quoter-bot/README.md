@@ -655,7 +655,10 @@ reduced to its origin (`url.full` keeps scheme and host; path and query are drop
 unconditionally) because RPC provider URLs commonly embed API keys. Failures are sanitized the
 same way: a span processor strips every `exception` event and status message before export, so a
 failed request or cycle span carries only an error status plus low-cardinality classifications
-(`error.type`, the allowlisted `errorName`) — raw error text never reaches the exporter. AWS KMS and quoter-signer Lambda calls use the AWS SDK's `node:http` stack, not
+(`error.type`, the allowlisted `errorName`) — raw error text never reaches the exporter. A cycle
+whose result reports a handled failure — a `failed`/`halted` market result, a not-ready readiness
+report — carries the same error status, and one-shot `setup-check`, `bootstrap`, and `ladder`
+invocations wrap their single cycle in the same span, so trace coverage matches the monitors. AWS KMS and quoter-signer Lambda calls use the AWS SDK's `node:http` stack, not
 undici, so they appear inside the cycle span's duration but not as child spans.
 
 **Metrics.** The `quoter_bot.*` instruments are derived from the same shipped monitoring records
@@ -669,7 +672,10 @@ scheme, class-of-error `error.type`) and never a path, query, or free-form text.
 `*_bps` values are raw smallest-unit integers converted to floating point (magnitudes beyond 2^53
 lose precision but keep scale). The book `*_rate_bps` gauges exist only while that side is
 quoting: an empty side drops its rate data points rather than freezing the last published rate,
-so a rate reading always sits beside `quoter_bot.book.quoting = 1`.
+so a rate reading always sits beside `quoter_bot.book.quoting = 1`. Position and reference gauges
+are last-observed values, refreshed by every verbose cycle that carries the field — an optional
+field absent from one record (for example `maturityTimestamp` with no indexed group) keeps its
+previous reading rather than being dropped, exactly like its log counterpart.
 
 | Instrument                                                             | Kind      | Source record                                                     |
 | ---------------------------------------------------------------------- | --------- | ----------------------------------------------------------------- |

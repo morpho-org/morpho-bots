@@ -91,12 +91,15 @@ rule rather than growing `@repo/bot-kit` or `@repo/observability`), consumed by 
    as the error status code plus low-cardinality `error.type`/`errorName` attributes. Wire-level
    tests assert the exported OTLP payload of both a successful and a failing request contains no
    path, query, or free-form error material.
-3. **`withActiveSpan`** — a small wrapper the three monitor services (setup, bootstrap, ladder)
-   use around each cycle body, producing a `quoter-bot.cycle` root span tagged `workflow` that
-   parents the request spans via `AsyncLocalStorage` context. On failure it records only an error
-   status plus the injected `operatorErrorName` classification; raw error text never reaches a
-   span. This is the one deliberate departure from TIB-2026-08-23's "no second emit seam"
-   non-goal, and it is confined to three call sites wrapping existing invocations.
+3. **`withActiveSpan`** — a small wrapper around each cycle body: the three monitor services
+   (setup, bootstrap, ladder) and the one-shot CLI paths (`setup-check`, `bootstrap`, `ladder`
+   without `--monitor`) all produce a `quoter-bot.cycle` root span tagged `workflow` that parents
+   the request spans via `AsyncLocalStorage` context. On a thrown failure it records only an
+   error status plus the injected `operatorErrorName` classification, and an injected predicate
+   flips the same error status for handled failures the cycle returns instead of throwing (a
+   `failed`/`halted` market result, a not-ready readiness report) — raw error text never reaches
+   a span either way. This is the one deliberate departure from TIB-2026-08-23's "no second emit
+   seam" non-goal, confined to call sites wrapping existing invocations.
 4. **Metrics derived from the shipped record stream.** `createTelemetryRecordObserver`
    (quoter-bot infrastructure) mirrors the same allowlisted monitoring records the Better Stack
    path ships into counters, histograms, and gauges — the log stream and the metric stream cannot

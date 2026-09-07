@@ -1,6 +1,7 @@
 import type { Hex } from 'viem'
 
 import { cycleHasFailure } from '@repo/monitoring'
+import { withActiveSpan } from '@repo/telemetry'
 import { Command, CommanderError } from 'commander'
 
 import type { BootstrapTransactionSubmittedEvent } from '../../application/bootstrap/position-bootstrap-verbose'
@@ -27,6 +28,7 @@ import { PositionBootstrapMonitorHaltedError } from '../../application/bootstrap
 import { LadderCycleHaltedError } from '../../application/ladder/ladder-cycle-halted.error'
 import { LadderMonitorHaltedError } from '../../application/ladder/ladder-monitor-halted.error'
 import { createMonitoringProjection } from '../../application/monitoring/monitoring-projection.utils'
+import { operatorErrorName } from '../../application/operator-error-name.utils'
 import { QuoterBotMonitorHaltedError } from '../../application/quoter-bot/quoter-bot-monitor-halted.error'
 import { SetupMonitorHaltedError } from '../../application/setup/setup-monitor-halted.error'
 import { CliUsageError } from './cli-usage.error'
@@ -219,7 +221,16 @@ export class Cli {
         return
       }
 
-      this.capture(await setupService.assertReady(this.signal))
+      this.capture(
+        await withActiveSpan(
+          {
+            name: 'quoter-bot.cycle',
+            attributes: { workflow: 'setup-check' },
+            errorName: operatorErrorName
+          },
+          () => setupService.assertReady(this.signal)
+        )
+      )
     })
 
     const bootstrapCommand = this.program
@@ -255,7 +266,15 @@ export class Cli {
         return
       }
 
-      const result = await bootstrapService.runOnce({ verbose, onTransactionSubmitted })
+      const result = await withActiveSpan(
+        {
+          name: 'quoter-bot.cycle',
+          attributes: { workflow: 'bootstrap' },
+          errorName: operatorErrorName,
+          failed: cycle => Array.isArray(cycle) && cycleHasFailure(cycle)
+        },
+        () => bootstrapService.runOnce({ verbose, onTransactionSubmitted })
+      )
       if (Array.isArray(result) && cycleHasFailure(result)) {
         throw new PositionBootstrapHaltedError(result)
       }
@@ -295,7 +314,15 @@ export class Cli {
         return
       }
 
-      const result = await ladderService.runOnce({ verbose, onTransactionSubmitted })
+      const result = await withActiveSpan(
+        {
+          name: 'quoter-bot.cycle',
+          attributes: { workflow: 'ladder' },
+          errorName: operatorErrorName,
+          failed: cycleHasFailure
+        },
+        () => ladderService.runOnce({ verbose, onTransactionSubmitted })
+      )
       if (cycleHasFailure(result)) {
         throw new LadderCycleHaltedError(result)
       }

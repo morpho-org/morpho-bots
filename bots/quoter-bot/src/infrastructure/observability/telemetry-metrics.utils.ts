@@ -8,9 +8,12 @@ type SubmittedTransactionRecord = {
   event: `${string}.transaction-submitted`
   operation?: unknown
   marketId?: unknown
+  txHash?: unknown
 }
 
 type BookRateField = 'bestRateBps' | 'worstRateBps' | 'centerRateBps'
+
+const SUBMITTED_TX_MEMORY = 256
 
 const asNumber = (value: unknown) => {
   if (typeof value === 'number' && Number.isFinite(value)) return value
@@ -151,9 +154,24 @@ export const createTelemetryRecordObserver = () => {
     'centerRateBps'
   )
 
+  // Batched invalidation emits one submitted record per group sharing a single transaction hash,
+  // so submitted-phase increments deduplicate on a bounded memory of recent hashes.
+  const recentSubmittedTxHashes = new Set<string>()
+  const isFirstSubmission = (txHash: unknown) => {
+    if (typeof txHash !== 'string') return true
+    if (recentSubmittedTxHashes.has(txHash)) return false
+    recentSubmittedTxHashes.add(txHash)
+    if (recentSubmittedTxHashes.size > SUBMITTED_TX_MEMORY) {
+      const oldest = recentSubmittedTxHashes.values().next().value
+      if (oldest !== undefined) recentSubmittedTxHashes.delete(oldest)
+    }
+    return true
+  }
+
   const observe = (record: MonitoringEvent | SubmittedTransactionRecord) => {
     if (record.event.endsWith('.transaction-submitted')) {
       const submitted = record as SubmittedTransactionRecord
+      if (!isFirstSubmission(submitted.txHash)) return
       transactions.add(
         1,
         definedAttributes({
@@ -179,7 +197,14 @@ export const createTelemetryRecordObserver = () => {
         cycles.add(1, attributes)
         const durationMs = asNumber(event.durationMs)
         if (durationMs !== undefined) {
-          cycleDuration.record(durationMs, { workflow: event.workflow, status: event.status })
+          cycleDuration.record(
+            durationMs,
+            definedAttributes({
+              workflow: event.workflow,
+              status: event.status,
+              marketId: event.marketId
+            })
+          )
         }
         return
       }

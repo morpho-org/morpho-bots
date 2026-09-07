@@ -93,7 +93,10 @@ const bounded = async <Result>(task: Promise<Result>, timeoutMs: number) => {
  * through `diagnostics_channel` (bundle-safe, unlike module patching) with every URL-bearing span
  * attribute reduced to its origin, because RPC URLs commonly embed credentials. SDK diagnostics
  * are reduced to a rate-limited sanitized classification; endpoint values are never logged.
- * `OTEL_SERVICE_NAME` overrides the configured service name, matching SDK convention.
+ * `OTEL_SERVICE_NAME` overrides the configured service name, matching SDK convention. The `env`
+ * override drives opt-in detection, service naming, and interval parsing only — the OTLP
+ * exporters always read the standard `OTEL_EXPORTER_OTLP_*` variables from the process
+ * environment.
  */
 export const startBotTelemetry = (options: {
   serviceName: string
