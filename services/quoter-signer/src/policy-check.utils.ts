@@ -23,6 +23,30 @@ const SURFACE_INTENT_KINDS: Record<SigningSurface, QuoterSignerIntent['kind']> =
   'setup-remediation': 'setup-remediation'
 }
 
+/**
+ * Conservative worst-case execution gas per `setConsumed` inner call in a consumption batch: a
+ * cold zero-to-nonzero storage write (22,100), the consumption event, and the inner-call,
+ * memory, and calldata overhead, rounded up. Deliberately generous so a signed batch that fits
+ * the floor can execute; EVM gas repricings should revisit it (erring high only tightens the
+ * floor, never signs an inexecutable batch).
+ */
+export const MIN_GAS_PER_CONSUMED_GROUP = 30_000n
+
+/** Base transaction allowance under the same floor: intrinsic gas plus multicall dispatch. */
+export const MIN_CONSUME_GROUPS_BASE_GAS = 25_000n
+
+/**
+ * A consumption batch whose gas limit cannot cover its own worst-case execution would be
+ * included and revert: the maker nonce and fees burn while every group stays live. The ceilings
+ * only bound gas from above, so this floor bounds it from below, per batch size.
+ */
+const assertConsumeGroupsGasFloor = (fees: IntentFees, groups: number): void => {
+  const floor = MIN_CONSUME_GROUPS_BASE_GAS + MIN_GAS_PER_CONSUMED_GROUP * BigInt(groups)
+  if (BigInt(fees.gas) < floor) {
+    throw new IntentPolicyViolationError('gas-floor', 'fees.gas')
+  }
+}
+
 const assertFeesWithinCeiling = (
   fees: IntentFees,
   ceiling: PolicyFeeCeiling,
@@ -188,6 +212,8 @@ const assertOffersWithinPolicy = (
  * Enforces the deterministic TIB-2026-08-12 deployment-policy checks on one parsed intent: the
  * surface's pinned intent kind, the chain and maker pins, per-kind fee/gas ceilings (`protected`
  * on the break-glass surface, per-variant for setup remediation, `routine` otherwise), the
+ * per-batch consumption gas floor (a batch whose gas limit cannot cover its own worst-case
+ * execution would revert on inclusion, burning the nonce while every group stays live), the
  * ratifier-mode coherence of root revocations, the remediation-variant allowlist, and — for quote
  * and ratify offer sets — the market allowlist, tick price bounds and per-market tick-spacing
  * alignment, offer field pins, reduce-only side pins, continuous-fee-cap ceilings,
@@ -239,6 +265,9 @@ export const assertIntentWithinPolicy = (
           ? policy.feeCeilings.protected
           : policy.feeCeilings.routine
       assertFeesWithinCeiling(intent.fees, ceiling, 'fees')
+      if (intent.operation.type === 'consume-groups') {
+        assertConsumeGroupsGasFloor(intent.fees, intent.operation.groups.length)
+      }
       return
     }
     case 'setup-remediation': {

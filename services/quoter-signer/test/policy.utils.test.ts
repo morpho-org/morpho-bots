@@ -1,3 +1,4 @@
+import { gzipSync } from 'node:zlib'
 import { describe, expect, it } from 'vitest'
 
 import type { PolicyConfigurationReason } from '../src/policy-not-configured.error'
@@ -67,6 +68,18 @@ describe('parseQuoterSignerPolicy', () => {
       JSON.stringify(document({ maker: maker.toLowerCase(), ratifier: ratifier.toLowerCase() }))
     )
     expect(parsed).toStrictEqual(document())
+  })
+
+  it('accepts the same document as base64-encoded gzip, fitting the Lambda env quota', () => {
+    const json = JSON.stringify(document())
+    const compressed = gzipSync(Buffer.from(json, 'utf8')).toString('base64')
+
+    expect(parseQuoterSignerPolicy(compressed)).toStrictEqual(parseQuoterSignerPolicy(json))
+    expect(compressed.length).toBeLessThan(json.length)
+  })
+
+  it('refuses a non-JSON value that is not decodable gzip either', () => {
+    expectNotConfigured('AAAA', 'QUOTER_SIGNER_POLICY', 'not-json')
   })
 
   it.each(SIGNING_SURFACES)('accepts the %s surface with a compatible mode', surface => {
@@ -329,6 +342,22 @@ describe('parseQuoterSignerPolicy', () => {
         })
       ),
       'markets[0].collateralParams[1].token',
+      'collateral-order'
+    ],
+    [
+      'a zero-address first collateral token',
+      JSON.stringify(
+        document({
+          markets: [
+            market({
+              collateralParams: [
+                { ...fixtureCollateral, token: '0x0000000000000000000000000000000000000000' }
+              ]
+            })
+          ]
+        })
+      ),
+      'markets[0].collateralParams[0].token',
       'collateral-order'
     ],
     [

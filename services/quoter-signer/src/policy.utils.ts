@@ -6,6 +6,7 @@ import {
   MAX_CONTINUOUS_FEE,
   MAX_TICK
 } from '@morpho-org/midnight-sdk'
+import { gunzipSync } from 'node:zlib'
 import { getAddress, hexToBigInt, isAddress, isAddressEqual, isHex, size, zeroAddress } from 'viem'
 
 import type { UnsignedDecimal } from './intent.utils'
@@ -297,13 +298,16 @@ const collateralsValue = (value: unknown, field: string): readonly PolicyCollate
   const entries = arrayValue(value, field)
   if (entries.length === 0) throw new PolicyNotConfiguredError(field, 'empty')
   const collaterals = entries.map((entry, index) => collateralValue(entry, `${field}[${index}]`))
+  // Strictly ascending by token from the protocol's own zero baseline — the unique order (and
+  // non-zero-token rule) `touchMarket` enforces at creation — so the reviewed document admits
+  // exactly one representation, no duplicate tokens, and no zero-token market that could never
+  // exist on chain.
+  let previousToken = 0n
   collaterals.forEach((collateral, index) => {
-    const previous = collaterals[index - 1]
-    // Strictly ascending by token — the unique order the protocol enforces at market creation —
-    // so the reviewed document admits exactly one representation (and no duplicate tokens).
-    if (previous !== undefined && hexToBigInt(previous.token) >= hexToBigInt(collateral.token)) {
+    if (hexToBigInt(collateral.token) <= previousToken) {
       throw new PolicyNotConfiguredError(`${field}[${index}].token`, 'collateral-order')
     }
+    previousToken = hexToBigInt(collateral.token)
   })
   return collaterals
 }
@@ -508,9 +512,40 @@ export const emergencyBump = (ceiling: bigint): bigint => {
 }
 
 /**
+ * Upper bound on a decompressed policy document. The document is deployment-owned, not caller
+ * data, so this is hygiene rather than an attack surface: a gzip payload that inflates past it
+ * refuses to serve instead of exhausting memory.
+ */
+const MAX_POLICY_DOCUMENT_BYTES = 1_048_576
+
+/**
+ * Resolves the raw environment value to policy JSON text. A value whose first non-space byte can
+ * open a JSON value (`{`, `[`, or `"` — none of which appear in the base64 alphabet) passes
+ * through as JSON so its shape errors stay precise; anything else must be base64-encoded gzip of
+ * the JSON document — the encoding that keeps a full seven-market policy (now carrying complete
+ * market structs) inside AWS Lambda's 4 KB aggregate environment-variable quota without moving
+ * the policy out of the deployment (an external store would add a mutable dependency to the root
+ * of trust).
+ */
+const policyJsonText = (source: string): string => {
+  const first = source.trimStart()[0]
+  if (first === '{' || first === '[' || first === '"') return source
+  try {
+    return gunzipSync(Buffer.from(source, 'base64'), {
+      maxOutputLength: MAX_POLICY_DOCUMENT_BYTES
+    }).toString('utf8')
+  } catch {
+    throw new PolicyNotConfiguredError(QUOTER_SIGNER_POLICY_VARIABLE, 'not-json')
+  }
+}
+
+/**
  * Strictly parses the `QUOTER_SIGNER_POLICY` deployment parameter into the typed policy document.
  *
- * Fail-closed by construction, mirroring the intent parser: a missing document, malformed JSON,
+ * The value is either the JSON document itself or base64-encoded gzip of it (see
+ * {@link policyJsonText} — the compressed form keeps full multi-market policies inside Lambda's
+ * environment quota). Fail-closed by construction, mirroring the intent parser: a missing
+ * document, malformed JSON or encoding,
  * unknown versions, unknown keys, and out-of-domain values are all rejected, and the returned
  * object is rebuilt from validated values only. Cross-field deployment validation runs here too:
  * tick bounds must be coherent and within the protocol `MAX_TICK`, continuous-fee ceilings within
@@ -534,9 +569,11 @@ export const parseQuoterSignerPolicy = (source: string | undefined): QuoterSigne
   }
   let parsed: unknown
   try {
-    parsed = JSON.parse(source)
-  } catch {
-    throw new PolicyNotConfiguredError(QUOTER_SIGNER_POLICY_VARIABLE, 'not-json')
+    parsed = JSON.parse(policyJsonText(source))
+  } catch (error) {
+    throw error instanceof PolicyNotConfiguredError
+      ? error
+      : new PolicyNotConfiguredError(QUOTER_SIGNER_POLICY_VARIABLE, 'not-json')
   }
   const record = plainObject(parsed, 'policy')
   allowKeys(

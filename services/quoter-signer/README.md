@@ -127,7 +127,11 @@ at the maker's pending nonce. Without those, the answer is the corresponding typ
 ## Deployment policy (`QUOTER_SIGNER_POLICY`)
 
 Policy parameters live in the middleware's deployment, never in the request (TIB-2026-08-12): the
-`QUOTER_SIGNER_POLICY` environment variable carries one JSON policy document, strictly parsed by
+`QUOTER_SIGNER_POLICY` environment variable carries one JSON policy document — either the JSON
+itself or, because a full multi-market document with complete market structs no longer fits AWS
+Lambda's 4 KB aggregate environment-variable quota, **base64-encoded gzip of the JSON**
+(`gzip -c policy.json | base64`); the parser accepts both, detecting plain JSON by its leading
+`{`. Either form is strictly parsed by
 [`src/policy.utils.ts`](./src/policy.utils.ts) with the same fail-closed discipline as the wire
 contract — unknown keys, unknown versions, and out-of-domain values refuse to serve
 (`PolicyNotConfiguredError`; "never run a partial or empty policy"). A complete document:
@@ -170,8 +174,8 @@ contract — unknown keys, unknown versions, and out-of-domain values refuse to 
   ],
   "maxTotalLendExposureAssets": "30000000000",
   "feeCeilings": {
-    "routine": { "maxFeePerGas": "3000000000", "maxPriorityFeePerGas": "1500000000", "gas": "400000" },
-    "protected": { "maxFeePerGas": "30000000000", "maxPriorityFeePerGas": "15000000000", "gas": "800000" }
+    "routine": { "maxFeePerGas": "3000000000", "maxPriorityFeePerGas": "1500000000", "gas": "3000000" },
+    "protected": { "maxFeePerGas": "30000000000", "maxPriorityFeePerGas": "15000000000", "gas": "3000000" }
   },
   "remediations": [
     {
@@ -188,7 +192,7 @@ neither ever comes from the caller or an address registry, and both — like the
 non-zero (a zero pin would sign no-op transactions that burn the maker nonce while the caller
 believes the cancellation or publication happened). Each market entry now carries the
 market's **full immutable parameter struct** — `loanToken`, the `collateralParams` list (strictly
-ascending by token, the unique order the protocol enforces at creation), `rcfThreshold`,
+ascending by non-zero token, the unique order the protocol enforces at creation), `rcfThreshold`,
 `enterGate`, `liquidatorGate` — alongside its `maturity` and the book's live on-chain
 `tickSpacing` (1, 2, or 4 — it must divide the protocol default, every offer tick must align to
 it, and the `minTick`/`maxTick` window must contain at least one aligned tick or the entry
@@ -260,6 +264,12 @@ ceiling)` is a prerequisite of turning the bot's quote/ratify flows onto this mi
 - **`maxStartAgeSeconds`**: offers carry the block timestamp at build time as `start`, and a
   Setter ratify re-presents the same offers later, so size this for block-timestamp lag plus
   build→invoke and ratify-retry latency.
+- **Routine gas ceiling vs consumption batches**: a `consume-groups` intent must carry
+  `fees.gas ≥ 25,000 + 30,000 × groups` (a conservative worst-case execution floor; below it the
+  middleware denies with `gas-floor` rather than signing a transaction that would be included and
+  revert, burning the nonce). Size `feeCeilings.routine.gas` to cover the largest batch you plan
+  to sign in one transaction — the full 80-group wire cap needs ~2.43M — or split cleanups into
+  smaller revokes.
 
 ## RPC endpoint (`QUOTER_SIGNER_RPC_URL`)
 
@@ -447,7 +457,7 @@ document rides in the function's environment; without it every well-formed inten
 from the Deployment policy section saved as `policy.json`:
 
 ```sh
-jq -n --arg policy "$(cat policy.json)" \
+jq -n --arg policy "$(gzip -c policy.json | base64)" \
   '{Variables: {QUOTER_SIGNER_POLICY: $policy, QUOTER_SIGNER_KMS_KEY_ID: "alias/<maker-key-alias>", QUOTER_SIGNER_KMS_REGION: "<region>", QUOTER_SIGNER_RPC_URL: "https://<rpc-endpoint>"}}' > environment.json
 aws lambda create-function \
   --function-name quoter-signer \

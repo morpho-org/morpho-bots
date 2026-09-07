@@ -170,6 +170,14 @@ describe('assertIntentWithinPolicy', () => {
       'an allowlisted remediation variant',
       remediationIntent('loan-asset-approval'),
       policyFor({ surface: 'setup-remediation' })
+    ],
+    [
+      'a consume-groups batch at its exact per-batch gas floor',
+      revokeIntent(
+        { type: 'consume-groups', groups: [bytes32('11'), bytes32('12')] },
+        { ...fees, gas: '85000' }
+      ),
+      policyFor({ surface: 'routine-revoke' })
     ]
   ])('accepts %s', (_description, intent, policy) => {
     expect(() => assertIntentWithinPolicy(intent, policy, now)).not.toThrow()
@@ -404,6 +412,29 @@ describe('assertIntentWithinPolicy', () => {
       policyFor({ surface: 'break-glass-revoke' }),
       'fee-ceiling',
       'fees.maxFeePerGas'
+    ],
+    [
+      'a consume-groups batch one wei of gas below its per-batch floor',
+      revokeIntent(
+        { type: 'consume-groups', groups: [bytes32('11'), bytes32('12')] },
+        { ...fees, gas: '84999' }
+      ),
+      policyFor({ surface: 'routine-revoke' }),
+      'gas-floor',
+      'fees.gas'
+    ],
+    [
+      'a consume-groups batch too large for its in-ceiling gas limit',
+      revokeIntent(
+        {
+          type: 'consume-groups',
+          groups: [bytes32('11'), bytes32('12'), bytes32('13'), bytes32('14')]
+        },
+        { ...fees, gas: '90000' }
+      ),
+      policyFor({ surface: 'routine-revoke' }),
+      'gas-floor',
+      'fees.gas'
     ],
     [
       'an Ecrecover root cancellation on a Setter deployment',

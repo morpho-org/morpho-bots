@@ -9,6 +9,7 @@ export type IntentPolicyCheck =
   | 'chain-id'
   | 'maker'
   | 'fee-ceiling'
+  | 'gas-floor'
   | 'market-allowlist'
   | 'price-bound'
   | 'tick-alignment'

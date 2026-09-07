@@ -1434,9 +1434,10 @@ operations — on top of the attested digest-signing primitive that shipped with
   ([`transaction-encode.utils.ts`](../../services/quoter-signer/src/transaction-encode.utils.ts),
   [`transaction-sign.utils.ts`](../../services/quoter-signer/src/transaction-sign.utils.ts)):
   revocations encode exactly `setConsumed(group, MAX_OFFER_CAP, maker)` on the pinned singleton —
-  batches capped at the wire's 80-group limit (a larger cleanup splits into multiple revokes
-  instead of one unboundedly large multicall whose caller-chosen gas limit could admit an
-  include-but-revert transaction that burns the nonce) and encoded as one `multicall` whose inner
+  batches capped at the wire's 80-group limit and additionally required to carry a gas limit
+  covering the batch's conservative worst-case execution (`25,000 + 30,000 × groups`; below the
+  floor the intent denies as `gas-floor`, since an include-but-revert transaction would burn the
+  nonce while leaving every group live) — encoded as one `multicall` whose inner
   calls the middleware builds itself, so no foreign
   selector or nested multicall can appear — `cancelRoot(maker, root)`, or
   `setIsRootRatified(maker, root, false)` on the pinned ratifier. Only the routine-revoke surface
@@ -1457,9 +1458,14 @@ operations — on top of the attested digest-signing primitive that shipped with
   malformed read is a typed retryable `RpcUnavailableError` with a `middleware.read_failed` line
   and **no KMS call**. Quote intents need no endpoint.
 - **Policy document extensions** (still `policyVersion: 1`; no deployment served the earlier
-  shape, which now refuses to serve): a `contracts` block pins the Midnight singleton and Mempool
+  shape, which now refuses to serve): the environment value may be the JSON document or
+  base64-encoded gzip of it — the full multi-market document with complete structs exceeds
+  Lambda's 4 KB aggregate environment quota, and compressing keeps the policy in the deployment
+  itself rather than adding a mutable external store to the root of trust. A `contracts` block
+  pins the Midnight singleton and Mempool
   addresses, and each market entry carries the market's full immutable parameter struct
-  (`loanToken`, strictly-ascending `collateralParams`, `rcfThreshold`, `enterGate`,
+  (`loanToken`, strictly-ascending non-zero-token `collateralParams` — validated from the
+  protocol's own zero baseline, so a zero first token refuses to serve — `rcfThreshold`, `enterGate`,
   `liquidatorGate`) plus its live on-chain `tickSpacing` (a divisor of the protocol default;
   every offer tick must align to it — the deterministic checks name the violation as
   `tick-alignment` — and the tick window must contain at least one aligned value, or the entry is
