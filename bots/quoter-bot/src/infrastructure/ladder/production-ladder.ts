@@ -59,6 +59,7 @@ import { LadderAdapterError } from './ladder-adapter.error'
 import { readLadderBookOffers } from './ladder-book.utils'
 import { calculateLadderCapacities } from './ladder-capacity.utils'
 import { ladderCashReservations } from './ladder-cash-reservation.utils'
+import { retainedOpposingBookTicks } from './ladder-cross-book.utils'
 import { createLadderGroupOwnership } from './ladder-group-ownership.utils'
 import { MidnightLadderMakeService, type LadderOfferTransport } from './ladder-make.service'
 import { buildLadderTree } from './ladder-offer.utils'
@@ -582,14 +583,18 @@ export const createProductionLadderAdapters = (
 
   const prepareUnsignedPublication = async (
     quote: LadderQuoteSet,
-    bookState?: Awaited<ReturnType<typeof completeBookOffers>>
+    observed?: {
+      bookState?: Awaited<ReturnType<typeof completeBookOffers>>
+      publications?: readonly OwnedLadderPublication[]
+    }
   ) => {
     const selectedConfig = config.ladder.find(item => item.marketId === quote.marketId)
     if (!selectedConfig) throw new LadderAdapterError('market-not-configured')
-    const [state, market, block] = await Promise.all([
-      bookState ?? completeBookOffers(quote.marketId),
+    const [state, market, block, publications] = await Promise.all([
+      observed?.bookState ?? completeBookOffers(quote.marketId),
       midnight.getMarketData(quote.marketId),
-      client.getBlock({ blockTag: 'latest' })
+      client.getBlock({ blockTag: 'latest' }),
+      observed?.publications ?? ladderOwnership.read()
     ])
     const bootstrapTickCeiling = ownBootstrapBuyTickCeiling(state.book, quote.marketId)
     const prepared = buildLadderTree({
@@ -600,6 +605,13 @@ export const createProductionLadderAdapters = (
       now: block.timestamp,
       minimumRateBps: selectedConfig.minimumRateBps,
       maximumRateBps: selectedConfig.maximumRateBps,
+      opposingBookTicks: retainedOpposingBookTicks({
+        marketId: quote.marketId,
+        replacedGroupIds: new Set(
+          activeOwnedLadderGroupIds(publications, state.groups, quote.marketId)
+        ),
+        book: state.book
+      }),
       ...(bootstrapTickCeiling === undefined
         ? {}
         : { ownBootstrapBuyTickCeiling: bootstrapTickCeiling })
@@ -617,7 +629,10 @@ export const createProductionLadderAdapters = (
       completeBookOffers(parameters.marketId),
       ladderOwnership.read()
     ])
-    const prepared = await prepareUnsignedPublication(parameters.desired, bookState)
+    const prepared = await prepareUnsignedPublication(parameters.desired, {
+      bookState,
+      publications
+    })
     assertLadderProspectiveSpread({
       marketId: parameters.marketId,
       replacedGroupIds: new Set(

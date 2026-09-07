@@ -5,6 +5,7 @@ import { Group, Offer, Tree } from '@morpho-org/midnight-sdk'
 
 import type { LadderQuoteSet, LadderRung } from '../../domain/ladder/ladder'
 import type { TickWindow } from '../tick-window.utils'
+import type { OpposingBookTicks } from './ladder-cross-book.utils'
 import type { LadderGroupReference } from './ladder-group-ownership.utils'
 
 import { offerMaxAssetsByRung } from '../../domain/ladder/ladder'
@@ -28,6 +29,7 @@ type BuildLadderTreeParameters = {
   minimumRateBps?: bigint
   maximumRateBps?: bigint
   ownBootstrapBuyTickCeiling?: bigint
+  opposingBookTicks?: OpposingBookTicks
 }
 
 /** Complete locally built ladder tree plus group/rung ownership metadata. */
@@ -48,10 +50,33 @@ type MergedTickRungs = {
   maxAssets: bigint
 }
 
+/** Lowest tick the protocol encodes; `TickLib.priceToTick` never returns a negative tick. */
+const LOWEST_TICK = 0n
+
+const alignTickUp = (tick: bigint, spacing: bigint) => ((tick + spacing - 1n) / spacing) * spacing
+const alignTickDown = (tick: bigint, spacing: bigint) => (tick / spacing) * spacing
+
 const sellTickFloor = (parameters: BuildLadderTreeParameters, window: TickWindow) => {
-  if (parameters.ownBootstrapBuyTickCeiling === undefined) return undefined
-  const cleared = parameters.ownBootstrapBuyTickCeiling + BigInt(parameters.market.tickSpacing)
+  const opposingBuyTicks = [
+    parameters.ownBootstrapBuyTickCeiling,
+    parameters.opposingBookTicks?.highestBuyTick
+  ].filter(tick => tick !== undefined)
+  if (opposingBuyTicks.length === 0) return undefined
+  const cleared = alignTickUp(
+    opposingBuyTicks.reduce(bigintMax) + 1n,
+    BigInt(parameters.market.tickSpacing)
+  )
   return window.highestTick === undefined ? cleared : bigintMin(cleared, window.highestTick)
+}
+
+const buyTickCeiling = (parameters: BuildLadderTreeParameters, window: TickWindow) => {
+  const lowestSellTick = parameters.opposingBookTicks?.lowestSellTick
+  if (lowestSellTick === undefined) return undefined
+  const cleared =
+    lowestSellTick <= LOWEST_TICK
+      ? LOWEST_TICK
+      : alignTickDown(lowestSellTick - 1n, BigInt(parameters.market.tickSpacing))
+  return window.lowestTick === undefined ? cleared : bigintMax(cleared, window.lowestTick)
 }
 
 const mergedSideTicks = (
@@ -62,7 +87,9 @@ const mergedSideTicks = (
   const { window, timeToMaturity } = derivation
   const rungs = parameters.quote[side]
   const caps = offerMaxAssetsByRung(parameters.quote)[side]
-  const floor = side === 'lower' ? sellTickFloor(parameters, window) : undefined
+  const bound =
+    side === 'lower' ? sellTickFloor(parameters, window) : buyTickCeiling(parameters, window)
+  const saturate = side === 'lower' ? bigintMax : bigintMin
   const merged = new Map<bigint, MergedTickRungs>()
   rungs.forEach((rung, index) => {
     const aligned = alignedRateTick(
@@ -71,7 +98,7 @@ const mergedSideTicks = (
       BigInt(parameters.market.tickSpacing)
     )
     const bounded = clampTickToWindow(aligned, window)
-    const tick = floor === undefined ? bounded : bigintMax(bounded, floor)
+    const tick = bound === undefined ? bounded : saturate(bounded, bound)
     const cap = caps[index]!
     const entry = merged.get(tick)
     if (entry === undefined) {
@@ -119,15 +146,18 @@ const sideOffers = (
 /**
  * Converts one domain quote set into the exact mixed-side Midnight offer tree.
  * @param parameters - Quote, fresh market, maker, ratifier, block timestamp, optional minimum and
- * maximum APR bounds in basis points, and an optional highest own bootstrap-buy tick that every
- * sell must clear.
+ * maximum APR bounds in basis points, an optional highest own bootstrap-buy tick that every sell
+ * must clear, and the optional opposing retained book ticks both sides must clear.
  * @returns Tree, protocol-group-to-rung mapping, and prospective book ticks.
  * @throws `LadderAdapterError` when the market has matured, the ladder is empty, or the hard rate
  * range contains no aligned tick; SDK validation errors pass through.
  * @remarks Midnight prices are inverse to rates, so lower rates map to reduce-only sells and higher
  * rates map to lend buys. A rounded tick outside the supplied hard range saturates at the nearest
  * in-range tick instead of failing, and sells quote strictly above `ownBootstrapBuyTickCeiling`
- * (capped at the minimum-rate tick, where an exact own-offer tie remains possible). Same-side rungs
+ * (capped at the minimum-rate tick, where an exact own-offer tie remains possible). Rungs crossing
+ * `opposingBookTicks` reprice to the nearest tick just clear of it, saturating at the same hard
+ * bound: a book that crosses the whole configured range is left to the publication spread guard
+ * rather than silently repriced outside the operator's rates. Same-side rungs
  * resolving to one tick merge into a single offer whose cap covers every merged rung, so a group
  * may own several rungs even in `shared-rung` mode. Each offer uses the fresh block timestamp as
  * its start so a later publication cannot reuse a previously consumed content-addressed group. This

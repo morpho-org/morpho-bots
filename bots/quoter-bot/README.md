@@ -848,6 +848,15 @@ reference-rate excursion can never halt the strategy. A retained center is recen
 absolute effective-center movement is strictly greater than `movementToleranceBps`; capacity
 changes still resize quotes inside that tolerance.
 
+A rung that would cross an offer already resting on the market book is repriced to the nearest tick
+just clear of it. The bot is a maker, and a crossed book is refused at publication, so a large
+reference move compresses the affected side against the best opposing offer instead of quoting
+through it and failing the cycle. That clearance saturates at the same hard rate range as every
+other rung: if the best opposing offer sits beyond `minimumRateBps` / `maximumRateBps`, no in-range
+tick can clear it, and the cycle still fails on the crossed-book guard rather than quoting outside
+the configured rates. Own bootstrap buys keep their own clearance and their deliberate tie at the
+bound.
+
 `maturityPremium` makes the effective center a function of that market's remaining time to
 maturity, so one bot can quote every configured maturity from one term structure: further maturity
 = higher center. The initial `linear` shape resolves
