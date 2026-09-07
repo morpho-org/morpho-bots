@@ -162,6 +162,59 @@ export const synchronizedOptionalRailwayVariables = (
   })
 
 /**
+ * Names the Railway service that runs one chain; every supported chain gets its own service.
+ * @param chainId - Supported EVM chain identifier the service is provisioned for.
+ * @returns The project-wide service name, `quoter-bot-<chainId>`.
+ */
+export const railwayServiceName = (chainId: number) => `quoter-bot-${chainId}`
+
+/**
+ * Lists expected services that Railway does not report.
+ * @param existing - Services returned by `railway service list`.
+ * @param expected - Service names a deploy-only run must be able to re-ship.
+ * @returns Expected names absent from `existing`, in `expected` order.
+ * @remarks Deploy-only runs hold no secrets and so cannot create a service; naming the missing ones
+ * up front turns an opaque `railway up` failure into an instruction to run a full deploy.
+ */
+export const missingRailwayServices = (
+  existing: readonly RailwayService[],
+  expected: readonly string[]
+) => {
+  const names = new Set(existing.map(service => service.name))
+  return expected.filter(name => !names.has(name))
+}
+
+/**
+ * Re-ships already-provisioned services: starts every upload first, then waits on each.
+ * @param services - Service names to redeploy, in reporting order.
+ * @param start - Starts one service's upload and returns the snapshot its wait needs.
+ * @param wait - Resolves one started service to its terminal Railway status.
+ * @returns Every service's terminal status, in `services` order; `START_FAILED` when its upload
+ * could not start and `POLL_FAILED` when its status could not be read.
+ * @remarks One chain's failure never blocks another's re-ship: a rejected start is recorded and the
+ * remaining services still start, and no wait begins until every start has been attempted.
+ */
+export const reshipRailwayServices = async <Snapshot>(
+  services: readonly string[],
+  start: (service: string) => Promise<Snapshot>,
+  wait: (service: string, snapshot: Snapshot) => Promise<string>
+) => {
+  const started = new Map<string, Snapshot>()
+  const statuses = new Map<string, string>()
+  for (const service of services) {
+    const { data, error } = await tryCatch(start(service))
+    if (error) statuses.set(service, 'START_FAILED')
+    else started.set(service, data)
+  }
+  for (const [service, snapshot] of started) {
+    const { data, error } = await tryCatch(wait(service, snapshot))
+    statuses.set(service, error ? 'POLL_FAILED' : data)
+  }
+
+  return new Map(services.map(service => [service, statuses.get(service) ?? 'POLL_FAILED']))
+}
+
+/**
  * Parses Railway service JSON without exposing unknown response fields.
  * @param raw - Complete JSON emitted by `railway service list --json` or `railway add --json`.
  * @returns Identified, named services in response order; malformed or incomplete rows are omitted.
