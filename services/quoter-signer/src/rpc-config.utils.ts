@@ -9,7 +9,7 @@ export const QUOTER_SIGNER_RPC_URL_VARIABLE = 'QUOTER_SIGNER_RPC_URL'
 
 /** Validated RPC endpoint addressing for the middleware's independent chain reads. */
 export type RpcConfig = {
-  /** HTTP(S) JSON-RPC endpoint URL. Never logged and never echoed in errors or responses. */
+  /** HTTPS JSON-RPC endpoint URL. Never logged and never echoed in errors or responses. */
   readonly url: string
 }
 
@@ -18,10 +18,13 @@ export type RpcConfig = {
  *
  * Transaction-signing intents (ratify, revoke, setup remediation) fail closed without a usable
  * endpoint because the pending-nonce read cannot happen; quote intents sign no maker transaction
- * and never require it.
+ * and never require it. Only `https:` endpoints are accepted: the nonce read decides what the
+ * maker signs, and a plaintext-HTTP read lets an on-path attacker keep the expected chain id
+ * while altering the transaction count — a signature at an attacker-chosen nonce. Tests exercise
+ * the read through the injectable chain-read transport, not a plaintext endpoint.
  * @param source - Raw `QUOTER_SIGNER_RPC_URL` environment value, or `undefined` when unset.
  * @returns The validated {@link RpcConfig}.
- * @throws `RpcNotConfiguredError` when the value is missing, not a URL, or not `http(s)`.
+ * @throws `RpcNotConfiguredError` when the value is missing, not a URL, or not `https:`.
  */
 export const parseRpcConfig = (source: string | undefined): RpcConfig => {
   if (source === undefined || source.trim() === '') {
@@ -33,7 +36,7 @@ export const parseRpcConfig = (source: string | undefined): RpcConfig => {
   } catch {
     throw new RpcNotConfiguredError(QUOTER_SIGNER_RPC_URL_VARIABLE, 'invalid-url')
   }
-  if (url.protocol !== 'https:' && url.protocol !== 'http:') {
+  if (url.protocol !== 'https:') {
     throw new RpcNotConfiguredError(QUOTER_SIGNER_RPC_URL_VARIABLE, 'invalid-url')
   }
   return { url: source }

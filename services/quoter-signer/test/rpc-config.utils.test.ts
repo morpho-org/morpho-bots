@@ -6,8 +6,8 @@ import { parseRpcConfig, QUOTER_SIGNER_RPC_URL_VARIABLE } from '../src/rpc-confi
 import { RpcNotConfiguredError } from '../src/rpc-not-configured.error'
 
 describe('parseRpcConfig', () => {
-  it.each(['https://rpc.example', 'http://localhost:8545', 'https://rpc.example/path?key=1'])(
-    'accepts the http(s) endpoint %s',
+  it.each(['https://rpc.example', 'https://rpc.example:8545', 'https://rpc.example/path?key=1'])(
+    'accepts the https endpoint %s',
     source => {
       expect(parseRpcConfig(source)).toStrictEqual({ url: source })
     }
@@ -17,6 +17,7 @@ describe('parseRpcConfig', () => {
     ['an unset variable', undefined, 'missing'],
     ['a blank variable', '   ', 'missing'],
     ['a non-URL value', 'not a url', 'invalid-url'],
+    ['a plaintext http endpoint', 'http://rpc.example', 'invalid-url'],
     ['a websocket endpoint', 'wss://rpc.example', 'invalid-url'],
     ['a file url', 'file:///etc/hosts', 'invalid-url']
   ])('rejects %s without echoing the value', (_description, source, reason) => {

@@ -1422,7 +1422,9 @@ operations — on top of the attested digest-signing primitive that shipped with
   additionally pass a pre-sign publication-encodability preflight (the Mempool payload codec's
   offer-struct rules), and the signature-free Setter publication encoding doubles as the same
   preflight on the ratify path — in both cases an unpublishable set is the same named policy
-  denial with no KMS call. Ecrecover quotes sign the
+  denial with no KMS call. Both kinds also re-run the deterministic time-window checks on a fresh
+  clock immediately before the `Sign` call, so a set that expires or ages out during the chain
+  reads and attestation denies instead of yielding an unusable signed artifact. Ecrecover quotes sign the
   SDK-derived EIP-712 tree digest (exactly one `kms:Sign` per approval) and return the tree
   signature plus the encoded zero-value Mempool publication; Setter ratifications re-derive the
   root and sign `setIsRootRatified(maker, root, true)`; both encode the publication payload with
@@ -1446,7 +1448,8 @@ operations — on top of the attested digest-signing primitive that shipped with
   account signing; the artifact returns the exact signed bytes, hash, nonce, and fee fields of
   Addendum B's response DTOs.
 - **Independent pending-nonce read**: a new `QUOTER_SIGNER_RPC_URL` deployment parameter
-  addresses the middleware's own HTTP(S) endpoint
+  addresses the middleware's own HTTPS endpoint (plaintext HTTP is refused at parse — an on-path
+  attacker could keep the expected chain id while steering the nonce)
   ([`rpc-config.utils.ts`](../../services/quoter-signer/src/rpc-config.utils.ts),
   [`chain-read.utils.ts`](../../services/quoter-signer/src/chain-read.utils.ts)). Transaction
   kinds sign only the maker's independently read pending nonce; every read first verifies the

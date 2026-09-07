@@ -24,9 +24,12 @@ attestation, the handler now canonically encodes and signs the intents the ladde
   pinned ratifier — signed as one transaction artifact.
 
 Transaction-signing intents commit to the maker's **pending nonce read through the middleware's
-own RPC endpoint** (see [RPC endpoint](#rpc-endpoint-quoter_signer_rpc_url)); the endpoint's
+own HTTPS RPC endpoint** (see [RPC endpoint](#rpc-endpoint-quoter_signer_rpc_url)); the endpoint's
 chain id is verified against the policy pin on every read, and a read failure is a typed
-retryable denial with no KMS call. Everything else stays fail-closed with typed denials: payloads
+retryable denial with no KMS call. Quote and ratify intents additionally re-run the deterministic
+time-window checks on a fresh clock immediately before the `Sign` call, so an offer set that
+expires or ages out during the chain reads and attestation denies instead of becoming an
+unusable signed artifact. Everything else stays fail-closed with typed denials: payloads
 outside the contract (`MalformedIntentError`), a missing or invalid policy document
 (`PolicyNotConfiguredError`), out-of-policy intents including group ids that do not re-derive
 from the offer contents (`IntentPolicyViolationError` naming the violated check), missing or
@@ -262,13 +265,15 @@ ceiling)` is a prerequisite of turning the bot's quote/ratify flows onto this mi
 
 Transaction-signing intents (ratify and revoke) commit to an account nonce, and nonce ordering is
 policy-relevant: the middleware reads the maker's **current pending nonce independently** through
-its own HTTP(S) JSON-RPC endpoint — never from the caller — and signs only that nonce
+its own HTTPS JSON-RPC endpoint — never from the caller — and signs only that nonce
 ([`src/chain-read.utils.ts`](./src/chain-read.utils.ts), parsed by
 [`src/rpc-config.utils.ts`](./src/rpc-config.utils.ts)). Every read first verifies the endpoint's
 `eth_chainId` against the policy pin, so a repointed or misconfigured provider cannot feed
 another chain's account state into a signature that commits to the pinned chain
-(`RpcChainMismatchError`, terminal). A missing or non-HTTP(S) value refuses transaction signing
-with `RpcNotConfiguredError`; a failed or malformed read denies with the retryable
+(`RpcChainMismatchError`, terminal). A missing or non-HTTPS value refuses transaction signing
+with `RpcNotConfiguredError` — plaintext HTTP is rejected outright, since an on-path attacker
+could keep the expected chain id while altering the transaction count and steer signatures to an
+attacker-chosen nonce; a failed or malformed read denies with the retryable
 `RpcUnavailableError` and the `middleware.read_failed` log line — always before any KMS call.
 Quote intents sign no maker transaction and never require the endpoint. The endpoint URL is never
 echoed in errors, responses, or logs.

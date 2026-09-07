@@ -565,6 +565,45 @@ describe('handler', () => {
     })
   })
 
+  it('re-denies on a fresh clock when the offer set expires during the pre-sign awaits', async () => {
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    const { maturity, offers } = buildOfferFixture()
+    stubPolicy({ surface: 'quote', markets: [fixtureMarketEntry({ maturity })] })
+    stubKms()
+    const baseMs = Date.now()
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(baseMs)
+    const signDigest = vi.fn<KmsTransport['signDigest']>()
+    const handle = createHandler({
+      kms: {
+        getPublicKey: async () => {
+          // The attestation await is where wall-clock time passes: jump past the offer expiry so
+          // only the fresh-clock recheck between attestation and Sign can catch it.
+          clock.mockReturnValue(baseMs + 1_801_000)
+          return publicKeyMaterial()
+        },
+        signDigest
+      },
+      attestAtStartup: false
+    })
+
+    const response = await handle({
+      contractVersion: 1,
+      kind: 'quote',
+      chainId: 8453,
+      maker,
+      idempotencyKey: 'quote-3',
+      offers
+    })
+
+    expect(response.approved).toBe(false)
+    expect(!response.approved && response.denial).toStrictEqual({
+      name: 'IntentPolicyViolationError',
+      message: 'quoter-signer policy denied intent: offers[0].expiry failed offer-expired',
+      retryable: false
+    })
+    expect(signDigest).not.toHaveBeenCalled()
+  })
+
   it('denies a quote whose declared group does not re-derive, with no kms traffic', async () => {
     vi.spyOn(console, 'log').mockImplementation(() => {})
     const { maturity, offers } = buildOfferFixture()
