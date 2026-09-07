@@ -1561,7 +1561,10 @@ independent chain reads alone, with the ledger-backed refinements still to come:
   The remediation epoch (exclusive signing window with drained routine leases) is deferred with
   the independent control plane: operator-only IAM on the surface plus the runbook rule "stop
   routine signing first" stand in, and a nonce race against routine signing is a liveness, not an
-  authorization, hazard. The other action kinds — authorizations and the native-balance sweep
+  authorization, hazard. Deployment validation extends the emergency-bump reserve to every
+  variant: each remediation fee ceiling must be coverable by one full protected replacement bump,
+  since remediation transactions are break-glass-preemptable like every maker transaction. The
+  other action kinds — authorizations and the native-balance sweep
   with its admission-band arithmetic — remain later increments and are unrepresentable in the
   manifest until specified.
 
