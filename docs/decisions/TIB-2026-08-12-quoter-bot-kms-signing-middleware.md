@@ -1566,7 +1566,10 @@ independent chain reads alone, with the ledger-backed refinements still to come:
   routine signing first" stand in, and a nonce race against routine signing is a liveness, not an
   authorization, hazard. Deployment validation extends the emergency-bump reserve to every
   variant: each remediation fee ceiling must be coverable by one full protected replacement bump,
-  since remediation transactions are break-glass-preemptable like every maker transaction. The
+  since remediation transactions are break-glass-preemptable like every maker transaction, and
+  the routine gas ceiling must admit the smallest cleanup transaction (with `protected ≥
+routine`, the break-glass surface then always has a signable cleanup shape — a lower ceiling
+  is dead configuration refused at parse). The
   other action kinds — authorizations and the native-balance sweep
   with its admission-band arithmetic — remain later increments and are unrepresentable in the
   manifest until specified.

@@ -638,6 +638,16 @@ describe('parseQuoterSignerPolicy', () => {
       'invalid-decimal'
     ],
     [
+      'a routine gas ceiling below the smallest cleanup transaction',
+      JSON.stringify(
+        document({
+          feeCeilings: { routine: { ...routineCeiling, gas: '54999' }, protected: protectedCeiling }
+        })
+      ),
+      'feeCeilings.routine.gas',
+      'incoherent-bounds'
+    ],
+    [
       'a remediation gas ceiling below the single-call execution floor',
       JSON.stringify(
         document({
@@ -691,6 +701,17 @@ describe('parseQuoterSignerPolicy', () => {
     ]
   ])('rejects %s', (_description, source, field, reason) => {
     expectNotConfigured(source, field, reason)
+  })
+
+  it('accepts a routine gas ceiling at exactly the smallest cleanup transaction', () => {
+    const parsed = parseQuoterSignerPolicy(
+      JSON.stringify(
+        document({
+          feeCeilings: { routine: { ...routineCeiling, gas: '55000' }, protected: protectedCeiling }
+        })
+      )
+    )
+    expect(parsed.feeCeilings.routine.gas).toBe('55000')
   })
 
   it('accepts a remediation ceiling covered by exactly one protected replacement bump', () => {

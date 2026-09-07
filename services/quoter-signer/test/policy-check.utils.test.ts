@@ -10,13 +10,13 @@ import type {
 import type { QuoterSignerPolicy } from '../src/policy.utils'
 
 import { IntentPolicyViolationError } from '../src/intent-policy-violation.error'
+import { assertIntentWithinPolicy } from '../src/policy-check.utils'
 import {
-  assertIntentWithinPolicy,
   MIN_CONSUME_GROUPS_BASE_GAS,
+  MIN_CONTRACT_CALL_GAS,
   MIN_GAS_PER_CONSUMED_GROUP,
   MIN_SELF_CANCEL_GAS
-} from '../src/policy-check.utils'
-import { MIN_CONTRACT_CALL_GAS } from '../src/policy.utils'
+} from '../src/policy.utils'
 
 const twoGroupGasFloor = MIN_CONSUME_GROUPS_BASE_GAS + 2n * MIN_GAS_PER_CONSUMED_GROUP
 import { parseQuoterSignerPolicy } from '../src/policy.utils'

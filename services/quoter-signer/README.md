@@ -264,7 +264,9 @@ emergency replacement bump — `max(floor(routine × 1125 / 1000), routine + 1 w
 routine counterpart, with `protected.gas` at least `routine.gas`, and the same bump of every
 remediation variant's fee ceilings (remediation transactions are break-glass-preemptable like
 every maker transaction), so no routine or remediation bid can ever strand the break-glass
-replacement path.
+replacement path. `feeCeilings.routine.gas` must also cover the smallest cleanup transaction
+(55,000 — a one-group consumption), so `protected ≥ routine` guarantees the break-glass surface
+always has a signable cleanup shape; a lower ceiling is a dead configuration refused at parse.
 
 A well-formed intent is then checked against every rule decidable from these parameters and the
 middleware clock ([`src/policy-check.utils.ts`](./src/policy-check.utils.ts)): the surface's

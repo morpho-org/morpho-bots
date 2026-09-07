@@ -9,7 +9,12 @@ import type {
 } from './policy.utils'
 
 import { IntentPolicyViolationError } from './intent-policy-violation.error'
-import { MIN_CONTRACT_CALL_GAS } from './policy.utils'
+import {
+  MIN_CONSUME_GROUPS_BASE_GAS,
+  MIN_CONTRACT_CALL_GAS,
+  MIN_GAS_PER_CONSUMED_GROUP,
+  MIN_SELF_CANCEL_GAS
+} from './policy.utils'
 
 /**
  * The one intent kind each signing surface accepts. Routine and break-glass revocation share the
@@ -23,25 +28,6 @@ const SURFACE_INTENT_KINDS: Record<SigningSurface, QuoterSignerIntent['kind']> =
   'break-glass-revoke': 'revoke',
   'setup-remediation': 'setup-remediation'
 }
-
-/**
- * Conservative worst-case execution gas per `setConsumed` inner call in a consumption batch: a
- * cold zero-to-nonzero storage write (22,100), the consumption event, and the inner-call,
- * memory, and calldata overhead, rounded up. Deliberately generous so a signed batch that fits
- * the floor can execute; EVM gas repricings should revisit it (erring high only tightens the
- * floor, never signs an inexecutable batch).
- */
-export const MIN_GAS_PER_CONSUMED_GROUP = 30_000n
-
-/** Base transaction allowance under the same floor: intrinsic gas plus multicall dispatch. */
-export const MIN_CONSUME_GROUPS_BASE_GAS = 25_000n
-
-/**
- * Exact intrinsic gas of an empty zero-value self-send — the only execution a self-cancel ever
- * performs. Below it the transaction is invalid and could never be included, so the artifact
- * could not replace anything.
- */
-export const MIN_SELF_CANCEL_GAS = 21_000n
 
 /**
  * A consumption batch whose gas limit cannot cover its own worst-case execution would be

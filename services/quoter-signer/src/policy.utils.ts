@@ -41,6 +41,25 @@ export const QUOTER_SIGNER_POLICY_VERSION = 1
 export const MIN_CONTRACT_CALL_GAS = 50_000n
 
 /**
+ * Conservative worst-case execution gas per `setConsumed` inner call in a consumption batch: a
+ * cold zero-to-nonzero storage write (22,100), the consumption event, and the inner-call,
+ * memory, and calldata overhead, rounded up. Deliberately generous so a signed batch that fits
+ * the floor can execute; EVM gas repricings should revisit it (erring high only tightens the
+ * floor, never signs an inexecutable batch).
+ */
+export const MIN_GAS_PER_CONSUMED_GROUP = 30_000n
+
+/** Base transaction allowance under the same floor: intrinsic gas plus multicall dispatch. */
+export const MIN_CONSUME_GROUPS_BASE_GAS = 25_000n
+
+/**
+ * Exact intrinsic gas of an empty zero-value self-send — the only execution a self-cancel ever
+ * performs. Below it the transaction is invalid and could never be included, so the artifact
+ * could not replace anything.
+ */
+export const MIN_SELF_CANCEL_GAS = 21_000n
+
+/**
  * The five signing surfaces of the TIB-2026-08-12 mode-aware deployment shape. Each deployed
  * function pins exactly one surface in its own configuration — never from caller data — and the
  * surface decides which intent kind is accepted and which fee-ceiling class applies (`protected`
@@ -737,6 +756,14 @@ export const parseQuoterSignerPolicy = (source: string | undefined): QuoterSigne
       'feeCeilings.protected.gas',
       'insufficient-protected-ceiling'
     )
+  }
+  // One reviewed document serves every deployment of the shared image, so the routine gas
+  // ceiling must admit the smallest cleanup transaction (a one-group consumption; root
+  // operations and the self-cancel cost less) — and `protected ≥ routine` then guarantees the
+  // break-glass surface can always sign cleanup. A lower ceiling parses as configured but
+  // provides no usable transaction exactly when an incident needs one.
+  if (BigInt(routine.gas) < MIN_CONSUME_GROUPS_BASE_GAS + MIN_GAS_PER_CONSUMED_GROUP) {
+    throw new PolicyNotConfiguredError('feeCeilings.routine.gas', 'incoherent-bounds')
   }
   const maker = addressValue(record.maker, 'maker')
   const remediations = remediationsValue(record.remediations, 'remediations', maker)
