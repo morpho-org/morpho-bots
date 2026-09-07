@@ -268,8 +268,11 @@ speak this wire contract land.
   runtime stage is the AWS Lambda Node.js 24 base image (`public.ecr.aws/lambda/nodejs:24`) and
   receives only the self-contained ESM bundle — no workspace source, no bot code, no package
   manager.
-- CI publishing is not wired yet; maintainers push manually (below). When it lands it follows the
-  TIB-2026-08-14 OIDC pattern.
+- Published by CI on every quoter-bot production release: the signer rides the quoter-bot release
+  train through the shared publish workflow
+  ([`publish-quoter-bot-dockerhub.yml`](../../.github/workflows/publish-quoter-bot-dockerhub.yml)),
+  using the TIB-2026-08-14 OIDC exchange — no static registry credential — and the same
+  forward-only `latest` gate keyed on `quoter-bot-*` release tags.
 
 ## Build
 
@@ -313,19 +316,20 @@ in the local container the attestation stage cannot succeed anyway — a fully a
 
 ## Publish to Docker Hub (maintainers)
 
-Until CI publishing lands, releases are pushed manually — immutable commit tag first, then
-`latest`:
+CI publishes on every quoter-bot production release (see Image above). For an out-of-band push,
+build and push the immutable commit tag only:
 
 ```sh
 REVISION="$(git rev-parse HEAD)"
 docker build -f services/quoter-signer/Dockerfile --build-arg GIT_REVISION="$REVISION" \
-  -t "morphoorg/quoter-signer:$REVISION" -t morphoorg/quoter-signer:latest .
+  -t "morphoorg/quoter-signer:$REVISION" .
 docker push "morphoorg/quoter-signer:$REVISION"
-docker push morphoorg/quoter-signer:latest
 ```
 
 Build from a clean checkout of the released commit so the OCI `revision` label and the tag both
-name the source truthfully.
+name the source truthfully. `latest` belongs to CI's forward-only gate — retag it manually
+(`docker buildx imagetools create --tag morphoorg/quoter-signer:latest morphoorg/quoter-signer:$REVISION`)
+only when no quoter-bot release newer than the pushed commit exists.
 
 ## Run it in AWS Lambda
 

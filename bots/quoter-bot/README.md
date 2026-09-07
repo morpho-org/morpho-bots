@@ -340,11 +340,13 @@ approval-blocked, removed, skipped, sleeping, unknown, or timed-out deployments 
 
 A production release (a `release-quoter-bot` label on a merged PR, or a manual **Deploy production**
 dispatch) also publishes the image to Docker Hub as `morphoorg/quoter`, tagged with the release
-commit hash and `latest`. The push runs in parallel with the Railway deploy and gates neither the
-deploy nor the GitHub release. The **Publish quoter-bot Docker Hub** workflow authenticates through
-the Docker organization's OIDC connection scoped by the `quoter-bot-dockerhub` GitHub Environment
-(secret `DOCKERHUB_OIDC_CONNECTIONID`, vars `DOCKER_USERNAME` and `DOCKER_REPOSITORY`), so CI
-stores no static Docker Hub credential.
+commit hash and `latest` — alongside the
+[quoter-signer](../../services/quoter-signer/README.md) middleware image, which rides the same
+release train. The pushes run after the Railway deploy and the GitHub release, and gate neither.
+The **Publish quoter Docker Hub images** workflow authenticates through the Docker organization's
+OIDC connection scoped by the `quoter-bot-dockerhub` GitHub Environment (secret
+`DOCKERHUB_OIDC_CONNECTIONID`, vars `DOCKER_USERNAME`, `DOCKER_REPOSITORY`, and
+`DOCKER_SIGNER_REPOSITORY`), so CI stores no static Docker Hub credential.
 
 Before each build, the workflow checks Docker's registry API and fails closed when the commit-SHA
 tag already exists or the registry returns an unexpected status. A rerun therefore cannot replace

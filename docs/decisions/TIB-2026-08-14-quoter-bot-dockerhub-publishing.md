@@ -227,6 +227,27 @@ release tag's commit and `docker pull morphoorg/quoter:<sha>`, or inspect the im
 - [docker/login-action](https://github.com/docker/login-action) — OIDC connection sign-in
   (v4.5+).
 
+## Addendum A (2026-09-07) — quoter-signer publishes from the same workflow
+
+[TIB-2026-08-12 Addendum A](./TIB-2026-08-12-quoter-bot-kms-signing-middleware.md) committed the
+`morphoorg/quoter-signer` middleware image to this TIB's OIDC posture with manual pushes as the
+interim channel; CI publishing is now wired. `publish-quoter-bot-dockerhub.yml` fans its single
+`Publish` job over a two-image matrix — `bots/quoter-bot/Dockerfile` and
+`services/quoter-signer/Dockerfile`, both at repo-root context — so each quoter-bot production
+release pushes both images with the commit-hash tag plus the forward-only `latest`. The signer has
+no release selector of its own: it rides the quoter-bot release train, and the same `quoter-bot-*`
+release-tag family gates both images' `latest`. Legs run with `fail-fast: false` under per-image
+concurrency groups (`publish-quoter-bot-dockerhub-{image}`), so one registry failure neither
+cancels nor blocks the other image, and reruns stay idempotent per image (existing SHA tag reused,
+missed `latest` recovered). Each image's repository name stays environment configuration: the
+matrix carries the var name and the new `DOCKER_SIGNER_REPOSITORY` var (`quoter-signer`) joins
+`DOCKER_REPOSITORY` in the `quoter-bot-dockerhub` environment, preflighted fail-loud. Rollout
+requires `morphoorg/quoter-signer` to exist as a **public** repository before the first CI push —
+Docker Hub auto-creates a missing repository with the namespace's default privacy, which this
+workflow neither controls nor verifies — and the Docker-side OIDC connection must grant it
+image-push scope; nothing else about the auth posture changes. The "not publishing images for the other bots"
+non-goal stands — the signer is the TIB-2026-08-12 middleware root of trust, not a bot.
+
 <!--
 TIB conventions:
 - Once accepted, do not substantively edit this TIB. If the decision needs to change,
