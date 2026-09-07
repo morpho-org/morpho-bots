@@ -10,7 +10,13 @@ import type {
 import type { QuoterSignerPolicy } from '../src/policy.utils'
 
 import { IntentPolicyViolationError } from '../src/intent-policy-violation.error'
-import { assertIntentWithinPolicy } from '../src/policy-check.utils'
+import {
+  assertIntentWithinPolicy,
+  MIN_CONSUME_GROUPS_BASE_GAS,
+  MIN_GAS_PER_CONSUMED_GROUP
+} from '../src/policy-check.utils'
+
+const twoGroupGasFloor = MIN_CONSUME_GROUPS_BASE_GAS + 2n * MIN_GAS_PER_CONSUMED_GROUP
 import { parseQuoterSignerPolicy } from '../src/policy.utils'
 import {
   FIXTURE_MAKER as maker,
@@ -175,7 +181,7 @@ describe('assertIntentWithinPolicy', () => {
       'a consume-groups batch at its exact per-batch gas floor',
       revokeIntent(
         { type: 'consume-groups', groups: [bytes32('11'), bytes32('12')] },
-        { ...fees, gas: '85000' }
+        { ...fees, gas: twoGroupGasFloor.toString() }
       ),
       policyFor({ surface: 'routine-revoke' })
     ]
@@ -417,7 +423,7 @@ describe('assertIntentWithinPolicy', () => {
       'a consume-groups batch one wei of gas below its per-batch floor',
       revokeIntent(
         { type: 'consume-groups', groups: [bytes32('11'), bytes32('12')] },
-        { ...fees, gas: '84999' }
+        { ...fees, gas: (twoGroupGasFloor - 1n).toString() }
       ),
       policyFor({ surface: 'routine-revoke' }),
       'gas-floor',
