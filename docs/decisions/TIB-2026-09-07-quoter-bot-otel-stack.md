@@ -196,8 +196,8 @@ observability" section.
 
 - Other bots can adopt `startBotTelemetry` unchanged; their record-to-metric mappings are
   per-bot by design (each bot owns its event contract).
-- Span coverage inside a cycle (read / plan / reconcile phases, mutation-queue wait) if origin-level
-  request spans prove too coarse.
+- Span coverage inside a cycle (read / plan / reconcile phases) if origin-level request spans
+  prove too coarse; the cycle span already includes shared mutation-queue wait.
 - The proto exporter, only if a curator's collector rejects JSON.
 
 ## References

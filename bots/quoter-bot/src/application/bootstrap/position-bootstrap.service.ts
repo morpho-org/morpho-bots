@@ -315,25 +315,23 @@ export class PositionBootstrapService {
       try {
         const runCycle = async () => {
           if (parameters.signal.aborted) return undefined
-          const results = await withActiveSpan(
-            {
-              name: 'quoter-bot.cycle',
-              attributes: { workflow: 'bootstrap' },
-              errorName: operatorErrorName,
-              failed: cycleHasFailure
-            },
-            () =>
-              this.runOnce({
-                verbose: parameters.verbose,
-                onTransactionSubmitted: parameters.onTransactionSubmitted
-              })
-          )
+          const results = await this.runOnce({
+            verbose: parameters.verbose,
+            onTransactionSubmitted: parameters.onTransactionSubmitted
+          })
           await parameters.onCycle?.(results)
           return results
         }
-        const results = parameters.runOperation
-          ? await parameters.runOperation(runCycle)
-          : await runCycle()
+        // The span wraps the enqueue, so wait behind the shared mutation queue is traced.
+        const results = await withActiveSpan(
+          {
+            name: 'quoter-bot.cycle',
+            attributes: { workflow: 'bootstrap' },
+            errorName: operatorErrorName,
+            failed: cycle => cycle !== undefined && cycleHasFailure(cycle)
+          },
+          () => (parameters.runOperation ? parameters.runOperation(runCycle) : runCycle())
+        )
         if (results === undefined) break
         cycles += 1
 

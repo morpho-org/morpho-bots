@@ -650,7 +650,10 @@ auto-enables the safe `--verbose` event stream for `start`, `bootstrap`, and `la
 **Traces.** Every setup/bootstrap/ladder cycle runs inside a `quoter-bot.cycle` span tagged
 `workflow`, and every outbound `fetch`/undici request (RPC and Morpho API calls) becomes a child
 client span via `diagnostics_channel` instrumentation, with the semconv
-`http.client.request.duration` histogram recorded alongside. Every URL-bearing span attribute is
+`http.client.request.duration` histogram recorded alongside. Under the combined `start` lifecycle
+the cycle span begins at enqueue, so wait behind the shared bootstrap/ladder mutation queue is
+part of the span — per-market work time remains `cycle.completed.durationMs`, making contention
+the difference between the two. Every URL-bearing span attribute is
 reduced to its origin (`url.full` keeps scheme and host; path and query are dropped
 unconditionally) because RPC provider URLs commonly embed API keys. Failures are sanitized the
 same way: a span processor strips every `exception` event and status message before export, so a

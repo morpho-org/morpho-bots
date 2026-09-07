@@ -40,7 +40,11 @@ export const withActiveSpan = <Result>(
         return result
       } catch (error) {
         span.setStatus({ code: SpanStatusCode.ERROR })
-        if (options.errorName) span.setAttribute('errorName', options.errorName(error))
+        try {
+          if (options.errorName) span.setAttribute('errorName', options.errorName(error))
+        } catch {
+          // Classification must never replace the operation failure.
+        }
         throw error
       } finally {
         span.end()
