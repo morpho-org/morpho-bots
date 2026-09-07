@@ -636,8 +636,65 @@ describe('parseQuoterSignerPolicy', () => {
       JSON.stringify(remediationDocument({ ...action, amount: '0x10' })),
       'remediations[0].action.amount',
       'invalid-decimal'
+    ],
+    [
+      'a remediation max-fee ceiling the protected reserve cannot replace',
+      JSON.stringify(
+        document({
+          remediations: [
+            {
+              variant: 'loan-asset-approval',
+              action,
+              feeCeiling: { ...routineCeiling, maxFeePerGas: '26666666668' }
+            }
+          ]
+        })
+      ),
+      'remediations[0].feeCeiling.maxFeePerGas',
+      'insufficient-protected-ceiling'
+    ],
+    [
+      'a remediation priority ceiling the protected reserve cannot replace',
+      JSON.stringify(
+        document({
+          remediations: [
+            {
+              variant: 'loan-asset-approval',
+              action,
+              feeCeiling: {
+                ...routineCeiling,
+                maxFeePerGas: '20000000000',
+                maxPriorityFeePerGas: '13333333335'
+              }
+            }
+          ]
+        })
+      ),
+      'remediations[0].feeCeiling.maxPriorityFeePerGas',
+      'insufficient-protected-ceiling'
     ]
   ])('rejects %s', (_description, source, field, reason) => {
     expectNotConfigured(source, field, reason)
+  })
+
+  it('accepts a remediation ceiling covered by exactly one protected replacement bump', () => {
+    const parsed = parseQuoterSignerPolicy(
+      JSON.stringify(
+        document({
+          remediations: [
+            {
+              variant: 'loan-asset-approval',
+              action,
+              feeCeiling: {
+                maxFeePerGas: '26666666667',
+                maxPriorityFeePerGas: '13333333334',
+                gas: '120000'
+              }
+            }
+          ]
+        })
+      )
+    )
+    expect(parsed.remediations[0]?.feeCeiling.maxFeePerGas).toBe('26666666667')
   })
 })

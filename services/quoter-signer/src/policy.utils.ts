@@ -616,7 +616,8 @@ const policyJsonText = (source: string): string => {
  * tick bounds must be coherent and within the protocol `MAX_TICK`, continuous-fee ceilings within
  * `MAX_CONTINUOUS_FEE`, the quote surface requires the Ecrecover mode and ratify the Setter mode,
  * every protected fee ceiling must cover one complete {@link emergencyBump} of its routine
- * counterpart (with `protected.gas` at least `routine.gas`), collateral definitions must arrive
+ * counterpart (with `protected.gas` at least `routine.gas`) and of every remediation variant's
+ * fee ceilings (remediation transactions are break-glass-preemptable), collateral definitions must arrive
  * strictly ascending by token, each market's pinned struct must re-derive its pinned `marketId`
  * through the SDK's content addressing, maturities must sit exactly at 15:00:00 UTC inside the
  * Mempool codec's safe-timestamp bound (an off-schedule maturity could never publish), tick
@@ -729,6 +730,28 @@ export const parseQuoterSignerPolicy = (source: string | undefined): QuoterSigne
   if (surface === 'setup-remediation' && remediations.length === 0) {
     throw new PolicyNotConfiguredError('remediations', 'empty')
   }
+  // Remediation transactions are break-glass-preemptable like every maker transaction, so the
+  // protected reserve must cover one full replacement bump of every variant ceiling too — a
+  // variant admitting fees the protected class cannot out-bid would strand incident cleanup at
+  // that nonce.
+  remediations.forEach((remediation, index) => {
+    const ceiling = remediation.feeCeiling
+    if (BigInt(protectedCeiling.maxFeePerGas) < emergencyBump(BigInt(ceiling.maxFeePerGas))) {
+      throw new PolicyNotConfiguredError(
+        `remediations[${index}].feeCeiling.maxFeePerGas`,
+        'insufficient-protected-ceiling'
+      )
+    }
+    if (
+      BigInt(protectedCeiling.maxPriorityFeePerGas) <
+      emergencyBump(BigInt(ceiling.maxPriorityFeePerGas))
+    ) {
+      throw new PolicyNotConfiguredError(
+        `remediations[${index}].feeCeiling.maxPriorityFeePerGas`,
+        'insufficient-protected-ceiling'
+      )
+    }
+  })
   const ratifier = contractAddressValue(record.ratifier, 'ratifier')
   const contracts = contractsValue(record.contracts, 'contracts')
   // A ratifier pinned to the singleton or the Mempool would make the revoke and ratify encoders

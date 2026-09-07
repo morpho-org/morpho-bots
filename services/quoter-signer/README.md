@@ -256,8 +256,10 @@ rules: the quote surface requires `ratifierMode: "ecrecover"` and ratify require
 tick bounds must be coherent and within the protocol `MAX_TICK` (6744); continuous-fee ceilings
 within the protocol `MAX_CONTINUOUS_FEE`; and each protected fee ceiling must cover one complete
 emergency replacement bump — `max(floor(routine × 1125 / 1000), routine + 1 wei)` — of its
-routine counterpart, with `protected.gas` at least `routine.gas`, so a routine bid can never
-strand the break-glass replacement path.
+routine counterpart, with `protected.gas` at least `routine.gas`, and the same bump of every
+remediation variant's fee ceilings (remediation transactions are break-glass-preemptable like
+every maker transaction), so no routine or remediation bid can ever strand the break-glass
+replacement path.
 
 A well-formed intent is then checked against every rule decidable from these parameters and the
 middleware clock ([`src/policy-check.utils.ts`](./src/policy-check.utils.ts)): the surface's
