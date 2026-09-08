@@ -40,7 +40,6 @@ export async function quoteOneInch(
       dst: params.tokenOut,
       amount: params.amountIn.toString(),
       from: params.executor,
-      origin: params.executor,
       receiver: params.executor,
       // `minReturn` is an ABSOLUTE base-unit minimum, unlike `slippage` which is a percentage the API
       // applies to its own quote. Asking for the absolute floor is what lets the returned bound be
