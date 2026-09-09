@@ -33,7 +33,6 @@ import { MidnightAbi } from '@repo/contracts'
 import { parseSwapConfig } from '@repo/swaps'
 import { delay as sleep, lensKey, tryCatch } from '@repo/utils'
 import { readFileSync } from 'node:fs'
-import { createInterface } from 'node:readline/promises'
 import { parseArgs } from 'node:util'
 import {
   createPublicClient,
@@ -64,19 +63,7 @@ import { ORACLE_ABI, SWAP_ROUTER_ABI, WETH_ABI } from './seed/abis'
 import { encodeRatifierData, hashOffer, isLeaf, signOfferTree, toId } from './seed/offers'
 import { DEFAULT_TICK_SPACING, priceToTick, tickToPrice } from './seed/price-tick'
 import { priceDropToLiquidateBps, sizePosition } from './seed/sizing'
-
-// bun exposed a global synchronous `confirm()`; Node does not. Same contract: anything other than an
-// explicit y/yes is a decline, and a non-interactive stdin declines rather than hanging a CI run.
-const confirmPrompt = async (question: string): Promise<boolean> => {
-  if (!process.stdin.isTTY) return false
-  const rl = createInterface({ input: process.stdin, output: process.stdout })
-  try {
-    const answer = await rl.question(`${question} [y/N] `)
-    return /^y(es)?$/i.test(answer.trim())
-  } finally {
-    rl.close()
-  }
-}
+import { confirmPrompt, RETRY_DELAY_MS, SIMULATE_RETRIES, txStep } from './seed/tx'
 
 const CHAIN_ID = 8453
 const MIDNIGHT = getAddress('0xAdedD8ab6dE832766Fedf0FaC4992E5C4D3EA18A')
@@ -108,8 +95,6 @@ const MIDNIGHT_API = 'https://api.morpho.org/v0/midnight'
 // The configured RPC is a caching proxy with read-after-write lag: a pre-send simulate can transiently
 // see stale state (e.g. an approval/balance from a just-mined tx). Re-simulate a few times before
 // treating a revert as real — a genuine revert persists across retries and still aborts the run.
-const SIMULATE_RETRIES = 8
-const RETRY_DELAY_MS = 3000
 
 const TOKENS: Record<string, { address: Address; decimals: number }> = {
   WETH: { address: getAddress('0x4200000000000000000000000000000000000006'), decimals: 18 },
@@ -561,48 +546,6 @@ function printPlan({
     ''
   ]
   process.stderr.write(`${lines.join('\n')}\n`)
-}
-
-async function txStep({
-  ctx,
-  wallet,
-  label,
-  call
-}: {
-  ctx: { publicClient: PublicClient; logger: ReturnType<typeof createLogger> }
-  wallet: WalletClient
-  label: string
-  // Heterogeneous contract call across several ABIs; typed loosely on purpose for a one-off script.
-  call: {
-    address: Address
-    abi: readonly unknown[]
-    functionName: string
-    args: readonly unknown[]
-    value?: bigint
-  }
-}) {
-  let sim = await tryCatch(
-    ctx.publicClient.simulateContract({ account: wallet.account, ...call } as never)
-  )
-  for (let attempt = 1; sim.error && attempt < SIMULATE_RETRIES; attempt++) {
-    // Likely the caching RPC lagging a just-mined dependency — wait and re-simulate.
-    ctx.logger.warn('seed.simulate_retry', { step: label, attempt })
-    await sleep(RETRY_DELAY_MS)
-    sim = await tryCatch(
-      ctx.publicClient.simulateContract({ account: wallet.account, ...call } as never)
-    )
-  }
-  if (sim.error) {
-    ctx.logger.error('seed.simulate_failed', { step: label, reason: sim.error.message })
-    throw sim.error
-  }
-  ctx.logger.info('seed.simulate_ok', { step: label })
-  const { request, result } = sim.data as unknown as { request: never; result: unknown }
-  const hash = await wallet.writeContract(request)
-  const receipt = await ctx.publicClient.waitForTransactionReceipt({ hash })
-  if (receipt.status !== 'success') throw new Error(`${label} reverted on-chain (tx ${hash})`)
-  ctx.logger.info('seed.tx', { step: label, txHash: hash })
-  return result
 }
 
 async function main() {

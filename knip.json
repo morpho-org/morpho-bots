@@ -18,7 +18,11 @@
     "packages/swaps": {},
     "bots/midnight-liquidation": {
       "ignore": ["src/generated/**"],
-      "entry": ["src/index.ts", "scripts/seed-liquidatable-positions.ts"]
+      "entry": [
+        "src/index.ts",
+        "scripts/seed-liquidatable-positions.ts",
+        "scripts/seed-loan-collateral-position.ts"
+      ]
     },
     "bots/blue-liquidation": {
       "entry": ["src/index.ts", "scripts/probe-live-lens.ts"]

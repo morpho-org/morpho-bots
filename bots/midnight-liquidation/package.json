@@ -9,6 +9,7 @@
     "deploy:railway": "tsx scripts/deploy-railway.ts",
     "prestart": "pnpm --filter \"{.}...\" --if-present run build",
     "seed:positions": "pnpm --filter \"{.}...\" --if-present run build && node --env-file-if-exists=.env dist/scripts/seed-liquidatable-positions.js",
+    "seed:loan-collateral": "pnpm --filter \"{.}...\" --if-present run build && node --env-file-if-exists=.env dist/scripts/seed-loan-collateral-position.js",
     "start": "node --env-file-if-exists=.env dist/src/index.js",
     "typecheck": "soltag && tsc --noEmit"
   },
