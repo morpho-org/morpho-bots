@@ -20,7 +20,7 @@
  *
  *   RPC_URL=... PRIVATE_KEY_LENDER=0x... PRIVATE_KEY_BORROWER=0x... \
  *     pnpm --filter @morpho-org/midnight-liquidation run seed:loan-collateral -- \
- *       --market 0x… --face-usdc 0.7 --dry-run
+ *       --markets-api https://… --market 0x… --face-usdc 0.7 --dry-run
  *
  * Never prints secrets (keys, full RPC URL).
  */
@@ -65,8 +65,6 @@ const MIDNIGHT = getAddress('0xAdedD8ab6dE832766Fedf0FaC4992E5C4D3EA18A')
 const ECRECOVER_RATIFIER = getAddress('0xd6e70365C8E8DDa9a4ca662C07bbE663b017755E')
 const PRIVATE_KEY_HEX_LENGTH = 66
 const USDC_DECIMALS = 6
-
-const DEFAULT_MARKETS_API = 'https://api.morpho.dev'
 
 /**
  * Offer price, as a WAD discount factor on the units' face value: the borrower receives
@@ -121,7 +119,7 @@ function parseCliArgs(): Args {
   const { values } = parseArgs({
     options: {
       market: { type: 'string' },
-      'markets-api': { type: 'string', default: DEFAULT_MARKETS_API },
+      'markets-api': { type: 'string' },
       'face-usdc': { type: 'string', default: '0.7' },
       'collateral-multiple-bps': { type: 'string' },
       'price-wad': { type: 'string' },
@@ -136,6 +134,16 @@ function parseCliArgs(): Args {
   if (!market || !/^0x[0-9a-fA-F]{64}$/.test(market)) {
     throw new Error('--market is required and must be a 32-byte hex market id')
   }
+  // Required rather than defaulted: the whitelist endpoint decides WHICH deployment's bot will act
+  // on the position, and the bot itself takes it from an operator-set variable rather than the repo.
+  // Defaulting it would pick an environment on the operator's behalf for a run that spends real funds.
+  const marketsApi = values['markets-api']?.trim().replace(/\/$/, '')
+  if (!marketsApi) {
+    throw new Error(
+      '--markets-api is required (the markets endpoint whose `listed=true` set the target bot reads)'
+    )
+  }
+  if (!URL.canParse(marketsApi)) throw new Error(`--markets-api is not a valid URL: ${marketsApi}`)
   const collateralMultipleBps = values['collateral-multiple-bps']
     ? BigInt(values['collateral-multiple-bps'])
     : DEFAULT_COLLATERAL_MULTIPLE_BPS
@@ -147,7 +155,7 @@ function parseCliArgs(): Args {
 
   return {
     market: market as Hex,
-    marketsApi: values['markets-api'].trim().replace(/\/$/, ''),
+    marketsApi,
     faceUsdc: values['face-usdc'],
     collateralMultipleBps,
     priceWad,
