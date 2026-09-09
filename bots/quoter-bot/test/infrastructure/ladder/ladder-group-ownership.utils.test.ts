@@ -163,6 +163,36 @@ describe('createLadderGroupOwnership', () => {
     }
   })
 
+  test('round-trips both observation identities through durable state', async () => {
+    const stateDirectory = await mkdtemp(join(tmpdir(), 'ladder-ownership-'))
+    try {
+      const observed: LadderQuoteSet = {
+        ...quote,
+        referenceObservationId: 'blue:19000000',
+        bookObservationId: '4172:4200'
+      }
+      const write = createLadderGroupOwnership(
+        { chainId: base.id, maker, strategyMarketIds: [marketId] },
+        { stateDirectory }
+      )
+      await write.reserve({
+        marketId,
+        quote: observed,
+        groups: [{ groupId: lowerGroup, side: 'lower', rungIndexes: [0] }]
+      })
+
+      // A dropped identity reads back as undefined and never equals a freshly derived one, so the
+      // ladder would cancel and republish itself every cycle.
+      const read = createLadderGroupOwnership(
+        { chainId: base.id, maker, strategyMarketIds: [marketId] },
+        { stateDirectory }
+      )
+      expect((await read.read())[0]?.quote).toEqual(observed)
+    } finally {
+      await rm(stateDirectory, { recursive: true, force: true })
+    }
+  })
+
   test('keeps ownership stable when configured ladder markets change', async () => {
     const stateDirectory = await mkdtemp(join(tmpdir(), 'ladder-ownership-'))
     try {

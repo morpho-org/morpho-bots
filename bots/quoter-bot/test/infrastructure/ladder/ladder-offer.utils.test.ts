@@ -294,21 +294,23 @@ describe('buildLadderTree', () => {
     expect(counts({ ownBootstrapBuyTickCeiling: 4_018n })).toEqual({ lower: 0, higher: 0 })
   })
 
-  test('counts a book-constrained rung even when the bootstrap floor is the binding one', () => {
-    const result = buildLadderTree({
-      quote: quote('shared-rung'),
-      market,
-      maker,
-      ratifier,
-      now,
-      minimumRateBps: 1n,
-      maximumRateBps: 10_000n,
-      ownBootstrapBuyTickCeiling: 4_018n,
-      opposingBookTicks: { highestBuyTick: 4_000n }
-    })
+  test('attributes a rung to the book only when the book moved it further', () => {
+    const clearedByBook = (ownBootstrapBuyTickCeiling: bigint) =>
+      buildLadderTree({
+        quote: quote('shared-rung'),
+        market,
+        maker,
+        ratifier,
+        now,
+        minimumRateBps: 1n,
+        maximumRateBps: 10_000n,
+        ownBootstrapBuyTickCeiling,
+        opposingBookTicks: { highestBuyTick: 4_000n }
+      }).bookClearedRungs.lower
 
-    expect(result.bookClearedRungs.lower).toBe(1)
-    expect(result.bookOffers.filter(offer => !offer.buy).map(offer => offer.tick)).toEqual([4_019n])
+    // The bootstrap floor already lifts every sell past the book floor, so the book moved nothing.
+    expect(clearedByBook(4_018n)).toBe(0)
+    expect(clearedByBook(3_900n)).toBe(1)
   })
 
   test('keeps the own bootstrap tie when the book clearance is looser', () => {

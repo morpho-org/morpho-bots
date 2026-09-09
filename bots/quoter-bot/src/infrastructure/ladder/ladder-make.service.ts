@@ -54,6 +54,8 @@ export interface LadderOfferTransport {
     prospective: readonly LadderBookOffer[]
     /** Rungs per side the opposing book repriced while clearing the publication. */
     bookClearedRungs: { lower: number; higher: number }
+    /** Identity of the opposing offers in `observed` that this publication was cleared against. */
+    bookObservationId: string
     /**
      * Ratifies when required, publishes the policy-checked tree, and waits for every receipt.
      * @param onTransactionSubmitted - Optional safe observer notified after each wallet submission.
@@ -154,9 +156,12 @@ export class MidnightLadderMakeService implements LadderMakeService {
           book,
           prospective: publication.prospective
         })
+        // The identity recorded with the publication must describe the book it was actually
+        // cleared against, not the earlier one the decision compared: resting on a decision-time
+        // identity can rest on a book the live ladder never cleared.
         await this.transport.reservePublication({
           marketId: parameters.marketId,
-          quote: parameters.desired!,
+          quote: { ...parameters.desired!, bookObservationId: publication.bookObservationId },
           groups: publication.groups
         })
       }

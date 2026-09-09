@@ -623,6 +623,11 @@ export const createProductionLadderAdapters = (
       client.getBlock({ blockTag: 'latest' })
     ])
     const bootstrapTickCeiling = ownBootstrapBuyTickCeiling(observed.book, quote.marketId)
+    const opposingBookTicks = retainedOpposingBookTicks({
+      marketId: quote.marketId,
+      replacedGroupIds: observed.replacedGroupIds,
+      book: observed.book
+    })
     const prepared = buildLadderTree({
       quote,
       market,
@@ -631,11 +636,7 @@ export const createProductionLadderAdapters = (
       now: block.timestamp,
       minimumRateBps: selectedConfig.minimumRateBps,
       maximumRateBps: selectedConfig.maximumRateBps,
-      opposingBookTicks: retainedOpposingBookTicks({
-        marketId: quote.marketId,
-        replacedGroupIds: observed.replacedGroupIds,
-        book: observed.book
-      }),
+      opposingBookTicks,
       ...(bootstrapTickCeiling === undefined
         ? {}
         : { ownBootstrapBuyTickCeiling: bootstrapTickCeiling })
@@ -644,7 +645,7 @@ export const createProductionLadderAdapters = (
       chainId: config.chainId,
       apiUrl: `${config.morphoApiBaseUrl}/v0/midnight`
     })
-    return prepared
+    return { ...prepared, bookObservationId: opposingBookObservationId(opposingBookTicks) }
   }
 
   const validateReconcile: ProductionLadderAdapters['validateReconcile'] = async parameters => {
@@ -718,7 +719,7 @@ export const createProductionLadderAdapters = (
     listBookOffers: async marketId => (await completeBookOffers(marketId)).book,
     preparePublication: async (quote, observed) => {
       const prepared = await prepareUnsignedPublication(quote, observed)
-      const { bookClearedRungs } = prepared
+      const { bookClearedRungs, bookObservationId } = prepared
       const ratifierType = configuredRatifierType(config.setup.ratifier, config.chainId)
       const ratification = await prepareLadderRatification({
         type: ratifierType,
@@ -747,6 +748,7 @@ export const createProductionLadderAdapters = (
         groupIds,
         groups: prepared.groups,
         bookClearedRungs,
+        bookObservationId,
         prospective: ownedLadderProspectiveOffers(prepared.bookOffers),
         publish: onTransactionSubmitted =>
           publishLadderPublication({

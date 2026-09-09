@@ -44,6 +44,7 @@ type PersistedPublication = {
     marketId: string
     centerRateBps: string
     referenceObservationId?: string
+    bookObservationId?: string
     groupMode: string
     lower: PersistedRung[]
     higher: PersistedRung[]
@@ -105,6 +106,7 @@ const canonicalQuote = (value: unknown): LadderQuoteSet => {
     (quote.groupMode !== 'shared-rung' && quote.groupMode !== 'per-book') ||
     (quote.referenceObservationId !== undefined &&
       typeof quote.referenceObservationId !== 'string') ||
+    (quote.bookObservationId !== undefined && typeof quote.bookObservationId !== 'string') ||
     !Array.isArray(quote.lower) ||
     !Array.isArray(quote.higher)
   ) {
@@ -115,6 +117,9 @@ const canonicalQuote = (value: unknown): LadderQuoteSet => {
     centerRateBps: canonicalSignedAmount(quote.centerRateBps),
     ...(typeof quote.referenceObservationId === 'string'
       ? { referenceObservationId: quote.referenceObservationId }
+      : {}),
+    ...(typeof quote.bookObservationId === 'string'
+      ? { bookObservationId: quote.bookObservationId }
       : {}),
     groupMode: quote.groupMode,
     lower: quote.lower.map(canonicalRung),
@@ -207,6 +212,9 @@ const serializePublication = (publication: OwnedLadderPublication): PersistedPub
     centerRateBps: String(publication.quote.centerRateBps),
     ...(publication.quote.referenceObservationId
       ? { referenceObservationId: publication.quote.referenceObservationId }
+      : {}),
+    ...(publication.quote.bookObservationId
+      ? { bookObservationId: publication.quote.bookObservationId }
       : {}),
     groupMode: publication.quote.groupMode,
     lower: publication.quote.lower.map(rung => ({

@@ -79,24 +79,24 @@ const buyTickCeiling = (parameters: BuildLadderTreeParameters, window: TickWindo
 }
 
 /**
- * Resolves the tick bound for one side, and the part of it the opposing book contributes.
- * @remarks `book` is reported even when `bound` comes from the own bootstrap buy, so the guardrail
- * count answers "did the book constrain this rung" rather than "did the book win the maximum".
+ * Resolves the tick bound for one side, alongside the bound the same side would have without the
+ * opposing book.
+ * @remarks The pair exists so the guardrail count reports rungs the book actually moved. A rung the
+ * own bootstrap buy would have moved just as far is not attributed to the book, which keeps
+ * `guardrail.book-cleared` and `guardrail.cross-book-cleared` from both claiming it.
  */
 const sideTickBounds = (
   side: 'lower' | 'higher',
   parameters: BuildLadderTreeParameters,
   window: TickWindow
 ) => {
-  if (side === 'higher') {
-    const ceiling = buyTickCeiling(parameters, window)
-    return { bound: ceiling, book: ceiling }
-  }
+  if (side === 'higher')
+    return { bound: buyTickCeiling(parameters, window), withoutBook: undefined }
   const book = sellTickFloor(parameters.opposingBookTicks?.highestBuyTick, parameters, window)
   const bootstrap = sellTickFloor(parameters.ownBootstrapBuyTickCeiling, parameters, window)
   const bound =
     book === undefined || bootstrap === undefined ? (book ?? bootstrap) : bigintMax(book, bootstrap)
-  return { bound, book }
+  return { bound, withoutBook: bootstrap }
 }
 
 const mergedSideTicks = (
@@ -107,7 +107,7 @@ const mergedSideTicks = (
   const { window, timeToMaturity } = derivation
   const rungs = parameters.quote[side]
   const caps = offerMaxAssetsByRung(parameters.quote)[side]
-  const { bound, book } = sideTickBounds(side, parameters, window)
+  const { bound, withoutBook } = sideTickBounds(side, parameters, window)
   const saturate = side === 'lower' ? bigintMax : bigintMin
   let clearedByBook = 0
   const merged = new Map<bigint, MergedTickRungs>()
@@ -119,7 +119,8 @@ const mergedSideTicks = (
     )
     const bounded = clampTickToWindow(aligned, window)
     const tick = bound === undefined ? bounded : saturate(bounded, bound)
-    if (book !== undefined && saturate(bounded, book) !== bounded) clearedByBook += 1
+    const withoutBookTick = withoutBook === undefined ? bounded : saturate(bounded, withoutBook)
+    if (tick !== withoutBookTick) clearedByBook += 1
     const cap = caps[index]!
     const entry = merged.get(tick)
     if (entry === undefined) {
