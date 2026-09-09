@@ -41,6 +41,8 @@ type PreparedLadderTree = {
     buy: boolean
     tick: bigint
   }[]
+  /** Rungs per side the opposing book repriced, before equal-tick rungs merged. */
+  bookClearedRungs: { lower: number; higher: number }
 }
 
 /** One protocol offer merged from every same-side rung that resolved to the same tick. */
@@ -56,16 +58,13 @@ const LOWEST_TICK = 0n
 const alignTickUp = (tick: bigint, spacing: bigint) => ((tick + spacing - 1n) / spacing) * spacing
 const alignTickDown = (tick: bigint, spacing: bigint) => (tick / spacing) * spacing
 
-const sellTickFloor = (parameters: BuildLadderTreeParameters, window: TickWindow) => {
-  const opposingBuyTicks = [
-    parameters.ownBootstrapBuyTickCeiling,
-    parameters.opposingBookTicks?.highestBuyTick
-  ].filter(tick => tick !== undefined)
-  if (opposingBuyTicks.length === 0) return undefined
-  const cleared = alignTickUp(
-    opposingBuyTicks.reduce(bigintMax) + 1n,
-    BigInt(parameters.market.tickSpacing)
-  )
+const sellTickFloor = (
+  opposingBuyTick: bigint | undefined,
+  parameters: BuildLadderTreeParameters,
+  window: TickWindow
+) => {
+  if (opposingBuyTick === undefined) return undefined
+  const cleared = alignTickUp(opposingBuyTick + 1n, BigInt(parameters.market.tickSpacing))
   return window.highestTick === undefined ? cleared : bigintMin(cleared, window.highestTick)
 }
 
@@ -79,17 +78,38 @@ const buyTickCeiling = (parameters: BuildLadderTreeParameters, window: TickWindo
   return window.lowestTick === undefined ? cleared : bigintMax(cleared, window.lowestTick)
 }
 
+/**
+ * Resolves the tick bound for one side, and the part of it the opposing book contributes.
+ * @remarks `book` is reported even when `bound` comes from the own bootstrap buy, so the guardrail
+ * count answers "did the book constrain this rung" rather than "did the book win the maximum".
+ */
+const sideTickBounds = (
+  side: 'lower' | 'higher',
+  parameters: BuildLadderTreeParameters,
+  window: TickWindow
+) => {
+  if (side === 'higher') {
+    const ceiling = buyTickCeiling(parameters, window)
+    return { bound: ceiling, book: ceiling }
+  }
+  const book = sellTickFloor(parameters.opposingBookTicks?.highestBuyTick, parameters, window)
+  const bootstrap = sellTickFloor(parameters.ownBootstrapBuyTickCeiling, parameters, window)
+  const bound =
+    book === undefined || bootstrap === undefined ? (book ?? bootstrap) : bigintMax(book, bootstrap)
+  return { bound, book }
+}
+
 const mergedSideTicks = (
   side: 'lower' | 'higher',
   parameters: BuildLadderTreeParameters,
   derivation: { window: TickWindow; timeToMaturity: bigint }
-): MergedTickRungs[] => {
+) => {
   const { window, timeToMaturity } = derivation
   const rungs = parameters.quote[side]
   const caps = offerMaxAssetsByRung(parameters.quote)[side]
-  const bound =
-    side === 'lower' ? sellTickFloor(parameters, window) : buyTickCeiling(parameters, window)
+  const { bound, book } = sideTickBounds(side, parameters, window)
   const saturate = side === 'lower' ? bigintMax : bigintMin
+  let clearedByBook = 0
   const merged = new Map<bigint, MergedTickRungs>()
   rungs.forEach((rung, index) => {
     const aligned = alignedRateTick(
@@ -99,6 +119,7 @@ const mergedSideTicks = (
     )
     const bounded = clampTickToWindow(aligned, window)
     const tick = bound === undefined ? bounded : saturate(bounded, bound)
+    if (book !== undefined && saturate(bounded, book) !== bounded) clearedByBook += 1
     const cap = caps[index]!
     const entry = merged.get(tick)
     if (entry === undefined) {
@@ -108,7 +129,7 @@ const mergedSideTicks = (
     entry.rungs.push(rung)
     if (parameters.quote.groupMode === 'shared-rung') entry.maxAssets += cap
   })
-  return [...merged.values()]
+  return { entries: [...merged.values()], clearedByBook }
 }
 
 const sideOffers = (
@@ -177,16 +198,10 @@ export const buildLadderTree = (parameters: BuildLadderTreeParameters): Prepared
     tickSpacing: BigInt(parameters.market.tickSpacing)
   })
   if (isEmptyTickWindow(window)) throw new LadderAdapterError('rate-window-empty')
-  const lower = sideOffers(
-    'lower',
-    mergedSideTicks('lower', parameters, { window, timeToMaturity }),
-    parameters
-  )
-  const higher = sideOffers(
-    'higher',
-    mergedSideTicks('higher', parameters, { window, timeToMaturity }),
-    parameters
-  )
+  const lowerTicks = mergedSideTicks('lower', parameters, { window, timeToMaturity })
+  const higherTicks = mergedSideTicks('higher', parameters, { window, timeToMaturity })
+  const lower = sideOffers('lower', lowerTicks.entries, parameters)
+  const higher = sideOffers('higher', higherTicks.entries, parameters)
   const tagged = [
     ...lower.map(item => ({ ...item, side: 'lower' as const })),
     ...higher.map(item => ({ ...item, side: 'higher' as const }))
@@ -232,6 +247,7 @@ export const buildLadderTree = (parameters: BuildLadderTreeParameters): Prepared
   return {
     tree,
     groups,
+    bookClearedRungs: { lower: lowerTicks.clearedByBook, higher: higherTicks.clearedByBook },
     bookOffers: tree.offers.map(offer => ({
       marketId: parameters.quote.marketId,
       buy: offer.buy,

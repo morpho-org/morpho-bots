@@ -1,12 +1,8 @@
 import type { Hex } from 'viem'
 
-import { TickLib } from '@morpho-org/midnight-sdk'
-import { MathLib } from '@morpho-org/morpho-ts'
 import { batchProspectiveBook } from '@repo/offers'
 
 import type { OwnedOverlapBookOffer } from '../intentional-overlap.utils'
-
-const BPS_WAD = MathLib.WAD / 10_000n
 
 /**
  * Best opposing retained ticks a prospective ladder must clear on each side.
@@ -53,20 +49,13 @@ export const retainedOpposingBookTicks = (parameters: {
 }
 
 /**
- * Converts opposing book ticks into the annual rates ladder generation clears.
+ * Identifies the opposing offers a publication was cleared against.
  * @param ticks - Best opposing ticks from {@link retainedOpposingBookTicks}.
- * @param timeToMaturity - Seconds until the market matures; must be positive.
- * @returns `bookBuyRateBps` and `bookSellRateBps` for the sides the book holds.
- * @remarks Truncation to integer basis points is the deadband that keeps a sub-basis-point book
- * wobble from recentering the ladder. Because a tick's implied rate is a function of time to
- * maturity, a resting offer's rate still drifts as maturity approaches, exactly as the own
- * bootstrap-buy rate already does.
+ * @returns A token that changes if and only if either best opposing tick changes.
+ * @remarks Ladder reconciliation compares this instead of an annualized rate because the clearance
+ * itself is exact and tick-space. A rate would be lossy — two ticks a strict clearance apart can
+ * round to one basis point, hiding a book move that leaves the live ladder crossed — and a function
+ * of time to maturity, so an unchanged book would re-annualize into a fresh quote every cycle.
  */
-export const opposingBookRatesBps = (ticks: OpposingBookTicks, timeToMaturity: bigint) => ({
-  ...(ticks.highestBuyTick === undefined
-    ? {}
-    : { bookBuyRateBps: TickLib.tickToApr(ticks.highestBuyTick, timeToMaturity) / BPS_WAD }),
-  ...(ticks.lowestSellTick === undefined
-    ? {}
-    : { bookSellRateBps: TickLib.tickToApr(ticks.lowestSellTick, timeToMaturity) / BPS_WAD })
-})
+export const opposingBookObservationId = (ticks: OpposingBookTicks) =>
+  `${ticks.highestBuyTick ?? ''}:${ticks.lowestSellTick ?? ''}`

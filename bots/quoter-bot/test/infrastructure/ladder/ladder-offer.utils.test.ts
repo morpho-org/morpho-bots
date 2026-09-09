@@ -269,6 +269,48 @@ describe('buildLadderTree', () => {
     ])
   })
 
+  test('counts only the rungs the opposing book repriced', () => {
+    const counts = (parameters: Partial<Parameters<typeof buildLadderTree>[0]>) =>
+      buildLadderTree({
+        quote: quote('shared-rung'),
+        market,
+        maker,
+        ratifier,
+        now,
+        minimumRateBps: 1n,
+        maximumRateBps: 10_000n,
+        ...parameters
+      }).bookClearedRungs
+
+    expect(counts({})).toEqual({ lower: 0, higher: 0 })
+    expect(counts({ opposingBookTicks: { highestBuyTick: 4_000n } })).toEqual({
+      lower: 1,
+      higher: 0
+    })
+    expect(counts({ opposingBookTicks: { lowestSellTick: 3_945n } })).toEqual({
+      lower: 0,
+      higher: 1
+    })
+    expect(counts({ ownBootstrapBuyTickCeiling: 4_018n })).toEqual({ lower: 0, higher: 0 })
+  })
+
+  test('counts a book-constrained rung even when the bootstrap floor is the binding one', () => {
+    const result = buildLadderTree({
+      quote: quote('shared-rung'),
+      market,
+      maker,
+      ratifier,
+      now,
+      minimumRateBps: 1n,
+      maximumRateBps: 10_000n,
+      ownBootstrapBuyTickCeiling: 4_018n,
+      opposingBookTicks: { highestBuyTick: 4_000n }
+    })
+
+    expect(result.bookClearedRungs.lower).toBe(1)
+    expect(result.bookOffers.filter(offer => !offer.buy).map(offer => offer.tick)).toEqual([4_019n])
+  })
+
   test('keeps the own bootstrap tie when the book clearance is looser', () => {
     const result = buildLadderTree({
       quote: quote('shared-rung'),

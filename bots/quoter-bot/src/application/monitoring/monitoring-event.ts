@@ -77,8 +77,14 @@ export type MonitoringEvent =
       marketId: Hex
       side: MonitoringSide
       clearedRungs: number
-      /** Subset of `clearedRungs` moved by the opposing book rather than the own bootstrap buy. */
-      bookClearedRungs?: number
+    }
+  | {
+      /** The opposing market book, rather than an own offer, repriced rungs at publication. */
+      event: 'guardrail.book-cleared'
+      workflow: MonitoringWorkflow
+      marketId: Hex
+      side: MonitoringSide
+      clearedRungs: number
     }
   | {
       event: 'guardrail.exposure-capped'
@@ -177,6 +183,7 @@ const MONITORING_EVENT_NAMES = [
   'cycle.completed',
   'guardrail.rate-clamped',
   'guardrail.cross-book-cleared',
+  'guardrail.book-cleared',
   'guardrail.exposure-capped',
   'guardrail.rungs-truncated',
   'guardrail.spread-rejected',

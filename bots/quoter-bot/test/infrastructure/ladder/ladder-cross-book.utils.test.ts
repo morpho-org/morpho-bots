@@ -1,12 +1,11 @@
 import type { Hex } from 'viem'
 
-import { TickLib } from '@morpho-org/midnight-sdk'
 import { describe, expect, test } from 'vitest'
 
 import type { OwnedOverlapBookOffer } from '../../../src/infrastructure/intentional-overlap.utils'
 
 import {
-  opposingBookRatesBps,
+  opposingBookObservationId,
   retainedOpposingBookTicks
 } from '../../../src/infrastructure/ladder/ladder-cross-book.utils'
 
@@ -83,30 +82,28 @@ describe('retainedOpposingBookTicks', () => {
   })
 })
 
-describe('opposingBookRatesBps', () => {
-  const timeToMaturity = 31_536_000n
-  const bps = (tick: bigint) => TickLib.tickToApr(tick, timeToMaturity) / (10n ** 18n / 10_000n)
+describe('opposingBookObservationId', () => {
+  test('changes for any change to either best opposing tick', () => {
+    const base = opposingBookObservationId({ highestBuyTick: 4_172n, lowestSellTick: 4_200n })
 
-  test('converts each present side into an integer basis-point rate', () => {
-    const rates = opposingBookRatesBps(
-      { highestBuyTick: 3_993n, lowestSellTick: 3_937n },
-      timeToMaturity
+    expect(opposingBookObservationId({ highestBuyTick: 4_172n, lowestSellTick: 4_200n })).toBe(base)
+    expect(opposingBookObservationId({ highestBuyTick: 4_171n, lowestSellTick: 4_200n })).not.toBe(
+      base
     )
-
-    expect(rates).toEqual({ bookBuyRateBps: bps(3_993n), bookSellRateBps: bps(3_937n) })
-    expect(rates.bookBuyRateBps! < rates.bookSellRateBps!).toBe(true)
+    expect(opposingBookObservationId({ highestBuyTick: 4_172n, lowestSellTick: 4_201n })).not.toBe(
+      base
+    )
   })
 
-  test('omits a side the book does not hold', () => {
-    expect(opposingBookRatesBps({ lowestSellTick: 3_937n }, timeToMaturity)).toEqual({
-      bookSellRateBps: bps(3_937n)
-    })
-    expect(opposingBookRatesBps({}, timeToMaturity)).toEqual({})
+  test('separates neighbouring ticks one strict clearance apart', () => {
+    expect(opposingBookObservationId({ lowestSellTick: 3_902n })).not.toBe(
+      opposingBookObservationId({ lowestSellTick: 3_900n })
+    )
   })
 
-  test('holds a one-second maturity drift inside the basis-point deadband', () => {
-    expect(opposingBookRatesBps({ highestBuyTick: 3_993n }, timeToMaturity - 1n)).toEqual(
-      opposingBookRatesBps({ highestBuyTick: 3_993n }, timeToMaturity)
+  test('distinguishes an empty side from a present one', () => {
+    expect(opposingBookObservationId({})).not.toBe(
+      opposingBookObservationId({ highestBuyTick: 0n })
     )
   })
 })

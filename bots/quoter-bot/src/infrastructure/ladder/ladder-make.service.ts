@@ -52,6 +52,8 @@ export interface LadderOfferTransport {
     groupIds: readonly Hex[]
     groups: readonly LadderGroupReference[]
     prospective: readonly LadderBookOffer[]
+    /** Rungs per side the opposing book repriced while clearing the publication. */
+    bookClearedRungs: { lower: number; higher: number }
     /**
      * Ratifies when required, publishes the policy-checked tree, and waits for every receipt.
      * @param onTransactionSubmitted - Optional safe observer notified after each wallet submission.
@@ -213,7 +215,10 @@ export class MidnightLadderMakeService implements LadderMakeService {
         throw error
       }
       await this.transport.confirmPublication(publication.groupIds)
-      return { submittedTransactions } satisfies LadderMakeResult
+      return {
+        submittedTransactions,
+        bookClearedRungs: publication.bookClearedRungs
+      } satisfies LadderMakeResult
     })
   }
 

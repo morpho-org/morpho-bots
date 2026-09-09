@@ -57,6 +57,8 @@ export type LadderMakeResult =
   | {
       /** Confirmed transactions submitted by this mutation request, in submission order. */
       submittedTransactions: readonly LadderSubmittedTransaction[]
+      /** Rungs per side the opposing book repriced, when a publication was prepared. */
+      bookClearedRungs?: { lower: number; higher: number }
     }
 
 /** Complete provider and active-quote projection shown for a verbose ladder check. */
@@ -106,6 +108,8 @@ export type LadderVerboseDetails = {
   stateAfterCheck: LadderVerboseState
   /** Per-side clamp, clearance, and funding counts from generation, when a quote was derived. */
   diagnostics?: LadderDiagnostics
+  /** Rungs per side the opposing book repriced, when this check prepared a publication. */
+  bookClearedRungs?: { lower: number; higher: number }
   /** Monotonic per-group consumption observed for this market, when the adapter reports it. */
   groupConsumption?: readonly LadderGroupConsumption[]
   /** Wall-clock duration of this market's check, including the post-check verbose re-read. */

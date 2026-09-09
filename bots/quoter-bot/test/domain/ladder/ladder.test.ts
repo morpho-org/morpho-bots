@@ -2,7 +2,6 @@ import type { Hex } from 'viem'
 
 import { describe, expect, test } from 'vitest'
 
-import { sameLadderQuoteSet } from '../../../src/application/ladder/ladder-quoter.utils'
 import {
   assertLadderShapeAtReference,
   effectiveLadderPremiumBps,
@@ -10,8 +9,7 @@ import {
   generateLadderWithDiagnostics,
   shouldRecenter,
   validateLadderConfig,
-  type LadderConfig,
-  type LadderMarketState
+  type LadderConfig
 } from '../../../src/domain/ladder/ladder'
 import { LadderConfigurationError } from '../../../src/domain/ladder/ladder-configuration.error'
 import { MATURITY_PREMIUM_YEAR_SECONDS } from '../../../src/domain/maturity-premium'
@@ -218,66 +216,23 @@ describe('ladder domain', () => {
     })
     expect(quote.lower.map(rung => rung.rateBps)).toEqual([370n, 300n, 200n])
     expect(quote.higher.map(rung => rung.rateBps)).toEqual([600n, 700n, 800n])
-    expect(diagnostics.lower).toMatchObject({ clearedRungs: 1, bookClearedRungs: 0 })
+    expect(diagnostics.lower.clearedRungs).toBe(1)
   })
 
-  test('quotes sells below and buys above the best opposing offers on the book', () => {
-    const ladder = generateLadder({
+  test('leaves rung rates untouched by the observed book', () => {
+    const withBook = generateLadder({
       config: config(),
       referenceRateBps: 500n,
-      capacities: { bookBuyRateBps: 350n, bookSellRateBps: 650n }
+      capacities: { bookObservationId: '4172:3900' }
     })
+    const withoutBook = generateLadder({ config: config(), referenceRateBps: 500n })
 
-    expect(ladder.lower.map(rung => rung.rateBps)).toEqual([350n, 300n, 200n])
-    expect(ladder.higher.map(rung => rung.rateBps)).toEqual([650n, 700n, 800n])
-  })
-
-  test('takes the tighter of the bootstrap and book ceilings on sells', () => {
-    const bootstrapTighter = generateLadder({
-      config: config(),
-      referenceRateBps: 500n,
-      capacities: { bootstrapBuyRateBps: 380n, bookBuyRateBps: 500n }
-    })
-    const bookTighter = generateLadder({
-      config: config(),
-      referenceRateBps: 500n,
-      capacities: { bootstrapBuyRateBps: 500n, bookBuyRateBps: 350n }
-    })
-
-    expect(bootstrapTighter.lower.map(rung => rung.rateBps)).toEqual([370n, 300n, 200n])
-    expect(bookTighter.lower.map(rung => rung.rateBps)).toEqual([350n, 300n, 200n])
-  })
-
-  test('counts every book-cleared rung on both sides', () => {
-    const { diagnostics } = generateLadderWithDiagnostics({
-      config: config(),
-      referenceRateBps: 500n,
-      capacities: { bookBuyRateBps: 350n, bookSellRateBps: 750n }
-    })
-
-    expect(diagnostics.lower).toMatchObject({ clearedRungs: 1, bookClearedRungs: 1 })
-    expect(diagnostics.higher).toMatchObject({ clearedRungs: 2, bookClearedRungs: 2 })
-  })
-
-  test('makes the desired quote a function of the book so a moved book reconciles', () => {
-    const at = (capacities: LadderMarketState) =>
-      generateLadder({ config: config(), referenceRateBps: 500n, capacities })
-    const resting = { bookBuyRateBps: 350n }
-
-    expect(sameLadderQuoteSet(at(resting), at(resting))).toBe(true)
-    expect(sameLadderQuoteSet(at(resting), at({ bookBuyRateBps: 360n }))).toBe(false)
-    expect(sameLadderQuoteSet(at(resting), at({}))).toBe(false)
-  })
-
-  test('keeps book-cleared rungs inside the hard range', () => {
-    const ladder = generateLadder({
-      config: config(),
-      referenceRateBps: 500n,
-      capacities: { bookBuyRateBps: 150n, bookSellRateBps: 900n }
-    })
-
-    expect(ladder.lower.map(rung => rung.rateBps)).toEqual([200n, 200n, 200n])
-    expect(ladder.higher.map(rung => rung.rateBps)).toEqual([800n, 800n, 800n])
+    expect(withBook.lower.map(rung => rung.rateBps)).toEqual(
+      withoutBook.lower.map(rung => rung.rateBps)
+    )
+    expect(withBook.higher.map(rung => rung.rateBps)).toEqual(
+      withoutBook.higher.map(rung => rung.rateBps)
+    )
   })
 
   test('keeps bootstrap-cleared sells inside the hard range', () => {
@@ -332,16 +287,14 @@ describe('generateLadderWithDiagnostics', () => {
         fundedRungs: 3,
         clampedToMinimumRungs: 0,
         clampedToMaximumRungs: 0,
-        clearedRungs: 0,
-        bookClearedRungs: 0
+        clearedRungs: 0
       },
       higher: {
         configuredRungs: 3,
         fundedRungs: 3,
         clampedToMinimumRungs: 0,
         clampedToMaximumRungs: 0,
-        clearedRungs: 0,
-        bookClearedRungs: 0
+        clearedRungs: 0
       }
     })
   })
@@ -370,8 +323,7 @@ describe('generateLadderWithDiagnostics', () => {
       fundedRungs: 3,
       clampedToMinimumRungs: 2,
       clampedToMaximumRungs: 0,
-      clearedRungs: 0,
-      bookClearedRungs: 0
+      clearedRungs: 0
     })
     expect(below.diagnostics.higher.clampedToMinimumRungs).toBe(0)
     expect(below.diagnostics.higher.clampedToMaximumRungs).toBe(0)
@@ -385,8 +337,7 @@ describe('generateLadderWithDiagnostics', () => {
       fundedRungs: 3,
       clampedToMinimumRungs: 0,
       clampedToMaximumRungs: 2,
-      clearedRungs: 0,
-      bookClearedRungs: 0
+      clearedRungs: 0
     })
     expect(above.diagnostics.lower.clampedToMinimumRungs).toBe(0)
     expect(above.diagnostics.lower.clampedToMaximumRungs).toBe(0)
@@ -405,8 +356,7 @@ describe('generateLadderWithDiagnostics', () => {
       fundedRungs: 3,
       clampedToMinimumRungs: 0,
       clampedToMaximumRungs: 0,
-      clearedRungs: 1,
-      bookClearedRungs: 0
+      clearedRungs: 1
     })
     expect(diagnostics.higher.clearedRungs).toBe(0)
   })
@@ -424,8 +374,7 @@ describe('generateLadderWithDiagnostics', () => {
       fundedRungs: 3,
       clampedToMinimumRungs: 3,
       clampedToMaximumRungs: 0,
-      clearedRungs: 3,
-      bookClearedRungs: 0
+      clearedRungs: 3
     })
   })
 })

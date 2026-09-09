@@ -350,6 +350,7 @@ describe('publishLadderPublication', () => {
       preparePublication: async () => ({
         groupIds: [groupId],
         groups: [{ groupId, side: 'lower', rungIndexes: [0] }],
+        bookClearedRungs: { lower: 0, higher: 0 },
         prospective: [],
         publish: () =>
           publishLadderPublication({
@@ -394,6 +395,7 @@ describe('publishLadderPublication', () => {
       preparePublication: async () => ({
         groupIds: [groupId],
         groups: [{ groupId, side: 'lower', rungIndexes: [0] }],
+        bookClearedRungs: { lower: 0, higher: 0 },
         prospective: [],
         publish: () =>
           publishLadderPublication({

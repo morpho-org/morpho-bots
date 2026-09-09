@@ -40,6 +40,7 @@ const harness = () => {
     preparePublication: async () => ({
       groupIds: [newGroup],
       groups: [{ groupId: newGroup, side: 'lower', rungIndexes: [0] }],
+      bookClearedRungs: { lower: 0, higher: 0 },
       prospective: [
         { marketId, buy: true, tick: 10n },
         { marketId, buy: false, tick: 20n }
@@ -98,6 +99,7 @@ describe('MidnightLadderMakeService', () => {
       return {
         groupIds: [newGroup],
         groups: [{ groupId: newGroup, side: 'lower', rungIndexes: [0] }],
+        bookClearedRungs: { lower: 0, higher: 0 },
         prospective: [{ marketId, buy: false, tick: 20n }],
         publish: async () => undefined
       }
@@ -156,6 +158,7 @@ describe('MidnightLadderMakeService', () => {
     subject.transport.preparePublication = async () => ({
       groupIds: [newGroup],
       groups: [{ groupId: newGroup, side: 'lower', rungIndexes: [0] }],
+      bookClearedRungs: { lower: 0, higher: 0 },
       prospective: [{ marketId, buy: true, tick: 10n }],
       publish: async observer => {
         await observer?.({ operation: 'ratify', txHash: ratificationHash })
@@ -178,6 +181,7 @@ describe('MidnightLadderMakeService', () => {
     })
 
     expect(result).toEqual({
+      bookClearedRungs: { lower: 0, higher: 0 },
       submittedTransactions: [
         { operation: 'cancel', txHash: cancellationHash },
         { operation: 'ratify', txHash: ratificationHash },
@@ -247,6 +251,7 @@ describe('MidnightLadderMakeService', () => {
     subject.transport.preparePublication = async () => ({
       groupIds: [newGroup],
       groups: [{ groupId: newGroup, side: 'lower', rungIndexes: [0] }],
+      bookClearedRungs: { lower: 0, higher: 0 },
       prospective: [],
       publish: async () => {
         throw new LadderAdapterError('transaction-reverted')
@@ -291,6 +296,7 @@ describe('MidnightLadderMakeService', () => {
     subject.transport.preparePublication = async () => ({
       groupIds: [newGroup],
       groups: [{ groupId: newGroup, side: 'lower', rungIndexes: [0] }],
+      bookClearedRungs: { lower: 0, higher: 0 },
       prospective: [],
       publish: async () => {
         throw new LadderAdapterError('mempool-validation-after-ratification')
@@ -323,6 +329,7 @@ describe('MidnightLadderMakeService', () => {
     subject.transport.preparePublication = async () => ({
       groupIds: [newGroup],
       groups: [{ groupId: newGroup, side: 'lower', rungIndexes: [0] }],
+      bookClearedRungs: { lower: 0, higher: 0 },
       prospective: [{ marketId, buy: true, tick: 10n }],
       publish: async () => {
         subject.events.push('publish')

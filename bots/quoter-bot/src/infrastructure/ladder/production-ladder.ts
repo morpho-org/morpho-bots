@@ -61,7 +61,7 @@ import { LadderAdapterError } from './ladder-adapter.error'
 import { readLadderBookOffers } from './ladder-book.utils'
 import { calculateLadderCapacities } from './ladder-capacity.utils'
 import { ladderCashReservations } from './ladder-cash-reservation.utils'
-import { opposingBookRatesBps, retainedOpposingBookTicks } from './ladder-cross-book.utils'
+import { opposingBookObservationId, retainedOpposingBookTicks } from './ladder-cross-book.utils'
 import { createLadderGroupOwnership } from './ladder-group-ownership.utils'
 import { MidnightLadderMakeService, type LadderOfferTransport } from './ladder-make.service'
 import { buildLadderTree } from './ladder-offer.utils'
@@ -444,7 +444,6 @@ export const createProductionLadderAdapters = (
         now: block.timestamp
       })
 
-      const timeToMaturity = marketData.params.maturity - block.timestamp
       const opposingBookTicks = retainedOpposingBookTicks({
         marketId,
         replacedGroupIds: new Set(activeOwnedLadderGroupIds(publications, groups, marketId)),
@@ -466,7 +465,7 @@ export const createProductionLadderAdapters = (
           reservations
         }),
         ...(bootstrapBuyRateBps === undefined ? {} : { bootstrapBuyRateBps }),
-        ...(timeToMaturity > 0n ? opposingBookRatesBps(opposingBookTicks, timeToMaturity) : {}),
+        bookObservationId: opposingBookObservationId(opposingBookTicks),
         maturityTimestamp: marketData.params.maturity,
         observedTimestamp: block.timestamp
       }
@@ -719,6 +718,7 @@ export const createProductionLadderAdapters = (
     listBookOffers: async marketId => (await completeBookOffers(marketId)).book,
     preparePublication: async (quote, observed) => {
       const prepared = await prepareUnsignedPublication(quote, observed)
+      const { bookClearedRungs } = prepared
       const ratifierType = configuredRatifierType(config.setup.ratifier, config.chainId)
       const ratification = await prepareLadderRatification({
         type: ratifierType,
@@ -746,6 +746,7 @@ export const createProductionLadderAdapters = (
       return {
         groupIds,
         groups: prepared.groups,
+        bookClearedRungs,
         prospective: ownedLadderProspectiveOffers(prepared.bookOffers),
         publish: onTransactionSubmitted =>
           publishLadderPublication({

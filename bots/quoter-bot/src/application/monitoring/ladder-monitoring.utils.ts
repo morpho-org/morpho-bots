@@ -80,8 +80,7 @@ const sideGuardrails = (
           workflow: 'ladder',
           marketId,
           side,
-          clearedRungs: diagnostics.clearedRungs,
-          bookClearedRungs: diagnostics.bookClearedRungs
+          clearedRungs: diagnostics.clearedRungs
         } satisfies MonitoringEvent
       ]
     : []),
@@ -137,6 +136,18 @@ const verboseEvents = (
   if (verbose.diagnostics) {
     for (const side of SIDES) {
       events.push(...sideGuardrails(marketId, side, verbose.diagnostics[side], verbose.config))
+    }
+  }
+  for (const side of SIDES) {
+    const clearedRungs = verbose.bookClearedRungs?.[side] ?? 0
+    if (clearedRungs > 0) {
+      events.push({
+        event: 'guardrail.book-cleared',
+        workflow: 'ladder',
+        marketId,
+        side,
+        clearedRungs
+      })
     }
   }
   for (const transaction of verbose.submittedTransactions ?? []) {

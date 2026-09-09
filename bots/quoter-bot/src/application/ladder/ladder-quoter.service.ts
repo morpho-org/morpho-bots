@@ -559,7 +559,13 @@ export class LadderQuoterService {
               })
         diagnostics = generation.diagnostics
         const generated = generation.quote
-        desired = referenceObservationId ? { ...generated, referenceObservationId } : generated
+        desired = {
+          ...generated,
+          ...(referenceObservationId === undefined ? {} : { referenceObservationId }),
+          ...(market.bookObservationId === undefined
+            ? {}
+            : { bookObservationId: market.bookObservationId })
+        }
         if (!active) decision = 'publish'
         else if (sameLadderQuoteSet(active, desired)) decision = 'rest'
         else decision = recenter ? 'recenter' : 'resize'
@@ -650,17 +656,21 @@ export class LadderQuoterService {
         continue
       }
 
-      const submittedTransactions =
-        reconciliation === undefined || reconciliation === 'logged'
-          ? undefined
-          : reconciliation.submittedTransactions
+      const settled =
+        reconciliation === undefined || reconciliation === 'logged' ? undefined : reconciliation
+      const submittedTransactions = settled?.submittedTransactions
+      const reconciled = {
+        ...verbosePlan,
+        ...(submittedTransactions ? { submittedTransactions } : {}),
+        ...(settled?.bookClearedRungs ? { bookClearedRungs: settled.bookClearedRungs } : {})
+      }
       if (decision === 'rest') {
         results.push(
           await this.completeResult(
             config,
             { marketId: config.marketId, status: 'observed', action: 'rest' },
             parameters,
-            { ...verbosePlan, ...(submittedTransactions ? { submittedTransactions } : {}) },
+            reconciled,
             startedAt
           )
         )
@@ -676,7 +686,7 @@ export class LadderQuoterService {
             reason: decision
           },
           parameters,
-          { ...verbosePlan, ...(submittedTransactions ? { submittedTransactions } : {}) },
+          reconciled,
           startedAt
         )
       )

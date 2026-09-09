@@ -15,7 +15,6 @@ import { LadderConfigurationError } from './ladder-configuration.error'
 const WEIGHT_SCALE_BPS = 10_000n
 const bigintAbs = (value: bigint) => (value < 0n ? -value : value)
 const bigintMin = (left: bigint, right: bigint) => (left < right ? left : right)
-const bigintMax = (left: bigint, right: bigint) => (left > right ? left : right)
 
 /**
  * Highest supported rung count per ladder side.
@@ -55,11 +54,10 @@ export type LadderConfig = {
  * bootstrap-buy rate; sells quote at least {@link CROSS_BOOK_CLEARANCE_BPS} below it so the ladder
  * cannot cross the own bootstrap offer.
  *
- * `bookBuyRateBps` and `bookSellRateBps` are the best opposing rates resting on the market book,
- * excluding own offers. They make generation a function of the book, so a book that starts or stops
- * constraining a rung moves the desired quote and reconciles instead of resting on a stale one.
- * Unlike the bootstrap bound they carry no margin: the exact clearance is applied in tick space at
- * publication, and a margin here would only publish further from the book than necessary.
+ * `bookObservationId` identifies the best opposing offers resting on the market book. It is opaque
+ * here and never shapes a rate: the clearance against those offers is exact and belongs to tick
+ * space, so an annualized rate would be both lossy and a function of time to maturity. Carrying the
+ * identity instead puts the book into active-versus-desired reconciliation without either flaw.
  *
  * The trailing fields are observation-only accounting primitives. Generation ignores them entirely;
  * they exist because the capacities above are saturating minima from which no position value can be
@@ -72,8 +70,7 @@ export type LadderMarketState = {
   targetMarketCapacityAssets?: bigint
   maximumTotalCapacityAssets?: bigint
   bootstrapBuyRateBps?: bigint
-  bookBuyRateBps?: bigint
-  bookSellRateBps?: bigint
+  bookObservationId?: string
   cashBalanceAssets?: bigint
   creditAssets?: bigint
   otherMarketCreditAssets?: bigint
@@ -95,6 +92,8 @@ export type LadderQuoteSet = {
   marketId: Hex
   centerRateBps: bigint
   referenceObservationId?: string
+  /** Identity of the opposing book the publication was cleared against; see `LadderMarketState`. */
+  bookObservationId?: string
   groupMode: LadderConfig['groupMode']
   lower: readonly LadderRung[]
   higher: readonly LadderRung[]
@@ -185,25 +184,10 @@ const aggregateBudget = (config: LadderConfig, capacities: LadderMarketState) =>
   return minimum(values)
 }
 
-const clearedRungRate = (side: 'lower' | 'higher', rate: bigint, capacities: LadderMarketState) => {
-  const bookBound = side === 'higher' ? capacities.bookSellRateBps : capacities.bookBuyRateBps
-  const bookRate =
-    bookBound === undefined
-      ? rate
-      : side === 'higher'
-        ? bigintMax(rate, bookBound)
-        : bigintMin(rate, bookBound)
-  const clearedByBook = bookRate !== rate
-  if (side === 'higher') return { rateBps: bookRate, clearedByBook }
-  const bootstrapCeiling =
-    capacities.bootstrapBuyRateBps === undefined
-      ? undefined
-      : capacities.bootstrapBuyRateBps - CROSS_BOOK_CLEARANCE_BPS
-  return {
-    rateBps: bootstrapCeiling === undefined ? bookRate : bigintMin(bookRate, bootstrapCeiling),
-    clearedByBook
-  }
-}
+const clearedSellRateBps = (rate: bigint, bootstrapBuyRateBps: bigint | undefined) =>
+  bootstrapBuyRateBps === undefined
+    ? rate
+    : bigintMin(rate, bootstrapBuyRateBps - CROSS_BOOK_CLEARANCE_BPS)
 
 /**
  * Validates one complete static ladder shape before any provider read.
@@ -362,8 +346,8 @@ export const effectiveLadderPremiumBps = (
  * Guardrail counts observed while generating one ladder side.
  * @remarks Counts, never per-rung records: a side may hold up to 512 rungs and regenerate every
  * second, so only aggregates are cheap enough to ship. `clampedToMinimumRungs` and
- * `clampedToMaximumRungs` are disjoint, and a rung cleared away from the own bootstrap buy or the
- * opposing book may also be clamped, so `clearedRungs` and the clamp counts can both include it.
+ * `clampedToMaximumRungs` are disjoint, and a rung cleared below the own bootstrap buy may also be
+ * clamped, so `clearedRungs` and the clamp counts can both include it.
  */
 export type LadderSideDiagnostics = {
   configuredRungs: number
@@ -371,8 +355,6 @@ export type LadderSideDiagnostics = {
   clampedToMinimumRungs: number
   clampedToMaximumRungs: number
   clearedRungs: number
-  /** Subset of `clearedRungs` moved by the opposing book rather than the own bootstrap buy. */
-  bookClearedRungs: number
 }
 
 /** Guardrail counts for both sides of one generated quote set. */
@@ -418,19 +400,19 @@ export const generateLadderWithDiagnostics = (
       fundedRungs: 0,
       clampedToMinimumRungs: 0,
       clampedToMaximumRungs: 0,
-      clearedRungs: 0,
-      bookClearedRungs: 0
+      clearedRungs: 0
     }
     const rungs = allocations.flatMap((assets, index) => {
       if (assets === 0n) return []
       const offset = halfSpread + BigInt(index) * config.stepBps
       const shapedRateBps = side === 'lower' ? centerRateBps - offset : centerRateBps + offset
-      const cleared = clearedRungRate(side, shapedRateBps, capacities)
-      const clearedRateBps = cleared.rateBps
+      const clearedRateBps =
+        side === 'lower'
+          ? clearedSellRateBps(shapedRateBps, capacities.bootstrapBuyRateBps)
+          : shapedRateBps
       const rateBps = clampRateBps(clearedRateBps, config.minimumRateBps, config.maximumRateBps)
       diagnostics.fundedRungs += 1
       if (clearedRateBps !== shapedRateBps) diagnostics.clearedRungs += 1
-      if (cleared.clearedByBook) diagnostics.bookClearedRungs += 1
       if (clearedRateBps < config.minimumRateBps) diagnostics.clampedToMinimumRungs += 1
       else if (clearedRateBps > config.maximumRateBps) diagnostics.clampedToMaximumRungs += 1
       return [{ index, rateBps, assets }]
@@ -468,8 +450,7 @@ export const generateLadderWithDiagnostics = (
  * @remarks Pure derivation with no provider, logging, persistence, or publication access. Rungs
  * walking outside the hard range saturate at the bound instead of failing: sells
  * settle on `minimumRateBps` and buys on `maximumRateBps`. Sells additionally quote at least
- * {@link CROSS_BOOK_CLEARANCE_BPS} below any live own bootstrap buy so both strategies cannot cross,
- * and either side clears the best opposing offer resting on the book when `capacities` reports one.
+ * {@link CROSS_BOOK_CLEARANCE_BPS} below any live own bootstrap buy so both strategies cannot cross.
  * Saturated neighbouring rungs may share one rate; protocol tick mapping merges equal-tick rungs.
  * Use {@link generateLadderWithDiagnostics} when those saturations must be observable.
  */
