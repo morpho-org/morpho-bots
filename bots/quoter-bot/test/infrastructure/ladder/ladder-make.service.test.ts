@@ -83,6 +83,46 @@ describe('MidnightLadderMakeService', () => {
 
     expect(selectedMarket).toBe(marketId)
   })
+
+  test('prepares and validates against one book snapshot and one replaced-group set', async () => {
+    const subject = harness()
+    const restingBid = { marketId, buy: true, tick: 5n }
+    let bookReads = 0
+    subject.transport.listBookOffers = async () => {
+      bookReads += 1
+      return [restingBid]
+    }
+    let observed: Parameters<LadderOfferTransport['preparePublication']>[1] | undefined
+    subject.transport.preparePublication = async (_quote, seen) => {
+      observed = seen
+      return {
+        groupIds: [newGroup],
+        groups: [{ groupId: newGroup, side: 'lower', rungIndexes: [0] }],
+        prospective: [{ marketId, buy: false, tick: 20n }],
+        publish: async () => undefined
+      }
+    }
+
+    await subject.service.reconcile({ marketId, desired: quote, reason: 'recenter' })
+
+    expect(bookReads).toBe(1)
+    expect(observed?.book).toEqual([restingBid])
+    expect([...(observed?.replacedGroupIds ?? [])]).toEqual([oldGroup])
+  })
+
+  test('does not read the book when there is nothing to publish', async () => {
+    const subject = harness()
+    let bookReads = 0
+    subject.transport.listBookOffers = async () => {
+      bookReads += 1
+      return []
+    }
+
+    await subject.service.reconcile({ marketId, reason: 'recenter' })
+
+    expect(bookReads).toBe(0)
+    expect(subject.events).toContain(`cancel:${oldGroup}`)
+  })
   test('reserves, cancels, publishes, and confirms one replacement in order', async () => {
     const subject = harness()
 

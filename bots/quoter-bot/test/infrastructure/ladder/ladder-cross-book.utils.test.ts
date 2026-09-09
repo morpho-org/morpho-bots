@@ -1,10 +1,14 @@
 import type { Hex } from 'viem'
 
+import { TickLib } from '@morpho-org/midnight-sdk'
 import { describe, expect, test } from 'vitest'
 
 import type { OwnedOverlapBookOffer } from '../../../src/infrastructure/intentional-overlap.utils'
 
-import { retainedOpposingBookTicks } from '../../../src/infrastructure/ladder/ladder-cross-book.utils'
+import {
+  opposingBookRatesBps,
+  retainedOpposingBookTicks
+} from '../../../src/infrastructure/ladder/ladder-cross-book.utils'
 
 const marketId: Hex = `0x${'77'.repeat(32)}`
 const otherMarketId: Hex = `0x${'88'.repeat(32)}`
@@ -76,5 +80,33 @@ describe('retainedOpposingBookTicks', () => {
         book: [offer({ buy: false, tick: 4_000n })]
       })
     ).toEqual({ lowestSellTick: 4_000n })
+  })
+})
+
+describe('opposingBookRatesBps', () => {
+  const timeToMaturity = 31_536_000n
+  const bps = (tick: bigint) => TickLib.tickToApr(tick, timeToMaturity) / (10n ** 18n / 10_000n)
+
+  test('converts each present side into an integer basis-point rate', () => {
+    const rates = opposingBookRatesBps(
+      { highestBuyTick: 3_993n, lowestSellTick: 3_937n },
+      timeToMaturity
+    )
+
+    expect(rates).toEqual({ bookBuyRateBps: bps(3_993n), bookSellRateBps: bps(3_937n) })
+    expect(rates.bookBuyRateBps! < rates.bookSellRateBps!).toBe(true)
+  })
+
+  test('omits a side the book does not hold', () => {
+    expect(opposingBookRatesBps({ lowestSellTick: 3_937n }, timeToMaturity)).toEqual({
+      bookSellRateBps: bps(3_937n)
+    })
+    expect(opposingBookRatesBps({}, timeToMaturity)).toEqual({})
+  })
+
+  test('holds a one-second maturity drift inside the basis-point deadband', () => {
+    expect(opposingBookRatesBps({ highestBuyTick: 3_993n }, timeToMaturity - 1n)).toEqual(
+      opposingBookRatesBps({ highestBuyTick: 3_993n }, timeToMaturity)
+    )
   })
 })

@@ -80,7 +80,8 @@ const sideGuardrails = (
           workflow: 'ladder',
           marketId,
           side,
-          clearedRungs: diagnostics.clearedRungs
+          clearedRungs: diagnostics.clearedRungs,
+          bookClearedRungs: diagnostics.bookClearedRungs
         } satisfies MonitoringEvent
       ]
     : []),

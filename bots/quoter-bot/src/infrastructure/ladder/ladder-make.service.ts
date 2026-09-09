@@ -36,8 +36,19 @@ export interface LadderOfferTransport {
   listActiveGroupIds(marketId?: Hex): Promise<readonly Hex[]>
   /** Lists the maker's live offers for one market. @param marketId - Market being reconciled. @returns Every offer needed for spread safety. */
   listBookOffers(marketId: Hex): Promise<readonly LadderBookOffer[]>
-  /** Prepares a policy-checked desired tree without broadcasting it. @param quote - Exact desired quote set. @returns Publication metadata and one-shot ratifier/publisher. */
-  preparePublication(quote: LadderQuoteSet): Promise<{
+  /**
+   * Prepares a policy-checked desired tree without broadcasting it.
+   * @param quote - Exact desired quote set.
+   * @param observed - The book snapshot and replaced groups this cycle reconciles against.
+   * @returns Publication metadata and one-shot ratifier/publisher.
+   * @remarks `observed` must be the same snapshot the caller then passes to
+   * `assertLadderProspectiveSpread`. Preparation clears the opposing offers it names, so a
+   * different snapshot would let preparation clear one book while the guard checks another.
+   */
+  preparePublication(
+    quote: LadderQuoteSet,
+    observed: { book: readonly LadderBookOffer[]; replacedGroupIds: ReadonlySet<Hex> }
+  ): Promise<{
     groupIds: readonly Hex[]
     groups: readonly LadderGroupReference[]
     prospective: readonly LadderBookOffer[]
@@ -124,14 +135,21 @@ export class MidnightLadderMakeService implements LadderMakeService {
       const invalidatedGroupIds = new Set(
         [...spreadReplacedGroupIds].filter(groupId => !this.confirmedCanceledGroups.has(groupId))
       )
-      const publication = parameters.desired
-        ? await this.transport.preparePublication(parameters.desired)
+      const book = parameters.desired
+        ? await this.transport.listBookOffers(parameters.marketId)
         : undefined
-      if (publication) {
+      const publication =
+        parameters.desired && book
+          ? await this.transport.preparePublication(parameters.desired, {
+              book,
+              replacedGroupIds: spreadReplacedGroupIds
+            })
+          : undefined
+      if (publication && book) {
         assertLadderProspectiveSpread({
           marketId: parameters.marketId,
           replacedGroupIds: spreadReplacedGroupIds,
-          book: await this.transport.listBookOffers(parameters.marketId),
+          book,
           prospective: publication.prospective
         })
         await this.transport.reservePublication({
