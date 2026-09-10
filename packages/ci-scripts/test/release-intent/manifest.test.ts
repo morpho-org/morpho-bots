@@ -47,7 +47,7 @@ describe('manifest.json', () => {
   })
 
   it('never publishes an image from staging', () => {
-    expect(deployTargets(manifest, 'staging').every(t => ! t.publish_image)).toBe(true)
+    expect(deployTargets(manifest, 'staging').every(t => !t.publish_image)).toBe(true)
   })
 })
 
