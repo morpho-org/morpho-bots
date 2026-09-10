@@ -1,11 +1,12 @@
-import type { Hex } from 'viem'
+import type { Address, Hex } from 'viem'
 
 import { describe, expect, test } from 'vitest'
 
 import type { OwnedOverlapBookOffer } from '../../../src/infrastructure/intentional-overlap.utils'
 
 import {
-  opposingBookObservationId,
+  bookCrossesRestingLadder,
+  clearableOpposingBook,
   retainedOpposingBookTicks
 } from '../../../src/infrastructure/ladder/ladder-cross-book.utils'
 
@@ -82,28 +83,150 @@ describe('retainedOpposingBookTicks', () => {
   })
 })
 
-describe('opposingBookObservationId', () => {
-  test('changes for any change to either best opposing tick', () => {
-    const base = opposingBookObservationId({ highestBuyTick: 4_172n, lowestSellTick: 4_200n })
+const maker: Address = '0x1111111111111111111111111111111111111111'
+const counterparty: Address = '0x2222222222222222222222222222222222222222'
+const ownLadderSell = { groupId: groupId('aa'), buy: false, tick: 4_000n, maker } as const
+const ownLadderBuy = { groupId: groupId('bb'), buy: true, tick: 3_900n, maker } as const
+const activeLadderGroupIds = {
+  lower: new Set([ownLadderSell.groupId]),
+  higher: new Set([ownLadderBuy.groupId])
+}
 
-    expect(opposingBookObservationId({ highestBuyTick: 4_172n, lowestSellTick: 4_200n })).toBe(base)
-    expect(opposingBookObservationId({ highestBuyTick: 4_171n, lowestSellTick: 4_200n })).not.toBe(
-      base
-    )
-    expect(opposingBookObservationId({ highestBuyTick: 4_172n, lowestSellTick: 4_201n })).not.toBe(
-      base
-    )
+const crossing = (book: readonly OwnedOverlapBookOffer[]) =>
+  bookCrossesRestingLadder({ marketId, maker, book, activeLadderGroupIds })
+
+describe('bookCrossesRestingLadder', () => {
+  test('reports the lower side crossed by a third-party bid above our ladder sell', () => {
+    expect(
+      crossing([
+        offer(ownLadderSell),
+        offer({ groupId: groupId('01'), buy: true, tick: 4_050n, maker: counterparty })
+      ])
+    ).toEqual({ lower: true, higher: false })
   })
 
-  test('separates neighbouring ticks one strict clearance apart', () => {
-    expect(opposingBookObservationId({ lowestSellTick: 3_902n })).not.toBe(
-      opposingBookObservationId({ lowestSellTick: 3_900n })
-    )
+  test('reports the higher side crossed by a third-party ask below our ladder buy', () => {
+    expect(
+      crossing([
+        offer(ownLadderBuy),
+        offer({ groupId: groupId('01'), buy: false, tick: 3_850n, maker: counterparty })
+      ])
+    ).toEqual({ lower: false, higher: true })
   })
 
-  test('distinguishes an empty side from a present one', () => {
-    expect(opposingBookObservationId({})).not.toBe(
-      opposingBookObservationId({ highestBuyTick: 0n })
-    )
+  test('counts a tie as crossed, matching the protocol matching rule', () => {
+    expect(
+      crossing([
+        offer(ownLadderSell),
+        offer({ groupId: groupId('01'), buy: true, tick: 4_000n, maker: counterparty })
+      ])
+    ).toEqual({ lower: true, higher: false })
+  })
+
+  test('reports only the crossed side of a two-sided ladder', () => {
+    expect(
+      crossing([
+        offer(ownLadderSell),
+        offer(ownLadderBuy),
+        offer({ groupId: groupId('01'), buy: true, tick: 4_010n, maker: counterparty }),
+        offer({ groupId: groupId('02'), buy: false, tick: 4_020n, maker: counterparty })
+      ])
+    ).toEqual({ lower: true, higher: false })
+  })
+
+  test('ignores a third party crossing an own offer outside the ladder groups', () => {
+    expect(
+      crossing([
+        offer({ groupId: groupId('cc'), buy: true, tick: 3_900n, maker }),
+        offer({ groupId: groupId('01'), buy: false, tick: 3_850n, maker: counterparty })
+      ])
+    ).toEqual({ lower: false, higher: false })
+  })
+
+  test("never treats the maker's own crossing offers as third party", () => {
+    expect(
+      crossing([
+        offer(ownLadderSell),
+        offer({ groupId: groupId('cc'), buy: true, tick: 4_050n, maker })
+      ])
+    ).toEqual({ lower: false, higher: false })
+  })
+
+  test('treats an offer carrying no maker as own', () => {
+    expect(
+      crossing([offer(ownLadderSell), offer({ groupId: groupId('01'), buy: true, tick: 4_050n })])
+    ).toEqual({
+      lower: false,
+      higher: false
+    })
+  })
+
+  test('ignores other markets and ladder groups that are no longer active', () => {
+    expect(
+      crossing([
+        offer({ groupId: groupId('dd'), buy: false, tick: 4_000n, maker }),
+        offer({ groupId: groupId('01'), buy: true, tick: 4_050n, maker: counterparty }),
+        offer({ marketId: otherMarketId, ...ownLadderSell }),
+        offer({
+          marketId: otherMarketId,
+          groupId: groupId('02'),
+          buy: true,
+          tick: 4_050n,
+          maker: counterparty
+        })
+      ])
+    ).toEqual({ lower: false, higher: false })
+  })
+})
+
+describe('clearableOpposingBook', () => {
+  test('clears a cross the configured window still has room for', () => {
+    expect(
+      clearableOpposingBook({
+        ticks: { highestBuyTick: 3_950n, lowestSellTick: 4_000n },
+        window: { lowestTick: 3_900n, highestTick: 4_050n },
+        tickSpacing: 5n
+      })
+    ).toEqual({ lower: true, higher: true })
+  })
+
+  test('reports the lower side unclearable when clearing would saturate at the window top', () => {
+    expect(
+      clearableOpposingBook({
+        ticks: { highestBuyTick: 4_050n },
+        window: { lowestTick: 3_900n, highestTick: 4_050n },
+        tickSpacing: 5n
+      })
+    ).toEqual({ lower: false, higher: true })
+  })
+
+  test('reports the higher side unclearable when clearing would saturate at the window bottom', () => {
+    expect(
+      clearableOpposingBook({
+        ticks: { lowestSellTick: 3_900n },
+        window: { lowestTick: 3_900n, highestTick: 4_050n },
+        tickSpacing: 5n
+      })
+    ).toEqual({ lower: true, higher: false })
+  })
+
+  test('clears every side against an unbounded window', () => {
+    expect(
+      clearableOpposingBook({
+        ticks: { highestBuyTick: 4_050n, lowestSellTick: 3_900n },
+        window: {},
+        tickSpacing: 5n
+      })
+    ).toEqual({ lower: true, higher: true })
+  })
+
+  test('clears a side the book does not hold', () => {
+    expect(
+      clearableOpposingBook({
+        ticks: {},
+        window: { lowestTick: 3_900n, highestTick: 4_050n },
+        tickSpacing: 5n
+      })
+    ).toEqual({ lower: true, higher: true })
   })
 })

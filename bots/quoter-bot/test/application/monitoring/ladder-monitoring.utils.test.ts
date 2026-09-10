@@ -1,10 +1,12 @@
 import { describe, expect, test } from 'vitest'
 
 import type { LadderRunResult } from '../../../src/application/ladder/ladder-quoter.service'
+import type { LadderBookSideCrossing } from '../../../src/domain/ladder/ladder'
 
 import {
   createLadderConsumptionBaselines,
-  ladderConsumptionEvents
+  ladderConsumptionEvents,
+  ladderMonitoringEvents
 } from '../../../src/application/monitoring/ladder-monitoring.utils'
 
 const marketId = `0x${'11'.repeat(32)}` as const
@@ -54,5 +56,70 @@ describe('ladderConsumptionEvents baselines', () => {
     }
 
     expect(baselines.groups.size).toBeLessThanOrEqual(501)
+  })
+})
+
+const crossingResult = (
+  before: Record<'lower' | 'higher', LadderBookSideCrossing>,
+  after: Record<'lower' | 'higher', LadderBookSideCrossing>
+): LadderRunResult =>
+  ({
+    marketId,
+    status: 'observed',
+    action: 'rest',
+    verbose: {
+      config: { marketId },
+      currentState: { status: 'observed', market: { bookCrossing: before } },
+      stateAfterCheck: { status: 'observed', market: { bookCrossing: after } }
+    }
+  }) as unknown as LadderRunResult
+
+const uncrossed: Record<'lower' | 'higher', LadderBookSideCrossing> = {
+  lower: { crossed: false, clearable: true },
+  higher: { crossed: false, clearable: true }
+}
+
+describe('guardrail.book-crossed', () => {
+  test('reports the pre-decision cross a completed replacement already cleared', () => {
+    const events = ladderMonitoringEvents([
+      crossingResult(
+        { lower: { crossed: true, clearable: true }, higher: uncrossed.higher },
+        uncrossed
+      )
+    ])
+
+    expect(events.filter(event => event.event === 'guardrail.book-crossed')).toEqual([
+      {
+        event: 'guardrail.book-crossed',
+        workflow: 'ladder',
+        marketId,
+        side: 'lower',
+        clearable: true,
+        suppressed: false
+      }
+    ])
+  })
+
+  test('reports every crossed side and its feasibility separately', () => {
+    const events = ladderMonitoringEvents([
+      crossingResult(
+        {
+          lower: { crossed: true, clearable: false },
+          higher: { crossed: true, clearable: true }
+        },
+        uncrossed
+      )
+    ])
+
+    expect(events.filter(event => event.event === 'guardrail.book-crossed')).toEqual([
+      expect.objectContaining({ side: 'lower', clearable: false }),
+      expect.objectContaining({ side: 'higher', clearable: true })
+    ])
+  })
+
+  test('stays silent when no side is crossed', () => {
+    const events = ladderMonitoringEvents([crossingResult(uncrossed, uncrossed)])
+
+    expect(events.some(event => event.event === 'guardrail.book-crossed')).toBe(false)
   })
 })

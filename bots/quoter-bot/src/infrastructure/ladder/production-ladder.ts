@@ -52,8 +52,10 @@ import { createMakerAccount } from '../make/maker-account.utils'
 import { maturityReadsByMarket } from '../maturity-read.utils'
 import { createBlueReferenceReader } from '../reference/blue-reference-reader.utils'
 import { mapSelectedMarketItems } from '../selected-market-items.utils'
+import { rateTickWindow } from '../tick-window.utils'
 import {
   activeOwnedLadderGroupIds,
+  activeOwnedLadderGroupIdsBySide,
   ownedLadderGroupConsumption,
   reconstructOwnedLadderPublication
 } from './ladder-active-publication.utils'
@@ -61,7 +63,11 @@ import { LadderAdapterError } from './ladder-adapter.error'
 import { readLadderBookOffers } from './ladder-book.utils'
 import { calculateLadderCapacities } from './ladder-capacity.utils'
 import { ladderCashReservations } from './ladder-cash-reservation.utils'
-import { opposingBookObservationId, retainedOpposingBookTicks } from './ladder-cross-book.utils'
+import {
+  bookCrossesRestingLadder,
+  clearableOpposingBook,
+  retainedOpposingBookTicks
+} from './ladder-cross-book.utils'
 import { createLadderGroupOwnership } from './ladder-group-ownership.utils'
 import { MidnightLadderMakeService, type LadderOfferTransport } from './ladder-make.service'
 import { buildLadderTree } from './ladder-offer.utils'
@@ -446,14 +452,42 @@ export const createProductionLadderAdapters = (
         now: block.timestamp
       })
 
+      const activeLadderGroupIds = new Set(
+        activeOwnedLadderGroupIds(publications, groups, marketId)
+      )
       const opposingBookTicks = retainedOpposingBookTicks({
         marketId,
-        replacedGroupIds: new Set(activeOwnedLadderGroupIds(publications, groups, marketId)),
+        replacedGroupIds: activeLadderGroupIds,
         book: markOwnBootstrapBuys(
           wholeBook,
           durableBootstrapGroupIds(bootstrapGroupIds, persistedBootstrapOffers)
         )
       })
+      const crossed = bookCrossesRestingLadder({
+        marketId,
+        maker,
+        book: wholeBook,
+        activeLadderGroupIds: activeOwnedLadderGroupIdsBySide(
+          publications,
+          marketId,
+          activeLadderGroupIds
+        )
+      })
+      const tickSpacing = BigInt(marketData.tickSpacing)
+      const timeToMaturity = marketData.params.maturity - block.timestamp
+      const clearable =
+        timeToMaturity <= 0n
+          ? undefined
+          : clearableOpposingBook({
+              ticks: opposingBookTicks,
+              window: rateTickWindow({
+                minimumRateBps: selectedConfig.minimumRateBps,
+                maximumRateBps: selectedConfig.maximumRateBps,
+                timeToMaturity,
+                tickSpacing
+              }),
+              tickSpacing
+            })
 
       return {
         ...calculateProductionLadderCapacities({
@@ -467,7 +501,14 @@ export const createProductionLadderAdapters = (
           reservations
         }),
         ...(bootstrapBuyRateBps === undefined ? {} : { bootstrapBuyRateBps }),
-        bookObservationId: opposingBookObservationId(opposingBookTicks),
+        ...(clearable === undefined
+          ? {}
+          : {
+              bookCrossing: {
+                lower: { crossed: crossed.lower, clearable: clearable.lower },
+                higher: { crossed: crossed.higher, clearable: clearable.higher }
+              }
+            }),
         maturityTimestamp: marketData.params.maturity,
         observedTimestamp: block.timestamp
       }
@@ -649,7 +690,7 @@ export const createProductionLadderAdapters = (
       chainId: config.chainId,
       apiUrl: `${config.morphoApiBaseUrl}/v0/midnight`
     })
-    return { ...prepared, bookObservationId: opposingBookObservationId(opposingBookTicks) }
+    return prepared
   }
 
   const validateReconcile: ProductionLadderAdapters['validateReconcile'] = async parameters => {
@@ -724,7 +765,7 @@ export const createProductionLadderAdapters = (
     listBookOffers: async marketId => (await completeBookOffers(marketId)).book,
     preparePublication: async (quote, observed) => {
       const prepared = await prepareUnsignedPublication(quote, observed)
-      const { bookClearedRungs, bookObservationId } = prepared
+      const { bookClearedRungs } = prepared
       const ratifierType = configuredRatifierType(config.setup.ratifier, config.chainId)
       const ratification = await prepareLadderRatification({
         type: ratifierType,
@@ -753,7 +794,6 @@ export const createProductionLadderAdapters = (
         groupIds,
         groups: prepared.groups,
         bookClearedRungs,
-        bookObservationId,
         prospective: ownedLadderProspectiveOffers(prepared.bookOffers),
         publish: onTransactionSubmitted =>
           publishLadderPublication({

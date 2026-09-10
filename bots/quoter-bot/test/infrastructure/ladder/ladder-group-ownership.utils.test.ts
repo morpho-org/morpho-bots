@@ -163,31 +163,45 @@ describe('createLadderGroupOwnership', () => {
     }
   })
 
-  test('round-trips both observation identities through durable state', async () => {
+  test('loads a persisted publication carrying a retired identity key', async () => {
     const stateDirectory = await mkdtemp(join(tmpdir(), 'ladder-ownership-'))
     try {
-      const observed: LadderQuoteSet = {
-        ...quote,
-        referenceObservationId: 'blue:19000000',
-        bookObservationId: '4172:4200'
-      }
-      const write = createLadderGroupOwnership(
-        { chainId: base.id, maker, strategyMarketIds: [marketId] },
-        { stateDirectory }
+      const strategy = keccak256(
+        stringToHex(JSON.stringify({ strategy: 'ladder', chainId: base.id, maker }))
       )
-      await write.reserve({
-        marketId,
-        quote: observed,
-        groups: [{ groupId: lowerGroup, side: 'lower', rungIndexes: [0] }]
-      })
+      await writeFile(
+        join(stateDirectory, `${strategy}.json`),
+        JSON.stringify({
+          version: 1,
+          strategy,
+          publications: [
+            {
+              marketId,
+              status: 'confirmed',
+              quote: {
+                marketId,
+                centerRateBps: '500',
+                referenceObservationId: 'blue:19000000',
+                bookObservationId: '4172:4200',
+                groupMode: 'shared-rung',
+                lower: [{ index: 0, rateBps: '450', assets: '10' }],
+                higher: [{ index: 0, rateBps: '550', assets: '20' }]
+              },
+              groups: [{ groupId: lowerGroup, side: 'lower', rungIndexes: [0] }]
+            }
+          ]
+        }),
+        { mode: 0o600 }
+      )
 
-      // A dropped identity reads back as undefined and never equals a freshly derived one, so the
-      // ladder would cancel and republish itself every cycle.
-      const read = createLadderGroupOwnership(
+      const ownership = createLadderGroupOwnership(
         { chainId: base.id, maker, strategyMarketIds: [marketId] },
         { stateDirectory }
       )
-      expect((await read.read())[0]?.quote).toEqual(observed)
+      expect((await ownership.read())[0]?.quote).toEqual({
+        ...quote,
+        referenceObservationId: 'blue:19000000'
+      })
     } finally {
       await rm(stateDirectory, { recursive: true, force: true })
     }

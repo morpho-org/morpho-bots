@@ -44,7 +44,6 @@ const harness = () => {
       groupIds: [newGroup],
       groups: [{ groupId: newGroup, side: 'lower', rungIndexes: [0] }],
       bookClearedRungs: { lower: 0, higher: 0 },
-      bookObservationId: ':',
       prospective: [
         { marketId, buy: true, tick: 10n },
         { marketId, buy: false, tick: 20n }
@@ -104,7 +103,6 @@ describe('MidnightLadderMakeService', () => {
         groupIds: [newGroup],
         groups: [{ groupId: newGroup, side: 'lower', rungIndexes: [0] }],
         bookClearedRungs: { lower: 0, higher: 0 },
-        bookObservationId: ':',
         prospective: [{ marketId, buy: false, tick: 20n }],
         publish: async () => undefined
       }
@@ -164,7 +162,6 @@ describe('MidnightLadderMakeService', () => {
       groupIds: [newGroup],
       groups: [{ groupId: newGroup, side: 'lower', rungIndexes: [0] }],
       bookClearedRungs: { lower: 0, higher: 0 },
-      bookObservationId: ':',
       prospective: [{ marketId, buy: true, tick: 10n }],
       publish: async observer => {
         await observer?.({ operation: 'ratify', txHash: ratificationHash })
@@ -258,7 +255,6 @@ describe('MidnightLadderMakeService', () => {
       groupIds: [newGroup],
       groups: [{ groupId: newGroup, side: 'lower', rungIndexes: [0] }],
       bookClearedRungs: { lower: 0, higher: 0 },
-      bookObservationId: ':',
       prospective: [],
       publish: async () => {
         throw new LadderAdapterError('transaction-reverted')
@@ -304,7 +300,6 @@ describe('MidnightLadderMakeService', () => {
       groupIds: [newGroup],
       groups: [{ groupId: newGroup, side: 'lower', rungIndexes: [0] }],
       bookClearedRungs: { lower: 0, higher: 0 },
-      bookObservationId: ':',
       prospective: [],
       publish: async () => {
         throw new LadderAdapterError('mempool-validation-after-ratification')
@@ -338,7 +333,6 @@ describe('MidnightLadderMakeService', () => {
       groupIds: [newGroup],
       groups: [{ groupId: newGroup, side: 'lower', rungIndexes: [0] }],
       bookClearedRungs: { lower: 0, higher: 0 },
-      bookObservationId: ':',
       prospective: [{ marketId, buy: true, tick: 10n }],
       publish: async () => {
         subject.events.push('publish')
@@ -445,7 +439,6 @@ describe('MidnightLadderMakeService', () => {
       groupIds: [newGroup],
       groups: [{ groupId: newGroup, side: 'lower', rungIndexes: [0] }],
       bookClearedRungs: { lower: 0, higher: 0 },
-      bookObservationId: ':',
       prospective: [{ marketId, maker, buy: false, tick: 20n }],
       publish: async () => {
         subject.events.push('publish')
@@ -470,7 +463,6 @@ describe('MidnightLadderMakeService', () => {
       groupIds: [newGroup],
       groups: [{ groupId: newGroup, side: 'lower', rungIndexes: [0] }],
       bookClearedRungs: { lower: 0, higher: 0 },
-      bookObservationId: ':',
       prospective: [{ marketId, maker, buy: false, tick: 20n }],
       publish: async () => {
         subject.events.push('publish')

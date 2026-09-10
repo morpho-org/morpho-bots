@@ -87,6 +87,19 @@ export type MonitoringEvent =
       clearedRungs: number
     }
   | {
+      /**
+       * A third party currently crosses this strategy's resting ladder on `side`; `clearable` says
+       * the configured rate window could still clear it, `suppressed` that the replacement cooldown
+       * held.
+       */
+      event: 'guardrail.book-crossed'
+      workflow: MonitoringWorkflow
+      marketId: Hex
+      side: MonitoringSide
+      clearable: boolean
+      suppressed: boolean
+    }
+  | {
       event: 'guardrail.exposure-capped'
       workflow: MonitoringWorkflow
       marketId: Hex
@@ -184,6 +197,7 @@ const MONITORING_EVENT_NAMES = [
   'guardrail.rate-clamped',
   'guardrail.cross-book-cleared',
   'guardrail.book-cleared',
+  'guardrail.book-crossed',
   'guardrail.exposure-capped',
   'guardrail.rungs-truncated',
   'guardrail.spread-rejected',

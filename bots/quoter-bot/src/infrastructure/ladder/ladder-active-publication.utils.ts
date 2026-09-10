@@ -134,6 +134,27 @@ export const activeOwnedLadderGroupIds = (
 }
 
 /**
+ * Splits owned ladder groups that remain active by the rate side each was published on.
+ * @param publications - Durable reserved and confirmed ladder publication intents.
+ * @param marketId - Strategy market whose publications are split.
+ * @param activeGroupIds - Group IDs {@link activeOwnedLadderGroupIds} still reports as active.
+ * @returns The active group IDs of that market per rate side.
+ */
+export const activeOwnedLadderGroupIdsBySide = (
+  publications: readonly OwnedLadderPublication[],
+  marketId: Hex,
+  activeGroupIds: ReadonlySet<Hex>
+) => {
+  const groups = publications
+    .filter(publication => publication.marketId === marketId)
+    .flatMap(publication => publication.groups)
+    .filter(group => activeGroupIds.has(group.groupId))
+  const side = (name: 'lower' | 'higher') =>
+    new Set(groups.filter(group => group.side === name).map(group => group.groupId))
+  return { lower: side('lower'), higher: side('higher') }
+}
+
+/**
  * Projects only ladder rungs whose persisted groups are still absent from the provider book.
  * @param publications - Durable reserved and confirmed ladder publication intents.
  * @param groups - Current maker groups returned by the eventually consistent API.

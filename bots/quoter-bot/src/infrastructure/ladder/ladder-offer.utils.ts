@@ -11,8 +11,11 @@ import type { LadderGroupReference } from './ladder-group-ownership.utils'
 import { offerMaxAssetsByRung } from '../../domain/ladder/ladder'
 import {
   alignedRateTick,
+  alignTickDown,
+  alignTickUp,
   clampTickToWindow,
   isEmptyTickWindow,
+  LOWEST_TICK,
   rateTickWindow
 } from '../tick-window.utils'
 import { LadderAdapterError } from './ladder-adapter.error'
@@ -51,12 +54,6 @@ type MergedTickRungs = {
   rungs: LadderRung[]
   maxAssets: bigint
 }
-
-/** Lowest tick the protocol encodes; `TickLib.priceToTick` never returns a negative tick. */
-const LOWEST_TICK = 0n
-
-const alignTickUp = (tick: bigint, spacing: bigint) => ((tick + spacing - 1n) / spacing) * spacing
-const alignTickDown = (tick: bigint, spacing: bigint) => (tick / spacing) * spacing
 
 const sellTickFloor = (
   opposingBuyTick: bigint | undefined,

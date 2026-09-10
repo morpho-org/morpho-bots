@@ -3,6 +3,8 @@ import { describe, expect, test } from 'vitest'
 
 import {
   alignedRateTick,
+  alignTickDown,
+  alignTickUp,
   clampTickToWindow,
   isEmptyTickWindow,
   rateTickWindow
@@ -59,5 +61,22 @@ describe('tick window', () => {
     expect(clampTickToWindow(4_100n, window)).toBe(3_993n)
     expect(clampTickToWindow(3_950n, window)).toBe(3_950n)
     expect(clampTickToWindow(3_950n, {})).toBe(3_950n)
+  })
+})
+
+describe('tick alignment', () => {
+  test('rounds onto the spacing away from and toward zero', () => {
+    expect(alignTickUp(4_001n, 5n)).toBe(4_005n)
+    expect(alignTickDown(4_001n, 5n)).toBe(4_000n)
+  })
+
+  test('leaves an already aligned tick untouched', () => {
+    expect(alignTickUp(4_000n, 5n)).toBe(4_000n)
+    expect(alignTickDown(4_000n, 5n)).toBe(4_000n)
+  })
+
+  test('is the identity at unit spacing', () => {
+    expect(alignTickUp(4_001n, 1n)).toBe(4_001n)
+    expect(alignTickDown(4_001n, 1n)).toBe(4_001n)
   })
 })

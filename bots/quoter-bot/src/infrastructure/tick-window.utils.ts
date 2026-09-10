@@ -14,6 +14,26 @@ export type TickWindow = {
   highestTick?: bigint
 }
 
+/** Lowest tick the protocol encodes; `TickLib.priceToTick` never returns a negative tick. */
+export const LOWEST_TICK = 0n
+
+/**
+ * Rounds a tick up onto the market's tick spacing.
+ * @param tick - Candidate protocol tick.
+ * @param spacing - Market tick spacing; must be positive.
+ * @returns The lowest aligned tick at or above `tick`.
+ */
+export const alignTickUp = (tick: bigint, spacing: bigint) =>
+  ((tick + spacing - 1n) / spacing) * spacing
+
+/**
+ * Rounds a tick down onto the market's tick spacing.
+ * @param tick - Candidate protocol tick.
+ * @param spacing - Market tick spacing; must be positive.
+ * @returns The highest aligned tick at or below `tick`.
+ */
+export const alignTickDown = (tick: bigint, spacing: bigint) => (tick / spacing) * spacing
+
 /**
  * Converts an annual rate into the lowest spacing-aligned tick whose price covers the rate.
  * @param rateBps - Simple annual rate in integer basis points.

@@ -47,6 +47,12 @@ export type LadderConfig = {
 }
 
 /**
+ * Whether a third party crosses this strategy's resting ladder on one side, and whether the
+ * configured rate window can still clear it.
+ */
+export type LadderBookSideCrossing = { crossed: boolean; clearable: boolean }
+
+/**
  * Fresh inventory by rate side plus exposure-increasing lend capacity for one ladder market.
  * @remarks Lower-rate capacity is accrued credit for reduce-only sells. Higher-rate capacity is
  * available loan-token balance and allowance for lend buys; target and total capacities cap only
@@ -54,10 +60,7 @@ export type LadderConfig = {
  * bootstrap-buy rate; sells quote at least {@link CROSS_BOOK_CLEARANCE_BPS} below it so the ladder
  * cannot cross the own bootstrap offer.
  *
- * `bookObservationId` identifies the best opposing offers resting on the market book. It is opaque
- * here and never shapes a rate: the clearance against those offers is exact and belongs to tick
- * space, so an annualized rate would be both lossy and a function of time to maturity. Carrying the
- * identity instead puts the book into active-versus-desired reconciliation without either flaw.
+ * `bookCrossing` is observed fresh every cycle and compared against nothing; generation ignores it.
  *
  * The trailing fields are observation-only accounting primitives. Generation ignores them entirely;
  * they exist because the capacities above are saturating minima from which no position value can be
@@ -70,7 +73,7 @@ export type LadderMarketState = {
   targetMarketCapacityAssets?: bigint
   maximumTotalCapacityAssets?: bigint
   bootstrapBuyRateBps?: bigint
-  bookObservationId?: string
+  bookCrossing?: { lower: LadderBookSideCrossing; higher: LadderBookSideCrossing }
   cashBalanceAssets?: bigint
   creditAssets?: bigint
   otherMarketCreditAssets?: bigint
@@ -92,8 +95,6 @@ export type LadderQuoteSet = {
   marketId: Hex
   centerRateBps: bigint
   referenceObservationId?: string
-  /** Identity of the opposing book the publication was cleared against; see `LadderMarketState`. */
-  bookObservationId?: string
   groupMode: LadderConfig['groupMode']
   lower: readonly LadderRung[]
   higher: readonly LadderRung[]

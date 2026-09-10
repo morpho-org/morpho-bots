@@ -394,7 +394,6 @@ describe('publishLadderPublication', () => {
           groupIds: [groupId],
           groups: [{ groupId, side: 'lower', rungIndexes: [0] }],
           bookClearedRungs: { lower: 0, higher: 0 },
-          bookObservationId: ':',
           prospective: [],
           publish: () =>
             publishLadderPublication({
@@ -443,7 +442,6 @@ describe('publishLadderPublication', () => {
           groupIds: [groupId],
           groups: [{ groupId, side: 'lower', rungIndexes: [0] }],
           bookClearedRungs: { lower: 0, higher: 0 },
-          bookObservationId: ':',
           prospective: [],
           publish: () =>
             publishLadderPublication({

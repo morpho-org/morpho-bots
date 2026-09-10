@@ -568,6 +568,7 @@ no field is human-scaled — resolve decimals downstream from the `loanAsset` ad
 | `guardrail.rate-clamped`       | A cycle clamped rates to a bound (per side, count > 0)                                                    | `workflow`, `marketId`, `side?`, `clampedRungs`, `bound`, `minimumRateBps`, `maximumRateBps`                                                                                                                                                                           |
 | `guardrail.cross-book-cleared` | Own bootstrap-buy clearance repriced rungs during generation (per side, count > 0)                        | `workflow`, `marketId`, `side`, `clearedRungs`                                                                                                                                                                                                                         |
 | `guardrail.book-cleared`       | The opposing market book repriced rungs at publication (per side, count > 0)                              | `workflow`, `marketId`, `side`, `clearedRungs`                                                                                                                                                                                                                         |
+| `guardrail.book-crossed`       | A third party crosses the resting ladder on that side (per side, verbose cycles)                          | `workflow`, `marketId`, `side`, `clearable`, `suppressed`                                                                                                                                                                                                              |
 | `guardrail.exposure-capped`    | A bootstrap offer was reduced below its request                                                           | `workflow`, `marketId`, `requestedAssets`, `cappedAssets`, `cap`                                                                                                                                                                                                       |
 | `guardrail.rungs-truncated`    | Funded rungs are fewer than configured (per side)                                                         | `marketId`, `side`, `configuredRungs`, `fundedRungs`                                                                                                                                                                                                                   |
 | `guardrail.spread-rejected`    | The internal `adapterOperation` is `negative-spread` (not shipped)                                        | `marketId`                                                                                                                                                                                                                                                             |
@@ -583,7 +584,8 @@ no field is human-scaled — resolve decimals downstream from the `loanAsset` ad
 
 `txHash` and `groupId` are unbounded trace-only correlation fields: use them to join records, never
 as grouping dimensions. The safe dimensions are `workflow`, `marketId`, `side`, `status`, `stage`,
-`action`, `reason`, `check`, `bound`, `cap`, `operation`, `state`, and `referenceMode`.
+`action`, `reason`, `check`, `bound`, `cap`, `operation`, `state`, `referenceMode`, and
+`guardrail.book-crossed`'s `clearable` and `suppressed`.
 Guardrail records are aggregated per side per cycle and emitted only when the count is non-zero,
 because a side can hold up to 512 rungs and regenerate every second. Error text never ships — only
 allowlisted `errorName` classifications.
@@ -858,15 +860,13 @@ tick can clear it, and the cycle still fails on the crossed-book guard rather th
 the configured rates. Own bootstrap buys keep their own clearance and their deliberate tie at the
 bound.
 
-The clearance itself is exact and lives in tick space, so it never appears as a rate. What each cycle
-carries instead is an identity for the best opposing offers, alongside the reference-rate
-observation, and the `rest` / `resize` / `recenter` decision compares it. A book that starts
-constraining the ladder, stops constraining it, or moves the constraining offer by a single tick
-reconciles; an unchanged book rests. Annualizing those offers instead would be both lossy — two ticks
-a strict clearance apart can round to the same basis point, hiding a move that leaves the live ladder
-crossed — and a function of time to maturity, so an untouched book would re-annualize into a fresh
-quote and republish the ladder every cycle. `guardrail.book-cleared` reports how many rungs the book
-repriced, separately from the own bootstrap-buy clearance on `guardrail.cross-book-cleared`.
+The clearance itself is exact and lives in tick space, so it never appears as a rate, and the
+`rest` / `resize` / `recenter` decision still reconciles against the reference rate alone. Every
+cycle additionally reports, per side, whether a third party currently crosses the ladder resting on
+the book and whether the configured rate window could still clear it (`guardrail.book-crossed`); the
+replacement policy that acts on it lands in a following change. `guardrail.book-cleared` reports how
+many rungs the book repriced, separately from the own bootstrap-buy clearance on
+`guardrail.cross-book-cleared`.
 
 `maturityPremium` makes the effective center a function of that market's remaining time to
 maturity, so one bot can quote every configured maturity from one term structure: further maturity

@@ -561,10 +561,7 @@ export class LadderQuoterService {
         const generated = generation.quote
         desired = {
           ...generated,
-          ...(referenceObservationId === undefined ? {} : { referenceObservationId }),
-          ...(market.bookObservationId === undefined
-            ? {}
-            : { bookObservationId: market.bookObservationId })
+          ...(referenceObservationId === undefined ? {} : { referenceObservationId })
         }
         if (!active) decision = 'publish'
         else if (sameLadderQuoteSet(active, desired)) decision = 'rest'

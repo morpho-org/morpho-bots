@@ -219,11 +219,16 @@ describe('ladder domain', () => {
     expect(diagnostics.lower.clearedRungs).toBe(1)
   })
 
-  test('leaves rung rates untouched by the observed book', () => {
+  test('leaves rung rates untouched by an observed book crossing', () => {
     const withBook = generateLadder({
       config: config(),
       referenceRateBps: 500n,
-      capacities: { bookObservationId: '4172:3900' }
+      capacities: {
+        bookCrossing: {
+          lower: { crossed: true, clearable: true },
+          higher: { crossed: false, clearable: true }
+        }
+      }
     })
     const withoutBook = generateLadder({ config: config(), referenceRateBps: 500n })
 

@@ -1,8 +1,12 @@
-import type { Hex } from 'viem'
+import type { Address, Hex } from 'viem'
 
 import { batchProspectiveBook } from '@repo/offers'
+import { isAddressEqual } from 'viem'
 
 import type { OwnedOverlapBookOffer } from '../intentional-overlap.utils'
+import type { TickWindow } from '../tick-window.utils'
+
+import { alignTickDown, alignTickUp, LOWEST_TICK } from '../tick-window.utils'
 
 /**
  * Best opposing retained ticks a prospective ladder must clear on each side.
@@ -13,6 +17,20 @@ import type { OwnedOverlapBookOffer } from '../intentional-overlap.utils'
 export type OpposingBookTicks = {
   highestBuyTick?: bigint
   lowestSellTick?: bigint
+}
+
+const highestTick = (ticks: readonly bigint[]) =>
+  ticks.length === 0
+    ? undefined
+    : ticks.reduce((highest, tick) => (tick > highest ? tick : highest))
+
+const lowestTick = (ticks: readonly bigint[]) =>
+  ticks.length === 0 ? undefined : ticks.reduce((lowest, tick) => (tick < lowest ? tick : lowest))
+
+const crosses = (buyTicks: readonly bigint[], sellTicks: readonly bigint[]) => {
+  const buy = highestTick(buyTicks)
+  const sell = lowestTick(sellTicks)
+  return buy !== undefined && sell !== undefined && buy >= sell
 }
 
 /**
@@ -36,26 +54,71 @@ export const retainedOpposingBookTicks = (parameters: {
     book: parameters.book.filter(offer => offer.overlapOwner !== 'bootstrap-buy'),
     prospective: []
   })
-  const buyTicks = retained.filter(offer => offer.buy).map(offer => offer.tick)
-  const sellTicks = retained.filter(offer => !offer.buy).map(offer => offer.tick)
+  const highestBuyTick = highestTick(retained.filter(offer => offer.buy).map(offer => offer.tick))
+  const lowestSellTick = lowestTick(retained.filter(offer => !offer.buy).map(offer => offer.tick))
   return {
-    ...(buyTicks.length === 0
-      ? {}
-      : { highestBuyTick: buyTicks.reduce((highest, tick) => (tick > highest ? tick : highest)) }),
-    ...(sellTicks.length === 0
-      ? {}
-      : { lowestSellTick: sellTicks.reduce((lowest, tick) => (tick < lowest ? tick : lowest)) })
+    ...(highestBuyTick === undefined ? {} : { highestBuyTick }),
+    ...(lowestSellTick === undefined ? {} : { lowestSellTick })
   }
 }
 
 /**
- * Identifies the opposing offers a publication was cleared against.
- * @param ticks - Best opposing ticks from {@link retainedOpposingBookTicks}.
- * @returns A token that changes if and only if either best opposing tick changes.
- * @remarks Ladder reconciliation compares this instead of an annualized rate because the clearance
- * itself is exact and tick-space. A rate would be lossy — two ticks a strict clearance apart can
- * round to one basis point, hiding a book move that leaves the live ladder crossed — and a function
- * of time to maturity, so an unchanged book would re-annualize into a fresh quote every cycle.
+ * Sides on which a third-party offer currently crosses one of this strategy's resting ladder offers.
+ * @param parameters - Selected market, configured maker, complete market book, and the strategy's
+ * active ladder group IDs per side.
+ * @returns Whether a third-party offer crosses the resting ladder on each side.
+ * @remarks An offer carrying no maker counts as own, as `hasInvalidOwnedBootstrapLadderSpread`
+ * already fails closed on one. Own offers outside the active ladder groups are on neither side: a
+ * third party crossing the bootstrap buy is bootstrap's concern, not a reason to replace the ladder.
  */
-export const opposingBookObservationId = (ticks: OpposingBookTicks) =>
-  `${ticks.highestBuyTick ?? ''}:${ticks.lowestSellTick ?? ''}`
+export const bookCrossesRestingLadder = (parameters: {
+  marketId: Hex
+  maker: Address
+  book: readonly OwnedOverlapBookOffer[]
+  activeLadderGroupIds: { lower: ReadonlySet<Hex>; higher: ReadonlySet<Hex> }
+}) => {
+  const market = parameters.book.filter(offer => offer.marketId === parameters.marketId)
+  const ticks = (offers: readonly OwnedOverlapBookOffer[], buy: boolean) =>
+    offers.filter(offer => offer.buy === buy).map(offer => offer.tick)
+  const thirdParty = market.filter(
+    offer => offer.maker !== undefined && !isAddressEqual(offer.maker, parameters.maker)
+  )
+  const ownLadder = (side: 'lower' | 'higher') =>
+    market.filter(
+      offer =>
+        offer.groupId !== undefined && parameters.activeLadderGroupIds[side].has(offer.groupId)
+    )
+  return {
+    lower: crosses(ticks(thirdParty, true), ticks(ownLadder('lower'), false)),
+    higher: crosses(ticks(ownLadder('higher'), true), ticks(thirdParty, false))
+  }
+}
+
+/**
+ * Whether the configured rate window still holds an aligned tick strictly clear of the best
+ * retained opposing offer, per side.
+ * @param parameters - Best retained opposing ticks, the configured rate window, and tick spacing.
+ * @returns Whether each side could be cleared inside the window; an empty side or an unbounded
+ * window is clearable.
+ */
+export const clearableOpposingBook = (parameters: {
+  ticks: OpposingBookTicks
+  window: TickWindow
+  tickSpacing: bigint
+}) => {
+  const { ticks, window, tickSpacing } = parameters
+  const clearedBuyTick =
+    ticks.lowestSellTick === undefined || ticks.lowestSellTick <= LOWEST_TICK
+      ? LOWEST_TICK
+      : alignTickDown(ticks.lowestSellTick - 1n, tickSpacing)
+  return {
+    lower:
+      ticks.highestBuyTick === undefined ||
+      window.highestTick === undefined ||
+      alignTickUp(ticks.highestBuyTick + 1n, tickSpacing) <= window.highestTick,
+    higher:
+      ticks.lowestSellTick === undefined ||
+      window.lowestTick === undefined ||
+      clearedBuyTick >= window.lowestTick
+  }
+}

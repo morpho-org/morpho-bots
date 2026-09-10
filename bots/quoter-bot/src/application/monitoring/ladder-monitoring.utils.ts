@@ -149,6 +149,20 @@ const verboseEvents = (
         clearedRungs
       })
     }
+    const crossing =
+      verbose.currentState.status === 'observed'
+        ? verbose.currentState.market.bookCrossing?.[side]
+        : undefined
+    if (crossing?.crossed) {
+      events.push({
+        event: 'guardrail.book-crossed',
+        workflow: 'ladder',
+        marketId,
+        side,
+        clearable: crossing.clearable,
+        suppressed: false
+      })
+    }
   }
   for (const transaction of verbose.submittedTransactions ?? []) {
     events.push({
@@ -170,9 +184,11 @@ const verboseEvents = (
  * @remarks A pure projection: it reads nothing and performs no provider calls. Everything beyond
  * `cycle.completed` and `guardrail.halted` requires `--verbose`, which shipping auto-enables.
  * `position.observed` and `book.observed` describe the post-check snapshot when that read succeeded
- * and fall back to the pre-decision read otherwise. The position record reports both the saturating
- * capacities and the balance primitives they were derived from, because the capacities alone cannot
- * be inverted into a position value. Fill records are not produced here — see
+ * and fall back to the pre-decision read otherwise. `guardrail.book-crossed` is the exception: it
+ * reads the pre-decision snapshot, because a replacement clears the cross before the after-check.
+ * The position record reports both the saturating capacities and the balance primitives they were
+ * derived from, because the capacities alone cannot be inverted into a position value. Fill records
+ * are not produced here — see
  * `ladderConsumptionEvents`, which needs the previous cycle's consumption to compute a delta.
  */
 export const ladderMonitoringEvents = (
