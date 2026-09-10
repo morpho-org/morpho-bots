@@ -11,57 +11,61 @@ import type { QuoterSignerPolicy } from '../src/policy.utils'
 
 import { IntentPolicyViolationError } from '../src/intent-policy-violation.error'
 import { assertIntentWithinPolicy } from '../src/policy-check.utils'
+import {
+  MIN_CONSUME_GROUPS_BASE_GAS,
+  MIN_CONTRACT_CALL_GAS,
+  MIN_GAS_PER_CONSUMED_GROUP,
+  MIN_SELF_CANCEL_GAS
+} from '../src/policy.utils'
+
+const twoGroupGasFloor = MIN_CONSUME_GROUPS_BASE_GAS + 2n * MIN_GAS_PER_CONSUMED_GROUP
 import { parseQuoterSignerPolicy } from '../src/policy.utils'
+import {
+  FIXTURE_MAKER as maker,
+  FIXTURE_RATIFIER as ratifier,
+  fixtureMarketEntry,
+  fixtureMarketId,
+  fixtureMaturityAfter,
+  fixturePolicyDocument
+} from './policy-fixture'
 
 const bytes32 = (byte: string) => `0x${byte.repeat(32)}` as const
 
-const maker = '0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A'
-const ratifier = '0x4444444444444444444444444444444444444444'
 const zeroAddress = '0x0000000000000000000000000000000000000000'
-const marketA = bytes32('55')
-const marketB = bytes32('56')
 
-/** Fixed middleware clock every time-window vector is phrased against. */
-const now = 1_700_000_000n
+/**
+ * Fixed middleware clock every time-window vector is phrased against — chosen so that `now +
+ * 1800` is a 15:00:00 UTC timestamp, the only maturity schedule the policy parser accepts, which
+ * lets the expiry-after-maturity vector pin a maturity inside the freshness window.
+ */
+const now = 1_700_058_600n
 
-const routineCeiling = {
-  maxFeePerGas: '3000000000',
-  maxPriorityFeePerGas: '1500000000',
-  gas: '400000'
+const defaultMaturity = fixtureMaturityAfter(now)
+const loanTokenB = '0x0000000000000000000000000000000000006001'
+const marketA = fixtureMarketId({ maturity: defaultMaturity })
+const marketB = fixtureMarketId({ maturity: defaultMaturity, loanToken: loanTokenB })
+
+const marketEntry = (marketId: `0x${string}`, overrides: Record<string, unknown> = {}) => {
+  const maturity = typeof overrides.maturity === 'string' ? overrides.maturity : defaultMaturity
+  return fixtureMarketEntry(
+    {
+      maturity,
+      loanToken: marketId === marketB ? loanTokenB : undefined
+    },
+    overrides
+  )
 }
-
-const protectedCeiling = {
-  maxFeePerGas: '30000000000',
-  maxPriorityFeePerGas: '15000000000',
-  gas: '800000'
-}
-
-const marketEntry = (marketId: `0x${string}`, overrides: Record<string, unknown> = {}) => ({
-  marketId,
-  maturity: (now + 86_400n).toString(),
-  minTick: '100',
-  maxTick: '5000',
-  maxContinuousFeeCap: '317097919',
-  maxLendExposureAssets: '20000000000',
-  ...overrides
-})
 
 const policyFor = (overrides: Record<string, unknown> = {}): QuoterSignerPolicy =>
   parseQuoterSignerPolicy(
-    JSON.stringify({
-      policyVersion: 1,
-      surface: 'quote',
-      ratifierMode: 'ecrecover',
-      chainId: 8453,
-      maker,
-      ratifier,
-      offerWindow: { freshnessCeilingSeconds: '3600', maxStartAgeSeconds: '900' },
-      markets: [marketEntry(marketA), marketEntry(marketB)],
-      maxTotalLendExposureAssets: '30000000000',
-      feeCeilings: { routine: routineCeiling, protected: protectedCeiling },
-      remediations: [{ variant: 'loan-asset-approval', feeCeiling: routineCeiling }],
-      ...overrides
-    })
+    JSON.stringify(
+      fixturePolicyDocument({
+        surface: 'quote',
+        ratifierMode: 'ecrecover',
+        markets: [marketEntry(marketA), marketEntry(marketB)],
+        ...overrides
+      })
+    )
   )
 
 const fees: IntentFees = {
@@ -161,9 +165,14 @@ describe('assertIntentWithinPolicy', () => {
       policyFor({ surface: 'routine-revoke' })
     ],
     [
-      'root un-ratification on a Setter break-glass surface',
-      revokeIntent({ type: 'unratify-root', root: bytes32('77') }),
+      'root un-ratification at an explicit nonce on a Setter break-glass surface',
+      revokeIntent({ type: 'unratify-root', root: bytes32('77'), nonce: 5 }),
       policyFor({ surface: 'break-glass-revoke', ratifierMode: 'setter' })
+    ],
+    [
+      'group consumption at an explicit nonce on the break-glass surface',
+      revokeIntent({ type: 'consume-groups', groups: [bytes32('11')], nonce: 0 }),
+      policyFor({ surface: 'break-glass-revoke' })
     ],
     [
       'a self-cancel on the break-glass surface',
@@ -171,9 +180,38 @@ describe('assertIntentWithinPolicy', () => {
       policyFor({ surface: 'break-glass-revoke' })
     ],
     [
+      'a self-cancel at exactly the intrinsic gas floor',
+      revokeIntent(
+        { type: 'self-cancel', nonce: 7 },
+        { ...fees, gas: MIN_SELF_CANCEL_GAS.toString() }
+      ),
+      policyFor({ surface: 'break-glass-revoke' })
+    ],
+    [
       'an allowlisted remediation variant',
       remediationIntent('loan-asset-approval'),
       policyFor({ surface: 'setup-remediation' })
+    ],
+    [
+      'a remediation at exactly the single-call gas floor',
+      remediationIntent('loan-asset-approval', { ...fees, gas: MIN_CONTRACT_CALL_GAS.toString() }),
+      policyFor({ surface: 'setup-remediation' })
+    ],
+    [
+      'a root cancellation at exactly the single-call gas floor',
+      revokeIntent(
+        { type: 'cancel-root', root: bytes32('77') },
+        { ...fees, gas: MIN_CONTRACT_CALL_GAS.toString() }
+      ),
+      policyFor({ surface: 'routine-revoke' })
+    ],
+    [
+      'a consume-groups batch at its exact per-batch gas floor',
+      revokeIntent(
+        { type: 'consume-groups', groups: [bytes32('11'), bytes32('12')] },
+        { ...fees, gas: twoGroupGasFloor.toString() }
+      ),
+      policyFor({ surface: 'routine-revoke' })
     ]
   ])('accepts %s', (_description, intent, policy) => {
     expect(() => assertIntentWithinPolicy(intent, policy, now)).not.toThrow()
@@ -332,15 +370,27 @@ describe('assertIntentWithinPolicy', () => {
     ],
     [
       'an expiry one second past the market maturity',
-      quoteIntent([buyOffer({ expiry: (now + 3001n).toString() })]),
+      quoteIntent([
+        buyOffer({
+          marketId: fixtureMarketId({ maturity: (now + 1800n).toString() }),
+          expiry: (now + 1801n).toString()
+        })
+      ]),
       policyFor({
         markets: [
-          marketEntry(marketA, { maturity: (now + 3000n).toString() }),
+          marketEntry(marketA, { maturity: (now + 1800n).toString() }),
           marketEntry(marketB)
         ]
       }),
       'expiry-after-maturity',
       'offers[0].expiry'
+    ],
+    [
+      'a tick inside the price bounds but off the pinned tick spacing',
+      quoteIntent([buyOffer({ tick: '121' })]),
+      policyFor(),
+      'tick-alignment',
+      'offers[0].tick'
     ],
     [
       'one group spanning two markets',
@@ -398,6 +448,50 @@ describe('assertIntentWithinPolicy', () => {
       'fees.maxFeePerGas'
     ],
     [
+      'a consume-groups batch one wei of gas below its per-batch floor',
+      revokeIntent(
+        { type: 'consume-groups', groups: [bytes32('11'), bytes32('12')] },
+        { ...fees, gas: (twoGroupGasFloor - 1n).toString() }
+      ),
+      policyFor({ surface: 'routine-revoke' }),
+      'gas-floor',
+      'fees.gas'
+    ],
+    [
+      'a root cancellation below the single-call gas floor',
+      revokeIntent({ type: 'cancel-root', root: bytes32('77') }, { ...fees, gas: '49999' }),
+      policyFor({ surface: 'routine-revoke' }),
+      'gas-floor',
+      'fees.gas'
+    ],
+    [
+      'a root un-ratification below the single-call gas floor',
+      revokeIntent({ type: 'unratify-root', root: bytes32('77') }, { ...fees, gas: '49999' }),
+      policyFor({ surface: 'routine-revoke', ratifierMode: 'setter' }),
+      'gas-floor',
+      'fees.gas'
+    ],
+    [
+      'a ratification below the single-call gas floor',
+      ratifyIntent([buyOffer()], { ...fees, gas: '49999' }),
+      policyFor({ surface: 'ratify', ratifierMode: 'setter' }),
+      'gas-floor',
+      'fees.gas'
+    ],
+    [
+      'a consume-groups batch too large for its in-ceiling gas limit',
+      revokeIntent(
+        {
+          type: 'consume-groups',
+          groups: [bytes32('11'), bytes32('12'), bytes32('13'), bytes32('14')]
+        },
+        { ...fees, gas: '90000' }
+      ),
+      policyFor({ surface: 'routine-revoke' }),
+      'gas-floor',
+      'fees.gas'
+    ],
+    [
       'an Ecrecover root cancellation on a Setter deployment',
       revokeIntent({ type: 'cancel-root', root: bytes32('77') }),
       policyFor({ surface: 'routine-revoke', ratifierMode: 'setter' }),
@@ -412,6 +506,37 @@ describe('assertIntentWithinPolicy', () => {
       'operation.type'
     ],
     [
+      'an explicit placement nonce on the routine-revoke surface',
+      revokeIntent({ type: 'consume-groups', groups: [bytes32('11')], nonce: 7 }),
+      policyFor({ surface: 'routine-revoke' }),
+      'nonce-pin',
+      'operation.nonce'
+    ],
+    [
+      'a self-cancel on the routine-revoke surface',
+      revokeIntent({ type: 'self-cancel', nonce: 7 }),
+      policyFor({ surface: 'routine-revoke' }),
+      'nonce-pin',
+      'operation.nonce'
+    ],
+    [
+      'a break-glass root cancellation without an explicit placement nonce',
+      revokeIntent({ type: 'cancel-root', root: bytes32('77') }),
+      policyFor({ surface: 'break-glass-revoke' }),
+      'nonce-pin',
+      'operation.nonce'
+    ],
+    [
+      'a self-cancel below the intrinsic gas floor',
+      revokeIntent(
+        { type: 'self-cancel', nonce: 1 },
+        { ...fees, gas: (MIN_SELF_CANCEL_GAS - 1n).toString() }
+      ),
+      policyFor({ surface: 'break-glass-revoke' }),
+      'gas-floor',
+      'fees.gas'
+    ],
+    [
       'a remediation variant outside the manifest',
       remediationIntent('collateral-approval'),
       policyFor({ surface: 'setup-remediation' }),
@@ -424,6 +549,13 @@ describe('assertIntentWithinPolicy', () => {
       policyFor({ surface: 'setup-remediation' }),
       'fee-ceiling',
       'fees.maxFeePerGas'
+    ],
+    [
+      'a remediation below the single-call gas floor',
+      remediationIntent('loan-asset-approval', { ...fees, gas: '49999' }),
+      policyFor({ surface: 'setup-remediation' }),
+      'gas-floor',
+      'fees.gas'
     ]
   ])('denies %s', (_description, intent, policy, check, field) => {
     expectViolation(intent, policy, check, field)

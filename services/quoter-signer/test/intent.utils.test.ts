@@ -18,6 +18,7 @@ import {
   MAX_INTENT_MARKETS,
   MAX_INTENT_OFFERS,
   MAX_INTENT_OFFERS_PER_SIDE,
+  MAX_REVOKE_GROUPS,
   QUOTER_SIGNER_CONTRACT_VERSION,
   classifyIntentKind,
   parseQuoterSignerIntent
@@ -118,7 +119,9 @@ describe('parseQuoterSignerIntent', () => {
 
   it.each<RevokeOperation>([
     { type: 'consume-groups', groups: [bytes32('11'), bytes32('22')] },
+    { type: 'consume-groups', groups: [bytes32('11')], nonce: 4 },
     { type: 'unratify-root', root: bytes32('33') },
+    { type: 'cancel-root', root: bytes32('33'), nonce: 0 },
     { type: 'self-cancel', nonce: 0 }
   ])('accepts the %j revoke operation', operation => {
     expect(parseQuoterSignerIntent({ ...revokeIntent, operation })).toStrictEqual({
@@ -159,6 +162,26 @@ describe('parseQuoterSignerIntent', () => {
   it('rejects one same-side offer above the per-side wire cap', () => {
     const offers = Array.from({ length: MAX_INTENT_OFFERS_PER_SIDE + 1 }, () => offer())
     expectMalformed({ ...quoteIntent, offers }, 'offers', 'too-many-offers')
+  })
+
+  it('accepts exactly the consume-groups wire cap and rejects one group above it', () => {
+    const groups = (length: number) =>
+      Array.from({ length }, (_ignored, index) => bytes32((10 + (index % 90)).toString()))
+    const atCap = parseQuoterSignerIntent({
+      ...revokeIntent,
+      operation: { type: 'consume-groups', groups: groups(MAX_REVOKE_GROUPS) }
+    })
+    expect(
+      atCap.kind === 'revoke' && atCap.operation.type === 'consume-groups' && atCap.operation.groups
+    ).toHaveLength(MAX_REVOKE_GROUPS)
+    expectMalformed(
+      {
+        ...revokeIntent,
+        operation: { type: 'consume-groups', groups: groups(MAX_REVOKE_GROUPS + 1) }
+      },
+      'operation.groups',
+      'too-many-groups'
+    )
   })
 
   it.each<[string, unknown, string, MalformedIntentReason]>([
@@ -326,6 +349,18 @@ describe('parseQuoterSignerIntent', () => {
       { ...revokeIntent, operation: { type: 'self-cancel', nonce: -1 } },
       'operation.nonce',
       'out-of-range'
+    ],
+    [
+      'a missing self-cancel nonce',
+      { ...revokeIntent, operation: { type: 'self-cancel' } },
+      'operation.nonce',
+      'missing'
+    ],
+    [
+      'a non-numeric placement nonce on a root cancellation',
+      { ...revokeIntent, operation: { type: 'cancel-root', root: bytes32('77'), nonce: '4' } },
+      'operation.nonce',
+      'wrong-type'
     ],
     [
       'a fractional self-cancel nonce',

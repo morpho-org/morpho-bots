@@ -14,9 +14,9 @@ import type {
   SignedTransactionArtifact
 } from '../src/response.utils'
 
+import { IntentPolicyViolationError } from '../src/intent-policy-violation.error'
 import { MalformedIntentError } from '../src/malformed-intent.error'
 import { buildDenialResponse } from '../src/response.utils'
-import { SigningNotImplementedError } from '../src/signing-not-implemented.error'
 
 const publication: EncodedPublication = {
   to: '0x2222222222222222222222222222222222222222',
@@ -66,16 +66,19 @@ describe('quoter-signer response contract', () => {
     }
     const responses: readonly QuoterSignerResponse[] = [
       approval,
-      buildDenialResponse(new SigningNotImplementedError())
+      buildDenialResponse(new IntentPolicyViolationError('nonce-window', 'operation.nonce'))
     ]
 
     expect(
       responses.map(response => (response.approved ? response.result.kind : response.denial.name))
-    ).toStrictEqual(['revoke', 'SigningNotImplementedError'])
+    ).toStrictEqual(['revoke', 'IntentPolicyViolationError'])
   })
 
   it.each<[QuoterSignerDenial['name'], () => QuoterSignerDenial & Error]>([
-    ['SigningNotImplementedError', () => new SigningNotImplementedError()],
+    [
+      'IntentPolicyViolationError',
+      () => new IntentPolicyViolationError('remediation-state', 'remediation')
+    ],
     ['MalformedIntentError', () => new MalformedIntentError('offers[0].maxAssets', 'out-of-range')]
   ])('maps a %s cause into the versioned denial envelope', (name, cause) => {
     const error = cause()

@@ -29,6 +29,14 @@ export const MAX_INTENT_OFFERS_PER_SIDE = 40
 export const MAX_INTENT_MARKETS = 7
 
 /**
+ * Hard wire cap on groups per `consume-groups` revocation — the full two-sided wire-cap ladder's
+ * group count. A larger cleanup splits into multiple revoke intents (each at its own nonce)
+ * instead of one unboundedly large multicall whose caller-chosen gas limit could admit an
+ * include-but-revert transaction that burns the nonce while leaving every group live.
+ */
+export const MAX_REVOKE_GROUPS = 80
+
+/**
  * Canonical unsigned decimal integer string: base-10 digits with no sign, no leading zeros, and a
  * value within uint256 range (narrower where the protocol field is narrower, such as the uint128
  * offer caps). JSON cannot carry bigint, so every uint-range value on the wire — wei, assets,
@@ -102,33 +110,44 @@ export type IntentOffer = {
  * group consumption is exactly `setConsumed(group, MAX_OFFER_CAP, maker)` on the Midnight
  * singleton (batches become one policy-checked multicall), root cancellation is exactly
  * `cancelRoot(maker, root)` on the Ecrecover ratifier or `setIsRootRatified(maker, root, false)`
- * on the Setter ratifier, and a self-cancel replaces the caller's own recorded pending
- * transaction at `nonce` with an empty zero-value self-send. Callers never supply targets,
- * selectors, or calldata.
+ * on the Setter ratifier, and a self-cancel replaces the maker's own in-flight transaction at
+ * `nonce` with an empty zero-value self-send. Callers never supply targets, selectors, or
+ * calldata, and an explicit `nonce` never widens what may be signed: policy accepts one only on
+ * the operator-only break-glass surface — a routine displacement could out-bid a pending cleanup
+ * and preserve exposure — and the middleware validates it against the independently read maker
+ * nonce window (`[latest, pending]` for revocations, `[latest, pending)` for a self-cancel,
+ * which must replace an in-flight transaction), so an operator can direct a replacement but
+ * never obtain a future-nonce stockpile.
  */
 export type RevokeOperation =
   | {
       /** Consume one or more maker-owned offer groups to their cap. */
       readonly type: 'consume-groups'
-      /** Offer-group ids (bytes32) to consume; must be non-empty. */
+      /** Offer-group ids (bytes32) to consume; non-empty, at most {@link MAX_REVOKE_GROUPS}. */
       readonly groups: readonly Hex[]
+      /** Explicit placement nonce — required on break-glass, rejected on routine revocation. */
+      readonly nonce?: number
     }
   | {
       /** Cancel one Ecrecover-ratified root. */
       readonly type: 'cancel-root'
       /** Offer-tree root (bytes32) to cancel. */
       readonly root: Hex
+      /** Explicit placement nonce — required on break-glass, rejected on routine revocation. */
+      readonly nonce?: number
     }
   | {
       /** Clear one Setter root ratification (defense in depth; group consumption is authoritative). */
       readonly type: 'unratify-root'
       /** Offer-tree root (bytes32) to un-ratify. */
       readonly root: Hex
+      /** Explicit placement nonce — required on break-glass, rejected on routine revocation. */
+      readonly nonce?: number
     }
   | {
-      /** Replace the caller's own recorded pending transaction with a zero-value self-cancel. */
+      /** Replace the maker's own in-flight transaction with a zero-value self-cancel. */
       readonly type: 'self-cancel'
-      /** Account nonce of the recorded pending transaction to cancel. */
+      /** Nonce of the transaction to cancel; a required placement, so break-glass-only for now. */
       readonly nonce: number
     }
 
@@ -139,7 +158,12 @@ type IntentBase = {
   readonly chainId: number
   /** Maker address the caller believes it is signing for; must equal the deployment pin. */
   readonly maker: Address
-  /** Caller-chosen idempotency key: retries with the same key return the stored artifacts. */
+  /**
+   * Caller-chosen idempotency key, reserved for the stored-artifact retry semantics of the
+   * reservation-ledger increment. Inert until then: a replayed key re-evaluates the intent and,
+   * for transaction kinds, signs again at its then-current placement — so callers must invoke
+   * synchronously and never blind-retry a timed-out signing invocation.
+   */
   readonly idempotencyKey: string
 }
 
@@ -378,24 +402,37 @@ const offersValue = (value: unknown, field: string): readonly IntentOffer[] => {
   return offers
 }
 
+// Surface rules for an explicit placement nonce (required on break-glass, forbidden on routine)
+// are policy checks: the parser owns only the shape, so the field stays optional on the wire.
+const placementNonceValue = (value: unknown, field: string): { readonly nonce?: number } =>
+  value === undefined ? {} : { nonce: nonNegativeIntegerValue(value, field) }
+
 const revokeOperationValue = (value: unknown, field: string): RevokeOperation => {
   if (value === undefined) throw new MalformedIntentError(field, 'missing')
   const record = plainObject(value, field)
   const type = stringValue(record.type, `${field}.type`)
   if (type === 'consume-groups') {
-    allowKeys(record, ['type', 'groups'], field)
+    allowKeys(record, ['type', 'groups', 'nonce'], field)
     const groups = record.groups
     if (groups === undefined) throw new MalformedIntentError(`${field}.groups`, 'missing')
     if (!Array.isArray(groups)) throw new MalformedIntentError(`${field}.groups`, 'wrong-type')
     if (groups.length === 0) throw new MalformedIntentError(`${field}.groups`, 'empty')
+    if (groups.length > MAX_REVOKE_GROUPS) {
+      throw new MalformedIntentError(`${field}.groups`, 'too-many-groups')
+    }
     return {
       type,
-      groups: groups.map((group, index) => bytes32Value(group, `${field}.groups[${index}]`))
+      groups: groups.map((group, index) => bytes32Value(group, `${field}.groups[${index}]`)),
+      ...placementNonceValue(record.nonce, `${field}.nonce`)
     }
   }
   if (type === 'cancel-root' || type === 'unratify-root') {
-    allowKeys(record, ['type', 'root'], field)
-    return { type, root: bytes32Value(record.root, `${field}.root`) }
+    allowKeys(record, ['type', 'root', 'nonce'], field)
+    return {
+      type,
+      root: bytes32Value(record.root, `${field}.root`),
+      ...placementNonceValue(record.nonce, `${field}.nonce`)
+    }
   }
   if (type === 'self-cancel') {
     allowKeys(record, ['type', 'nonce'], field)

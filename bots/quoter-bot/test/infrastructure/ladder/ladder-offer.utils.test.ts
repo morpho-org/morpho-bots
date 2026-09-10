@@ -5,9 +5,12 @@ import { TickLib } from '@morpho-org/midnight-sdk'
 import { describe, expect, test } from 'vitest'
 
 import type { LadderQuoteSet } from '../../../src/domain/ladder/ladder'
+import type { OpposingBookTicks } from '../../../src/infrastructure/ladder/ladder-cross-book.utils'
 
 import { offerMaxAssetsByRung } from '../../../src/domain/ladder/ladder'
+import { retainedOpposingBookTicks } from '../../../src/infrastructure/ladder/ladder-cross-book.utils'
 import { buildLadderTree } from '../../../src/infrastructure/ladder/ladder-offer.utils'
+import { assertLadderProspectiveSpread } from '../../../src/infrastructure/ladder/ladder-spread.utils'
 
 const maker: Address = '0x1111111111111111111111111111111111111111'
 const midnight: Address = '0x2222222222222222222222222222222222222222'
@@ -16,6 +19,7 @@ const ratifier: Address = '0x4444444444444444444444444444444444444444'
 const collateral: Address = '0x5555555555555555555555555555555555555555'
 const oracle: Address = '0x6666666666666666666666666666666666666666'
 const marketId: Hex = `0x${'77'.repeat(32)}`
+const groupId = (byte: string): Hex => `0x${byte.repeat(32)}`
 const now = 1_000n
 const market = {
   params: {
@@ -227,6 +231,218 @@ describe('buildLadderTree', () => {
 
     const sells = result.bookOffers.filter(offer => !offer.buy)
     expect(sells).toEqual([{ marketId, buy: false, tick: 3_993n }])
+  })
+
+  test('reprices sells just clear of the best resting bid', () => {
+    const result = buildLadderTree({
+      quote: quote('shared-rung'),
+      market,
+      maker,
+      ratifier,
+      now,
+      minimumRateBps: 1n,
+      maximumRateBps: 10_000n,
+      opposingBookTicks: { highestBuyTick: 4_000n }
+    })
+
+    expect(result.bookOffers.filter(offer => !offer.buy).map(offer => offer.tick)).toEqual([
+      4_001n,
+      4_018n
+    ])
+  })
+
+  test('reprices buys just clear of the best resting ask', () => {
+    const result = buildLadderTree({
+      quote: quote('shared-rung'),
+      market,
+      maker,
+      ratifier,
+      now,
+      minimumRateBps: 1n,
+      maximumRateBps: 10_000n,
+      opposingBookTicks: { lowestSellTick: 3_945n }
+    })
+
+    expect(result.bookOffers.filter(offer => offer.buy).map(offer => offer.tick)).toEqual([
+      3_944n,
+      3_937n
+    ])
+  })
+
+  test('counts only the rungs the opposing book repriced', () => {
+    const counts = (parameters: Partial<Parameters<typeof buildLadderTree>[0]>) =>
+      buildLadderTree({
+        quote: quote('shared-rung'),
+        market,
+        maker,
+        ratifier,
+        now,
+        minimumRateBps: 1n,
+        maximumRateBps: 10_000n,
+        ...parameters
+      }).bookClearedRungs
+
+    expect(counts({})).toEqual({ lower: 0, higher: 0 })
+    expect(counts({ opposingBookTicks: { highestBuyTick: 4_000n } })).toEqual({
+      lower: 1,
+      higher: 0
+    })
+    expect(counts({ opposingBookTicks: { lowestSellTick: 3_945n } })).toEqual({
+      lower: 0,
+      higher: 1
+    })
+    expect(counts({ ownBootstrapBuyTickCeiling: 4_018n })).toEqual({ lower: 0, higher: 0 })
+  })
+
+  test('attributes a rung to the book only when the book moved it further', () => {
+    const clearedByBook = (ownBootstrapBuyTickCeiling: bigint) =>
+      buildLadderTree({
+        quote: quote('shared-rung'),
+        market,
+        maker,
+        ratifier,
+        now,
+        minimumRateBps: 1n,
+        maximumRateBps: 10_000n,
+        ownBootstrapBuyTickCeiling,
+        opposingBookTicks: { highestBuyTick: 4_000n }
+      }).bookClearedRungs.lower
+
+    // The bootstrap floor already lifts every sell past the book floor, so the book moved nothing.
+    expect(clearedByBook(4_018n)).toBe(0)
+    expect(clearedByBook(3_900n)).toBe(1)
+  })
+
+  test('keeps the own bootstrap tie when the book clearance is looser', () => {
+    const result = buildLadderTree({
+      quote: quote('shared-rung'),
+      market,
+      maker,
+      ratifier,
+      now,
+      minimumRateBps: 450n,
+      maximumRateBps: 600n,
+      ownBootstrapBuyTickCeiling: 3_993n,
+      opposingBookTicks: { highestBuyTick: 3_950n }
+    })
+
+    expect(result.bookOffers.filter(offer => !offer.buy)).toEqual([
+      { marketId, buy: false, tick: 3_993n }
+    ])
+  })
+
+  test('saturates the book clearance at the hard range rather than quoting outside it', () => {
+    const sells = (opposingBookTicks: OpposingBookTicks) =>
+      buildLadderTree({
+        quote: quote('shared-rung'),
+        market,
+        maker,
+        ratifier,
+        now,
+        minimumRateBps: 450n,
+        maximumRateBps: 600n,
+        opposingBookTicks
+      }).bookOffers.filter(offer => !offer.buy)
+
+    expect(sells({ highestBuyTick: 3_993n })).toEqual([{ marketId, buy: false, tick: 3_993n }])
+    expect(sells({ highestBuyTick: 9_999n })).toEqual([{ marketId, buy: false, tick: 3_993n }])
+  })
+
+  test('saturates a buy clearance below the hard range at the maximum-rate tick', () => {
+    const result = buildLadderTree({
+      quote: quote('shared-rung'),
+      market,
+      maker,
+      ratifier,
+      now,
+      minimumRateBps: 450n,
+      maximumRateBps: 600n,
+      opposingBookTicks: { lowestSellTick: 3_937n }
+    })
+
+    expect(result.bookOffers.filter(offer => offer.buy)).toEqual([
+      { marketId, buy: true, tick: 3_937n }
+    ])
+  })
+
+  test('keeps every clearance aligned to a market tick spacing wider than one', () => {
+    const spaced = { ...market, tickSpacing: 4 } as unknown as IMarket
+    const result = buildLadderTree({
+      quote: quote('shared-rung'),
+      market: spaced,
+      maker,
+      ratifier,
+      now,
+      minimumRateBps: 1n,
+      maximumRateBps: 10_000n,
+      opposingBookTicks: { highestBuyTick: 3_996n, lowestSellTick: 3_952n }
+    })
+
+    expect(result.bookOffers.map(offer => offer.tick)).toEqual([4_000n, 4_020n, 3_948n, 3_940n])
+    expect(result.bookOffers.every(offer => offer.tick % 4n === 0n)).toBe(true)
+  })
+
+  test('clears the crossed-book guard a resting bid inside the ladder would trip', () => {
+    const restingBid = { groupId: groupId('09'), marketId, buy: true, tick: 4_000n }
+    const book = [restingBid]
+    const replacedGroupIds = new Set<Hex>()
+    const prospective = (opposingBookTicks?: OpposingBookTicks) =>
+      buildLadderTree({
+        quote: quote('shared-rung'),
+        market,
+        maker,
+        ratifier,
+        now,
+        minimumRateBps: 1n,
+        maximumRateBps: 10_000n,
+        ...(opposingBookTicks === undefined ? {} : { opposingBookTicks })
+      }).bookOffers.map(offer => ({
+        ...offer,
+        ...(offer.buy ? {} : { overlapOwner: 'ladder-sell' as const })
+      }))
+
+    expect(() =>
+      assertLadderProspectiveSpread({
+        marketId,
+        maker,
+        replacedGroupIds,
+        book,
+        prospective: prospective()
+      })
+    ).toThrow('Ladder adapter failed')
+
+    expect(() =>
+      assertLadderProspectiveSpread({
+        marketId,
+        maker,
+        replacedGroupIds,
+        book,
+        prospective: prospective(retainedOpposingBookTicks({ marketId, replacedGroupIds, book }))
+      })
+    ).not.toThrow()
+  })
+
+  test('still publishes both sides when the book crosses the whole hard range', () => {
+    const result = buildLadderTree({
+      quote: quote('shared-rung'),
+      market,
+      maker,
+      ratifier,
+      now,
+      minimumRateBps: 450n,
+      maximumRateBps: 600n,
+      opposingBookTicks: { highestBuyTick: 9_999n, lowestSellTick: 1n }
+    })
+
+    expect(result.bookOffers.some(offer => offer.buy)).toBe(true)
+    expect(result.bookOffers.some(offer => !offer.buy)).toBe(true)
+    const timeToMaturity = BigInt(market.params.maturity) - now
+    const basisPointWad = 10n ** 14n
+    for (const offer of result.tree.offers) {
+      const encodedRateBps = TickLib.tickToApr(offer.tick, timeToMaturity) / basisPointWad
+      expect(encodedRateBps).toBeGreaterThanOrEqual(450n)
+      expect(encodedRateBps).toBeLessThanOrEqual(600n)
+    }
   })
 
   test('rejects a hard range too narrow to contain any aligned tick', () => {

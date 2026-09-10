@@ -26,6 +26,7 @@ const config = (): LadderConfig => ({
   minimumOfferAssets: 100n,
   groupMode: 'shared-rung',
   loopIntervalSeconds: 1,
+  bookCrossedCooldownSeconds: 3,
   movementToleranceBps: 0n,
   minimumRateBps: 100n,
   maximumRateBps: 5_000n

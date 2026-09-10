@@ -163,6 +163,50 @@ describe('createLadderGroupOwnership', () => {
     }
   })
 
+  test('loads a persisted publication carrying a retired identity key', async () => {
+    const stateDirectory = await mkdtemp(join(tmpdir(), 'ladder-ownership-'))
+    try {
+      const strategy = keccak256(
+        stringToHex(JSON.stringify({ strategy: 'ladder', chainId: base.id, maker }))
+      )
+      await writeFile(
+        join(stateDirectory, `${strategy}.json`),
+        JSON.stringify({
+          version: 1,
+          strategy,
+          publications: [
+            {
+              marketId,
+              status: 'confirmed',
+              quote: {
+                marketId,
+                centerRateBps: '500',
+                referenceObservationId: 'blue:19000000',
+                bookObservationId: '4172:4200',
+                groupMode: 'shared-rung',
+                lower: [{ index: 0, rateBps: '450', assets: '10' }],
+                higher: [{ index: 0, rateBps: '550', assets: '20' }]
+              },
+              groups: [{ groupId: lowerGroup, side: 'lower', rungIndexes: [0] }]
+            }
+          ]
+        }),
+        { mode: 0o600 }
+      )
+
+      const ownership = createLadderGroupOwnership(
+        { chainId: base.id, maker, strategyMarketIds: [marketId] },
+        { stateDirectory }
+      )
+      expect((await ownership.read())[0]?.quote).toEqual({
+        ...quote,
+        referenceObservationId: 'blue:19000000'
+      })
+    } finally {
+      await rm(stateDirectory, { recursive: true, force: true })
+    }
+  })
+
   test('keeps ownership stable when configured ladder markets change', async () => {
     const stateDirectory = await mkdtemp(join(tmpdir(), 'ladder-ownership-'))
     try {

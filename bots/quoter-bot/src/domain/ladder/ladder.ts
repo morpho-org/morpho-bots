@@ -22,7 +22,8 @@ const bigintMin = (left: bigint, right: bigint) => (left < right ? left : right)
  * comfortably below Midnight SDK 1.2.0's height-20 tree limit while bounding local allocation.
  */
 const MAX_LADDER_RUNG_COUNT = 512
-const MAX_MONITOR_INTERVAL_SECONDS = 2_147_483
+/** Longest interval the runtime timer accepts; loop and cooldown intervals share it. */
+export const MAX_MONITOR_INTERVAL_SECONDS = 2_147_483
 
 /** Static shape, inventory and offer floors, cadence, and hard rate range for one ladder market. */
 export type LadderConfig = {
@@ -41,18 +42,30 @@ export type LadderConfig = {
   minimumOfferAssets: bigint
   groupMode: 'shared-rung' | 'per-book'
   loopIntervalSeconds: number
+  /** Seconds one side waits between replacements a third-party crossing triggered. */
+  bookCrossedCooldownSeconds: number
   movementToleranceBps: bigint
   minimumRateBps: bigint
   maximumRateBps: bigint
 }
 
 /**
+ * Whether a third party crosses this strategy's resting ladder on one side, and whether the
+ * configured rate window can still clear it.
+ */
+export type LadderBookSideCrossing = { crossed: boolean; clearable: boolean }
+
+/**
  * Fresh inventory by rate side plus exposure-increasing lend capacity for one ladder market.
  * @remarks Lower-rate capacity is accrued credit for reduce-only sells. Higher-rate capacity is
  * available loan-token balance and allowance for lend buys; target and total capacities cap only
- * that higher-rate exposure-increasing side. `bootstrapBuyRateBps` is the highest live own
+ * that higher-rate exposure-increasing side. `bootstrapBuyRateBps` is the lowest live own
  * bootstrap-buy rate; sells quote at least {@link CROSS_BOOK_CLEARANCE_BPS} below it so the ladder
  * cannot cross the own bootstrap offer.
+ *
+ * `bookCrossing` is observed fresh every cycle and compared against nothing; generation ignores it.
+ * It is absent when the book could not be observed this cycle, which suppresses only the
+ * `book-crossed` replacement and never withdraws the ladder.
  *
  * The trailing fields are observation-only accounting primitives. Generation ignores them entirely;
  * they exist because the capacities above are saturating minima from which no position value can be
@@ -65,6 +78,7 @@ export type LadderMarketState = {
   targetMarketCapacityAssets?: bigint
   maximumTotalCapacityAssets?: bigint
   bootstrapBuyRateBps?: bigint
+  bookCrossing?: { lower: LadderBookSideCrossing; higher: LadderBookSideCrossing }
   cashBalanceAssets?: bigint
   creditAssets?: bigint
   otherMarketCreditAssets?: bigint
@@ -235,6 +249,13 @@ export const validateLadderConfig = (config: LadderConfig): void => {
   if (config.loopIntervalSeconds > MAX_MONITOR_INTERVAL_SECONDS) {
     throw new LadderConfigurationError(
       'loopIntervalSeconds',
+      `must not exceed ${MAX_MONITOR_INTERVAL_SECONDS}`
+    )
+  }
+  safePositive(config.bookCrossedCooldownSeconds, 'bookCrossedCooldownSeconds')
+  if (config.bookCrossedCooldownSeconds > MAX_MONITOR_INTERVAL_SECONDS) {
+    throw new LadderConfigurationError(
+      'bookCrossedCooldownSeconds',
       `must not exceed ${MAX_MONITOR_INTERVAL_SECONDS}`
     )
   }

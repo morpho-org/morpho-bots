@@ -213,6 +213,8 @@ export const createTelemetryRecordObserver = () => {
         return
       case 'guardrail.rate-clamped':
       case 'guardrail.cross-book-cleared':
+      case 'guardrail.book-cleared':
+      case 'guardrail.book-crossed':
       case 'guardrail.exposure-capped':
       case 'guardrail.rungs-truncated':
       case 'guardrail.spread-rejected':

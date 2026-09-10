@@ -1046,7 +1046,7 @@ describe('createApplication', () => {
   test('routes --readonly ladder make operations to terminal output', async () => {
     const reconcile = vi.fn(async () => {})
     const hardHalt = vi.fn(async () => {})
-    const validateReconcile = vi.fn(async () => {})
+    const validateReconcile = vi.fn(async () => undefined)
     const events: unknown[] = []
     const application = createApplication(
       {

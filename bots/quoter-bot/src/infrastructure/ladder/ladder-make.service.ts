@@ -1,7 +1,9 @@
-import type { Hex } from 'viem'
+import type { IMarket } from '@morpho-org/midnight-sdk'
+import type { Address, Hex } from 'viem'
 
 import type { LadderMakeService } from '../../application/ladder/ladder-quoter.service'
 import type {
+  LadderBookReconciliation,
   LadderGroupConsumption,
   LadderMakeResult,
   LadderSubmittedTransaction,
@@ -14,11 +16,24 @@ import type { LadderGroupReference } from './ladder-group-ownership.utils'
 import { LadderOwnershipCleanupError } from '../../application/ladder/ladder-ownership-cleanup.error'
 import { operatorErrorName } from '../../application/operator-error-name.utils'
 import { LadderAdapterError } from './ladder-adapter.error'
+import { hasClearableCrossing } from './ladder-cross-book.utils'
 import { LadderHardHaltError } from './ladder-hard-halt.error'
 import { assertLadderProspectiveSpread } from './ladder-spread.utils'
 
 type LadderBookOffer = OwnedOverlapBookOffer
 type LadderOwnedGroup = { groupId: Hex; maxAssets: bigint }
+
+/**
+ * Market and block state one in-queue read produced, carried between the book assessment and the
+ * publication it gates so both resolve ticks against the same instant.
+ */
+export type LadderObservedMarket = { market: IMarket; now: bigint }
+
+/** The book snapshot and replaced groups one reconciliation cycle works against. */
+export type LadderObservedBook = {
+  book: readonly LadderBookOffer[]
+  replacedGroupIds: ReadonlySet<Hex>
+}
 
 /** Blocking transport used by the serialized ladder make adapter. */
 export interface LadderOfferTransport {
@@ -36,11 +51,41 @@ export interface LadderOfferTransport {
   listActiveGroupIds(marketId?: Hex): Promise<readonly Hex[]>
   /** Lists the maker's live offers for one market. @param marketId - Market being reconciled. @returns Every offer needed for spread safety. */
   listBookOffers(marketId: Hex): Promise<readonly LadderBookOffer[]>
-  /** Prepares a policy-checked desired tree without broadcasting it. @param quote - Exact desired quote set. @returns Publication metadata and one-shot ratifier/publisher. */
-  preparePublication(quote: LadderQuoteSet): Promise<{
+  /**
+   * Re-evaluates the resting-ladder crossing and its feasibility from one fresh book read and the
+   * current block.
+   * @param marketId - Market being reconciled.
+   * @param observed - The book snapshot and replaced groups this cycle reconciles against.
+   * @returns The rechecked per-side crossing, and the market/block state it read so the publication
+   * this gates can start its offers at the timestamp reported here.
+   * @throws When the market is unconfigured, already matured, or its state cannot be read.
+   */
+  assessBook(
+    marketId: Hex,
+    observed: LadderObservedBook
+  ): Promise<{
+    reconciliation: Omit<LadderBookReconciliation, 'applied'>
+    observedMarket: LadderObservedMarket
+  }>
+  /**
+   * Prepares a policy-checked desired tree without broadcasting it.
+   * @param quote - Exact desired quote set.
+   * @param observed - The book snapshot and replaced groups this cycle reconciles against, plus the
+   * market/block state {@link LadderOfferTransport.assessBook} already read.
+   * @returns Publication metadata and one-shot ratifier/publisher.
+   * @remarks `observed` must be the same snapshot the caller then passes to
+   * `assertLadderProspectiveSpread`. Preparation clears the opposing offers it names, so a
+   * different snapshot would let preparation clear one book while the guard checks another.
+   */
+  preparePublication(
+    quote: LadderQuoteSet,
+    observed: LadderObservedBook & { observedMarket?: LadderObservedMarket }
+  ): Promise<{
     groupIds: readonly Hex[]
     groups: readonly LadderGroupReference[]
     prospective: readonly LadderBookOffer[]
+    /** Rungs per side the opposing book repriced while clearing the publication. */
+    bookClearedRungs: { lower: number; higher: number }
     /**
      * Ratifies when required, publishes the policy-checked tree, and waits for every receipt.
      * @param onTransactionSubmitted - Optional safe observer notified after each wallet submission.
@@ -85,8 +130,11 @@ export class MidnightLadderMakeService implements LadderMakeService {
   private queue = Promise.resolve()
   private readonly confirmedCanceledGroups = new Set<Hex>()
 
-  /** Creates one mutation queue. @param transport - Protocol, book, and ownership transport. */
-  constructor(private readonly transport: LadderOfferTransport) {}
+  /** Creates one mutation queue. @param transport - Protocol, book, and ownership transport. @param maker - Configured maker whose offers the spread guard treats as own. */
+  constructor(
+    private readonly transport: LadderOfferTransport,
+    private readonly maker: Address
+  ) {}
 
   /** Reads active quote state. @param marketId - Selected market. @returns Reconstructed quote or no active quote. */
   readActive(marketId: Hex) {
@@ -111,7 +159,9 @@ export class MidnightLadderMakeService implements LadderMakeService {
    * @returns Completion after every required receipt and ownership update.
    * @throws When preparation, spread validation, cancellation, publication, or storage fails.
    * @remarks The future groups are reserved before old groups are invalidated. A publication whose
-   * submission outcome is unknown remains reserved so a restart still recognizes it as owned.
+   * submission outcome is unknown remains reserved so a restart still recognizes it as owned. The
+   * crossing that upgraded a `rest` into a `book-crossed` replacement is rechecked here against a
+   * fresh book, before anything is reserved, cancelled, or signed.
    */
   reconcile(parameters: Parameters<LadderMakeService['reconcile']>[0]) {
     return this.enqueue(async () => {
@@ -124,14 +174,41 @@ export class MidnightLadderMakeService implements LadderMakeService {
       const invalidatedGroupIds = new Set(
         [...spreadReplacedGroupIds].filter(groupId => !this.confirmedCanceledGroups.has(groupId))
       )
-      const publication = parameters.desired
-        ? await this.transport.preparePublication(parameters.desired)
+      const book = parameters.desired
+        ? await this.transport.listBookOffers(parameters.marketId)
         : undefined
-      if (publication) {
+      const observed =
+        parameters.desired && book ? { book, replacedGroupIds: spreadReplacedGroupIds } : undefined
+      const assessed = observed
+        ? await this.transport.assessBook(parameters.marketId, observed)
+        : undefined
+      // A `book-crossed` request without an assessed publication would otherwise fall through to
+      // cancelling the ladder with nothing to republish, so absence fails closed here too.
+      if (
+        parameters.reason === 'book-crossed' &&
+        !(
+          assessed &&
+          hasClearableCrossing(assessed.reconciliation.bookCrossing, parameters.bookCrossedSides)
+        )
+      ) {
+        return {
+          submittedTransactions,
+          ...(assessed ? { reconciliation: { ...assessed.reconciliation, applied: false } } : {})
+        }
+      }
+      const publication =
+        parameters.desired && observed && assessed
+          ? await this.transport.preparePublication(parameters.desired, {
+              ...observed,
+              observedMarket: assessed.observedMarket
+            })
+          : undefined
+      if (publication && book) {
         assertLadderProspectiveSpread({
           marketId: parameters.marketId,
+          maker: this.maker,
           replacedGroupIds: spreadReplacedGroupIds,
-          book: await this.transport.listBookOffers(parameters.marketId),
+          book,
           prospective: publication.prospective
         })
         await this.transport.reservePublication({
@@ -171,7 +248,10 @@ export class MidnightLadderMakeService implements LadderMakeService {
         throw error
       }
 
-      if (!publication) return { submittedTransactions }
+      const reconciliation = assessed
+        ? { reconciliation: { ...assessed.reconciliation, applied: true } }
+        : {}
+      if (!publication) return { submittedTransactions, ...reconciliation }
       try {
         const publicationResult = await publication.publish(
           this.safeObserver(parameters.onTransactionSubmitted)
@@ -195,7 +275,11 @@ export class MidnightLadderMakeService implements LadderMakeService {
         throw error
       }
       await this.transport.confirmPublication(publication.groupIds)
-      return { submittedTransactions } satisfies LadderMakeResult
+      return {
+        submittedTransactions,
+        bookClearedRungs: publication.bookClearedRungs,
+        ...reconciliation
+      } satisfies LadderMakeResult
     })
   }
 

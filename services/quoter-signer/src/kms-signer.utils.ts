@@ -110,8 +110,10 @@ export type KmsMakerSigner = {
    * @throws `KmsAttestationStaleError` when the signer's attestation aged past
    * {@link KMS_ATTESTATION_FRESHNESS_MS} — no KMS call is made and the caller must resolve a
    * fresh signer; `KmsSigningFailedError` when the digest is not 32 bytes or the response cannot
-   * be verified; `KmsSignOutcomeUnknownError` when the `Sign` call itself fails — the outcome is
-   * ambiguous (a signature may exist server-side), so it is never advertised as retryable.
+   * be verified (a post-call rejection carries the completed call's digest and request id so the
+   * caller can still record the CloudTrail-joinable `Sign` event); `KmsSignOutcomeUnknownError`
+   * when the `Sign` call itself fails — the outcome is ambiguous (a signature may exist
+   * server-side), so it is never advertised as retryable.
    */
   signDigest(digest: Hex): Promise<KmsSignedDigest>
 }
@@ -306,13 +308,29 @@ export const createKmsMakerSigner = async (
       // lost, so this is never advertised as retryable (see KmsSignOutcomeUnknownError).
       throw new KmsSignOutcomeUnknownError({ cause: error })
     }
-    if (signed.signature === undefined) throw new KmsSigningFailedError('missing-signature')
-    const kmsRequestId = signed.kmsRequestId
-    // A blank id is as unreconcilable as an absent one; a valid id passes through untrimmed.
-    if (typeof kmsRequestId !== 'string' || kmsRequestId.trim() === '') {
-      throw new KmsSigningFailedError('missing-request-id')
+    // From here on the KMS Sign call completed — a CloudTrail Sign event exists — so every
+    // rejection carries the digest (and the request id once validated) for the per-artifact
+    // reconciliation record the handler emits even on a denial.
+    const rawRequestId = signed.kmsRequestId
+    const validRequestId =
+      typeof rawRequestId === 'string' && rawRequestId.trim() !== '' ? rawRequestId : undefined
+    if (signed.signature === undefined) {
+      throw new KmsSigningFailedError('missing-signature', {
+        digest,
+        kmsRequestId: validRequestId
+      })
     }
-    const parsed = parseDerSignature(signed.signature)
+    // A blank id is as unreconcilable as an absent one; a valid id passes through untrimmed.
+    if (validRequestId === undefined) {
+      throw new KmsSigningFailedError('missing-request-id', { digest })
+    }
+    const kmsRequestId = validRequestId
+    let parsed: { r: bigint; s: bigint }
+    try {
+      parsed = parseDerSignature(signed.signature)
+    } catch {
+      throw new KmsSigningFailedError('der-encoding', { digest, kmsRequestId })
+    }
     const r = numberToHex(parsed.r, { size: 32 })
     const s = numberToHex(parsed.s, { size: 32 })
     for (const yParity of [0, 1] as const) {
@@ -325,7 +343,7 @@ export const createKmsMakerSigner = async (
         // Try the other recovery parity; a signature recovering to neither fails below.
       }
     }
-    throw new KmsSigningFailedError('recovery')
+    throw new KmsSigningFailedError('recovery', { digest, kmsRequestId })
   }
 
   return { address, publicKey, signDigest }

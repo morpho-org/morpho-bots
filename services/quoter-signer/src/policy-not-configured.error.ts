@@ -17,6 +17,10 @@ export type PolicyConfigurationReason =
   | 'mode-surface-mismatch'
   | 'incoherent-bounds'
   | 'insufficient-protected-ceiling'
+  | 'collateral-order'
+  | 'market-id-mismatch'
+  | 'off-schedule'
+  | 'zero-address'
 
 /**
  * Signals that the middleware's deployment policy is missing or invalid, so the build refuses to

@@ -143,9 +143,10 @@ describe('read-only make adapters', () => {
     )
 
     expect(await service.readActive(marketId)).toBe(active)
-    expect(await service.reconcile({ marketId, desired: active, reason: 'recenter' })).toBe(
-      'logged'
-    )
+    expect(await service.reconcile({ marketId, desired: active, reason: 'recenter' })).toEqual({
+      submittedTransactions: [],
+      logged: true
+    })
     expect(await service.hardHalt({ reason: 'ladder-decision-failed' })).toBe('logged')
 
     expect(reads).toEqual([marketId])
@@ -203,6 +204,64 @@ describe('read-only make adapters', () => {
     const error = await service.reconcile({ marketId, reason: 'publish' }).catch(value => value)
 
     expect(error).toBeInstanceOf(LadderAdapterError)
+    expect(lines).toEqual([])
+  })
+
+  test('returns the crossing recheck validation supplied beside the logged line', async () => {
+    const lines: string[] = []
+    const reconciliation = {
+      preparedAtTimestamp: 1_000n,
+      bookCrossing: {
+        lower: { crossed: true, clearable: true },
+        higher: { crossed: false, clearable: true }
+      },
+      applied: true
+    }
+    const service = new ReadOnlyLadderMakeService(
+      { readActive: async () => undefined },
+      line => {
+        lines.push(line)
+      },
+      async () => ({ reconciliation, bookClearedRungs: { lower: 2, higher: 0 } })
+    )
+
+    expect(await service.reconcile({ marketId, reason: 'book-crossed' })).toEqual({
+      submittedTransactions: [],
+      logged: true,
+      reconciliation,
+      bookClearedRungs: { lower: 2, higher: 0 }
+    })
+    expect(lines).toHaveLength(1)
+    expect(JSON.parse(lines[0]!)).toMatchObject({
+      event: 'readonly.make',
+      operation: 'reconcile',
+      request: { reason: 'book-crossed' }
+    })
+  })
+
+  test('logs nothing when the read-only recheck found no clearable cross left', async () => {
+    const lines: string[] = []
+    const reconciliation = {
+      preparedAtTimestamp: 1_000n,
+      bookCrossing: {
+        lower: { crossed: false, clearable: true },
+        higher: { crossed: false, clearable: true }
+      },
+      applied: false
+    }
+    const service = new ReadOnlyLadderMakeService(
+      { readActive: async () => undefined },
+      line => {
+        lines.push(line)
+      },
+      async () => ({ reconciliation })
+    )
+
+    expect(await service.reconcile({ marketId, reason: 'book-crossed' })).toEqual({
+      submittedTransactions: [],
+      logged: true,
+      reconciliation
+    })
     expect(lines).toEqual([])
   })
 })

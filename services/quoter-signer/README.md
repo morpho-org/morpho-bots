@@ -6,42 +6,84 @@ Lambda container image that will become the **only** `kms:Sign` principal on the
 validating structured intents (quote, ratify, revoke, setup remediation) against its own
 independent reads before signing anything.
 
-**Current status: fail-closed build with the v1 wire contract, the deterministic
-deployment-policy checks, and the KMS maker-key custody attestation plus digest-signing layer.**
-The handler implements no encode-and-sign surface and never calls `kms:Sign`, but it now enforces
-the typed request/response contract below at the invocation boundary, validates every well-formed
-intent against the deployment policy document (see
-[Deployment policy](#deployment-policy-quoter_signer_policy)), and — for intents that pass every
-deterministic check — attests the configured KMS maker key (see
-[KMS maker key](#kms-maker-key-quoter_signer_kms_key_id-quoter_signer_kms_region)). Payloads
-outside the contract are denied with a `MalformedIntentError`; when the policy document is missing
-or invalid the build refuses to serve with a `PolicyNotConfiguredError`; out-of-policy intents are
-denied with an `IntentPolicyViolationError` naming the violated check; missing or invalid KMS
-addressing refuses to serve with a `KmsNotConfiguredError`; a failed KMS call is denied with a
-retryable `KmsUnavailableError`; custody drift (wrong key shape, malformed public key, or a
-derived address that is not the policy maker) is denied with a `KmsAttestationFailedError`; and
-intents that pass every implemented stage are still denied with a `SigningNotImplementedError`:
+**Current status: every v1 intent kind encodes and signs.** On top of the wire contract, the
+deterministic deployment-policy checks, and the KMS maker-key custody attestation, the handler
+canonically encodes and signs all four kinds:
 
-```json
-{
-  "contractVersion": 1,
-  "service": "quoter-signer",
-  "approved": false,
-  "denial": {
-    "name": "SigningNotImplementedError",
-    "message": "no signing surface is implemented in this quoter-signer build; every intent is denied",
-    "retryable": false
-  }
-}
-```
+- **`quote`** (Ecrecover): the offer tree is re-derived from the validated set with the pinned
+  maker and the policy-pinned market structs injected, every content-addressed consumption-group
+  id is verified against the offer contents, the EIP-712 tree digest is signed with exactly one
+  `kms:Sign` call, and the approval returns the re-derived root, the tree signature, and the
+  exact zero-value Mempool publication payload.
+- **`ratify`** (Setter): the same full re-validation and root re-derivation, then the signed
+  `setIsRootRatified(maker, root, true)` transaction plus the signature-free publication payload.
+- **`revoke`** (both revoke surfaces): the exact allowlisted zero-value call —
+  `setConsumed(group, MAX_OFFER_CAP, maker)` on the pinned singleton (at most 80 groups per
+  intent, batched as one `multicall` built solely from such calls), `cancelRoot(maker, root)` or
+  `setIsRootRatified(maker, root, false)` on the pinned ratifier, or the empty **self-cancel**
+  self-send that replaces the maker's own in-flight transaction — signed as one transaction
+  artifact. The routine-revoke surface places operations at the middleware's own pending-nonce
+  read and rejects every explicit nonce; the operator-only **break-glass-revoke surface**
+  requires one, under the `protected` fee ceilings, so cleanup replaces the occupied nonces the
+  operator directs instead of silently queueing behind them. Self-cancel's nonce is required by
+  shape, which makes the operation **break-glass-only for now**: a routine displacement could
+  out-bid a pending cleanup or remediation and preserve exposure, and telling a replaceable
+  routine transaction from a safety action needs the recorded-transaction inventory of a later
+  increment. Every accepted explicit placement is validated against the independently read
+  **`[latest, pending]` nonce window** — below it the artifact could never be included, above it
+  it would be a future-nonce stockpile — and a self-cancel must additionally stay below
+  `pending`: it replaces an in-flight transaction, so its slot must be occupied, while the
+  unused slot stays reserved for final revocations. A self-cancel also requires a fresh code read
+  to prove the maker codeless (`maker-code`): with an EIP-7702 delegation designator the "empty"
+  self-send would execute the delegated code in the maker's context instead of being a no-op.
+  Every violation denies before any KMS call.
+- **`setup-remediation`** (operator-only surface): the manifest-pinned ERC-20
+  `approve(spender, amount)` with every value from the deployment policy, signed only after the
+  middleware's own allowance read proves the transaction changes state — a re-approval of the
+  live allowance denies (`remediation-state`) instead of burning the nonce, and a non-zero grant
+  signs only from a zero live allowance (reset-then-set, enforced). The allowance is read at
+  pending state, the same speculative view as the nonce read, so an approval still in flight
+  already counts and is not signed a second time.
 
-Each invocation also emits the TIB's `middleware.intent_received` / `middleware.intent_denied`
-JSON log lines to CloudWatch Logs — plus `middleware.kms_error` when the attestation stage fails —
-carrying only the allowlist-classified intent kind (`quote`, `ratify`, `revoke`,
-`setup-remediation`, or `unknown`), the denial class name, the violated policy check id on a
-policy denial, the failed KMS operation or attestation reason on a KMS denial, and the AWS request
-id — never caller-supplied data. The image is safe to deploy anywhere: `kms:Sign` is never called,
-so it can sign nothing.
+Every transaction nonce is read or validated through the middleware's **own HTTPS RPC endpoint**
+(see [RPC endpoint](#rpc-endpoint-quoter_signer_rpc_url)) — the pending read for routine
+placement, the window validation for explicit break-glass placement; the endpoint's chain id is
+verified against the policy pin on every read, and a read failure is a typed retryable denial
+with no KMS call. Quote and ratify intents additionally re-run the deterministic time-window
+checks on a fresh clock — demanding a 30-second remaining-lifetime margin for the `Sign` call,
+publication assembly, and delivery — immediately before signing, so an offer set that expires (or
+would expire in the caller's hands) during the pre-sign awaits denies instead of becoming an
+unusable signed artifact. Everything else stays fail-closed with typed denials: payloads outside
+the contract (`MalformedIntentError`), a missing or invalid policy document
+(`PolicyNotConfiguredError`), out-of-policy intents including group ids that do not re-derive
+from the offer contents, placement nonces outside the live window, and remediations whose pinned
+allowance already holds (`IntentPolicyViolationError` naming the violated check), missing or
+invalid KMS or RPC addressing (`KmsNotConfiguredError` / `RpcNotConfiguredError`), chain-read
+failures (`RpcUnavailableError`, retryable) and endpoint chain drift (`RpcChainMismatchError`),
+attestation-read failures (`KmsUnavailableError`, retryable), custody drift
+(`KmsAttestationFailedError`), stale attestations (`KmsAttestationStaleError`, retryable), KMS
+signature-validation failures (`KmsSigningFailedError`), a `Sign` call that failed outright
+(`KmsSignOutcomeUnknownError`, non-retryable — the outcome is ambiguous), and post-validation
+assembly faults (`ArtifactEncodingFailedError`). The TIB's reservation ledger — the recorded
+transaction inventory with its derived replacement fees and append-only artifact histories, nonce
+leases, signed-gas budgets — and the remediation/cleanup epochs remain later increments: until
+they land, break-glass placement is **operator-directed** (occupied nonces enumerated from the
+caller's records, the `middleware.intent_approved` log lines, and the node's pending set — the
+middleware cannot see withheld artifacts it did not record), replacement fee bids are
+caller-supplied within the ceilings, and remediation exclusivity (stop routine signing first) is
+a runbook step rather than an enforced epoch.
+
+Each invocation emits the TIB's JSON log lines to CloudWatch Logs: `middleware.intent_received`,
+then one `middleware.kms_sign` line per completed `Sign` call carrying the middleware-derived
+digest and the **KMS request id** (the CloudTrail reconciliation join key — emitted immediately
+after the call, so the record exists even if a later assembly stage fails, and emitted on the
+denial path too when a completed `Sign` response fails the DER/recovery verification), and finally
+`middleware.intent_approved` (re-derived root, nonce, transaction hash, and the expected
+`kmsSignCalls` count, per kind) or `middleware.intent_denied`; `middleware.kms_error` and
+`middleware.read_failed` accompany the corresponding failures. Lines carry only the
+allowlist-classified intent kind, denial class names, check identifiers, and middleware-owned
+values — never caller-supplied data. Deploying the image without granting its execution role
+`kms:Sign` keeps it sign-inert: every signing attempt then fails closed at the KMS boundary.
 
 ## Wire contract (v1)
 
@@ -57,8 +99,9 @@ unknown kinds, and unknown contract versions are rejected outright — no best-e
 interpretation.
 
 Every intent carries `contractVersion: 1`, `kind`, `chainId`, `maker`, and a caller-chosen
-`idempotencyKey` (retries with the same key must return the stored artifacts once signing exists).
-The four kinds:
+`idempotencyKey` (inert in this build — stored-artifact retries ride on the reservation ledger of
+a later increment, so a replayed key today re-evaluates and, for transaction kinds, re-signs at
+its then-current placement). The four kinds:
 
 - **`quote`** (Ecrecover): `offers` — 1..80 structured offers (at most 40 per side) over at most
   7 distinct markets, in
@@ -72,11 +115,21 @@ The four kinds:
   `publication` payload.
 - **`revoke`**: one constrained `operation` — `consume-groups` (non-empty group list, encoded as
   exact `setConsumed(group, MAX_OFFER_CAP, maker)` calls, batched as one policy-checked
-  multicall), `cancel-root`, `unratify-root`, or `self-cancel` at a recorded nonce — plus `fees`.
-  Approval returns the signed transaction artifact.
-- **`setup-remediation`**: a deployment-manifest `remediation` variant id plus `fees`; the
-  middleware reads current allowance/authorization state itself and encodes the exact pinned
+  multicall), `cancel-root`, `unratify-root`, or `self-cancel` at an explicit nonce — plus
+  `fees`. `consume-groups` carries at most 80 groups per intent; larger cleanups split into
+  multiple revokes rather than one unboundedly large multicall whose caller-chosen gas limit
+  could admit an include-but-revert transaction. The three contract operations also accept an
+  optional `nonce`, and explicit placement is **required on the break-glass surface, rejected on
+  routine revocation** (`nonce-pin`) — `self-cancel` carries a required nonce, so it is
+  break-glass-only until the recorded-transaction inventory lands. Every accepted explicit nonce
+  must sit inside the independently read maker window (`nonce-window`) — `[latest, pending]` for
+  the contract operations, `[latest, pending)` for `self-cancel`, which must replace an in-flight
   transaction. Approval returns the signed transaction artifact.
+- **`setup-remediation`**: a deployment-manifest `remediation` variant id plus `fees`; the
+  middleware reads the current allowance itself and encodes the exact pinned
+  `approve(spender, amount)` — a variant whose pinned allowance already holds is denied
+  (`remediation-state`) rather than signed as a nonce-burning no-op. Approval returns the signed
+  transaction artifact.
 
 `fees` (`maxFeePerGas`, `maxPriorityFeePerGas`, `gas`) are caller-supplied liveness parameters
 only — the middleware enforces its own ceilings and budgets on top. Signed transaction artifacts
@@ -97,15 +150,20 @@ A complete well-formed revoke intent:
 }
 ```
 
-This build answers it with the `SigningNotImplementedError` denial above (once the deployment
-policy below is configured and the KMS maker key is configured and attested; without those, the
-answer is the `PolicyNotConfiguredError`, `KmsNotConfiguredError`, `KmsUnavailableError`, or
-`KmsAttestationFailedError` denial).
+A fully configured deployment (policy, KMS maker key with `kms:Sign` granted, RPC endpoint)
+answers it with the approval envelope — the signed `cancelRoot(maker, root)` transaction artifact
+at the maker's pending nonce. Without those, the answer is the corresponding typed denial
+(`PolicyNotConfiguredError`, `KmsNotConfiguredError`, `RpcNotConfiguredError`,
+`RpcUnavailableError`, `KmsUnavailableError`, or `KmsAttestationFailedError`).
 
 ## Deployment policy (`QUOTER_SIGNER_POLICY`)
 
 Policy parameters live in the middleware's deployment, never in the request (TIB-2026-08-12): the
-`QUOTER_SIGNER_POLICY` environment variable carries one JSON policy document, strictly parsed by
+`QUOTER_SIGNER_POLICY` environment variable carries one JSON policy document — either the JSON
+itself or, because a full multi-market document with complete market structs no longer fits AWS
+Lambda's 4 KB aggregate environment-variable quota, **base64-encoded gzip of the JSON**
+(`gzip -c policy.json | base64`); the parser accepts both, detecting plain JSON by its leading
+`{`. Either form is strictly parsed by
 [`src/policy.utils.ts`](./src/policy.utils.ts) with the same fail-closed discipline as the wire
 contract — unknown keys, unknown versions, and out-of-domain values refuse to serve
 (`PolicyNotConfiguredError`; "never run a partial or empty policy"). A complete document:
@@ -118,11 +176,28 @@ contract — unknown keys, unknown versions, and out-of-domain values refuse to 
   "chainId": 8453,
   "maker": "0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A",
   "ratifier": "0xd6e70365C8E8DDa9a4ca662C07bbE663b017755E",
+  "contracts": {
+    "midnight": "0xAdedD8ab6dE832766Fedf0FaC4992E5C4D3EA18A",
+    "mempool": "0xdD6DCE32e21f7b020898a8258dA37355b4017993"
+  },
   "offerWindow": { "freshnessCeilingSeconds": "3600", "maxStartAgeSeconds": "900" },
   "markets": [
     {
       "marketId": "0x5555555555555555555555555555555555555555555555555555555555555555",
-      "maturity": "1800000000",
+      "maturity": "1800025200",
+      "tickSpacing": "4",
+      "loanToken": "0x0000000000000000000000000000000000006000",
+      "collateralParams": [
+        {
+          "token": "0x0000000000000000000000000000000000007000",
+          "lltv": "770000000000000000",
+          "liquidationCursor": "250000000000000000",
+          "oracle": "0x0000000000000000000000000000000000008000"
+        }
+      ],
+      "rcfThreshold": "0",
+      "enterGate": "0x0000000000000000000000000000000000000000",
+      "liquidatorGate": "0x0000000000000000000000000000000000000000",
       "minTick": "100",
       "maxTick": "5000",
       "maxContinuousFeeCap": "317097919",
@@ -131,17 +206,52 @@ contract — unknown keys, unknown versions, and out-of-domain values refuse to 
   ],
   "maxTotalLendExposureAssets": "30000000000",
   "feeCeilings": {
-    "routine": { "maxFeePerGas": "3000000000", "maxPriorityFeePerGas": "1500000000", "gas": "400000" },
-    "protected": { "maxFeePerGas": "30000000000", "maxPriorityFeePerGas": "15000000000", "gas": "800000" }
+    "routine": { "maxFeePerGas": "3000000000", "maxPriorityFeePerGas": "1500000000", "gas": "3000000" },
+    "protected": { "maxFeePerGas": "30000000000", "maxPriorityFeePerGas": "15000000000", "gas": "3000000" }
   },
   "remediations": [
     {
       "variant": "loan-asset-approval",
+      "action": {
+        "type": "erc20-approval",
+        "token": "0x0000000000000000000000000000000000006000",
+        "spender": "0x9999999999999999999999999999999999999999",
+        "amount": "20000000000"
+      },
       "feeCeiling": { "maxFeePerGas": "3000000000", "maxPriorityFeePerGas": "1500000000", "gas": "120000" }
     }
   ]
 }
 ```
+
+The `contracts` block pins the Midnight singleton (the group-consumption target and every market
+struct's `midnight` field) and the Mempool log contract (the zero-value publication target);
+neither ever comes from the caller or an address registry, and both — like the ratifier — must be
+non-zero (a zero pin would sign no-op transactions that burn the maker nonce while the caller
+believes the cancellation or publication happened). Each market entry now carries the
+market's **full immutable parameter struct** — `loanToken`, the `collateralParams` list (strictly
+ascending by non-zero token and at most the protocol's 128 per-market entries, the order and cap the protocol enforces at creation), `rcfThreshold`,
+`enterGate`, `liquidatorGate` — alongside its `maturity` and the book's live on-chain
+`tickSpacing` (1, 2, or 4 — it must divide the protocol default, every offer tick must align to
+it, and the `minTick`/`maxTick` window must contain at least one aligned tick or the entry
+refuses to serve). Parse-time validation re-derives the content-addressed market id from the struct fields
+(plus the policy `chainId` and the pinned singleton) through the SDK and refuses to serve unless
+it equals the pinned `marketId`, and requires the maturity to sit exactly at 15:00:00 UTC inside
+the Mempool codec's safe-timestamp bound — an off-schedule maturity could never publish, so a
+mis-pinned document refuses to serve instead of denying every intent. The `marketId` shown above
+is a placeholder — use the real id and its real struct.
+
+Each `remediations` entry pins the **exact transaction template** its variant signs: this build's
+one action kind is `erc20-approval` — `approve(spender, amount)` on `token`, every value from the
+reviewed document, so arbitrary calldata, permit signatures, token transfers, wildcard spenders,
+and caller-selected targets are unrepresentable. A revocation variant pins `amount: "0"`. Token
+and spender must be non-zero and distinct from the maker EOA (either collision would sign a no-op
+that burns the nonce), each variant's gas ceiling must cover the 50,000 single-call execution
+floor (below it no intent could ever be signed — a dead variant refused at parse), and changing a
+live non-zero allowance always takes two variants invoked in sequence — a reset (`amount: "0"`)
+then a set — because the middleware refuses the direct non-zero-to-non-zero transition: zero-first
+tokens revert on it (burning the nonce mid-remediation) and every ERC-20 carries the approval
+race.
 
 Every field is required on every surface so one reviewed document serves all deployments of the
 shared image; `surface` is the only per-deployment difference and pins which intent kind the
@@ -151,8 +261,12 @@ rules: the quote surface requires `ratifierMode: "ecrecover"` and ratify require
 tick bounds must be coherent and within the protocol `MAX_TICK` (6744); continuous-fee ceilings
 within the protocol `MAX_CONTINUOUS_FEE`; and each protected fee ceiling must cover one complete
 emergency replacement bump — `max(floor(routine × 1125 / 1000), routine + 1 wei)` — of its
-routine counterpart, with `protected.gas` at least `routine.gas`, so a routine bid can never
-strand the break-glass replacement path.
+routine counterpart, with `protected.gas` at least `routine.gas`, and the same bump of every
+remediation variant's fee ceilings (remediation transactions are break-glass-preemptable like
+every maker transaction), so no routine or remediation bid can ever strand the break-glass
+replacement path. `feeCeilings.routine.gas` must also cover the smallest cleanup transaction
+(55,000 — a one-group consumption), so `protected ≥ routine` guarantees the break-glass surface
+always has a signable cleanup shape; a lower ceiling is a dead configuration refused at parse.
 
 A well-formed intent is then checked against every rule decidable from these parameters and the
 middleware clock ([`src/policy-check.utils.ts`](./src/policy-check.utils.ts)): the surface's
@@ -170,10 +284,22 @@ once per consumption domain `(market, group, side, cap value)`, so per-book rung
 count once, against both the per-market and the maker-wide cap. Violations are denied with
 `IntentPolicyViolationError` naming the check; the denial log line carries the same check id.
 
-These are the deterministic checks only. The TIB's independent-read properties — crossed books,
-PnL, snapshot-derived market fees, aggregate reservations, nonce leases, and native-balance
-admission — land in later increments, so passing every current check still ends in the
-`SigningNotImplementedError` denial.
+An offer set that passes these checks is then **re-encoded canonically before signing**
+([`src/offer-tree.utils.ts`](./src/offer-tree.utils.ts)): the middleware builds every offer
+itself from the validated fields, the pinned maker, and the policy market structs; reconstructs
+the consumption groups from the intent's leaf order (offers sharing a declared group must be
+contiguous); and denies the set unless every content-addressed group id it derives equals the
+caller's declared id (`group-derivation`). Quote sets additionally pass a publication-encoding
+preflight — the Mempool payload codec's own offer-struct rules, such as 15:00:00-UTC maturities —
+before any KMS call (`offer-encoding` on rejection). What was validated is what is signed, by
+construction.
+
+The TIB's independent-read properties — crossed books, PnL, snapshot-derived market fees,
+aggregate signed-exposure reservations, nonce leases, signed-gas budgets, and native-balance
+admission — remain later increments: this build's approvals charge no durable reservation, and
+the production-enablement gates the TIB places on the quote/ratify surfaces (the PnL model,
+pinned provider quorum, indexed-block snapshots, write-before-sign catalog persistence) are
+unchanged. The pending-nonce read is the one independent read this increment adds.
 
 Operator guidance for the policy values (all fail closed, so a tight value halts quoting rather
 than leaking exposure — revocation stays the kill switch):
@@ -181,8 +307,8 @@ than leaking exposure — revocation stays the kill switch):
 - **Freshness sequencing**: today's ladder/bootstrap builders pin `expiry = market maturity`, so
   any freshness ceiling shorter than time-to-maturity denies their offers. That is the TIB's
   intended order — the bot-side builder change to `expiry = min(maturity, signedAt + freshness
-ceiling)` is a prerequisite of the same increment that enables quote/ratify signing — and is
-  irrelevant while this build signs nothing.
+ceiling)` is a prerequisite of turning the bot's quote/ratify flows onto this middleware, and
+  this build now enforces the ceiling on every quote/ratify intent it signs.
 - **Tick bounds**: a Midnight tick maps to a rate through time-to-maturity, so the tick for a
   fixed APR drifts upward as the market ages. Set `minTick`/`maxTick` as an envelope over the
   market's whole quoting horizon, not today's rate window.
@@ -192,6 +318,58 @@ ceiling)` is a prerequisite of the same increment that enables quote/ratify sign
 - **`maxStartAgeSeconds`**: offers carry the block timestamp at build time as `start`, and a
   Setter ratify re-presents the same offers later, so size this for block-timestamp lag plus
   build→invoke and ratify-retry latency.
+- **Routine gas ceiling vs consumption batches**: a `consume-groups` intent must carry
+  `fees.gas ≥ 25,000 + 30,000 × groups`, every single-call transaction (ratify, `cancel-root`,
+  `unratify-root`, a remediation approval) must carry `fees.gas ≥ 50,000`, and a `self-cancel`
+  must carry `fees.gas ≥ 21,000` — its exact intrinsic cost (conservative worst-case execution
+  floors; below them the middleware denies with `gas-floor` rather than signing a transaction
+  that would be included and revert — or never be includable — burning the nonce). The 50,000
+  floor is exact for the pinned ratifier calls but only a standard-ERC-20 floor for a remediation
+  approve: a proxied or hooked token can cost more, so provisioning `fees.gas` for the pinned
+  token's real cost is part of the manifest review. Size
+  `feeCeilings.routine.gas` to cover the largest batch you plan
+  to sign in one transaction — the full 80-group wire cap needs ~2.43M — or split cleanups into
+  smaller revokes.
+- **Replacements are priced by the caller**: a self-cancel or break-glass replacement only
+  propagates if its fee fields out-bid the transaction it displaces by the network's
+  replace-by-fee margin (the repository formula: +12.5% with a one-wei floor on both fields).
+  The middleware enforces its ceilings on top but does not derive the bump — the recorded fee
+  history that derivation needs is the reservation-ledger increment — so an under-bid replacement
+  is a liveness failure (the old transaction stands), never a safety failure.
+- **Break-glass runbook shape**: enumerate the maker's occupied nonces (`[latest, pending)` from
+  the node, joined with the bot's records and the `middleware.intent_approved` log lines, which
+  carry every middleware-signed nonce and hash); sign and broadcast a replacement at each
+  occupied nonce in ascending order — a revocation where one is pending, the self-cancel where
+  none is — then place final revocations at the pending nonce. The middleware validates each
+  placement against the live window but does not enumerate occupied nonces itself: it cannot see
+  withheld artifacts it did not record, so the enumeration and the TIB's containment epoch remain
+  operator duties until the transaction-inventory increment lands.
+
+## RPC endpoint (`QUOTER_SIGNER_RPC_URL`)
+
+Transaction-signing intents (ratify, revoke, setup remediation) commit to an account nonce, and
+nonce ordering is policy-relevant: the middleware reads the maker's nonce state **independently**
+through its own HTTPS JSON-RPC endpoint — never from the caller
+([`src/chain-read.utils.ts`](./src/chain-read.utils.ts), parsed by
+[`src/rpc-config.utils.ts`](./src/rpc-config.utils.ts)). Routine-placed kinds sign only the
+pending-count read; an explicit placement (self-cancel, break-glass operations) is validated
+against the `[latest, pending]` window — both counts read fresh, with an incoherent window
+(pending below latest) refused as a malformed provider view — and the setup-remediation surface
+additionally reads the pinned action's current allowance before encoding. Every read first
+verifies the endpoint's `eth_chainId` against the policy pin, so a repointed or misconfigured
+provider cannot feed another chain's account state into a signature that commits to the pinned
+chain (`RpcChainMismatchError`, terminal). A missing or non-HTTPS value refuses transaction
+signing with `RpcNotConfiguredError` — plaintext HTTP is rejected outright, since an on-path
+attacker could keep the expected chain id while altering the transaction count and steer
+signatures to an attacker-chosen nonce; a failed or malformed read denies with the retryable
+`RpcUnavailableError` and the `middleware.read_failed` log line — always before any KMS call.
+Quote intents sign no maker transaction and never require the endpoint. The endpoint URL is never
+echoed in errors, responses, or logs.
+
+The TIB's nonce-lease fence (refusing a second routine signature at a non-terminal nonce) rides
+on the reservation ledger and is a later increment; until it lands, the bot's serialized
+make/pending queue remains the single routine writer, and the `[latest, pending]` window is the
+only middleware-side placement bound.
 
 ## KMS maker key (`QUOTER_SIGNER_KMS_KEY_ID`, `QUOTER_SIGNER_KMS_REGION`)
 
@@ -228,10 +406,10 @@ attestation registry with its manifest-pinned freshness window and scheduled ref
 alias/image/readiness validation are later increments. An unattested container still answers
 wire-contract and policy denials (that is fail-closed serving, not signing), and the guarantee
 this build does make is strict: the digest-signing primitive is reachable only behind a fresh
-attestation and refuses on its own to sign against a stale one, and since no encode-and-sign
-surface exists, nothing can be signed before, without, or against a stale attestation.
+attestation and refuses on its own to sign against a stale one, so nothing is ever signed
+before, without, or against a stale attestation.
 
-The same module carries the digest-signing primitive the TIB's encode stages will call
+The same module carries the digest-signing primitive the encode stages call
 (sign-what-you-encode, §2): `kms:Sign` with `MessageType: 'DIGEST'` and
 `SigningAlgorithm: 'ECDSA_SHA_256'` — issued against the resolved key ARN captured at attestation
 (never the configured alias, which could be repointed to an unattested key afterwards) on a
@@ -240,11 +418,14 @@ one middleware signing record; a `Sign` call that fails outright maps to the **n
 `KmsSignOutcomeUnknownError`, because the outcome is ambiguous — a signature may exist
 server-side — and blind invocation-level retry could mint a second signature for one artifact) — followed by a strict canonical DER parse, low-s
 normalization, a recovery check across both parities against the attested maker address, and
-capture of the KMS request id — the CloudTrail reconciliation join key each per-artifact signing
-record must log, so a `Sign` response without one (or with a blank one) is rejected rather than
-becoming an unreconcilable signature. **No intent reaches it yet**: until the encode stages land, every attested
-intent is still denied with `SigningNotImplementedError`, and the execution role needs
-`kms:GetPublicKey` on the maker key but must not hold `kms:Sign`.
+capture of the KMS request id — the CloudTrail reconciliation join key each per-artifact
+`middleware.kms_sign` record logs, so a `Sign` response without one (or with a blank one) is
+rejected rather than becoming an unreconcilable signature. **Every intent kind reaches it**: an
+intent that passes every earlier stage produces exactly one `Sign` call per artifact, so a
+signing deployment's execution role needs `kms:Sign` alongside `kms:GetPublicKey` on the maker
+key. A deployment that should stay sign-inert simply withholds the `kms:Sign` grant: every
+signing attempt then denies at the KMS boundary with `KmsSignOutcomeUnknownError` while
+attestation and every denial path keep working.
 
 ## Bot integration
 
@@ -308,8 +489,8 @@ complete revoke intent from the wire-contract section yields the `PolicyNotConfi
 denial — no policy document is configured — and re-running the container with
 `-e QUOTER_SIGNER_POLICY='<policy JSON>'` turns that into the policy checks plus the
 `KmsNotConfiguredError` denial: the KMS maker key is not configured, and without AWS credentials
-in the local container the attestation stage cannot succeed anyway — a fully attested
-`SigningNotImplementedError` denial needs the Lambda deployment below.
+and an RPC endpoint in the local container neither the attestation nor the nonce read can succeed
+anyway — a signed approval needs the Lambda deployment below.
 
 ## Publish to Docker Hub (maintainers)
 
@@ -345,16 +526,19 @@ docker push "$ACCOUNT.dkr.ecr.$REGION.amazonaws.com/quoter-signer:<commit-sha>"
 Create the function. Without KMS configuration an execution role with the
 `AWSLambdaBasicExecutionRole` managed policy (CloudWatch Logs only) is enough and every
 well-formed in-policy intent is denied with `KmsNotConfiguredError`; to exercise the custody
-attestation, additionally grant the execution role `kms:GetPublicKey` — and nothing else, in
-particular not `kms:Sign` — on the maker key and set the two KMS variables. The deployment policy
+attestation alone, additionally grant the execution role `kms:GetPublicKey` on the maker key and
+set the two KMS variables — withholding `kms:Sign` keeps the deployment sign-inert. **A signing
+deployment additionally grants `kms:Sign` on the maker key** and sets `QUOTER_SIGNER_RPC_URL`
+(required for every transaction kind — ratify, revoke, setup remediation; quote signs without
+it). The deployment policy
 document rides in the function's environment; without it every well-formed intent is denied with
 `PolicyNotConfiguredError`. The policy is itself JSON, so pass the environment as a file
 (`--environment` shorthand cannot safely carry the nested commas and quotes) — with the document
 from the Deployment policy section saved as `policy.json`:
 
 ```sh
-jq -n --arg policy "$(cat policy.json)" \
-  '{Variables: {QUOTER_SIGNER_POLICY: $policy, QUOTER_SIGNER_KMS_KEY_ID: "alias/<maker-key-alias>", QUOTER_SIGNER_KMS_REGION: "<region>"}}' > environment.json
+jq -n --arg policy "$(gzip -c policy.json | base64)" \
+  '{Variables: {QUOTER_SIGNER_POLICY: $policy, QUOTER_SIGNER_KMS_KEY_ID: "alias/<maker-key-alias>", QUOTER_SIGNER_KMS_REGION: "<region>", QUOTER_SIGNER_RPC_URL: "https://<rpc-endpoint>"}}' > environment.json
 aws lambda create-function \
   --function-name quoter-signer \
   --package-type Image \
@@ -385,10 +569,15 @@ Expect a fail-closed denial envelope in `response.json` and the `middleware.inte
 
 Everything else in the TIB, in later increments: the mode-aware five-function deployment shape
 (setup/health, quote or ratify, routine revoke, break-glass revoke, setup remediation)
-instantiated from this one image, the invoke-only IAM chain that removes `kms:Sign` from the bot,
-the independent-read policy properties (crossed books, PnL, snapshot-derived fees and
-`continuousFeeCap`, canonical group and root re-derivation), the reservation ledger with its
-aggregate signed-exposure, signed-gas, and nonce-lease accounting, the canonical encode stages
-that feed the now-present attested KMS digest signer (sign-what-you-encode — the first stages to
-hold `kms:Sign`), and the bot-side intent ports that speak the wire contract above. Until then,
-deploying this image grants nothing beyond `kms:GetPublicKey` and signs nothing.
+instantiated from this one image, the invoke-only IAM chain that removes direct KMS access from
+the bot, the remaining independent-read policy properties (crossed books, PnL, snapshot-derived
+fees bounding `continuousFeeCap`, position state, pinned provider quorum), the reservation
+ledger with its aggregate signed-exposure, signed-gas, nonce-lease, recorded-transaction
+inventory (middleware-enumerated break-glass placement and middleware-derived replacement fees),
+and write-before-sign catalog accounting, the remediation and cleanup epochs with their deny
+generations, the remaining remediation action kinds (authorizations, the native-balance sweep),
+the setup/health attestation registry, and the bot-side intent ports that speak the wire
+contract above. The TIB's production-enablement gates for quote/ratify signing (PnL model,
+provider quorum, indexed-block snapshots, catalog persistence, the bot-side freshness-aware
+builders) are unchanged by this increment; a production deployment controls exposure through the
+`kms:Sign` grant and the policy document it reviews.

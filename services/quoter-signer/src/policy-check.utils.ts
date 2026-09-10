@@ -9,6 +9,12 @@ import type {
 } from './policy.utils'
 
 import { IntentPolicyViolationError } from './intent-policy-violation.error'
+import {
+  MIN_CONSUME_GROUPS_BASE_GAS,
+  MIN_CONTRACT_CALL_GAS,
+  MIN_GAS_PER_CONSUMED_GROUP,
+  MIN_SELF_CANCEL_GAS
+} from './policy.utils'
 
 /**
  * The one intent kind each signing surface accepts. Routine and break-glass revocation share the
@@ -21,6 +27,52 @@ const SURFACE_INTENT_KINDS: Record<SigningSurface, QuoterSignerIntent['kind']> =
   'routine-revoke': 'revoke',
   'break-glass-revoke': 'revoke',
   'setup-remediation': 'setup-remediation'
+}
+
+/**
+ * A consumption batch whose gas limit cannot cover its own worst-case execution would be
+ * included and revert: the maker nonce and fees burn while every group stays live. The ceilings
+ * only bound gas from above, so this floor bounds it from below, per batch size.
+ */
+const assertConsumeGroupsGasFloor = (fees: IntentFees, groups: number): void => {
+  const floor = MIN_CONSUME_GROUPS_BASE_GAS + MIN_GAS_PER_CONSUMED_GROUP * BigInt(groups)
+  if (BigInt(fees.gas) < floor) {
+    throw new IntentPolicyViolationError('gas-floor', 'fees.gas')
+  }
+}
+
+/** Flat execution floor for single-call operations (ratify, root revocations, remediation). */
+const assertContractCallGasFloor = (fees: IntentFees): void => {
+  if (BigInt(fees.gas) < MIN_CONTRACT_CALL_GAS) {
+    throw new IntentPolicyViolationError('gas-floor', 'fees.gas')
+  }
+}
+
+/** Intrinsic floor for the empty self-send; below it the artifact could never be included. */
+const assertSelfCancelGasFloor = (fees: IntentFees): void => {
+  if (BigInt(fees.gas) < MIN_SELF_CANCEL_GAS) {
+    throw new IntentPolicyViolationError('gas-floor', 'fees.gas')
+  }
+}
+
+/**
+ * The explicit-placement rule of the two revoke surfaces: break-glass cleanup must direct every
+ * placement itself — replacing occupied nonces, never silently queueing at the pending one
+ * (TIB-2026-08-12 §5) — so its operations require an explicit nonce, while routine revocation
+ * signs only the middleware's independent pending-nonce read and rejects one. Self-cancel
+ * carries a required nonce by shape, so this rule makes it operator-only for now: a routine
+ * displacement could out-bid a pending cleanup or remediation and *preserve* exposure, and
+ * telling a replaceable routine transaction from a safety action needs the recorded-transaction
+ * inventory of the ledger increment. The window validation of an accepted explicit nonce happens
+ * at the chain-read stage.
+ */
+const assertPlacementNonceWithinSurface = (
+  nonce: number | undefined,
+  surface: SigningSurface
+): void => {
+  if (surface === 'break-glass-revoke' ? nonce === undefined : nonce !== undefined) {
+    throw new IntentPolicyViolationError('nonce-pin', 'operation.nonce')
+  }
 }
 
 const assertFeesWithinCeiling = (
@@ -78,6 +130,11 @@ const assertOfferWithinPolicy = (
   const tick = BigInt(offer.tick)
   if (tick < BigInt(market.minTick) || tick > BigInt(market.maxTick)) {
     throw new IntentPolicyViolationError('price-bound', `${field}.tick`)
+  }
+  // The pinned per-market spacing (the book's live on-chain spacing) is what the encoding stage
+  // hands the SDK; checking here names the exact field instead of a generic encoding denial.
+  if (tick % BigInt(market.tickSpacing) !== 0n) {
+    throw new IntentPolicyViolationError('tick-alignment', `${field}.tick`)
   }
   if (BigInt(offer.continuousFeeCap) > BigInt(market.maxContinuousFeeCap)) {
     throw new IntentPolicyViolationError('continuous-fee-cap', `${field}.continuousFeeCap`)
@@ -183,11 +240,14 @@ const assertOffersWithinPolicy = (
  * Enforces the deterministic TIB-2026-08-12 deployment-policy checks on one parsed intent: the
  * surface's pinned intent kind, the chain and maker pins, per-kind fee/gas ceilings (`protected`
  * on the break-glass surface, per-variant for setup remediation, `routine` otherwise), the
- * ratifier-mode coherence of root revocations, the remediation-variant allowlist, and — for quote
- * and ratify offer sets — the market allowlist, tick price bounds, offer field pins, reduce-only
- * side pins, continuous-fee-cap ceilings, freshness/start/maturity time windows, group coherence,
- * and the static per-market and maker-wide lend-exposure caps charged once per consumption
- * domain.
+ * per-shape gas floors (a limit that cannot cover the transaction's own worst-case execution
+ * would revert on inclusion — or, for the empty self-send, never be includable — burning the
+ * nonce without effect), the ratifier-mode coherence of root revocations, the explicit-placement
+ * nonce pin of the revoke surfaces, the remediation-variant allowlist, and — for quote and ratify
+ * offer sets — the market allowlist, tick price bounds and per-market tick-spacing alignment,
+ * offer field pins, reduce-only side pins, continuous-fee-cap ceilings, freshness/start/maturity
+ * time windows, group coherence, and the static per-market and maker-wide lend-exposure caps
+ * charged once per consumption domain.
  *
  * These are the checks decidable from deployment parameters and the middleware clock alone. The
  * independent-read properties (crossed books, PnL, snapshot fees, aggregate reservations, nonce
@@ -220,6 +280,7 @@ export const assertIntentWithinPolicy = (
     case 'ratify': {
       assertOffersWithinPolicy(intent.offers, policy, nowSeconds)
       assertFeesWithinCeiling(intent.fees, policy.feeCeilings.routine, 'fees')
+      assertContractCallGasFloor(intent.fees)
       return
     }
     case 'revoke': {
@@ -234,6 +295,16 @@ export const assertIntentWithinPolicy = (
           ? policy.feeCeilings.protected
           : policy.feeCeilings.routine
       assertFeesWithinCeiling(intent.fees, ceiling, 'fees')
+      if (intent.operation.type === 'consume-groups') {
+        assertConsumeGroupsGasFloor(intent.fees, intent.operation.groups.length)
+      }
+      if (intent.operation.type === 'cancel-root' || intent.operation.type === 'unratify-root') {
+        assertContractCallGasFloor(intent.fees)
+      }
+      if (intent.operation.type === 'self-cancel') {
+        assertSelfCancelGasFloor(intent.fees)
+      }
+      assertPlacementNonceWithinSurface(intent.operation.nonce, policy.surface)
       return
     }
     case 'setup-remediation': {
@@ -242,6 +313,7 @@ export const assertIntentWithinPolicy = (
         throw new IntentPolicyViolationError('remediation-allowlist', 'remediation')
       }
       assertFeesWithinCeiling(intent.fees, remediation.feeCeiling, 'fees')
+      assertContractCallGasFloor(intent.fees)
       return
     }
   }

@@ -100,6 +100,7 @@ not-yet-built bots sit in `docs/decisions/` alongside their siblings._
 - [TIB-2026-08-25: Quoter-bot npm publishing](./decisions/TIB-2026-08-25-quoter-bot-npm-publishing.md) — `@morpho-org/quoter` on production release — proposed
 - [TIB-2026-08-28: Midnight loan-as-collateral](./decisions/TIB-2026-08-28-midnight-loan-as-collateral.md) — off-chain slot choice and the swap-free path — proposed
 - [TIB-2026-09-07: OpenTelemetry stack for the quoter bot](./decisions/TIB-2026-09-07-quoter-bot-otel-stack.md) — opt-in OTLP traces + metrics via new `@repo/telemetry`: redacted undici request spans, `quoter-bot.cycle` spans, metrics derived from the shipped monitoring records, `grafana/otel-lgtm` compose profile — proposed
+- [TIB-2026-09-09: Quoter-bot ladder reconciliation against the resting book](./decisions/TIB-2026-09-09-quoter-ladder-book-reconciliation.md) — supersedes TIB-2026-08-14's third-party non-goal: the fail-closed crossing invariant narrows to the maker's own offers, classified by the `maker` field the book response already carries (a third party's order can no longer wedge a market); clearing third parties becomes best-effort one-tick pricing; a crossed resting ladder is detected per side from the current book alone — third-party ticks against this strategy's active ladder groups, nothing persisted or converted — and replaced after an in-queue recheck under a per-side cooldown. Rate-ratifier semantics are deferred to a second TIB written once the ABI is installed — proposed
 
 ---
 
