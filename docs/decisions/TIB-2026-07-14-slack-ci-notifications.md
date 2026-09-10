@@ -134,3 +134,16 @@ The threat-model delta is small:
   deferral this reverses (Future Considerations: "Linear + PR automation").
 - Source system in `prime-monorepo`: `.github/workflows/pr-slack-notify.yml`,
   `.github/workflows/claude-write-release-notes.yml`, `packages/ci-scripts`.
+
+## Addenda
+
+### 2026-09-09 — PR notifications retired; release notifications kept
+
+Morpho no longer reviews PRs through Slack, so `pr-slack-notify.yml` and its
+`.github/slack-user-map.json` are deleted. `vars.SLACK_PR_CHANNEL_ID` is now unused and can be
+removed from the repository variables (admin, out of band); the `<!-- slack-thread-ts:… -->` markers
+left in older PR descriptions are inert. `release-slack-notify.yml` stays, and is now also invoked
+via `workflow_call` from `deploy-bot.yml` after each production release
+([TIB-2026-09-09](./TIB-2026-09-09-release-intent-gated-deploys.md)); the `release: published`
+trigger never fired for CI-created releases because GitHub suppresses events for `GITHUB_TOKEN`
+writes. `secrets.SLACK_BOT_TOKEN` and `vars.SLACK_RELEASE_CHANNEL_ID` remain in use.
