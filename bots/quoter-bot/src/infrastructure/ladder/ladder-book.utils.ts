@@ -16,6 +16,12 @@ const bytes32 = (value: unknown) => {
   return bytesToHex(hexToBytes(value))
 }
 
+const units = (value: unknown) => {
+  if (typeof value !== 'string' || !/^\d+$/.test(value))
+    throw new LadderAdapterError('book-response')
+  return BigInt(value)
+}
+
 const address = (value: unknown) => {
   if (typeof value !== 'string' || !isAddress(value, { strict: false })) {
     throw new LadderAdapterError('book-response')
@@ -30,7 +36,7 @@ const address = (value: unknown) => {
  * @param parameters - Router origin, configured market IDs, aggregate deadline, cleanup-tombstone
  *   group IDs to omit, and optional request boundary.
  * @returns Every active market offer required for negative-spread validation, each carrying its
- *   checksummed `maker` and `ratifier`.
+ *   checksummed `maker` and `ratifier` and its executable size in `units`.
  * @throws `LadderAdapterError` when a response is malformed, exceeds the endpoint bound, or the
  *   aggregate deadline expires before a side can be requested.
  */
@@ -94,6 +100,7 @@ export const readLadderBookOffers = async (parameters: {
           marketId: returnedMarketId,
           maker: address(raw.maker),
           ratifier: address(raw.ratifier),
+          units: units(row.units),
           buy: expectedBuy,
           tick: BigInt(raw.tick)
         }

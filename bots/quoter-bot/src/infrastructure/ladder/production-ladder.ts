@@ -480,7 +480,8 @@ export const createProductionLadderAdapters = (
           publications,
           marketId,
           activeLadderGroupIds
-        )
+        ),
+        minimumOpposingAssets: selectedConfig.minimumOfferAssets
       })
       const tickSpacing = BigInt(marketData.tickSpacing)
       const timeToMaturity = marketData.params.maturity - block.timestamp
@@ -692,7 +693,8 @@ export const createProductionLadderAdapters = (
         publications,
         marketId,
         observed.replacedGroupIds
-      )
+      ),
+      minimumOpposingAssets: selectedConfig.minimumOfferAssets
     })
     const clearable = clearableOpposingBook({
       ticks: retainedOpposingBookTicks({

@@ -6,6 +6,8 @@ export type OwnedOverlapBookOffer = BookOffer & {
   overlapOwner?: 'bootstrap-buy' | 'ladder-sell'
   /** Signing maker, when the projection that produced the offer knows it. */
   maker?: Address
+  /** Executable size in credit units, when the projection that produced the offer knows it. */
+  units?: bigint
 }
 
 /**

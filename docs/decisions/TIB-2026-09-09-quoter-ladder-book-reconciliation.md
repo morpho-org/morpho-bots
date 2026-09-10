@@ -205,7 +205,12 @@ force a defined-but-arbitrary answer for the mixed case.
 
 The relation is the one `hasInvalidOwnedBootstrapLadderSpread` encodes — highest buy tick at or
 above lowest sell tick — but applied to a deliberately narrower pair of sets: third-party offers on
-one side against **this strategy's active ladder groups** on the other, per side. Own offers that are
+one side against **this strategy's active ladder groups** on the other, per side. A third-party
+offer counts only if its executable size, converted to assets at its own tick, is at least the
+market's `minimumOfferAssets`. A replacement costs one transaction per active group, and posting an
+offer costs its maker one, so without a size floor a dust offer moved once per cooldown buys that
+amplification for free; an offer smaller than the smallest one we would quote ourselves is dust by
+our own definition. The reader keeps the response's `units` for this and for nothing else. Own offers that are
 not ladder groups are on neither side. A third-party sell crossing an own bootstrap buy is
 bootstrap's concern and must not replace the ladder; an own orphan crossing the ladder is the
 guard's concern, not a reason to reprice. Durable ladder publications already record their groups by

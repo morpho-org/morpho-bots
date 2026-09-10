@@ -1,5 +1,6 @@
 import type { Address, Hex } from 'viem'
 
+import { TakeAmountsLib } from '@morpho-org/midnight-sdk'
 import { describe, expect, test } from 'vitest'
 
 import type { OwnedOverlapBookOffer } from '../../../src/infrastructure/intentional-overlap.utils'
@@ -92,8 +93,14 @@ const activeLadderGroupIds = {
   higher: new Set([ownLadderBuy.groupId])
 }
 
-const crossing = (book: readonly OwnedOverlapBookOffer[]) =>
-  bookCrossesRestingLadder({ marketId, maker, book, activeLadderGroupIds })
+const crossing = (book: readonly OwnedOverlapBookOffer[], minimumOpposingAssets?: bigint) =>
+  bookCrossesRestingLadder({
+    marketId,
+    maker,
+    book,
+    activeLadderGroupIds,
+    ...(minimumOpposingAssets === undefined ? {} : { minimumOpposingAssets })
+  })
 
 describe('bookCrossesRestingLadder', () => {
   test('reports the lower side crossed by a third-party bid above our ladder sell', () => {
@@ -103,6 +110,25 @@ describe('bookCrossesRestingLadder', () => {
         offer({ groupId: groupId('01'), buy: true, tick: 4_050n, maker: counterparty })
       ])
     ).toEqual({ lower: true, higher: false })
+  })
+
+  test('ignores a third-party offer smaller than the minimum opposing size', () => {
+    const tick = 4_050n
+    const minimumUnits = TakeAmountsLib.toUnitsAtTick({ assets: 100n, tick, rounding: 'Up' })
+    const bid = (units: bigint) =>
+      offer({ groupId: groupId('01'), buy: true, tick, maker: counterparty, units })
+
+    expect(crossing([offer(ownLadderSell), bid(minimumUnits - 1n)], 100n)).toEqual({
+      lower: false,
+      higher: false
+    })
+    expect(crossing([offer(ownLadderSell), bid(minimumUnits)], 100n)).toEqual({
+      lower: true,
+      higher: false
+    })
+    expect(crossing([offer(ownLadderSell), offer({ ...bid(1n), units: undefined })], 100n)).toEqual(
+      { lower: true, higher: false }
+    )
   })
 
   test('reports the higher side crossed by a third-party ask below our ladder buy', () => {

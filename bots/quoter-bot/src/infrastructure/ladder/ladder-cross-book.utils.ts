@@ -1,5 +1,6 @@
 import type { Address, Hex } from 'viem'
 
+import { TakeAmountsLib } from '@morpho-org/midnight-sdk'
 import { batchProspectiveBook } from '@repo/offers'
 import { isAddressEqual } from 'viem'
 
@@ -65,24 +66,38 @@ export const retainedOpposingBookTicks = (parameters: {
 
 /**
  * Sides on which a third-party offer currently crosses one of this strategy's resting ladder offers.
- * @param parameters - Selected market, configured maker, complete market book, and the strategy's
- * active ladder group IDs per side.
+ * @param parameters - Selected market, configured maker, complete market book, the strategy's
+ * active ladder group IDs per side, and the smallest opposing size worth repricing for.
  * @returns Whether a third-party offer crosses the resting ladder on each side.
  * @remarks An offer carrying no maker counts as own, as `hasInvalidOwnedBootstrapLadderSpread`
  * already fails closed on one. Own offers outside the active ladder groups are on neither side: a
  * third party crossing the bootstrap buy is bootstrap's concern, not a reason to replace the ladder.
+ * A third-party offer whose executable size converts to fewer assets than
+ * `minimumOpposingAssets` at its own tick is dust and never crosses: a replacement costs one
+ * transaction per active group, so a size floor is what keeps a free-to-post offer from buying
+ * those transactions. An offer of unknown size still counts.
  */
 export const bookCrossesRestingLadder = (parameters: {
   marketId: Hex
   maker: Address
   book: readonly OwnedOverlapBookOffer[]
   activeLadderGroupIds: { lower: ReadonlySet<Hex>; higher: ReadonlySet<Hex> }
+  minimumOpposingAssets?: bigint
 }) => {
   const market = parameters.book.filter(offer => offer.marketId === parameters.marketId)
   const ticks = (offers: readonly OwnedOverlapBookOffer[], buy: boolean) =>
     offers.filter(offer => offer.buy === buy).map(offer => offer.tick)
+  const minimum = parameters.minimumOpposingAssets
+  const meaningful = (offer: OwnedOverlapBookOffer) =>
+    minimum === undefined ||
+    offer.units === undefined ||
+    offer.units >=
+      TakeAmountsLib.toUnitsAtTick({ assets: minimum, tick: offer.tick, rounding: 'Up' })
   const thirdParty = market.filter(
-    offer => offer.maker !== undefined && !isAddressEqual(offer.maker, parameters.maker)
+    offer =>
+      offer.maker !== undefined &&
+      !isAddressEqual(offer.maker, parameters.maker) &&
+      meaningful(offer)
   )
   const ownLadder = (side: 'lower' | 'higher') =>
     market.filter(

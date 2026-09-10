@@ -22,6 +22,7 @@ describe('readLadderBookOffers', () => {
             ? [
                 {
                   market_id: marketId,
+                  units: '5',
                   offer: { group: groupId, maker, ratifier, buy: true, tick: 1 }
                 }
               ]
@@ -42,12 +43,18 @@ describe('readLadderBookOffers', () => {
         if (url.includes('/bids/')) return { data: [] }
         return {
           data: [
-            { market_id: marketId, offer: { group: groupId, maker, ratifier, buy: false, tick: 1 } }
+            {
+              market_id: marketId,
+              units: '5',
+              offer: { group: groupId, maker, ratifier, buy: false, tick: 1 }
+            }
           ]
         }
       }
     })
-    expect(offers).toEqual([{ groupId, marketId, maker, ratifier, buy: false, tick: 1n }])
+    expect(offers).toEqual([
+      { groupId, marketId, maker, ratifier, units: 5n, buy: false, tick: 1n }
+    ])
     expect(urls).toEqual([
       `https://router.invalid/v0/midnight/books/${marketId}/asks/takeable-offers`,
       `https://router.invalid/v0/midnight/books/${marketId}/bids/takeable-offers`
@@ -66,12 +73,32 @@ describe('readLadderBookOffers', () => {
           ? []
           : [groupId, retainedGroupId].map(group => ({
               market_id: marketId,
+              units: '5',
               offer: { group, maker, ratifier, buy: false, tick: 1 }
             }))
       })
     })
 
     expect(offers.map(offer => offer.groupId)).toEqual([retainedGroupId])
+  })
+
+  test('rejects a takeable offer whose executable units are not a non-negative integer', async () => {
+    await expect(
+      readLadderBookOffers({
+        baseUrl: 'https://router.invalid',
+        marketIds: [marketId],
+        timeoutMs: 1_000,
+        request: async () => ({
+          data: [
+            {
+              market_id: marketId,
+              units: '-1',
+              offer: { group: groupId, maker, ratifier, buy: false, tick: 1 }
+            }
+          ]
+        })
+      })
+    ).rejects.toMatchObject({ operation: 'book-response' })
   })
 
   test('rejects a takeable offer whose maker is not an address', async () => {
@@ -86,6 +113,7 @@ describe('readLadderBookOffers', () => {
             : [
                 {
                   market_id: marketId,
+                  units: '5',
                   offer: { group: groupId, maker: '0xnotanaddress', ratifier, buy: false, tick: 1 }
                 }
               ]
@@ -105,6 +133,7 @@ describe('readLadderBookOffers', () => {
           : [
               {
                 market_id: marketId,
+                units: '5',
                 offer: {
                   group: groupId,
                   maker: maker.toLowerCase(),
