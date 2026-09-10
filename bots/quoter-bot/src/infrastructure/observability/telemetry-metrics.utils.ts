@@ -230,7 +230,9 @@ export const createTelemetryRecordObserver = () => {
             stage: fields.stage,
             reason: fields.reason,
             bound: fields.bound,
-            cap: fields.cap
+            cap: fields.cap,
+            clearable: fields.clearable,
+            suppressed: fields.suppressed
           })
         )
         return

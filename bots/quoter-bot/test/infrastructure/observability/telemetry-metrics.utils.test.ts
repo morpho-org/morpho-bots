@@ -130,6 +130,14 @@ describe('createTelemetryRecordObserver', () => {
       maximumRateBps: 800n
     })
     observer.record({
+      event: 'guardrail.book-crossed',
+      workflow: 'ladder',
+      marketId: MARKET_ID,
+      side: 'lower',
+      clearable: true,
+      suppressed: false
+    })
+    observer.record({
       event: 'ladder.transaction-submitted',
       operation: 'publish',
       marketId: MARKET_ID,
@@ -162,6 +170,17 @@ describe('createTelemetryRecordObserver', () => {
           marketId: MARKET_ID,
           side: 'higher',
           bound: 'maximum'
+        },
+        value: 1
+      },
+      {
+        attributes: {
+          type: 'book-crossed',
+          workflow: 'ladder',
+          marketId: MARKET_ID,
+          side: 'lower',
+          clearable: true,
+          suppressed: false
         },
         value: 1
       }
