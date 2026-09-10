@@ -56,6 +56,26 @@ const metricExportIntervalMs = (env: Environment, logger?: TelemetryLogger) => {
   return DEFAULT_METRIC_EXPORT_INTERVAL_MS
 }
 
+// Optional lifecycle logging must never affect telemetry control flow: a throwing logger would
+// otherwise break startBotTelemetry's never-throw and shutdown's never-reject guarantees.
+const nonThrowing = (logger: TelemetryLogger | undefined): TelemetryLogger | undefined =>
+  logger && {
+    info(event, fields) {
+      try {
+        logger.info(event, fields)
+      } catch {
+        return
+      }
+    },
+    warn(event, fields) {
+      try {
+        logger.warn(event, fields)
+      } catch {
+        return
+      }
+    }
+  }
+
 const installDiagnosticLogger = (logger: TelemetryLogger | undefined, now: () => number) => {
   if (logger === undefined) return
   let lastLoggedAt = -Infinity
@@ -117,6 +137,7 @@ export const startBotTelemetry = (options: {
   const noop = { enabled: false, shutdown: async () => {} }
   if (!tracesEnabled && !metricsEnabled) return noop
 
+  const logger = nonThrowing(options.logger)
   const startSignal = <Registered>(
     signal: string,
     start: () => Registered,
@@ -125,7 +146,7 @@ export const startBotTelemetry = (options: {
     try {
       return start()
     } catch (error) {
-      options.logger?.warn('otel.start-failed', {
+      logger?.warn('otel.start-failed', {
         signal,
         errorName: diagnosticErrorName(error instanceof Error ? error.name : error)
       })
@@ -135,7 +156,7 @@ export const startBotTelemetry = (options: {
   }
 
   try {
-    installDiagnosticLogger(options.logger, options.now ?? Date.now)
+    installDiagnosticLogger(logger, options.now ?? Date.now)
     const serviceName = env.OTEL_SERVICE_NAME?.trim() || options.serviceName
     const resource = defaultResource().merge(
       resourceFromAttributes({
@@ -175,7 +196,7 @@ export const startBotTelemetry = (options: {
               readers: [
                 new PeriodicExportingMetricReader({
                   exporter: withDeltaObservableGauges(new OTLPMetricExporter()),
-                  exportIntervalMillis: metricExportIntervalMs(env, options.logger)
+                  exportIntervalMillis: metricExportIntervalMs(env, logger)
                 })
               ]
             })
@@ -204,7 +225,7 @@ export const startBotTelemetry = (options: {
       () => {}
     )
 
-    options.logger?.info('otel.started', {
+    logger?.info('otel.started', {
       serviceName,
       traces: tracerProvider !== undefined,
       metrics: meterProvider !== undefined
@@ -233,10 +254,10 @@ export const startBotTelemetry = (options: {
                     )
                   )[0]
           if (failure !== undefined) {
-            options.logger?.warn('otel.shutdown-failed', { errorName: failure })
+            logger?.warn('otel.shutdown-failed', { errorName: failure })
           }
         } catch (error) {
-          options.logger?.warn('otel.shutdown-failed', {
+          logger?.warn('otel.shutdown-failed', {
             errorName: diagnosticErrorName(error instanceof Error ? error.name : error)
           })
         } finally {
@@ -249,7 +270,7 @@ export const startBotTelemetry = (options: {
       }
     }
   } catch (error) {
-    options.logger?.warn('otel.start-failed', {
+    logger?.warn('otel.start-failed', {
       signal: 'pipeline',
       errorName: diagnosticErrorName(error instanceof Error ? error.name : error)
     })

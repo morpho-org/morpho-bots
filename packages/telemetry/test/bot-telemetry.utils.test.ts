@@ -214,6 +214,27 @@ describe('startBotTelemetry', () => {
     }
   })
 
+  test('a throwing lifecycle logger never breaks startup or shutdown', async () => {
+    const collector = await startCollector()
+    vi.stubEnv('OTEL_EXPORTER_OTLP_ENDPOINT', collector.origin)
+    vi.stubEnv('OTEL_METRIC_EXPORT_INTERVAL', 'not-a-number')
+    const explosive = {
+      info: () => {
+        throw new Error('logger exploded')
+      },
+      warn: () => {
+        throw new Error('logger exploded')
+      }
+    }
+    const telemetry = startBotTelemetry({ serviceName: 'test-bot', logger: explosive })
+    try {
+      expect(telemetry.enabled).toBe(true)
+    } finally {
+      await expect(telemetry.shutdown()).resolves.toBeUndefined()
+      await collector.close()
+    }
+  })
+
   test('shutdown is idempotent', async () => {
     const collector = await startCollector()
     vi.stubEnv('OTEL_EXPORTER_OTLP_ENDPOINT', collector.origin)

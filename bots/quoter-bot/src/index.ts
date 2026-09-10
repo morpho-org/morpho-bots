@@ -1,4 +1,4 @@
-import { classifyShippingConfig, createLogger } from '@repo/bot-kit'
+import { createLogger } from '@repo/bot-kit'
 import {
   createBotObservability,
   enhanceVerboseArgv,
@@ -37,14 +37,14 @@ process.once('SIGTERM', requestShutdown)
 const chainId = await resolveObservabilityChainId(process.env, process.argv.slice(2))
 
 const monitoringLogger = createMonitoringLogger({ bot: 'quoter-bot', chainId })
-// The stderr fallback keeps `otel.*` lifecycle lines visible when BetterStack shipping is off,
-// but is constructed only for a telemetry-enabled run with shipping fully absent: constructing a
-// logger under partial shipping config would emit a second `logship.misconfigured`, and a plain
-// local run must stay silent.
+// The stderr-only fallback keeps `otel.*` lifecycle lines visible whenever telemetry is on and
+// shipping is not fully configured — including a partial Better Stack setup, where it is built
+// against an empty environment so it neither ships nor emits a second `logship.misconfigured`.
+// A plain local run (no telemetry opt-in) stays silent.
 const telemetryLogger =
   monitoringLogger ??
-  (hasTelemetryConfig(process.env) && classifyShippingConfig(process.env).state === 'disabled'
-    ? createLogger('info', { context: { bot: 'quoter-bot', chainId } })
+  (hasTelemetryConfig(process.env)
+    ? createLogger('info', { env: {}, context: { bot: 'quoter-bot', chainId } })
     : undefined)
 // Registered before any application work so outbound-request instrumentation observes every
 // provider call. Disabled entirely without an OTLP endpoint opt-in; never throws.
