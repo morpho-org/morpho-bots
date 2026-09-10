@@ -3,6 +3,7 @@ import type { Address, Hex } from 'viem'
 import { batchProspectiveBook } from '@repo/offers'
 import { isAddressEqual } from 'viem'
 
+import type { LadderBookSideCrossing } from '../../domain/ladder/ladder'
 import type { OwnedOverlapBookOffer } from '../intentional-overlap.utils'
 import type { TickWindow } from '../tick-window.utils'
 
@@ -122,3 +123,15 @@ export const clearableOpposingBook = (parameters: {
       clearedBuyTick >= window.lowestTick
   }
 }
+
+/**
+ * Whether either side reports a crossing the configured rate window can still clear.
+ * @param crossing - Per-side crossing and feasibility observed on one book read.
+ * @returns `true` when a `book-crossed` replacement still has something to clear; an unclearable
+ * cross is an operator condition and never a reason to mutate.
+ */
+export const hasClearableCrossing = (crossing: {
+  lower: LadderBookSideCrossing
+  higher: LadderBookSideCrossing
+}) =>
+  (['lower', 'higher'] as const).some(side => crossing[side].crossed && crossing[side].clearable)

@@ -11,6 +11,7 @@ import type {
   LadderPositionService,
   LadderReferenceRateService
 } from './application/ladder/ladder-quoter.service'
+import type { LadderBookReconciliation } from './application/ladder/ladder-verbose'
 import type { SetupStateService } from './application/setup/setup-check.service'
 import type { ConfigService } from './config/config.service'
 import type { TargetRateStrategyConfig } from './domain/target-rate'
@@ -102,7 +103,9 @@ type Dependencies = {
     positions: LadderPositionService
     rates: LadderReferenceRateService
     make: LadderMakeService
-    validateReconcile?: (parameters: Parameters<LadderMakeService['reconcile']>[0]) => Promise<void>
+    validateReconcile?: (
+      parameters: Parameters<LadderMakeService['reconcile']>[0]
+    ) => Promise<LadderBookReconciliation | undefined>
   }
   /** Replaces the provider, signer, and ownership port for explicit offer invalidation. */
   createInvalidationPort?: (config: ConfigService) => OfferInvalidationPort

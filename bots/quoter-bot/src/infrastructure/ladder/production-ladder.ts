@@ -19,6 +19,7 @@ import type {
   LadderReferenceRateService
 } from '../../application/ladder/ladder-quoter.service'
 import type {
+  LadderBookReconciliation,
   LadderSubmittedTransaction,
   LadderTransactionSubmittedObserver
 } from '../../application/ladder/ladder-verbose'
@@ -66,10 +67,16 @@ import { ladderCashReservations } from './ladder-cash-reservation.utils'
 import {
   bookCrossesRestingLadder,
   clearableOpposingBook,
+  hasClearableCrossing,
   retainedOpposingBookTicks
 } from './ladder-cross-book.utils'
 import { createLadderGroupOwnership } from './ladder-group-ownership.utils'
-import { MidnightLadderMakeService, type LadderOfferTransport } from './ladder-make.service'
+import {
+  MidnightLadderMakeService,
+  type LadderObservedBook,
+  type LadderObservedMarket,
+  type LadderOfferTransport
+} from './ladder-make.service'
 import { buildLadderTree } from './ladder-offer.utils'
 import { configuredRatifierType, prepareLadderRatification } from './ladder-ratification.utils'
 import { assertLadderProspectiveSpread } from './ladder-spread.utils'
@@ -84,7 +91,9 @@ type ProductionLadderAdapters = {
   positions: LadderPositionService
   rates: LadderReferenceRateService
   make: LadderMakeService
-  validateReconcile: (parameters: Parameters<LadderMakeService['reconcile']>[0]) => Promise<void>
+  validateReconcile: (
+    parameters: Parameters<LadderMakeService['reconcile']>[0]
+  ) => Promise<LadderBookReconciliation | undefined>
 }
 
 const minimum = (left: bigint, right: bigint) => (left < right ? left : right)
@@ -657,16 +666,67 @@ export const createProductionLadderAdapters = (
 
   const readActive = async (marketId: Hex) => (await readActiveState(marketId)).quote
 
+  const readObservedMarket = async (marketId: Hex): Promise<LadderObservedMarket> => {
+    const [market, block] = await Promise.all([
+      midnight.getMarketData(marketId),
+      client.getBlock({ blockTag: 'latest' })
+    ])
+    return { market, now: block.timestamp }
+  }
+
+  const assessBookCrossing = async (marketId: Hex, observed: LadderObservedBook) => {
+    const selectedConfig = configByMarket.get(marketId)
+    if (!selectedConfig) throw new LadderAdapterError('market-configuration-missing')
+    const [observedMarket, publications] = await Promise.all([
+      readObservedMarket(marketId),
+      ladderOwnership.read()
+    ])
+    const timeToMaturity = BigInt(observedMarket.market.params.maturity) - observedMarket.now
+    if (timeToMaturity <= 0n) throw new LadderAdapterError('market-matured')
+    const tickSpacing = BigInt(observedMarket.market.tickSpacing)
+    const crossed = bookCrossesRestingLadder({
+      marketId,
+      maker,
+      book: observed.book,
+      activeLadderGroupIds: activeOwnedLadderGroupIdsBySide(
+        publications,
+        marketId,
+        observed.replacedGroupIds
+      )
+    })
+    const clearable = clearableOpposingBook({
+      ticks: retainedOpposingBookTicks({
+        marketId,
+        replacedGroupIds: observed.replacedGroupIds,
+        book: observed.book
+      }),
+      window: rateTickWindow({
+        minimumRateBps: selectedConfig.minimumRateBps,
+        maximumRateBps: selectedConfig.maximumRateBps,
+        timeToMaturity,
+        tickSpacing
+      }),
+      tickSpacing
+    })
+    return {
+      reconciliation: {
+        preparedAtTimestamp: observedMarket.now,
+        bookCrossing: {
+          lower: { crossed: crossed.lower, clearable: clearable.lower },
+          higher: { crossed: crossed.higher, clearable: clearable.higher }
+        }
+      },
+      observedMarket
+    }
+  }
+
   const prepareUnsignedPublication = async (
     quote: LadderQuoteSet,
-    observed: { book: readonly OwnedOverlapBookOffer[]; replacedGroupIds: ReadonlySet<Hex> }
+    observed: LadderObservedBook & { observedMarket?: LadderObservedMarket }
   ) => {
     const selectedConfig = config.ladder.find(item => item.marketId === quote.marketId)
     if (!selectedConfig) throw new LadderAdapterError('market-not-configured')
-    const [market, block] = await Promise.all([
-      midnight.getMarketData(quote.marketId),
-      client.getBlock({ blockTag: 'latest' })
-    ])
+    const { market, now } = observed.observedMarket ?? (await readObservedMarket(quote.marketId))
     const bootstrapTickCeiling = ownBootstrapBuyTickCeiling(observed.book, quote.marketId)
     const opposingBookTicks = retainedOpposingBookTicks({
       marketId: quote.marketId,
@@ -678,7 +738,7 @@ export const createProductionLadderAdapters = (
       market,
       maker,
       ratifier: config.setup.ratifier,
-      now: block.timestamp,
+      now,
       minimumRateBps: selectedConfig.minimumRateBps,
       maximumRateBps: selectedConfig.maximumRateBps,
       opposingBookTicks,
@@ -694,7 +754,7 @@ export const createProductionLadderAdapters = (
   }
 
   const validateReconcile: ProductionLadderAdapters['validateReconcile'] = async parameters => {
-    if (parameters.reason === 'rest' || !parameters.desired) return
+    if (parameters.reason === 'rest' || !parameters.desired) return undefined
     const [bookState, publications] = await Promise.all([
       completeBookOffers(parameters.marketId),
       ladderOwnership.read()
@@ -705,7 +765,17 @@ export const createProductionLadderAdapters = (
         activeOwnedLadderGroupIds(publications, bookState.groups, parameters.marketId)
       )
     }
-    const prepared = await prepareUnsignedPublication(parameters.desired, observed)
+    const assessed = await assessBookCrossing(parameters.marketId, observed)
+    if (
+      parameters.reason === 'book-crossed' &&
+      !hasClearableCrossing(assessed.reconciliation.bookCrossing)
+    ) {
+      return { ...assessed.reconciliation, applied: false }
+    }
+    const prepared = await prepareUnsignedPublication(parameters.desired, {
+      ...observed,
+      observedMarket: assessed.observedMarket
+    })
     assertLadderProspectiveSpread({
       marketId: parameters.marketId,
       maker,
@@ -713,6 +783,7 @@ export const createProductionLadderAdapters = (
       book: observed.book,
       prospective: ownedLadderProspectiveOffers(prepared.bookOffers)
     })
+    return { ...assessed.reconciliation, applied: true }
   }
 
   const readOnlyMake: LadderMakeService = {
@@ -763,6 +834,7 @@ export const createProductionLadderAdapters = (
       return activeOwnedLadderGroupIds(publications, groups, marketId)
     },
     listBookOffers: async marketId => (await completeBookOffers(marketId)).book,
+    assessBook: assessBookCrossing,
     preparePublication: async (quote, observed) => {
       const prepared = await prepareUnsignedPublication(quote, observed)
       const { bookClearedRungs } = prepared

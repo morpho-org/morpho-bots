@@ -1,6 +1,7 @@
 import type { Hex } from 'viem'
 
 import type {
+  LadderBookSideCrossing,
   LadderConfig,
   LadderDiagnostics,
   LadderMarketState,
@@ -50,6 +51,22 @@ export type LadderGroupConsumption = {
   remainingAssets: bigint
 }
 
+/** One side's observed crossing, and whether the replacement cooldown held this cycle. */
+export type LadderBookSideCrossingReport = LadderBookSideCrossing & { suppressed: boolean }
+
+/**
+ * Result of re-evaluating the resting-ladder crossing from the fresh in-queue book read.
+ * @remarks The evidence the cooldown is anchored to: a decision-time crossing is a reason to enter
+ * the mutation queue, never a licence to mutate on it.
+ */
+export type LadderBookReconciliation = {
+  /** Block timestamp preparation ran at; the same clock the offers' `start` uses. */
+  preparedAtTimestamp: bigint
+  bookCrossing: { lower: LadderBookSideCrossing; higher: LadderBookSideCrossing }
+  /** `false` when a `book-crossed` replacement found nothing left to clear and mutated nothing. */
+  applied: boolean
+}
+
 /** Result returned by a live or read-only ladder make adapter. */
 export type LadderMakeResult =
   | void
@@ -59,6 +76,10 @@ export type LadderMakeResult =
       submittedTransactions: readonly LadderSubmittedTransaction[]
       /** Rungs per side the opposing book repriced, when a publication was prepared. */
       bookClearedRungs?: { lower: number; higher: number }
+      /** Marks a dry run that validated and logged the request instead of submitting it. */
+      logged?: true
+      /** The in-queue crossing recheck, when a desired publication was assessed. */
+      reconciliation?: LadderBookReconciliation
     }
 
 /** Complete provider and active-quote projection shown for a verbose ladder check. */
@@ -101,7 +122,11 @@ export type LadderVerboseDetails = {
   /** Exact desired lower/higher quote set, when decision derivation succeeded. */
   ladderOffer?: LadderQuoteSet
   /** Stable reconciliation reason selected by the application workflow. */
-  decision?: 'publish' | 'recenter' | 'resize' | 'rest' | 'matured'
+  decision?: 'publish' | 'recenter' | 'resize' | 'rest' | 'book-crossed' | 'matured'
+  /** Pre-decision per-side crossing, and whether its cooldown suppressed a replacement. */
+  bookCrossing?: { lower: LadderBookSideCrossingReport; higher: LadderBookSideCrossingReport }
+  /** The make adapter's in-queue crossing recheck, when it assessed one. */
+  bookReconciliation?: LadderBookReconciliation
   /** Confirmed transactions submitted for this market check, in submission order. */
   submittedTransactions?: readonly LadderSubmittedTransaction[]
   /** Fresh provider and active-quote state read after the check or mutation completed. */

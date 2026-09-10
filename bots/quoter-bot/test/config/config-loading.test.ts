@@ -202,6 +202,7 @@ describe('ConfigService YAML and environment loading', () => {
       { strategy: 'variable_rate_avg' },
       { strategy: 'hardcoded', hardcodedRateBps: 400n }
     ])
+    expect(config.ladder.map(item => item.bookCrossedCooldownSeconds)).toEqual([180, 180])
   })
 
   test('rejects an invalid nested YAML target-rate with an exact validation failure', async () => {

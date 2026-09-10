@@ -41,6 +41,8 @@ export type LadderConfig = {
   minimumOfferAssets: bigint
   groupMode: 'shared-rung' | 'per-book'
   loopIntervalSeconds: number
+  /** Seconds one side waits between replacements a third-party crossing triggered. */
+  bookCrossedCooldownSeconds: number
   movementToleranceBps: bigint
   minimumRateBps: bigint
   maximumRateBps: bigint
@@ -244,6 +246,13 @@ export const validateLadderConfig = (config: LadderConfig): void => {
   if (config.loopIntervalSeconds > MAX_MONITOR_INTERVAL_SECONDS) {
     throw new LadderConfigurationError(
       'loopIntervalSeconds',
+      `must not exceed ${MAX_MONITOR_INTERVAL_SECONDS}`
+    )
+  }
+  safePositive(config.bookCrossedCooldownSeconds, 'bookCrossedCooldownSeconds')
+  if (config.bookCrossedCooldownSeconds > MAX_MONITOR_INTERVAL_SECONDS) {
+    throw new LadderConfigurationError(
+      'bookCrossedCooldownSeconds',
       `must not exceed ${MAX_MONITOR_INTERVAL_SECONDS}`
     )
   }

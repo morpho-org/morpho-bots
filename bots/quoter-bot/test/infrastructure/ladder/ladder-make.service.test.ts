@@ -1,9 +1,10 @@
+import type { IMarket } from '@morpho-org/midnight-sdk'
 import type { Address, Hex } from 'viem'
 
 import { getAddress } from 'viem'
 import { describe, expect, test, vi } from 'vitest'
 
-import type { LadderQuoteSet } from '../../../src/domain/ladder/ladder'
+import type { LadderBookSideCrossing, LadderQuoteSet } from '../../../src/domain/ladder/ladder'
 import type { LadderOfferTransport } from '../../../src/infrastructure/ladder/ladder-make.service'
 
 import { LadderOwnershipCleanupError } from '../../../src/application/ladder/ladder-ownership-cleanup.error'
@@ -28,6 +29,28 @@ const quote: LadderQuoteSet = {
   higher: [{ index: 0, rateBps: 550n, assets: 10n }]
 }
 
+const uncrossed: LadderBookSideCrossing = { crossed: false, clearable: true }
+const observedMarket = { market: {} as IMarket, now: 1_000n }
+
+const assessment =
+  (
+    crossing: Partial<Record<'lower' | 'higher', LadderBookSideCrossing>> = {},
+    events?: string[]
+  ): LadderOfferTransport['assessBook'] =>
+  async () => {
+    events?.push('assess')
+    return {
+      reconciliation: {
+        preparedAtTimestamp: 1_000n,
+        bookCrossing: {
+          lower: crossing.lower ?? uncrossed,
+          higher: crossing.higher ?? uncrossed
+        }
+      },
+      observedMarket
+    }
+  }
+
 const harness = () => {
   const events: string[] = []
   const transport: LadderOfferTransport = {
@@ -40,6 +63,7 @@ const harness = () => {
     readGroupConsumed: async () => 0n,
     listActiveGroupIds: async selected => (selected ? [oldGroup] : [oldGroup, secondGroup]),
     listBookOffers: async () => [],
+    assessBook: assessment(),
     preparePublication: async () => ({
       groupIds: [newGroup],
       groups: [{ groupId: newGroup, side: 'lower', rungIndexes: [0] }],
@@ -183,7 +207,7 @@ describe('MidnightLadderMakeService', () => {
       }
     })
 
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       bookClearedRungs: { lower: 0, higher: 0 },
       submittedTransactions: [
         { operation: 'cancel', txHash: cancellationHash },
@@ -473,5 +497,82 @@ describe('MidnightLadderMakeService', () => {
       subject.service.reconcile({ marketId, desired: quote, reason: 'recenter' })
     ).rejects.toMatchObject({ operation: 'negative-spread' })
     expect(subject.events).toEqual([])
+  })
+
+  test('mutates nothing when a book-crossed replacement finds no clearable cross left', async () => {
+    const subject = harness()
+    let prepared = 0
+    subject.transport.preparePublication = async () => {
+      prepared += 1
+      throw new Error('preparation must not run')
+    }
+
+    const result = await subject.service.reconcile({
+      marketId,
+      desired: quote,
+      reason: 'book-crossed'
+    })
+
+    expect(result).toEqual({
+      submittedTransactions: [],
+      reconciliation: {
+        preparedAtTimestamp: 1_000n,
+        bookCrossing: {
+          lower: { crossed: false, clearable: true },
+          higher: { crossed: false, clearable: true }
+        },
+        applied: false
+      }
+    })
+    expect(prepared).toBe(0)
+    expect(subject.events).toEqual([])
+  })
+
+  test('replaces the whole ladder when the recheck confirms a clearable cross', async () => {
+    const subject = harness()
+    subject.transport.assessBook = assessment({ lower: { crossed: true, clearable: true } })
+
+    const result = await subject.service.reconcile({
+      marketId,
+      desired: quote,
+      reason: 'book-crossed'
+    })
+
+    expect(subject.events).toEqual([
+      'reserve',
+      `cancel:${oldGroup}`,
+      `forget:${oldGroup}`,
+      'publish',
+      'confirm'
+    ])
+    expect(result).toMatchObject({ reconciliation: { applied: true } })
+  })
+
+  test('publishes a resize over an uncrossed book and still reports the recheck', async () => {
+    const subject = harness()
+
+    const result = await subject.service.reconcile({ marketId, desired: quote, reason: 'resize' })
+
+    expect(subject.events).toContain('publish')
+    expect(result).toMatchObject({ reconciliation: { applied: true } })
+  })
+
+  test('assesses the fresh book before preparing the publication it gates', async () => {
+    const subject = harness()
+    subject.transport.assessBook = assessment({}, subject.events)
+    subject.transport.preparePublication = async () => {
+      subject.events.push('prepare')
+      return {
+        groupIds: [newGroup],
+        groups: [{ groupId: newGroup, side: 'lower', rungIndexes: [0] }],
+        bookClearedRungs: { lower: 0, higher: 0 },
+        prospective: [],
+        publish: async () => undefined
+      }
+    }
+
+    await subject.service.reconcile({ marketId, desired: quote, reason: 'recenter' })
+
+    expect(subject.events.slice(0, 2)).toEqual(['assess', 'prepare'])
   })
 })

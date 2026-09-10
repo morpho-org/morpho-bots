@@ -149,10 +149,12 @@ const verboseEvents = (
         clearedRungs
       })
     }
+    const report = verbose.bookCrossing?.[side]
     const crossing =
-      verbose.currentState.status === 'observed'
+      report ??
+      (verbose.currentState.status === 'observed'
         ? verbose.currentState.market.bookCrossing?.[side]
-        : undefined
+        : undefined)
     if (crossing?.crossed) {
       events.push({
         event: 'guardrail.book-crossed',
@@ -160,7 +162,7 @@ const verboseEvents = (
         marketId,
         side,
         clearable: crossing.clearable,
-        suppressed: false
+        suppressed: report?.suppressed ?? false
       })
     }
   }

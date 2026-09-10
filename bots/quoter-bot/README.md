@@ -810,29 +810,31 @@ mutation and graceful-cleanup operation instead.
 Each `ladder` entry has a unique allowlisted `marketId`. Rates are integer BPS and asset/exposure
 amounts are exact raw loan-asset units. `quotePremiumBps` and `sizeSkewBps` are signed; all other
 integer fields are nonnegative or positive as shown below. `targetRate` defaults to
-`{ strategy: "variable_rate_avg" }` and `maturityPremium` may be omitted entirely; every other
-field in each entry is required.
+`{ strategy: "variable_rate_avg" }`, `maturityPremium` may be omitted entirely, and
+`bookCrossedCooldownSeconds` defaults to three loop intervals; every other field in each entry is
+required.
 
-| Field                        | Unit / behavior                                                                                                                                                      | Validation                                                                                                |
-| ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
-| `marketId`                   | 0x-prefixed 32-byte Midnight market ID quoted by this entry.                                                                                                         | Required, unique across the array, and present in `MARKET_IDS`.                                           |
-| `targetRate`                 | Target-rate method used as reference `R`.                                                                                                                            | `variable_rate_avg`, or `hardcoded` with positive `hardcodedRateBps`; defaults to `variable_rate_avg`.    |
-| `quotePremiumBps`            | Signed BPS added to the fresh reference rate before the ladder spread is applied. Positive moves both sides higher; negative moves both lower.                       | Signed decimal integer; the resulting funded rungs must remain inside the configured rate range.          |
-| `maturityPremium`            | Optional premium function of the market's time to maturity added to the effective center on top of `quotePremiumBps`.                                                | Object with `shape: 'linear'`, positive `premiumPerYearBps`, optional positive `maximumPremiumBps`.       |
-| `spreadBps`                  | Full distance in BPS between the nearest lower and higher rates. Each nearest rung is half this value from the center.                                               | Positive and even, so each half-spread is an exact integer BPS value.                                     |
-| `stepBps`                    | Additional BPS between successive rungs on the same side, moving farther from the center.                                                                            | Positive.                                                                                                 |
-| `rungCount`                  | Maximum number of rungs constructed on each side before capacity and minimum-size filtering.                                                                         | Positive safe integer no greater than `512`.                                                              |
-| `sizeSkewBps`                | Signed change to each successive rung's allocation weight from the base weight `10000`. Positive favors outer rungs; negative favors inner rungs.                    | Signed decimal integer; every configured rung weight must remain positive.                                |
-| `lowerRateBudgetAssets`      | Maximum raw assets allocated across lower-rate rungs. This side posts reduce-only borrow-side sells and is additionally capped by the maker's accrued market credit. | Positive and at least `minimumOfferAssets`.                                                               |
-| `higherRateBudgetAssets`     | Maximum raw assets allocated across higher-rate rungs. This side posts lend-side buys and is additionally capped by available balance, allowance, and exposure.      | Positive and at least `minimumOfferAssets`.                                                               |
-| `targetMarketExposureAssets` | Raw cap for credit plus reserved lend-buy liquidity in this market. It caps only the higher-rate, exposure-increasing side.                                          | Positive and no greater than `maximumTotalExposureAssets`.                                                |
-| `maximumTotalExposureAssets` | Raw cap for credit plus reserved lend-buy liquidity across all configured markets. It caps only the higher-rate, exposure-increasing side.                           | Positive.                                                                                                 |
-| `minimumOfferAssets`         | Smallest raw size permitted for any emitted rung. Capacity funds the closest rungs first and omits a side or outer rungs that cannot each meet this floor.           | Positive and no greater than either configured side budget. Use at least `101000000` for USDC.            |
-| `groupMode`                  | Consumption-cap grouping: `shared-rung` creates one independent group per rung; `per-book` creates one shared group for all funded rungs on each side.               | Exactly `shared-rung` or `per-book`.                                                                      |
-| `loopIntervalSeconds`        | Requested delay between completed monitor cycles for this market set; the monitor uses the shortest configured value.                                                | Positive integer no greater than `2147483`, keeping the millisecond delay within the runtime timer limit. |
-| `movementToleranceBps`       | Inclusive center-rate deadband. An existing center is retained until the effective center moves by strictly more than this value; capacity resizing still applies.   | Nonnegative.                                                                                              |
-| `minimumRateBps`             | Inclusive hard minimum for every funded final rung after premium, spread, and step offsets. A rung below it saturates at this bound.                                 | Nonnegative and strictly less than `maximumRateBps`.                                                      |
-| `maximumRateBps`             | Inclusive hard maximum for every funded final rung after premium, spread, and step offsets. A rung above it saturates at this bound.                                 | Positive and strictly greater than `minimumRateBps`; the complete static ladder shape must fit.           |
+| Field                        | Unit / behavior                                                                                                                                                                                                      | Validation                                                                                                |
+| ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| `marketId`                   | 0x-prefixed 32-byte Midnight market ID quoted by this entry.                                                                                                                                                         | Required, unique across the array, and present in `MARKET_IDS`.                                           |
+| `targetRate`                 | Target-rate method used as reference `R`.                                                                                                                                                                            | `variable_rate_avg`, or `hardcoded` with positive `hardcodedRateBps`; defaults to `variable_rate_avg`.    |
+| `quotePremiumBps`            | Signed BPS added to the fresh reference rate before the ladder spread is applied. Positive moves both sides higher; negative moves both lower.                                                                       | Signed decimal integer; the resulting funded rungs must remain inside the configured rate range.          |
+| `maturityPremium`            | Optional premium function of the market's time to maturity added to the effective center on top of `quotePremiumBps`.                                                                                                | Object with `shape: 'linear'`, positive `premiumPerYearBps`, optional positive `maximumPremiumBps`.       |
+| `spreadBps`                  | Full distance in BPS between the nearest lower and higher rates. Each nearest rung is half this value from the center.                                                                                               | Positive and even, so each half-spread is an exact integer BPS value.                                     |
+| `stepBps`                    | Additional BPS between successive rungs on the same side, moving farther from the center.                                                                                                                            | Positive.                                                                                                 |
+| `rungCount`                  | Maximum number of rungs constructed on each side before capacity and minimum-size filtering.                                                                                                                         | Positive safe integer no greater than `512`.                                                              |
+| `sizeSkewBps`                | Signed change to each successive rung's allocation weight from the base weight `10000`. Positive favors outer rungs; negative favors inner rungs.                                                                    | Signed decimal integer; every configured rung weight must remain positive.                                |
+| `lowerRateBudgetAssets`      | Maximum raw assets allocated across lower-rate rungs. This side posts reduce-only borrow-side sells and is additionally capped by the maker's accrued market credit.                                                 | Positive and at least `minimumOfferAssets`.                                                               |
+| `higherRateBudgetAssets`     | Maximum raw assets allocated across higher-rate rungs. This side posts lend-side buys and is additionally capped by available balance, allowance, and exposure.                                                      | Positive and at least `minimumOfferAssets`.                                                               |
+| `targetMarketExposureAssets` | Raw cap for credit plus reserved lend-buy liquidity in this market. It caps only the higher-rate, exposure-increasing side.                                                                                          | Positive and no greater than `maximumTotalExposureAssets`.                                                |
+| `maximumTotalExposureAssets` | Raw cap for credit plus reserved lend-buy liquidity across all configured markets. It caps only the higher-rate, exposure-increasing side.                                                                           | Positive.                                                                                                 |
+| `minimumOfferAssets`         | Smallest raw size permitted for any emitted rung. Capacity funds the closest rungs first and omits a side or outer rungs that cannot each meet this floor.                                                           | Positive and no greater than either configured side budget. Use at least `101000000` for USDC.            |
+| `groupMode`                  | Consumption-cap grouping: `shared-rung` creates one independent group per rung; `per-book` creates one shared group for all funded rungs on each side.                                                               | Exactly `shared-rung` or `per-book`.                                                                      |
+| `loopIntervalSeconds`        | Requested delay between completed monitor cycles for this market set; the monitor uses the shortest configured value.                                                                                                | Positive integer no greater than `2147483`, keeping the millisecond delay within the runtime timer limit. |
+| `bookCrossedCooldownSeconds` | Seconds one side of the resting ladder waits between replacements triggered by a third party crossing it. Anchored to the block timestamp the replaced publication was prepared at, and held in process memory only. | Optional positive integer no greater than `2147483`; defaults to three times `loopIntervalSeconds`.       |
+| `movementToleranceBps`       | Inclusive center-rate deadband. An existing center is retained until the effective center moves by strictly more than this value; capacity resizing still applies.                                                   | Nonnegative.                                                                                              |
+| `minimumRateBps`             | Inclusive hard minimum for every funded final rung after premium, spread, and step offsets. A rung below it saturates at this bound.                                                                                 | Nonnegative and strictly less than `maximumRateBps`.                                                      |
+| `maximumRateBps`             | Inclusive hard maximum for every funded final rung after premium, spread, and step offsets. A rung above it saturates at this bound.                                                                                 | Positive and strictly greater than `minimumRateBps`; the complete static ladder shape must fit.           |
 
 The rung limit bounds local allocation to 1,024 offers for a two-sided ladder, a height-10 tree
 below the Midnight SDK's height-20 protocol limit.
@@ -852,21 +854,28 @@ absolute effective-center movement is strictly greater than `movementToleranceBp
 changes still resize quotes inside that tolerance.
 
 A rung that would cross an offer already resting on the market book is repriced to the nearest tick
-just clear of it. The bot is a maker, and a crossed book is refused at publication, so a large
-reference move compresses the affected side against the best opposing offer instead of quoting
-through it and failing the cycle. That clearance saturates at the same hard rate range as every
+just clear of it, so a large reference move compresses the affected side against the best opposing
+offer instead of quoting through it. That clearance saturates at the same hard rate range as every
 other rung: if the best opposing offer sits beyond `minimumRateBps` / `maximumRateBps`, no in-range
-tick can clear it, and the cycle still fails on the crossed-book guard rather than quoting outside
-the configured rates. Own bootstrap buys keep their own clearance and their deliberate tie at the
-bound.
+tick can clear it and the rung publishes at the bound, crossed, rather than outside the configured
+rates. Publication refuses only a ladder that would cross an offer the maker itself owns, since that
+is a self-trade; crossing a third party is a pricing concern, never a reason to fail the cycle. Own
+bootstrap buys keep their own clearance and their deliberate tie at the bound.
 
-The clearance itself is exact and lives in tick space, so it never appears as a rate, and the
-`rest` / `resize` / `recenter` decision still reconciles against the reference rate alone. Every
-cycle additionally reports, per side, whether a third party currently crosses the ladder resting on
-the book and whether the configured rate window could still clear it (`guardrail.book-crossed`); the
-replacement policy that acts on it lands in a following change. `guardrail.book-cleared` reports how
-many rungs the book repriced, separately from the own bootstrap-buy clearance on
-`guardrail.cross-book-cleared`.
+The clearance itself is exact and lives in tick space, so it never appears as a rate, and rate-space
+quote drift stays governed by `movementToleranceBps` alone. Every cycle additionally reports, per
+side, whether a third party currently crosses the ladder resting on the book and whether the
+configured rate window could still clear it (`guardrail.book-crossed`). A side that is crossed,
+clearable, and past its `bookCrossedCooldownSeconds` upgrades that cycle's `rest` into a replacement
+with reason `book-crossed`. The crossing is then re-evaluated inside the mutation queue from a fresh
+book before anything is reserved, cancelled, or signed: a cross that has already gone mutates
+nothing and the cycle reports `rest`. The cooldown is per side, lives in process memory, is anchored
+to the block timestamp the publication was prepared at, and advances only on a replacement that was
+applied — or logged, in read-only mode — so a failed replacement retries on the next cycle.
+Crossed-and-unclearable is an operator condition rather than a bot condition: the book has left the
+configured rate window, so the cross is reported and nothing is acted on.
+`guardrail.book-cleared` reports how many rungs the book repriced, separately from the own
+bootstrap-buy clearance on `guardrail.cross-book-cleared`.
 
 `maturityPremium` makes the effective center a function of that market's remaining time to
 maturity, so one bot can quote every configured maturity from one term structure: further maturity
@@ -917,12 +926,13 @@ one-shot `ladder` invocation and every non-overlapping `ladder --monitor` cycle:
    recalculated from fresh inventory.
 4. Compares the complete active and desired quotes, then selects one decision:
 
-| Decision   | Condition                                                                                                                                                                | Mutation                                                                                                         |
-| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------- |
-| `publish`  | No active ladder remains and at least one side can fund an offer.                                                                                                        | Publishes one fresh complete tree. The cycle reports `action: "publish", reason: "publish"`.                     |
-| `rest`     | Active and desired quotes are exactly equal, or neither an active nor a fundable desired quote exists.                                                                   | Submits no transaction.                                                                                          |
-| `resize`   | An active ladder exists, its center remains inside tolerance, but fresh sizes, funded rung count, side availability, or grouping have changed.                           | Replaces the complete market ladder and reports `action: "replace", reason: "resize"`.                           |
-| `recenter` | The absolute movement from the active center to the fresh effective center (reference plus quote and maturity premiums) is strictly greater than `movementToleranceBps`. | Recalculates rates and sizes, replaces the complete ladder, and reports `action: "replace", reason: "recenter"`. |
+| Decision       | Condition                                                                                                                                                                             | Mutation                                                                                                                                                                                  |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `publish`      | No active ladder remains and at least one side can fund an offer.                                                                                                                     | Publishes one fresh complete tree. The cycle reports `action: "publish", reason: "publish"`.                                                                                              |
+| `rest`         | Active and desired quotes are exactly equal, or neither an active nor a fundable desired quote exists.                                                                                | Submits no transaction.                                                                                                                                                                   |
+| `resize`       | An active ladder exists, its center remains inside tolerance, but fresh sizes, funded rung count, side availability, or grouping have changed.                                        | Replaces the complete market ladder and reports `action: "replace", reason: "resize"`.                                                                                                    |
+| `recenter`     | The absolute movement from the active center to the fresh effective center (reference plus quote and maturity premiums) is strictly greater than `movementToleranceBps`.              | Recalculates rates and sizes, replaces the complete ladder, and reports `action: "replace", reason: "recenter"`.                                                                          |
+| `book-crossed` | An active ladder exists, its quote is otherwise unchanged, and a third party crosses one side of it inside the configured rate window, past that side's `bookCrossedCooldownSeconds`. | Rechecks the crossing under the mutation lock, then replaces the complete ladder and reports `action: "replace", reason: "book-crossed"`; a cross that has gone reports `action: "rest"`. |
 
 `movementToleranceBps` controls only rate movement. It never suppresses a capacity-driven `resize`.
 For example, a retained center can stay at 4.22% while a fill changes five higher-side rungs from

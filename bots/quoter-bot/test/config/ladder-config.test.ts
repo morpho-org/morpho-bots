@@ -400,4 +400,33 @@ describe('ladder configuration loading', () => {
       })
     ).toThrow('must be at least minimumOfferAssets')
   })
+
+  test('defaults an omitted book-crossed cooldown to three loop intervals', () => {
+    const config = ConfigService.from({
+      ...baseEnvironment,
+      LADDER_MARKETS: JSON.stringify([item({ loopIntervalSeconds: '60' })])
+    })
+
+    expect(config.ladder[0]?.bookCrossedCooldownSeconds).toBe(180)
+  })
+
+  test('honours an explicitly configured book-crossed cooldown', () => {
+    const config = ConfigService.from({
+      ...baseEnvironment,
+      LADDER_MARKETS: JSON.stringify([item({ bookCrossedCooldownSeconds: '600' })])
+    })
+
+    expect(config.ladder[0]?.bookCrossedCooldownSeconds).toBe(600)
+  })
+
+  test('rejects a non-positive or malformed book-crossed cooldown at its own field path', () => {
+    for (const value of ['0', '-1', 'x']) {
+      expect(() =>
+        ConfigService.from({
+          ...baseEnvironment,
+          LADDER_MARKETS: JSON.stringify([item({ bookCrossedCooldownSeconds: value })])
+        })
+      ).toThrow('ladder[0].bookCrossedCooldownSeconds')
+    }
+  })
 })

@@ -107,6 +107,7 @@ export const LADDER_MARKET_FIELDS = [
   'minimumOfferAssets',
   'groupMode',
   'loopIntervalSeconds',
+  'bookCrossedCooldownSeconds',
   'movementToleranceBps',
   'minimumRateBps',
   'maximumRateBps'
@@ -387,6 +388,9 @@ export const bootstrapConfigsValue = (
   return configs
 }
 
+/** Loop intervals a crossed side waits before replacing again when no cooldown is configured. */
+const DEFAULT_BOOK_CROSSED_COOLDOWN_LOOPS = 3
+
 const safeInteger = (value: unknown, field: string) => {
   const parsed = integerBigInt(value, field, false)
   const number = Number(parsed)
@@ -404,7 +408,8 @@ const safeInteger = (value: unknown, field: string) => {
  * Converts an exact ladder collection into production domain values using shared pure semantics.
  * @param value - Untrusted collection value at the JSON or YAML boundary.
  * @param allowlistedMarkets - Canonical markets allowed for this complete replacement collection.
- * @returns Validated ladder configurations in input order.
+ * @returns Validated ladder configurations in input order; an omitted `bookCrossedCooldownSeconds`
+ * defaults to three `loopIntervalSeconds`.
  * @throws `ConfigValidationError` for a non-list value, an unknown or missing entry field, a
  * malformed integer or group mode, a malformed optional `maturityPremium` (unknown nested key,
  * unsupported shape, missing slope, non-positive slope or cap, or an unquoted integer), a
@@ -424,7 +429,8 @@ export const ladderConfigsValue = (
     const prefix = `ladder[${index}]`
     const record = exactRecord(item, prefix, LADDER_MARKET_FIELDS, [
       'targetRate',
-      'maturityPremium'
+      'maturityPremium',
+      'bookCrossedCooldownSeconds'
     ])
     const required = (name: (typeof LADDER_MARKET_FIELDS)[number]) => record[name]
     const marketValue = required('marketId')
@@ -439,6 +445,10 @@ export const ladderConfigsValue = (
     const maturityPremium = maturityPremiumValue(
       record.maturityPremium,
       `${prefix}.maturityPremium`
+    )
+    const loopIntervalSeconds = safeInteger(
+      required('loopIntervalSeconds'),
+      `${prefix}.loopIntervalSeconds`
     )
     const config: TargetRateConfigured<LadderConfig> = {
       marketId: parseBytes32(marketValue, `${prefix}.marketId`),
@@ -479,10 +489,11 @@ export const ladderConfigsValue = (
         false
       ),
       groupMode: groupMode as LadderConfig['groupMode'],
-      loopIntervalSeconds: safeInteger(
-        required('loopIntervalSeconds'),
-        `${prefix}.loopIntervalSeconds`
-      ),
+      loopIntervalSeconds,
+      bookCrossedCooldownSeconds:
+        record.bookCrossedCooldownSeconds === undefined
+          ? DEFAULT_BOOK_CROSSED_COOLDOWN_LOOPS * loopIntervalSeconds
+          : safeInteger(record.bookCrossedCooldownSeconds, `${prefix}.bookCrossedCooldownSeconds`),
       movementToleranceBps: integerBigInt(
         required('movementToleranceBps'),
         `${prefix}.movementToleranceBps`,

@@ -1,9 +1,11 @@
+import type { IMarket } from '@morpho-org/midnight-sdk'
 import type { Address, Hex } from 'viem'
 
 import { TickLib } from '@morpho-org/midnight-sdk'
 import { describe, expect, test } from 'vitest'
 
 import type { LadderQuoteSet } from '../../../src/domain/ladder/ladder'
+import type { LadderOfferTransport } from '../../../src/infrastructure/ladder/ladder-make.service'
 
 import { ConfigService } from '../../../src/config/config.service'
 import { LadderAdapterError } from '../../../src/infrastructure/ladder/ladder-adapter.error'
@@ -35,6 +37,17 @@ const quote: LadderQuoteSet = {
   lower: [{ index: 0, rateBps: 450n, assets: 10n }],
   higher: [{ index: 0, rateBps: 550n, assets: 10n }]
 }
+
+const uncrossedAssessment: LadderOfferTransport['assessBook'] = async () => ({
+  reconciliation: {
+    preparedAtTimestamp: 1_000n,
+    bookCrossing: {
+      lower: { crossed: false, clearable: true },
+      higher: { crossed: false, clearable: true }
+    }
+  },
+  observedMarket: { market: {} as IMarket, now: 1_000n }
+})
 
 const environment = {
   CHAIN_ID: '8453',
@@ -390,6 +403,7 @@ describe('publishLadderPublication', () => {
         readGroupConsumed: async () => 0n,
         listActiveGroupIds: async () => [],
         listBookOffers: async () => [],
+        assessBook: uncrossedAssessment,
         preparePublication: async () => ({
           groupIds: [groupId],
           groups: [{ groupId, side: 'lower', rungIndexes: [0] }],
@@ -438,6 +452,7 @@ describe('publishLadderPublication', () => {
         readGroupConsumed: async () => 0n,
         listActiveGroupIds: async () => [],
         listBookOffers: async () => [],
+        assessBook: uncrossedAssessment,
         preparePublication: async () => ({
           groupIds: [groupId],
           groups: [{ groupId, side: 'lower', rungIndexes: [0] }],

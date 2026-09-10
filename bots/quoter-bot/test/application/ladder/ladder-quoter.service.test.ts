@@ -6,7 +6,9 @@ import type {
   LadderMakeService,
   LadderPositionService
 } from '../../../src/application/ladder/ladder-quoter.service'
+import type { LadderMakeResult } from '../../../src/application/ladder/ladder-verbose'
 import type {
+  LadderBookSideCrossing,
   LadderConfig,
   LadderMarketState,
   LadderQuoteSet
@@ -34,6 +36,7 @@ const config = (id = marketId): LadderConfig => ({
   minimumOfferAssets: 1n,
   groupMode: 'shared-rung',
   loopIntervalSeconds: 3600,
+  bookCrossedCooldownSeconds: 180,
   movementToleranceBps: 10n,
   minimumRateBps: 0n,
   maximumRateBps: 1_000n
@@ -54,6 +57,7 @@ const harness = (configs: readonly LadderConfig[] = [config()]) => {
   let readFailure: Hex | undefined
   const maturedMarkets = new Set<Hex>()
   let reconcileFailure: Hex | undefined
+  let reconcileResult: LadderMakeResult
   const reads: string[] = []
   const reconciliations: Array<{
     marketId: Hex
@@ -101,6 +105,7 @@ const harness = (configs: readonly LadderConfig[] = [config()]) => {
       reconciliations.push(parameters)
       if (parameters.desired) liveDesired.set(parameters.marketId, parameters.desired)
       else liveDesired.delete(parameters.marketId)
+      return parameters.reason === 'rest' ? undefined : reconcileResult
     },
     async hardHalt(parameters) {
       halts.push(parameters.reason)
@@ -128,7 +133,9 @@ const harness = (configs: readonly LadderConfig[] = [config()]) => {
     setCapacity: (value: bigint) => (marketState = state(value)),
     failMarket: (id: Hex) => (readFailure = id),
     matureMarket: (id: Hex) => maturedMarkets.add(id),
-    failReconcile: (id: Hex) => (reconcileFailure = id),
+    failReconcile: (id: Hex | undefined) => (reconcileFailure = id),
+    setReconcileResult: (value: LadderMakeResult) => (reconcileResult = value),
+    setMarketState: (value: LadderMarketState) => (marketState = value),
     expireRoots: (id: Hex) => liveDesired.delete(id),
     recreateService: () => (service = new LadderQuoterService(positions, rates, make, configs))
   }
@@ -796,6 +803,143 @@ describe('LadderQuoterService', () => {
       701n,
       601n,
       501n
+    ])
+  })
+})
+
+const crossedClearable: LadderBookSideCrossing = { crossed: true, clearable: true }
+const uncrossed: LadderBookSideCrossing = { crossed: false, clearable: true }
+
+const crossedState = (
+  observedTimestamp: bigint,
+  lower: LadderBookSideCrossing = crossedClearable
+): LadderMarketState => ({
+  ...state(),
+  bookCrossing: { lower, higher: uncrossed },
+  observedTimestamp
+})
+
+const recheck = (
+  preparedAtTimestamp: bigint,
+  options: { applied?: boolean; logged?: true } = {}
+): LadderMakeResult => ({
+  submittedTransactions: [],
+  ...(options.logged ? { logged: options.logged } : {}),
+  reconciliation: {
+    preparedAtTimestamp,
+    bookCrossing: { lower: crossedClearable, higher: uncrossed },
+    applied: options.applied ?? true
+  }
+})
+
+const published = async () => {
+  const subject = harness()
+  expect(await subject.service.runOnce()).toMatchObject([{ action: 'publish' }])
+  return subject
+}
+
+describe('LadderQuoterService book-crossed replacement', () => {
+  test('upgrades an unchanged quote to a replacement when a clearable cross is reported', async () => {
+    const subject = await published()
+    subject.setMarketState(crossedState(1_000n))
+    subject.setReconcileResult(recheck(1_000n))
+
+    expect(await subject.service.runOnce()).toMatchObject([
+      { status: 'applied', action: 'replace', reason: 'book-crossed' }
+    ])
+    expect(subject.reconciliations.at(-1)?.reason).toBe('book-crossed')
+  })
+
+  test('rests on an unclearable cross and reports it unsuppressed', async () => {
+    const subject = await published()
+    subject.setMarketState(crossedState(1_000n, { crossed: true, clearable: false }))
+
+    const result = await subject.service.runOnce({ verbose: true })
+
+    expect(result).toMatchObject([{ status: 'observed', action: 'rest' }])
+    expect(result[0]?.verbose?.bookCrossing?.lower).toEqual({
+      crossed: true,
+      clearable: false,
+      suppressed: false
+    })
+    expect(subject.reconciliations.at(-1)?.reason).toBe('rest')
+  })
+
+  test('holds the side for one cooldown after an applied replacement, then replaces again', async () => {
+    const subject = await published()
+    subject.setMarketState(crossedState(1_000n))
+    subject.setReconcileResult(recheck(1_000n))
+    expect(await subject.service.runOnce()).toMatchObject([{ reason: 'book-crossed' }])
+
+    subject.setMarketState(crossedState(1_179n))
+    const held = await subject.service.runOnce({ verbose: true })
+
+    expect(held).toMatchObject([{ status: 'observed', action: 'rest' }])
+    expect(held[0]?.verbose?.bookCrossing?.lower.suppressed).toBe(true)
+
+    subject.setMarketState(crossedState(1_180n))
+    expect(await subject.service.runOnce()).toMatchObject([
+      { status: 'applied', action: 'replace', reason: 'book-crossed' }
+    ])
+  })
+
+  test('leaves the cooldown untouched when the replacement throws', async () => {
+    const subject = await published()
+    subject.setMarketState(crossedState(1_000n))
+    subject.failReconcile(marketId)
+    expect(await subject.service.runOnce()).toMatchObject([
+      { status: 'failed', stage: 'reconcile' }
+    ])
+
+    subject.failReconcile(undefined)
+    subject.setReconcileResult(recheck(1_001n))
+    subject.setMarketState(crossedState(1_001n))
+
+    expect(await subject.service.runOnce()).toMatchObject([
+      { status: 'applied', action: 'replace', reason: 'book-crossed' }
+    ])
+  })
+
+  test('reports rest and holds no cooldown when the recheck found nothing to clear', async () => {
+    const subject = await published()
+    subject.setMarketState(crossedState(1_000n))
+    subject.setReconcileResult(recheck(1_000n, { applied: false }))
+
+    const result = await subject.service.runOnce()
+
+    expect(result).toMatchObject([{ status: 'observed', action: 'rest' }])
+    expect(subject.reconciliations.at(-1)?.reason).toBe('book-crossed')
+
+    subject.setMarketState(crossedState(1_001n))
+    subject.setReconcileResult(recheck(1_001n))
+    expect(await subject.service.runOnce()).toMatchObject([
+      { status: 'applied', action: 'replace', reason: 'book-crossed' }
+    ])
+  })
+
+  test('advances the cooldown on a logged dry-run replacement', async () => {
+    const subject = await published()
+    subject.setMarketState(crossedState(1_000n))
+    subject.setReconcileResult(recheck(1_000n, { logged: true }))
+
+    expect(await subject.service.runOnce()).toMatchObject([
+      { status: 'logged', action: 'replace', reason: 'book-crossed' }
+    ])
+
+    subject.setMarketState(crossedState(1_100n))
+    const held = await subject.service.runOnce({ verbose: true })
+
+    expect(held).toMatchObject([{ status: 'observed', action: 'rest' }])
+    expect(held[0]?.verbose?.bookCrossing?.lower.suppressed).toBe(true)
+  })
+
+  test('never overwrites a recenter that a crossing coincides with', async () => {
+    const subject = await published()
+    subject.setMarketState(crossedState(1_000n))
+    subject.setRate(511n)
+
+    expect(await subject.service.runOnce()).toMatchObject([
+      { status: 'applied', action: 'replace', reason: 'recenter' }
     ])
   })
 })

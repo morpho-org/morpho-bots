@@ -122,4 +122,49 @@ describe('guardrail.book-crossed', () => {
 
     expect(events.some(event => event.event === 'guardrail.book-crossed')).toBe(false)
   })
+
+  test('reports the cooldown suppression the decision recorded', () => {
+    const result = {
+      marketId,
+      status: 'observed',
+      action: 'rest',
+      verbose: {
+        config: { marketId },
+        currentState: { status: 'observed', market: { bookCrossing: uncrossed } },
+        stateAfterCheck: { status: 'observed', market: { bookCrossing: uncrossed } },
+        bookCrossing: {
+          lower: { crossed: true, clearable: true, suppressed: true },
+          higher: { crossed: false, clearable: true, suppressed: false }
+        }
+      }
+    } as unknown as LadderRunResult
+
+    expect(
+      ladderMonitoringEvents([result]).filter(event => event.event === 'guardrail.book-crossed')
+    ).toEqual([
+      {
+        event: 'guardrail.book-crossed',
+        workflow: 'ladder',
+        marketId,
+        side: 'lower',
+        clearable: true,
+        suppressed: true
+      }
+    ])
+  })
+
+  test('carries the new book-crossed reason onto the completed cycle', () => {
+    const events = ladderMonitoringEvents([
+      { marketId, status: 'applied', action: 'replace', reason: 'book-crossed' }
+    ])
+
+    expect(events).toContainEqual({
+      event: 'cycle.completed',
+      workflow: 'ladder',
+      marketId,
+      status: 'applied',
+      action: 'replace',
+      reason: 'book-crossed'
+    })
+  })
 })

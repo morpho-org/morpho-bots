@@ -128,6 +128,7 @@ const yamlKeys = {
     'minimumOfferAssets',
     'groupMode',
     'loopIntervalSeconds',
+    'bookCrossedCooldownSeconds',
     'movementToleranceBps',
     'minimumRateBps',
     'maximumRateBps'
