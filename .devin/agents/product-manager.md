@@ -13,4 +13,4 @@ Read `.claude/agents/product-manager.md` and follow it exactly. That file is the
 truth for this role; this manifest only pins the model and tool surface for Devin.
 
 Repo rules that always apply are in `AGENTS.md`. The review procedure that dispatches you
-is `.agents/skills/review-loop/SKILL.md`.
+is `.agents/skills/superintend/SKILL.md`.

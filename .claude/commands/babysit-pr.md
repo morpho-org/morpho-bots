@@ -306,7 +306,7 @@ Addressing N unresolved review comment(s), P conversation comment(s), M CI failu
 ### Step 4: Address each item
 
 > This step is **Parameterization C** of
-> [`.agents/skills/review-loop/SKILL.md`](../../.agents/skills/review-loop/SKILL.md) — follow it
+> [`.agents/skills/superintend/SKILL.md`](../../.agents/skills/superintend/SKILL.md) — follow it
 > there rather than working from a summary here. It carries the order, the entropy bar that governs
 > which findings are worth acting on, and the thread-resolution rule.
 

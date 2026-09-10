@@ -49,7 +49,7 @@ so and exit — do not force a TIB where none is needed.
 TIBs are a conversation, not a one-shot generation. Follow this flow:
 
 > **Before the draft is presented as done**, run **Parameterization A** of
-> [`.agents/skills/review-loop/SKILL.md`](../../.agents/skills/review-loop/SKILL.md), which states
+> [`.agents/skills/superintend/SKILL.md`](../../.agents/skills/superintend/SKILL.md), which states
 > its own order and the two agents it dispatches.
 >
 > Record the reviewer's session id in a `.sessions` file sitting beside the TIB

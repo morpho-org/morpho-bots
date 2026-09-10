@@ -1,6 +1,6 @@
 ---
-name: review-loop
-description: Use before presenting a plan or TIB, after finishing an implementation, and when responding to PR review comments. Runs the satisficing self-check, dispatches independent reviewers in the background, and synthesizes their findings into incorporate / drop / defer decisions.
+name: superintend
+description: Use before presenting a plan or TIB, before implementing a ticket of unknown provenance, after finishing an implementation, and when responding to PR review comments. Runs the satisficing self-check, dispatches independent reviewers in the background, and synthesizes their findings into incorporate / drop / defer decisions.
 version: 1.0.0
 author: Morpho
 license: Apache-2.0
@@ -10,7 +10,7 @@ metadata:
     related_skills: []
 ---
 
-# Review Loop
+# Superintend
 
 One procedure with three parameterizations. The pieces below are **named, not sequenced** — each
 parameterization states its own order, and they genuinely differ. Do not restate a piece inside a
@@ -18,7 +18,7 @@ caller; point at it by name.
 
 ## The Pieces
 
-**Self-check.** Is what you are about to do _necessary and sufficient_ for the stated intent and
+**Self-Check.** Is what you are about to do _necessary and sufficient_ for the stated intent and
 constraints — no more, no less? Then look at the intent and constraints themselves. If either is
 unclear, say so. If a reframe of either would produce a neater, more ergonomic outcome, say that
 too, before building on the original framing.
@@ -27,10 +27,10 @@ Surface that doubt as prose the engineer can act on. Do not compress a real desi
 short multiple-choice question: options with one-line labels throw away the context that makes the
 choice decidable. Concise but not thin.
 
-**Independent review.** Dispatch reviewer(s) in the background. Which ones, and how many rounds,
+**Independent Review.** Dispatch reviewer(s) in the background. Which ones, and how many rounds,
 depends on the parameterization.
 
-**Own pass.** Readability, concision, ergonomics. Naming, ordering, what a reader hits first, what
+**Own Pass.** Readability, concision, ergonomics. Naming, ordering, what a reader hits first, what
 the shape of the thing implies.
 
 > The one hard coupling between pieces: **while a review is in flight, change nothing semantic.**
@@ -41,20 +41,38 @@ the shape of the thing implies.
 **Synthesis.** The one piece that _is_ internally ordered, because each part feeds the next:
 
 - **Deduplicate.** Two reviewers naming the same defect is one finding, with two votes. Say it once.
-- **Synthesize and dissolve.** Findings that look separate are often one root cause wearing several
+- **Synthesize and Dissolve.** Findings that look separate are often one root cause wearing several
   hats, and the fix for the root dissolves the rest. Look for the reframe that makes several
   findings stop existing before you write several patches.
-- **Discuss** — TIB parameterization only; see below.
+- **Discuss** — for TIBs only; see below.
 - **Decide, per finding: incorporate, drop, or defer as a Linear ticket.** State the call and the
   reason. A dropped finding is a decision, not an oversight, and reads as one only if you say why.
 
+**Convergence.** Tell the reviewer(s) how you addressed their findings and ask whether they
+accept it. Not a second cold read — a reply. A reviewer re-reading a changed artifact without
+knowing what you did with round one just re-derives its own findings, and you learn nothing about
+whether your resolution held.
+
+A single round where the reviewer has nothing further _is_ convergence. The repetition exists for
+genuine disagreement, not to manufacture a second round on a one-line fix. Where it does repeat, it
+re-enters Independent Review + Own Pass → Synthesis, and it needs an exit: if the rounds stop
+converging, abandon that session and prime a fresh one for a new set of eyes, and consider running
+Self-Check again — flagging the difficulty to the engineer either way. "This is a fool's errand"
+and "this is improperly scoped" are acceptable outcomes **after** a genuine effort, not instead of
+one.
+
 ## Parameterization A — TIBs
 
-**Order: Self-check → Independent review → Own pass → Synthesis.**
+**Order: Self-Check → Independent Review + Own Pass → Synthesis → Convergence.**
 
-The bar is higher than for a plan: a TIB is a persistent record of intent written _before_
-implementation, so a framing error here is expensive later. After the self-check, dispatch these two
-agents in parallel:
+The bar is high: a TIB is a persistent record of intent written _before_ implementation, so a
+framing error here is expensive later.
+
+**Self-Check runs first, against the request itself.** Do it as soon as you have fielded the ask or
+read the ticket — before the draft exists, not merely before the reviewers are dispatched. Its
+object is the framing you were handed, and a framing you accept here is one you will spend the rest
+of the TIB defending. Then think the problem through and get a draft together. Only once there is a
+draft do you dispatch these two agents in parallel:
 
 **Clean-room agent** — a fresh subagent (never `fork`; a fork inherits your context, which is the
 whole thing you are trying to avoid). Omit the model override so it inherits the orchestrating
@@ -69,7 +87,7 @@ valid outcomes and are the most valuable ones when they are right.
 Isolation is best-effort. A clean-room agent that finds the draft anyway is a weaker signal, not a
 failed run — weigh it accordingly.
 
-**Review agent** — Codex, GPT Sol at high reasoning, in two rounds against the same session:
+**Review agent** — Codex, GPT Sol at high reasoning, in **two rounds** against the same session:
 
 1. **Correctness.** Bugs, regressions, and things the TIB failed to consider.
 2. **Reframing.** Once round one is in, ask whether it would reframe anything about the spec to
@@ -84,24 +102,34 @@ raise anything interesting to the engineer and talk about it. Do not demand deci
 
 ## Parameterization B — Implementations
 
-**Order: implement → Independent review → Own pass → Synthesis.**
+**Order: Self-Check → Implement → Independent Review + Own Pass → Synthesis → Convergence.**
 
-You implement first, per the plan or TIB, then dispatch one reviewer and do your own pass while it
-works.
+**What the self-check bites on here is where the spec came from.** A ticket handed to you is not a
+reviewed intent. Before implementing, say what you are implementing _against_: a TIB that went
+through Parameterization A, or a description someone typed. A `create-issue` ticket's
+`Possible solution` says _possible_ — it is a suggestion to be checked against the ticket's own
+`Context`, not a spec to execute. If the ticket is the only plan there is, it is an unreviewed
+draft, and the honest move may be to run A on it rather than implement it neatly.
+
+One line when the answer is clean — "TIB-2026-07-13 covers this, scope matches". Prose when it is
+not. State the reframe and proceed under a stated assumption; block only where proceeding either
+way would waste the work.
+
+Then you implement, dispatch one reviewer, and do your own pass while it works.
 
 **Review agent** — Codex, GPT Sol at high reasoning. Ask for correctness: bugs, regressions, and
 whether the implementation actually respects the plan or TIB it claims to follow. If the TIB's
 review session is still available, resume it rather than starting cold — it already knows the intent
-and will notice a drift from it that a fresh reviewer cannot.
+and will notice a drift from it better than a fresh reviewer might.
 
 No discussion beat. Go from synthesize straight to decide.
 
 ## Parameterization C — Responding to PR review
 
-**Order: Synthesis → implement → Independent review, and only conditionally.**
+**Order: Synthesis → Implement → Independent Review (conditionally) → Convergence.**
 
-B and C are the same loop with the ordering inverted. **B implements, then asks for review and reads
-it. C reads the review, implements, and only sometimes asks for another.**
+B and C are the same procedure with the ordering inverted. **B implements, then asks for review and
+reads it. C reads the review, implements, and only sometimes asks for another.**
 
 By the time you are here, at least one round of implementation and review has already completed, and
 the findings in front of you _are_ that independent pass. So C opens on Synthesis:
@@ -109,7 +137,7 @@ the findings in front of you _are_ that independent pass. So C opens on Synthesi
 1. **Synthesis**, applied to the findings you already have. Look for the reframe that dissolves
    several findings at once before you write several patches.
 2. **Implement** whatever you decided to incorporate.
-3. **Independent review, only if something substantial changed.** The clearest signal is that the
+3. **Independent Review, only if something substantial changed.** The clearest signal is that the
    TIB or the plan itself took edits — if the intent moved, then nobody has reviewed the thing you
    now have. A round of ordinary comment-fixes does not qualify. Say which reviewer ran, or that
    none did and why.
@@ -121,13 +149,15 @@ and a merge risk and buys nothing. That bar applies to which findings you act on
 implement at all, and to how much new surface a fresh review would be asked to cover. Drop what does
 not clear it, say you dropped it, and say why.
 
-**Resolve threads.** Acting on a thread includes resolving it, with a reply when the reply carries
+**Convergence in C is thread resolution.** Same piece, GitHub's medium instead of a Codex
+session: the reviewer is a person, and the reply on the thread is the report-back. Acting on a
+thread includes resolving it, with a reply when the reply carries
 information — what changed, or why you disagreed. A thread you dropped still needs the reply saying
 so. **No PR merges with unresolved threads.**
 
 ## Under Devin
 
-The loop works the same, with three model facts that decide whether it is worth anything:
+Superintend works the same, with three model facts that decide whether it is worth anything:
 
 - The **clean-room agent** maps to `subagent_general`, which inherits the parent session's model —
   which is what this loop wants, so do not pin it.
@@ -212,5 +242,5 @@ Deferred findings go to the **Bots** team per
 packages affected, no project. If no existing label fits the surface, flag the gap to the engineer
 rather than filing unlabelled or inventing one.
 
-Every ticket filed from this loop also carries **`code-review`** (the `Provenance` group) and links
-the PR or TIB it came from, so what the loop keeps punting stays auditable.
+Every ticket filed from superintend also carries **`code-review`** (the `Provenance` group) and
+links the PR or TIB it came from, so what it keeps punting stays auditable.

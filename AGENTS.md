@@ -64,7 +64,7 @@ is not a status.
   `pnpm test`. Run them when the work is ready, not after every edit.
 - Non-trivial new behavior leaves one runnable check behind, under `test/` mirroring `src/`.
 - Get an independent review before calling it done — see
-  [`.agents/skills/review-loop/SKILL.md`](./.agents/skills/review-loop/SKILL.md) for TIBs,
+  [`.agents/skills/superintend/SKILL.md`](./.agents/skills/superintend/SKILL.md) for TIBs,
   implementations, and PR-review responses.
 - Stop when you are out of hypotheses, not after some number of tries, and say what you tried and
   what is blocking.
