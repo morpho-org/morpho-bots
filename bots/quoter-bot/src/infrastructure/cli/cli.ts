@@ -253,13 +253,13 @@ export class Cli {
     bootstrapCommand.action(async () => {
       const options = this.configurationOptions()
       const bootstrapOptions = bootstrapCommand.opts<{ monitor?: boolean; verbose?: boolean }>()
-      const bootstrapService = await bootstrap({
-        ...options,
-        writeEvent: this.runtime.writeEvent
-      })
+      // Deferred so the one-shot span below also covers construction, whose readiness preflight
+      // and removed-market cleanup already reach providers.
+      const makeService = () => bootstrap({ ...options, writeEvent: this.runtime.writeEvent })
       const verbose = bootstrapOptions.verbose === true
       const onTransactionSubmitted = this.eventObserver<BootstrapTransactionSubmittedEvent>(verbose)
       if (bootstrapOptions.monitor === true) {
+        const bootstrapService = await makeService()
         if (!bootstrapService.runContinuously) throw new CliUsageError()
         const result = await bootstrapService.runContinuously({
           signal: this.signal,
@@ -281,7 +281,7 @@ export class Cli {
           errorName: operatorErrorName,
           failed: cycle => Array.isArray(cycle) && cycleHasFailure(cycle)
         },
-        () => bootstrapService.runOnce({ verbose, onTransactionSubmitted })
+        async () => (await makeService()).runOnce({ verbose, onTransactionSubmitted })
       )
       if (Array.isArray(result)) {
         await this.writeCycleRecords(monitoring => monitoring.bootstrap(result))
@@ -304,13 +304,13 @@ export class Cli {
     ladderCommand.action(async () => {
       const options = this.configurationOptions()
       const ladderOptions = ladderCommand.opts<{ monitor?: boolean; verbose?: boolean }>()
-      const ladderService = await ladder({
-        ...options,
-        writeEvent: this.runtime.writeEvent
-      })
+      // Deferred so the one-shot span below also covers construction, whose readiness preflight
+      // and removed-market cleanup already reach providers.
+      const makeService = () => ladder({ ...options, writeEvent: this.runtime.writeEvent })
       const verbose = ladderOptions.verbose === true
       const onTransactionSubmitted = this.eventObserver<LadderTransactionSubmittedEvent>(verbose)
       if (ladderOptions.monitor === true) {
+        const ladderService = await makeService()
         if (!ladderService.runContinuously) throw new CliUsageError()
         const result = await ladderService.runContinuously({
           signal: this.signal,
@@ -332,7 +332,7 @@ export class Cli {
           errorName: operatorErrorName,
           failed: cycleHasFailure
         },
-        () => ladderService.runOnce({ verbose, onTransactionSubmitted })
+        async () => (await makeService()).runOnce({ verbose, onTransactionSubmitted })
       )
       await this.writeCycleRecords(monitoring => monitoring.ladder(result))
       if (cycleHasFailure(result)) {

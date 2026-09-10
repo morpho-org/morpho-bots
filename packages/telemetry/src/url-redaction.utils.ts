@@ -20,7 +20,11 @@ const redactedHostname = (hostname: string) => {
  * and only the last two hostname labels survive, which keeps the provider identity dashboards
  * group on while over-redacting multi-part public suffixes rather than ever leaking. IPv4/IPv6
  * literals and one- or two-label hosts (a compose service, localhost) pass through, ports are
- * kept, and unparseable inputs redact to a fixed placeholder instead of passing raw text.
+ * kept, and unparseable inputs redact to a fixed placeholder instead of passing raw text. The
+ * registrable domain is the deliberate boundary: it is public identity (resolvable DNS, TLS SAN,
+ * visible to any network observer via SNI regardless of telemetry), so a deployment whose one- or
+ * two-label hostname is itself a secret is outside this redaction's threat model — front the bot
+ * with a scrubbing collector or leave telemetry off there.
  */
 export const redactedUrlAttributes = (request: { origin: string; path: string }): Attributes => {
   let url: URL

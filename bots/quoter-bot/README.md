@@ -632,10 +632,13 @@ Absence alerts are scoped per market by `market.configured`, which names the mar
 - Monitoring cannot halt quoting. Records are derived and written inside the monitored cycle's own
   callback, but `writeCycle` swallows any failure raised while projecting or writing them: telemetry
   can be lost silently, and a broken projection can never stop a cycle.
-- Shutdown cleanup cancellations ship pre-receipt `ladder.transaction-submitted` /
-  `bootstrap.transaction-submitted` records but no `transaction.settled` counterpart: confirmed
-  hashes exist only on the terminal monitor report, which is not shipped. A failed cleanup remains
-  alertable as `bot.failed` with `reason: "cleanup-failed"`.
+- Shutdown cleanup cancellations and the explicit `invalidate` command ship pre-receipt
+  `*.transaction-submitted` records but no `transaction.settled` counterpart: confirmed hashes
+  exist only on terminal reports, which are not shipped, and `MonitoringWorkflow` has no
+  invalidation member for a contract-valid settled record. The `quoter_bot.transactions` metric
+  therefore pairs `submitted`/`settled` phases only for the `bootstrap` and `ladder` workflows —
+  `offer-invalidation` submissions are submitted-only by contract, not stuck. A failed cleanup
+  remains alertable as `bot.failed` with `reason: "cleanup-failed"`.
 - `cycle.completed.durationMs` covers one market's check including the post-check verbose re-read.
   Under the combined `start` lifecycle the ladder and bootstrap writers share one mutation queue, so
   it can include queue wait.

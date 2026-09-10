@@ -212,7 +212,11 @@ observability" section.
   and never logged.
 - **Redaction:** URL attributes are redacted at span creation (before any buffering), and
   exception events plus status messages are stripped at span end, before the batch processor
-  buffers the span; the unit and wire-level tests pin both.
+  buffers the span; the unit and wire-level tests pin both. The registrable domain is the
+  deliberate redaction boundary: it is public identity (resolvable DNS, visible via SNI to any
+  network observer regardless of telemetry), so a deployment whose one- or two-label hostname is
+  itself secret is outside this threat model and should front the bot with a scrubbing collector
+  or leave telemetry off.
 - **Dependency surface:** 21 new packages / 0.77 MB — `@opentelemetry/*` plus
   `import-in-the-middle`/`require-in-the-middle` (inert here) — all install-script-free under
   `strictDepBuilds`, all subject to `minimumReleaseAge`. No gRPC, no protobuf.
