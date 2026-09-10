@@ -250,10 +250,11 @@ describe('quoter-bot workflow on a pinned Base fork', () => {
     try {
       const config = ConfigService.from(environment(anvil.rpcUrl, api.baseUrl))
       expect((await publishMakerSell(anvil, api, 0n)).status).toBe('success')
-      expect(await (await createProductionLadderRuntime(config)).runOnce()).toMatchObject([
-        { status: 'failed', stage: 'reconcile', errorName: 'LadderAdapterError' }
-      ])
-      expect(await api.activeOffers()).toHaveLength(1)
+      const runtime = await createProductionLadderRuntime(config)
+      expect(await runtime.runOnce()).toMatchObject([{ status: 'applied', action: 'publish' }])
+      expect(await api.activeOffers()).toHaveLength(4)
+      expect(await runtime.runOnce()).toMatchObject([{ status: 'observed', action: 'rest' }])
+      expect(await api.activeOffers()).toHaveLength(4)
     } finally {
       await anvil.client.revert({ id: crossing })
       await resetStateDirectory()
