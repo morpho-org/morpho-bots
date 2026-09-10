@@ -1,6 +1,6 @@
 import type { Address, Hex } from 'viem'
 
-import { TakeAmountsLib } from '@morpho-org/midnight-sdk'
+import { TakeAmountsLib, TickLib } from '@morpho-org/midnight-sdk'
 import { batchProspectiveBook } from '@repo/offers'
 import { isAddressEqual } from 'viem'
 
@@ -75,7 +75,8 @@ export const retainedOpposingBookTicks = (parameters: {
  * A third-party offer whose executable size converts to fewer assets than
  * `minimumOpposingAssets` at its own tick is dust and never crosses: a replacement costs one
  * transaction per active group, so a size floor is what keeps a free-to-post offer from buying
- * those transactions. An offer of unknown size still counts.
+ * those transactions. An offer of unknown size still counts; one at a tick whose price rounds to
+ * zero is worth zero assets whatever its units, so it never does.
  */
 export const bookCrossesRestingLadder = (parameters: {
   marketId: Hex
@@ -88,11 +89,14 @@ export const bookCrossesRestingLadder = (parameters: {
   const ticks = (offers: readonly OwnedOverlapBookOffer[], buy: boolean) =>
     offers.filter(offer => offer.buy === buy).map(offer => offer.tick)
   const minimum = parameters.minimumOpposingAssets
-  const meaningful = (offer: OwnedOverlapBookOffer) =>
-    minimum === undefined ||
-    offer.units === undefined ||
-    offer.units >=
+  const meaningful = (offer: OwnedOverlapBookOffer) => {
+    if (minimum === undefined || offer.units === undefined) return true
+    if (TickLib.tickToPrice(offer.tick) === 0n) return false
+    return (
+      offer.units >=
       TakeAmountsLib.toUnitsAtTick({ assets: minimum, tick: offer.tick, rounding: 'Up' })
+    )
+  }
   const thirdParty = market.filter(
     offer =>
       offer.maker !== undefined &&

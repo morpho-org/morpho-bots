@@ -131,6 +131,18 @@ describe('bookCrossesRestingLadder', () => {
     )
   })
 
+  test('treats an offer at a zero-price tick as dust whatever its units', () => {
+    const ask = offer({
+      groupId: groupId('01'),
+      buy: false,
+      tick: 0n,
+      maker: counterparty,
+      units: 10n ** 30n
+    })
+    expect(crossing([offer(ownLadderBuy), ask], 100n)).toEqual({ lower: false, higher: false })
+    expect(crossing([offer(ownLadderBuy), ask])).toEqual({ lower: false, higher: true })
+  })
+
   test('reports the higher side crossed by a third-party ask below our ladder buy', () => {
     expect(
       crossing([
