@@ -20,7 +20,7 @@
  *
  *   RPC_URL=... PRIVATE_KEY_LENDER=0x... PRIVATE_KEY_BORROWER=0x... \
  *     pnpm --filter @morpho-org/midnight-liquidation run seed:loan-collateral -- \
- *       --markets-api https://… --market 0x… --face-usdc 0.7 --dry-run
+ *       --markets-api https://…/v0/midnight/markets --market 0x… --face-usdc 0.7 --dry-run
  *
  * Never prints secrets (keys, full RPC URL).
  */
@@ -39,7 +39,6 @@ import {
   getAddress,
   http,
   isAddressEqual,
-  numberToHex,
   parseUnits,
   zeroAddress
 } from 'viem'
@@ -52,6 +51,7 @@ import type { LensOut } from '../src/state/lens.sol'
 import type { Offer } from './seed/offers'
 
 import { BPS, ORACLE_PRICE_SCALE, WAD } from '../src/constants'
+import { createListedMarketFilter } from '../src/discovery/markets'
 import { mulDivDown, mulDivUp } from '../src/sizing/math'
 import { readMidnightLiquidationLens } from '../src/state/lens.sol'
 import { ORACLE_ABI } from './seed/abis'
@@ -63,6 +63,7 @@ const CHAIN_ID = 8453
 const MIDNIGHT = getAddress('0xAdedD8ab6dE832766Fedf0FaC4992E5C4D3EA18A')
 /** `EcrecoverRatifier` on Base — ratifies an offer against a maker's own ECDSA signature. */
 const ECRECOVER_RATIFIER = getAddress('0xd6e70365C8E8DDa9a4ca662C07bbE663b017755E')
+const USDC = getAddress('0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913')
 const PRIVATE_KEY_HEX_LENGTH = 66
 const USDC_DECIMALS = 6
 
@@ -89,6 +90,10 @@ const DEFAULT_COLLATERAL_MULTIPLE_BPS = 10_500n
  * script prints is the one the bot will actually compute.
  */
 const SEIZE_CAP_MARGIN_BPS = 30n
+
+// Up to five sequential txs, each with up to SIMULATE_RETRIES * RETRY_DELAY_MS of re-simulation,
+// must land before `take`, which reverts post-maturity.
+const MIN_SECONDS_TO_MATURITY = 600n
 
 type Args = {
   market: Hex
@@ -134,13 +139,15 @@ function parseCliArgs(): Args {
   if (!market || !/^0x[0-9a-fA-F]{64}$/.test(market)) {
     throw new Error('--market is required and must be a 32-byte hex market id')
   }
-  // Required rather than defaulted: the whitelist endpoint decides WHICH deployment's bot will act
-  // on the position, and the bot itself takes it from an operator-set variable rather than the repo.
+  // Required rather than defaulted: this is the target bot's MARKETS_API_URL value — the full
+  // endpoint, e.g. https://api.morpho.org/v0/midnight/markets (an origin also works because the
+  // filter falls back to it). The whitelist endpoint decides WHICH deployment's bot will act on the
+  // position, and the bot itself takes it from an operator-set variable rather than the repo.
   // Defaulting it would pick an environment on the operator's behalf for a run that spends real funds.
   const marketsApi = values['markets-api']?.trim().replace(/\/$/, '')
   if (!marketsApi) {
     throw new Error(
-      '--markets-api is required (the markets endpoint whose `listed=true` set the target bot reads)'
+      '--markets-api is required (the target bot MARKETS_API_URL full endpoint or origin)'
     )
   }
   if (!URL.canParse(marketsApi)) throw new Error(`--markets-api is not a valid URL: ${marketsApi}`)
@@ -164,30 +171,6 @@ function parseCliArgs(): Args {
     yes: values.yes
   }
 }
-
-/**
- * Confirms the target market is listed for this chain on the configured markets API — the same
- * `listed=true` signal that defines the bot's whitelist. Fails closed: an unlisted market is one the
- * bot will discover a position in and then refuse to act on, which is the quiet failure this check
- * exists to prevent.
- */
-async function assertListed(deps: { marketsApi: string; market: Hex; logger: Logger }) {
-  const url = `${deps.marketsApi}/v0/midnight/markets?market_ids=${deps.market}&listed=true`
-  const response = await fetch(url, { signal: AbortSignal.timeout(10_000) })
-  if (!response.ok) {
-    throw new Error(`markets API returned ${response.status} for the target market`)
-  }
-  const body = (await response.json()) as { data?: { chain_id?: number; listed?: boolean }[] }
-  const row = body.data?.find(m => m.chain_id === CHAIN_ID)
-  if (!row?.listed) {
-    throw new Error(
-      `market ${deps.market} is not listed for chain ${CHAIN_ID} on the configured markets API — the bot would never act on it`
-    )
-  }
-  deps.logger.info('seed.market_listed', { market: deps.market, chainId: CHAIN_ID })
-}
-
-type Logger = ReturnType<typeof createLogger>
 
 /** The market's loan-as-collateral slot: the index whose token IS the loan token. */
 function findLoanCollateralSlot(market: Market): number {
@@ -261,7 +244,17 @@ async function main() {
     dryRun: args.dryRun
   })
 
-  await assertListed({ marketsApi: args.marketsApi, market: args.market, logger })
+  const whitelist = createListedMarketFilter({
+    apiUrl: args.marketsApi,
+    chainId: CHAIN_ID,
+    logger
+  })
+  await whitelist.refresh()
+  if (!whitelist.isListed(args.market)) {
+    throw new Error(
+      `market ${args.market} is not listed for chain ${CHAIN_ID} on ${whitelist.snapshot().source} — the bot would never act on it`
+    )
+  }
 
   // The id is a cryptographic commitment to the Market struct, so reading the struct back and
   // re-deriving the id proves the local `toId` port still matches this deployment before anything
@@ -276,6 +269,11 @@ async function main() {
   if (derivedId.toLowerCase() !== args.market.toLowerCase()) {
     throw new Error(`toId(toMarket(${args.market})) = ${derivedId} — market id self-check FAILED`)
   }
+  if (!isAddressEqual(market.loanToken, USDC)) {
+    throw new Error(
+      'market loan token is not Base USDC; --face-usdc / --max-spend-usdc assume 6 decimals'
+    )
+  }
   logger.info('seed.market_selfcheck_ok', { market: args.market })
 
   if (market.enterGate !== zeroAddress) throw new Error('market has an enterGate; refusing to seed')
@@ -283,8 +281,10 @@ async function main() {
     throw new Error('market has a liquidatorGate; the bot may be unable to liquidate')
   }
   const latest = await publicClient.getBlock({ blockTag: 'latest' })
-  if (market.maturity <= latest.timestamp) {
-    throw new Error('market has already matured; a take cannot increase debt post-maturity')
+  if (market.maturity < latest.timestamp + MIN_SECONDS_TO_MATURITY) {
+    throw new Error(
+      `market matures in ${market.maturity - latest.timestamp}s; need at least ${MIN_SECONDS_TO_MATURITY}s to land every tx before take`
+    )
   }
 
   const slotIndex = findLoanCollateralSlot(market)
@@ -384,9 +384,10 @@ async function main() {
     // maturity would be rejected as already-expired if the seed lands close to the wire.
     expiry: market.maturity,
     tick,
-    // `consumed[maker][group]` accumulates across takes and is capped at the offer's own `maxUnits`,
-    // so each seeded position needs a group this maker has not already consumed.
-    group: numberToHex(Number(market.maturity), { size: 32 }),
+    // consumed[maker][group] is global to the maker, so the group is the market id — two markets
+    // sharing a maturity cannot collide, and re-seeding the same market trips the `consumed` check
+    // below by design.
+    group: args.market,
     callback: zeroAddress,
     callbackData: '0x',
     receiverIfMakerIsSeller: zeroAddress,
@@ -426,6 +427,17 @@ async function main() {
     functionName: 'isAuthorized',
     args: [lender.address, ECRECOVER_RATIFIER]
   })
+
+  const executor = getAddress(Executor.with().address)
+  const pairs = [{ id: args.market, borrower: borrower.address, caller: executor }]
+  const before = (await readMidnightLiquidationLens(deploylessClient, MIDNIGHT, pairs)).get(
+    lensKey(args.market, borrower.address)
+  )
+  if (before && (before.hasDebt || before.collaterals.length > 0)) {
+    throw new Error(
+      `borrower already has a position in this market (debt ${before.debt}, slots [${before.collaterals.map(c => c.index).join(', ')}]); use a fresh borrower key`
+    )
+  }
 
   process.stderr.write(
     [
@@ -532,8 +544,6 @@ async function main() {
   })
 
   // Verify through the bot's own lens, so what is asserted is exactly what the bot will read.
-  const executor = getAddress(Executor.with().address)
-  const pairs = [{ id: args.market, borrower: borrower.address, caller: executor }]
   let out: LensOut | undefined
   for (let attempt = 0; attempt < SIMULATE_RETRIES; attempt++) {
     if (attempt > 0) await sleep(RETRY_DELAY_MS)
@@ -570,6 +580,10 @@ async function main() {
     problems.push(
       `expected only the loan-collateral slot ${slotIndex} activated, got [${activatedSlots.join(', ')}]`
     )
+  }
+  if (out.debt !== units) problems.push(`expected debt ${units}, got ${out.debt}`)
+  if (out.collaterals[0]?.amt !== collateral) {
+    problems.push(`expected collateral ${collateral}, got ${out.collaterals[0]?.amt}`)
   }
   if (problems.length > 0) {
     throw new Error(`seeded position will not be liquidated as intended: ${problems.join('; ')}`)
