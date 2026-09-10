@@ -28,10 +28,11 @@ export function parseReleaseIntents(
 ): string[] {
   if (!text) return []
   // HTML comments are dropped first: GitHub does not render them, so intent inside one is invisible
-  // to the reviewer whose approval the gate counts. Inline code/emphasis markers are then stripped
+  // to the reviewer whose approval the gate counts. An unterminated `<!--` hides everything to the
+  // end of the text, so it is dropped the same way. Inline code/emphasis markers are then stripped
   // so `` `quoter-bot` ``-style markdown still parses; the grammar itself stays single-line.
   const normalized = text
-    .replace(/<!--[\s\S]*?-->/g, '')
+    .replace(/<!--[\s\S]*?(?:-->|$)/g, '')
     .replace(/\r\n?/g, '\n')
     .toLowerCase()
     .replace(/[`*_]/g, '')
@@ -47,6 +48,25 @@ export function parseReleaseIntents(
 export interface BodyIntentRevision {
   editedAt: string
   body: string | null
+}
+
+/**
+ * GitHub's schema only calls `userContentEdits.diff` a "summary"; the gate depends on it being the
+ * full body after each edit (verified live: the newest node equals the current body byte for byte).
+ * This checks that property on every run so a silent API change fails closed instead of misdating
+ * intent. Returns a reason when the history cannot be trusted, else null.
+ */
+export function bodyHistoryProblem(
+  revisions: readonly BodyIntentRevision[],
+  currentBody: string | null | undefined
+): string | null {
+  if (revisions.length === 0) return null
+  const newest = revisions.reduce((a, b) =>
+    new Date(b.editedAt).getTime() >= new Date(a.editedAt).getTime() ? b : a
+  )
+  return (newest.body ?? '') === (currentBody ?? '')
+    ? null
+    : 'the newest body revision does not match the current body, so revisions are not full snapshots'
 }
 
 interface CommitPullRequest {

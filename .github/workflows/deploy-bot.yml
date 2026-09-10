@@ -79,7 +79,9 @@ jobs:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
           # Re-ship the pre-provisioned services only; set no secrets/variables (CI holds none).
           DEPLOY_ONLY: 'true'
-        run: pnpm --filter "${{ inputs.package }}" run deploy:railway
+        # --fail-if-no-match: a package name that matches no workspace member would otherwise exit 0
+        # having deployed nothing, and the Release job downstream would tag a deploy that never ran.
+        run: pnpm --filter "${{ inputs.package }}" --fail-if-no-match run deploy:railway
 
   Release:
     # A failed deploy skips this job, so a bot is never tagged unless it deployed.

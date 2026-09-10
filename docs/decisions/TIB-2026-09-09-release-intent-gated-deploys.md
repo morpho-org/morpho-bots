@@ -64,7 +64,10 @@ prime and trimmed:
 nothing`), kept byte-for-byte on prime's golden fixture so the two repos parse identically.
 - `release-intent/common.ts` — replays the PR body's `userContentEdits` history to find when each
   bot's intent was added, with a cutoff at `merged_at`. GitHub retains only 100 revisions, so a
-  body at that cap is treated as unverifiable and every intent on it is refused.
+  body at that cap is treated as unverifiable and every intent on it is refused. GitHub's schema
+  calls each revision's `diff` a "summary"; it is in fact the full body after that edit (verified
+  live on PR #210: the newest node equals the current body), and the gate re-checks that equality
+  on every run so a silent API change refuses rather than misdates.
 - `release-intent/gate.ts` — pure gate: latest verdict per reviewer, minus bots and the author,
   submitted at or before `merged_at`; a bot passes if some approval postdates its intent.
 - `manifest.json` — `{ id, package, environments: { staging?, production }, publishImage? }` per
@@ -72,8 +75,9 @@ nothing`), kept byte-for-byte on prime's golden fixture so the two repos parse i
   suffix; the environment names are the existing GitHub Environments, including the irregular
   `crossed-books-prod`; `publishImage` marks quoter-bot's Docker Hub publish.
 
-The grammar drops HTML comments before parsing: GitHub does not render them, so intent hidden in
-one would be invisible to the reviewer whose approval the gate counts.
+The grammar drops HTML comments before parsing, including an unterminated `<!--` through the end of
+the text: GitHub does not render them, so intent hidden in one would be invisible to the reviewer
+whose approval the gate counts.
 
 **`deploy-production.yml`** on `push: main` becomes three jobs:
 

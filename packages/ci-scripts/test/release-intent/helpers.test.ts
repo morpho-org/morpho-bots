@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  bodyHistoryProblem,
   deriveBodyIntentTimes,
   findMergedPullRequest,
   parseReleaseIntents
@@ -27,6 +28,13 @@ describe('parseReleaseIntents (golden fixture)', () => {
     expect(parseReleaseIntents('<!-- Releases markets-app -->', KNOWN)).toEqual([])
     expect(
       parseReleaseIntents('<!--\nReleases markets-app\n-->\nReleases delegate-app', KNOWN)
+    ).toEqual(['delegate-app'])
+  })
+
+  it('ignores intent after an unterminated HTML comment opener', () => {
+    expect(parseReleaseIntents('Fixes a bug.\n<!-- Releases markets-app', KNOWN)).toEqual([])
+    expect(
+      parseReleaseIntents('Releases delegate-app\n<!-- Releases markets-app\nmore text', KNOWN)
     ).toEqual(['delegate-app'])
   })
 
@@ -68,6 +76,27 @@ describe('deriveBodyIntentTimes (golden fixture)', () => {
         knownBots
       })
     ).toEqual(new Map([['markets-app', '2026-06-01T10:00:00Z']]))
+  })
+})
+
+describe('bodyHistoryProblem', () => {
+  const t1 = { editedAt: '2026-06-01T10:00:00Z', body: 'Fixes a bug' }
+  const t2 = { editedAt: '2026-06-01T11:00:00Z', body: 'Fixes a bug\n\nReleases markets-app' }
+
+  it('accepts an empty history', () => {
+    expect(bodyHistoryProblem([], 'anything')).toBeNull()
+  })
+
+  it('accepts a history whose newest snapshot is the current body, in any order', () => {
+    expect(bodyHistoryProblem([t2, t1], t2.body)).toBeNull()
+    expect(bodyHistoryProblem([t1, t2], t2.body)).toBeNull()
+  })
+
+  it('rejects a history whose newest entry is not the current body', () => {
+    expect(bodyHistoryProblem([t1, t2], t1.body)).toMatch(/not full snapshots/)
+    expect(bodyHistoryProblem([{ editedAt: t2.editedAt, body: '-old\n+new' }], 'new')).toMatch(
+      /not full snapshots/
+    )
   })
 })
 

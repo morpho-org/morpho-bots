@@ -1,5 +1,5 @@
 import { graphql } from '../lib/github'
-import { deriveBodyIntentTimes, type BodyIntentRevision } from './helpers'
+import { bodyHistoryProblem, deriveBodyIntentTimes, type BodyIntentRevision } from './helpers'
 
 export interface PullRequest {
   number: number
@@ -51,12 +51,12 @@ interface BodyIntentPage {
  * intent clock, so the gate treats it as unverifiable.
  * https://docs.github.com/en/communities/moderating-comments-and-conversations/tracking-changes-in-a-comment#editing-history-limits
  */
-export const EDIT_HISTORY_RETENTION = 100
+const EDIT_HISTORY_RETENTION = 100
 
 interface BodyIntentHistory {
   times: Map<string, string>
-  /** True when the retained history may have lost revisions ({@link EDIT_HISTORY_RETENTION}). */
-  truncated: boolean
+  /** Why the history cannot date intent (retention cap, non-snapshot revisions); null when it can. */
+  problem: string | null
 }
 
 /**
@@ -90,6 +90,9 @@ export async function bodyIntentTimes(
       knownBots,
       until
     }),
-    truncated: revisions.length >= EDIT_HISTORY_RETENTION
+    problem:
+      revisions.length >= EDIT_HISTORY_RETENTION
+        ? `the PR body has ${EDIT_HISTORY_RETENTION}+ edits, so GitHub no longer holds the full history needed to date the intent`
+        : bodyHistoryProblem(revisions, pr.body)
   }
 }
