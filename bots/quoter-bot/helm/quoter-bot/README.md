@@ -86,6 +86,7 @@ config:
       minimumOfferAssets: '101000000'
       groupMode: 'shared-rung'
       loopIntervalSeconds: '60'
+      bookCrossedCooldownSeconds: '180'
       movementToleranceBps: '10'
       minimumRateBps: '200'
       maximumRateBps: '800'

@@ -153,7 +153,13 @@ export const startRouterApi = async (rpcUrl: string): Promise<RouterApiHandle> =
           {
             market_id: MARKET_ID,
             units: String(offer.maxUnits || offer.maxAssets),
-            offer: { group: offer.group, buy: offer.buy, tick: Number(offer.tick) }
+            offer: {
+              group: offer.group,
+              maker: offer.maker,
+              ratifier: offer.ratifier,
+              buy: offer.buy,
+              tick: Number(offer.tick)
+            }
           }
         ]
       })

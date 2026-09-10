@@ -29,6 +29,7 @@ const config = (overrides: Partial<LadderConfig> = {}): LadderConfig => ({
   minimumOfferAssets: 1n,
   groupMode: 'shared-rung',
   loopIntervalSeconds: 3600,
+  bookCrossedCooldownSeconds: 180,
   movementToleranceBps: 10n,
   minimumRateBps: 200n,
   maximumRateBps: 800n,
@@ -209,13 +210,35 @@ describe('ladder domain', () => {
   })
 
   test('quotes sells at least the clearance below the live own bootstrap buy', () => {
-    const ladder = generateLadder({
+    const { quote, diagnostics } = generateLadderWithDiagnostics({
       config: config(),
       referenceRateBps: 500n,
       capacities: { bootstrapBuyRateBps: 380n }
     })
-    expect(ladder.lower.map(rung => rung.rateBps)).toEqual([370n, 300n, 200n])
-    expect(ladder.higher.map(rung => rung.rateBps)).toEqual([600n, 700n, 800n])
+    expect(quote.lower.map(rung => rung.rateBps)).toEqual([370n, 300n, 200n])
+    expect(quote.higher.map(rung => rung.rateBps)).toEqual([600n, 700n, 800n])
+    expect(diagnostics.lower.clearedRungs).toBe(1)
+  })
+
+  test('leaves rung rates untouched by an observed book crossing', () => {
+    const withBook = generateLadder({
+      config: config(),
+      referenceRateBps: 500n,
+      capacities: {
+        bookCrossing: {
+          lower: { crossed: true, clearable: true },
+          higher: { crossed: false, clearable: true }
+        }
+      }
+    })
+    const withoutBook = generateLadder({ config: config(), referenceRateBps: 500n })
+
+    expect(withBook.lower.map(rung => rung.rateBps)).toEqual(
+      withoutBook.lower.map(rung => rung.rateBps)
+    )
+    expect(withBook.higher.map(rung => rung.rateBps)).toEqual(
+      withoutBook.higher.map(rung => rung.rateBps)
+    )
   })
 
   test('keeps bootstrap-cleared sells inside the hard range', () => {
@@ -249,6 +272,15 @@ describe('ladder domain', () => {
   test('rejects monitor intervals above the runtime timer limit', () => {
     expect(() => validateLadderConfig(config({ loopIntervalSeconds: 2_147_484 }))).toThrow(
       'loopIntervalSeconds must not exceed 2147483'
+    )
+  })
+
+  test('rejects a book-crossed cooldown that is not a positive in-range interval', () => {
+    expect(() => validateLadderConfig(config({ bookCrossedCooldownSeconds: 0 }))).toThrow(
+      'bookCrossedCooldownSeconds must be a positive safe integer'
+    )
+    expect(() => validateLadderConfig(config({ bookCrossedCooldownSeconds: 2_147_484 }))).toThrow(
+      'bookCrossedCooldownSeconds must not exceed 2147483'
     )
   })
 

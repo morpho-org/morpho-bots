@@ -10,6 +10,8 @@ import type {
   LadderQuoteSet
 } from '../../domain/ladder/ladder'
 import type {
+  LadderBookReconciliation,
+  LadderBookSideCrossingReport,
   LadderGroupConsumption,
   LadderMakeResult,
   LadderSubmittedTransaction,
@@ -35,6 +37,11 @@ import { marketObservationMatured } from '../market-maturity.utils'
 import { operatorErrorName } from '../operator-error-name.utils'
 import { LadderOwnershipCleanupError } from './ladder-ownership-cleanup.error'
 import { sameLadderQuoteSet } from './ladder-quoter.utils'
+
+const SIDES = ['lower', 'higher'] as const
+
+const loggedMakeResult = (result: LadderMakeResult) =>
+  result === 'logged' || (result !== undefined && result.logged === true)
 
 /** Consumer-owned port for fresh position and capacity inputs for one ladder market. */
 export interface LadderPositionService {
@@ -112,7 +119,16 @@ export interface LadderMakeService {
   reconcile(parameters: {
     marketId: Hex
     desired?: LadderQuoteSet
-    reason: 'publish' | 'recenter' | 'resize' | 'rest' | 'market-matured' | 'market-read-failed'
+    reason:
+      | 'publish'
+      | 'recenter'
+      | 'resize'
+      | 'rest'
+      | 'book-crossed'
+      | 'market-matured'
+      | 'market-read-failed'
+    /** Sides whose cooldown admitted a `book-crossed` replacement; the recheck may mutate only for one of them. */
+    bookCrossedSides?: readonly ('lower' | 'higher')[]
     onTransactionSubmitted?: LadderTransactionSubmittedObserver
   }): Promise<LadderMakeResult>
   /**
@@ -148,7 +164,7 @@ type LadderRunOutcome =
       marketId: Hex
       status: 'applied' | 'logged'
       action: 'publish' | 'replace'
-      reason: 'publish' | 'recenter' | 'resize'
+      reason: 'publish' | 'recenter' | 'resize' | 'book-crossed'
     }
   | {
       marketId: Hex
@@ -216,6 +232,9 @@ export type LadderMonitorReport = {
 
 /** Coordinates deterministic ladder decisions through fresh read and explicit make outcomes. */
 export class LadderQuoterService {
+  // Process memory by design: a restart forgets it and at worst replaces once early.
+  private readonly bookCrossedReplacedAt = new Map<Hex, { lower?: bigint; higher?: bigint }>()
+
   /**
    * Creates one ladder application coordinator.
    * @param positions - Fresh position/capacity reader.
@@ -377,7 +396,10 @@ export class LadderQuoterService {
    * details. All publication and invalidation side effects pass exclusively through `make`. A market
    * whose fresh read shows maturity already reached is not quoted: its owned groups are invalidated
    * and it reports the non-failing `matured` action, so the remaining configured markets keep
-   * quoting and monitoring continues into later cycles.
+   * quoting and monitoring continues into later cycles. A resting ladder a third party has
+   * crossed on a clearable side is replaced with reason `book-crossed` once that side's cooldown
+   * has elapsed; `make` rechecks the crossing under its own lock, so one that cleared in between
+   * mutates nothing and the cycle reports `rest`.
    */
   async runOnce(parameters: LadderRunParameters = {}) {
     if (this.configs.length === 0) {
@@ -533,7 +555,7 @@ export class LadderQuoterService {
       }
 
       let desired: LadderQuoteSet
-      let decision: 'publish' | 'recenter' | 'resize' | 'rest'
+      let decision: 'publish' | 'recenter' | 'resize' | 'rest' | 'book-crossed'
       let diagnostics: LadderDiagnostics | undefined
       try {
         const targetRateBps =
@@ -559,7 +581,10 @@ export class LadderQuoterService {
               })
         diagnostics = generation.diagnostics
         const generated = generation.quote
-        desired = referenceObservationId ? { ...generated, referenceObservationId } : generated
+        desired = {
+          ...generated,
+          ...(referenceObservationId === undefined ? {} : { referenceObservationId })
+        }
         if (!active) decision = 'publish'
         else if (sameLadderQuoteSet(active, desired)) decision = 'rest'
         else decision = recenter ? 'recenter' : 'resize'
@@ -599,6 +624,25 @@ export class LadderQuoterService {
         desired.lower.length === 0 && desired.higher.length === 0 ? undefined : desired
       if (!active && !desiredPublication) decision = 'rest'
 
+      const bookCrossing = this.bookCrossingReport(config, market)
+      const bookCrossedSides =
+        bookCrossing === undefined
+          ? []
+          : SIDES.filter(
+              side =>
+                bookCrossing[side].crossed &&
+                bookCrossing[side].clearable &&
+                !bookCrossing[side].suppressed
+            )
+      if (
+        decision === 'rest' &&
+        active !== undefined &&
+        desiredPublication !== undefined &&
+        bookCrossedSides.length > 0
+      ) {
+        decision = 'book-crossed'
+      }
+
       const verbosePlan: LadderVerbosePlan = {
         config,
         currentState,
@@ -607,6 +651,7 @@ export class LadderQuoterService {
         ...this.premiumDiagnostics(config, referenceRateBps, secondsToMaturity),
         ladderOffer: desired,
         decision,
+        ...(bookCrossing ? { bookCrossing } : {}),
         ...(diagnostics ? { diagnostics } : {}),
         ...(groupConsumption ? { groupConsumption } : {})
       }
@@ -617,6 +662,7 @@ export class LadderQuoterService {
           marketId: config.marketId,
           desired: desiredPublication,
           reason: decision,
+          ...(decision === 'book-crossed' ? { bookCrossedSides } : {}),
           onTransactionSubmitted: this.marketObserver(config.marketId, parameters)
         })
       } catch (error) {
@@ -650,17 +696,28 @@ export class LadderQuoterService {
         continue
       }
 
-      const submittedTransactions =
-        reconciliation === undefined || reconciliation === 'logged'
-          ? undefined
-          : reconciliation.submittedTransactions
-      if (decision === 'rest') {
+      const settled =
+        reconciliation === undefined || reconciliation === 'logged' ? undefined : reconciliation
+      const bookReconciliation = settled?.reconciliation
+      if (bookReconciliation?.applied === true) {
+        this.advanceBookCrossedCooldown(config.marketId, bookReconciliation)
+      }
+      const submittedTransactions = settled?.submittedTransactions
+      const reconciled = {
+        ...verbosePlan,
+        ...(submittedTransactions ? { submittedTransactions } : {}),
+        ...(settled?.bookClearedRungs ? { bookClearedRungs: settled.bookClearedRungs } : {}),
+        ...(bookReconciliation ? { bookReconciliation } : {})
+      }
+      const nothingLeftToClear =
+        decision === 'book-crossed' && bookReconciliation?.applied === false
+      if (decision === 'rest' || nothingLeftToClear) {
         results.push(
           await this.completeResult(
             config,
             { marketId: config.marketId, status: 'observed', action: 'rest' },
             parameters,
-            { ...verbosePlan, ...(submittedTransactions ? { submittedTransactions } : {}) },
+            reconciled,
             startedAt
           )
         )
@@ -671,17 +728,57 @@ export class LadderQuoterService {
           config,
           {
             marketId: config.marketId,
-            status: reconciliation === 'logged' ? 'logged' : 'applied',
+            status: loggedMakeResult(reconciliation) ? 'logged' : 'applied',
             action: decision === 'publish' ? 'publish' : 'replace',
             reason: decision
           },
           parameters,
-          { ...verbosePlan, ...(submittedTransactions ? { submittedTransactions } : {}) },
+          reconciled,
           startedAt
         )
       )
     }
     return results
+  }
+
+  /**
+   * Projects the pre-decision per-side crossing, marking a side its cooldown still throttles.
+   * @param config - Market configuration whose `bookCrossedCooldownSeconds` gates each side.
+   * @param market - Fresh market observation carrying the crossing and its block timestamp.
+   * @returns One report per side, or `undefined` when the adapter reported no crossing at all.
+   * @remarks A side with no recorded replacement, or an observation without a block timestamp, has
+   * elapsed: the throttle may only ever suppress on positive evidence that it is too soon.
+   */
+  private bookCrossingReport(
+    config: LadderConfig,
+    market: LadderMarketState
+  ): { lower: LadderBookSideCrossingReport; higher: LadderBookSideCrossingReport } | undefined {
+    const crossing = market.bookCrossing
+    if (!crossing) return undefined
+    const replacedAt = this.bookCrossedReplacedAt.get(config.marketId)
+    const report = (side: (typeof SIDES)[number]): LadderBookSideCrossingReport => {
+      const previous = replacedAt?.[side]
+      const elapsed =
+        previous === undefined ||
+        market.observedTimestamp === undefined ||
+        market.observedTimestamp - previous >= BigInt(config.bookCrossedCooldownSeconds)
+      return {
+        ...crossing[side],
+        suppressed: crossing[side].crossed && crossing[side].clearable && !elapsed
+      }
+    }
+    return { lower: report('lower'), higher: report('higher') }
+  }
+
+  private advanceBookCrossedCooldown(marketId: Hex, reconciliation: LadderBookReconciliation) {
+    const replacedAt = this.bookCrossedReplacedAt.get(marketId) ?? {}
+    for (const side of SIDES) {
+      const crossing = reconciliation.bookCrossing[side]
+      if (crossing.crossed && crossing.clearable) {
+        replacedAt[side] = reconciliation.preparedAtTimestamp
+      }
+    }
+    this.bookCrossedReplacedAt.set(marketId, replacedAt)
   }
 
   private monitorIntervalMs() {
@@ -739,12 +836,11 @@ export class LadderQuoterService {
       config,
       {
         marketId: config.marketId,
-        status:
-          invalidation === 'logged'
-            ? 'logged'
-            : submittedTransactions && submittedTransactions.length > 0
-              ? 'applied'
-              : 'observed',
+        status: loggedMakeResult(invalidation)
+          ? 'logged'
+          : submittedTransactions && submittedTransactions.length > 0
+            ? 'applied'
+            : 'observed',
         action: 'matured'
       },
       parameters,
@@ -771,8 +867,8 @@ export class LadderQuoterService {
           marketId: config.marketId,
           status: 'failed',
           stage: 'market-read',
-          invalidated: invalidation !== 'logged',
-          ...(invalidation === 'logged' ? { invalidationLogged: true } : {}),
+          invalidated: !loggedMakeResult(invalidation),
+          ...(loggedMakeResult(invalidation) ? { invalidationLogged: true } : {}),
           errorName: operatorErrorName(error)
         },
         invalidation

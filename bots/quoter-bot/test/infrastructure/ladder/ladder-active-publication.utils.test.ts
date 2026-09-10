@@ -7,6 +7,7 @@ import type { OwnedLadderPublication } from '../../../src/infrastructure/ladder/
 
 import {
   activeOwnedLadderGroupIds,
+  activeOwnedLadderGroupIdsBySide,
   ownedLadderGroupConsumption,
   pendingLadderQuoteSets,
   reconstructOwnedLadderPublication
@@ -198,5 +199,35 @@ describe('ownedLadderGroupConsumption', () => {
     expect(
       ownedLadderGroupConsumption([lowerPublication, foreign], groups, otherMarketId)
     ).toMatchObject([{ groupId: otherGroupId, marketId: otherMarketId }])
+  })
+})
+
+describe('activeOwnedLadderGroupIdsBySide', () => {
+  const otherMarketId: Hex = `0x${'99'.repeat(32)}`
+
+  test('splits the active groups of one market by the side each was published on', () => {
+    expect(
+      activeOwnedLadderGroupIdsBySide(
+        [publication],
+        marketId,
+        new Set([lowerGroupId, higherGroupId])
+      )
+    ).toEqual({ lower: new Set([lowerGroupId]), higher: new Set([higherGroupId]) })
+  })
+
+  test('omits a group the active set no longer reports', () => {
+    expect(
+      activeOwnedLadderGroupIdsBySide([publication], marketId, new Set([higherGroupId]))
+    ).toEqual({ lower: new Set(), higher: new Set([higherGroupId]) })
+  })
+
+  test('omits every publication of another market', () => {
+    expect(
+      activeOwnedLadderGroupIdsBySide(
+        [publication],
+        otherMarketId,
+        new Set([lowerGroupId, higherGroupId])
+      )
+    ).toEqual({ lower: new Set(), higher: new Set() })
   })
 })

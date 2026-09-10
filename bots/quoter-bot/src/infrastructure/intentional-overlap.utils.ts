@@ -1,8 +1,13 @@
 import type { BookOffer } from '@repo/offers'
+import type { Address } from 'viem'
 
 /** Ownership evidence attached only after durable strategy-state validation. */
 export type OwnedOverlapBookOffer = BookOffer & {
   overlapOwner?: 'bootstrap-buy' | 'ladder-sell'
+  /** Signing maker, when the projection that produced the offer knows it. */
+  maker?: Address
+  /** Executable size in credit units, when the projection that produced the offer knows it. */
+  units?: bigint
 }
 
 /**

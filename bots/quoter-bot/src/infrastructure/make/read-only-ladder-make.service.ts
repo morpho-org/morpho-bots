@@ -1,4 +1,5 @@
 import type { LadderMakeService } from '../../application/ladder/ladder-quoter.service'
+import type { LadderReadOnlyValidation } from '../../application/ladder/ladder-verbose'
 
 import { formatReadOnlyMakeEvent } from './read-only-make.utils'
 
@@ -17,7 +18,7 @@ export class ReadOnlyLadderMakeService implements LadderMakeService {
     private readonly write: (line: string) => void | Promise<void> = console.log,
     private readonly validate: (
       parameters: Parameters<LadderMakeService['reconcile']>[0]
-    ) => Promise<void> = async () => {}
+    ) => Promise<LadderReadOnlyValidation | undefined> = async () => undefined
   ) {}
 
   /**
@@ -50,16 +51,22 @@ export class ReadOnlyLadderMakeService implements LadderMakeService {
   /**
    * Logs the exact desired ladder reconciliation instead of submitting it.
    * @param parameters - Market, desired quote set or invalidation, and reconciliation reason.
-   * @returns `logged` after the terminal writer accepts one JSON line.
+   * @returns A logged result carrying the crossing recheck when validation assessed one.
    * @throws When live-equivalent validation fails or the injected terminal writer rejects the line.
    * @remarks Production read-only composition builds the exact protocol tree, validates its
    * unsigned Mempool policy and prospective whole-book spread, then logs it. No signing,
    * publication, replacement, or invalidation occurs.
    */
   async reconcile(parameters: Parameters<LadderMakeService['reconcile']>[0]) {
-    await this.validate(parameters)
-    await this.write(formatReadOnlyMakeEvent('ladder', 'reconcile', parameters))
-    return 'logged' as const
+    const validation = await this.validate(parameters)
+    if (validation?.reconciliation.applied !== false) {
+      await this.write(formatReadOnlyMakeEvent('ladder', 'reconcile', parameters))
+    }
+    return {
+      submittedTransactions: [],
+      logged: true as const,
+      ...validation
+    }
   }
 
   /**

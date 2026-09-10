@@ -1,3 +1,5 @@
+import type { BookOffer } from '@repo/offers'
+
 import { MAX_TICK, midnightAbi, Payload, TickLib } from '@morpho-org/midnight-sdk'
 import { morphoViemExtension } from '@morpho-org/morpho-sdk'
 import { getChainAddress } from '@morpho-org/morpho-ts'
@@ -17,6 +19,7 @@ import type {
   LadderReferenceRateService
 } from '../../application/ladder/ladder-quoter.service'
 import type {
+  LadderReadOnlyValidation,
   LadderSubmittedTransaction,
   LadderTransactionSubmittedObserver
 } from '../../application/ladder/ladder-verbose'
@@ -50,8 +53,10 @@ import { createMakerAccount } from '../make/maker-account.utils'
 import { maturityReadsByMarket } from '../maturity-read.utils'
 import { createBlueReferenceReader } from '../reference/blue-reference-reader.utils'
 import { mapSelectedMarketItems } from '../selected-market-items.utils'
+import { rateTickWindow } from '../tick-window.utils'
 import {
   activeOwnedLadderGroupIds,
+  activeOwnedLadderGroupIdsBySide,
   ownedLadderGroupConsumption,
   reconstructOwnedLadderPublication
 } from './ladder-active-publication.utils'
@@ -59,8 +64,19 @@ import { LadderAdapterError } from './ladder-adapter.error'
 import { readLadderBookOffers } from './ladder-book.utils'
 import { calculateLadderCapacities } from './ladder-capacity.utils'
 import { ladderCashReservations } from './ladder-cash-reservation.utils'
+import {
+  bookCrossesRestingLadder,
+  clearableOpposingBook,
+  hasClearableCrossing,
+  retainedOpposingBookTicks
+} from './ladder-cross-book.utils'
 import { createLadderGroupOwnership } from './ladder-group-ownership.utils'
-import { MidnightLadderMakeService, type LadderOfferTransport } from './ladder-make.service'
+import {
+  MidnightLadderMakeService,
+  type LadderObservedBook,
+  type LadderObservedMarket,
+  type LadderOfferTransport
+} from './ladder-make.service'
 import { buildLadderTree } from './ladder-offer.utils'
 import { configuredRatifierType, prepareLadderRatification } from './ladder-ratification.utils'
 import { assertLadderProspectiveSpread } from './ladder-spread.utils'
@@ -75,7 +91,9 @@ type ProductionLadderAdapters = {
   positions: LadderPositionService
   rates: LadderReferenceRateService
   make: LadderMakeService
-  validateReconcile: (parameters: Parameters<LadderMakeService['reconcile']>[0]) => Promise<void>
+  validateReconcile: (
+    parameters: Parameters<LadderMakeService['reconcile']>[0]
+  ) => Promise<LadderReadOnlyValidation | undefined>
 }
 
 const minimum = (left: bigint, right: bigint) => (left < right ? left : right)
@@ -84,13 +102,15 @@ const BPS_WAD = 10n ** 18n / 10_000n
 type OwnedBootstrapOffer = BootstrapOffer & { groupId: Hex }
 
 /**
- * Finds the highest live own-bootstrap buy rate relevant to one ladder market.
+ * Finds the lowest live own-bootstrap buy rate relevant to one ladder market.
  * @param parameters - Indexed groups, durable ownership, persisted and pending intents, market, and block time.
- * @returns The highest nominal or exact tick-derived annual rate, or `undefined` without a live own buy.
- * @remarks Configured V0 groups may predate persisted offer intents, so their indexed tick and maturity
- * are authoritative fallback evidence while the projection is live.
+ * @returns The lowest nominal or exact tick-derived annual rate, or `undefined` without a live own buy.
+ * @remarks The lowest rate is the binding one: every ladder sell must clear every own bootstrap buy,
+ * and ticks are inverse to rates, so this selects the same offer as `ownBootstrapBuyTickCeiling`.
+ * Configured V0 groups may predate persisted offer intents, so their indexed tick and maturity are
+ * authoritative fallback evidence while the projection is live.
  */
-export const highestBootstrapBuyRateBps = (parameters: {
+export const lowestBootstrapBuyRateBps = (parameters: {
   groups: readonly BootstrapRawGroup[]
   ownedGroupIds: readonly Hex[]
   persistedOffers: readonly OwnedBootstrapOffer[]
@@ -114,7 +134,7 @@ export const highestBootstrapBuyRateBps = (parameters: {
     .filter(offer => offer.marketId === parameters.marketId)
     .map(offer => offer.rateBps)
   return [...indexedRates, ...pendingRates].reduce<bigint | undefined>(
-    (highest, rateBps) => (highest === undefined || rateBps > highest ? rateBps : highest),
+    (lowest, rateBps) => (lowest === undefined || rateBps < lowest ? rateBps : lowest),
     undefined
   )
 }
@@ -353,6 +373,26 @@ export const createProductionLadderAdapters = (
   let cleanupRemovedMarkets: () => Promise<readonly Hex[] | void> = async () => []
   let removedGroupTombstones: ReadonlySet<Hex> = new Set()
 
+  // Observing third parties is best-effort: a book the reader rejects as oversized or malformed
+  // yields no crossing signal, never a withdrawn ladder. Provider failures keep failing the read.
+  const observeBookOffers = async (marketId: Hex) => {
+    try {
+      return await readLadderBookOffers({
+        baseUrl: config.morphoApiBaseUrl,
+        marketIds: [marketId],
+        timeoutMs: config.requestTimeoutMs
+      })
+    } catch (error) {
+      if (
+        error instanceof LadderAdapterError &&
+        ['book-response', 'book-timeout'].includes(error.operation)
+      ) {
+        return undefined
+      }
+      throw error
+    }
+  }
+
   const positions: LadderPositionService = {
     readMarket: async marketId => {
       const selectedConfig = configByMarket.get(marketId)
@@ -366,7 +406,8 @@ export const createProductionLadderAdapters = (
         cashBalance,
         allowance,
         positionSnapshots,
-        marketData
+        marketData,
+        wholeBook
       ] = await Promise.all([
         readGroups(),
         ladderOwnership.read(),
@@ -399,7 +440,8 @@ export const createProductionLadderAdapters = (
             }
           })
         ),
-        midnight.getMarketData(marketId)
+        midnight.getMarketData(marketId),
+        observeBookOffers(marketId)
       ])
       const selectedPosition = positionSnapshots.find(item => item.marketId === marketId)
       if (!selectedPosition) throw new LadderAdapterError('position-unavailable')
@@ -426,7 +468,7 @@ export const createProductionLadderAdapters = (
         .filter(position => position.marketId !== marketId)
         .reduce((sum, position) => sum + position.credit, 0n)
 
-      const bootstrapBuyRateBps = highestBootstrapBuyRateBps({
+      const bootstrapBuyRateBps = lowestBootstrapBuyRateBps({
         groups,
         ownedGroupIds: bootstrapGroupIds,
         persistedOffers: persistedBootstrapOffers,
@@ -434,6 +476,54 @@ export const createProductionLadderAdapters = (
         marketId,
         now: block.timestamp
       })
+
+      const activeLadderGroupIds = new Set(
+        activeOwnedLadderGroupIds(publications, groups, marketId)
+      )
+      const observedBookCrossing = (wholeBook: readonly OwnedOverlapBookOffer[]) => {
+        const opposingBookTicks = retainedOpposingBookTicks({
+          marketId,
+          replacedGroupIds: activeLadderGroupIds,
+          book: markOwnBootstrapBuys(
+            wholeBook,
+            durableBootstrapGroupIds(bootstrapGroupIds, persistedBootstrapOffers)
+          ),
+          depthFloor: { maker, minimumOpposingAssets: selectedConfig.minimumOfferAssets }
+        })
+        const crossed = bookCrossesRestingLadder({
+          marketId,
+          maker,
+          book: wholeBook,
+          activeLadderGroupIds: activeOwnedLadderGroupIdsBySide(
+            publications,
+            marketId,
+            activeLadderGroupIds
+          ),
+          minimumOpposingAssets: selectedConfig.minimumOfferAssets
+        })
+        const tickSpacing = BigInt(marketData.tickSpacing)
+        const timeToMaturity = marketData.params.maturity - block.timestamp
+        const clearable =
+          timeToMaturity <= 0n
+            ? undefined
+            : clearableOpposingBook({
+                ticks: opposingBookTicks,
+                window: rateTickWindow({
+                  minimumRateBps: selectedConfig.minimumRateBps,
+                  maximumRateBps: selectedConfig.maximumRateBps,
+                  timeToMaturity,
+                  tickSpacing
+                }),
+                tickSpacing
+              })
+        return clearable === undefined
+          ? undefined
+          : {
+              lower: { crossed: crossed.lower, clearable: clearable.lower },
+              higher: { crossed: crossed.higher, clearable: clearable.higher }
+            }
+      }
+      const bookCrossing = wholeBook === undefined ? undefined : observedBookCrossing(wholeBook)
 
       return {
         ...calculateProductionLadderCapacities({
@@ -447,6 +537,7 @@ export const createProductionLadderAdapters = (
           reservations
         }),
         ...(bootstrapBuyRateBps === undefined ? {} : { bootstrapBuyRateBps }),
+        ...(bookCrossing === undefined ? {} : { bookCrossing }),
         maturityTimestamp: marketData.params.maturity,
         observedTimestamp: block.timestamp
       }
@@ -485,6 +576,26 @@ export const createProductionLadderAdapters = (
     }
   }
 
+  const durableBootstrapGroupIds = (
+    ownedGroupIds: readonly Hex[],
+    persistedOffers: readonly { groupId: Hex }[]
+  ) =>
+    new Set<Hex>([
+      ...config.v0OfferGroupIds,
+      ...ownedGroupIds,
+      ...persistedOffers.map(offer => offer.groupId)
+    ])
+
+  const markOwnBootstrapBuys = (
+    book: readonly BookOffer[],
+    bootstrapGroupIds: ReadonlySet<Hex>
+  ): OwnedOverlapBookOffer[] =>
+    book.map(offer =>
+      offer.buy && offer.groupId !== undefined && bootstrapGroupIds.has(offer.groupId)
+        ? { ...offer, overlapOwner: 'bootstrap-buy' as const }
+        : offer
+    )
+
   const completeBookOffers = async (marketId: Hex) => {
     const [groups, durableBootstrapIds, persistedBootstrapOffers, wholeBook] = await Promise.all([
       readGroups(),
@@ -510,6 +621,7 @@ export const createProductionLadderAdapters = (
           return {
             groupId: offer.groupId,
             marketId: offer.marketId,
+            maker,
             buy: true,
             tick: offer.tick,
             overlapOwner: 'bootstrap-buy' as const
@@ -529,23 +641,17 @@ export const createProductionLadderAdapters = (
         return {
           groupId: offer.groupId,
           marketId: offer.marketId,
+          maker,
           buy: true,
           tick: conservativeTick,
           overlapOwner: 'bootstrap-buy' as const
         }
       }
     )
-    const durableBootstrapGroupIds = new Set([
-      ...config.v0OfferGroupIds,
-      ...durableBootstrapIds,
-      ...persistedBootstrapOffers.map(offer => offer.groupId)
-    ])
-    const indexedOffers = bootstrapBookOffers(groups).map(offer => ({
-      ...offer,
-      ...(offer.buy && durableBootstrapGroupIds.has(offer.groupId)
-        ? { overlapOwner: 'bootstrap-buy' as const }
-        : {})
-    }))
+    const indexedOffers = markOwnBootstrapBuys(
+      bootstrapBookOffers(groups),
+      durableBootstrapGroupIds(durableBootstrapIds, persistedBootstrapOffers)
+    )
     const key = (offer: { groupId?: Hex; marketId: Hex; buy: boolean; tick: bigint }) =>
       `${offer.groupId ?? ''}:${offer.marketId}:${offer.buy ? 'buy' : 'sell'}:${offer.tick}`
     const indexedByKey = new Map(indexedOffers.map(offer => [key(offer), offer] as const))
@@ -580,26 +686,85 @@ export const createProductionLadderAdapters = (
 
   const readActive = async (marketId: Hex) => (await readActiveState(marketId)).quote
 
+  const readObservedMarket = async (marketId: Hex): Promise<LadderObservedMarket> => {
+    const [market, block] = await Promise.all([
+      midnight.getMarketData(marketId),
+      client.getBlock({ blockTag: 'latest' })
+    ])
+    return { market, now: block.timestamp }
+  }
+
+  const assessBookCrossing = async (marketId: Hex, observed: LadderObservedBook) => {
+    const selectedConfig = configByMarket.get(marketId)
+    if (!selectedConfig) throw new LadderAdapterError('market-configuration-missing')
+    const [observedMarket, publications] = await Promise.all([
+      readObservedMarket(marketId),
+      ladderOwnership.read()
+    ])
+    const timeToMaturity = BigInt(observedMarket.market.params.maturity) - observedMarket.now
+    if (timeToMaturity <= 0n) throw new LadderAdapterError('market-matured')
+    const tickSpacing = BigInt(observedMarket.market.tickSpacing)
+    const crossed = bookCrossesRestingLadder({
+      marketId,
+      maker,
+      book: observed.book,
+      activeLadderGroupIds: activeOwnedLadderGroupIdsBySide(
+        publications,
+        marketId,
+        observed.replacedGroupIds
+      ),
+      minimumOpposingAssets: selectedConfig.minimumOfferAssets
+    })
+    const clearable = clearableOpposingBook({
+      ticks: retainedOpposingBookTicks({
+        marketId,
+        replacedGroupIds: observed.replacedGroupIds,
+        book: observed.book,
+        depthFloor: { maker, minimumOpposingAssets: selectedConfig.minimumOfferAssets }
+      }),
+      window: rateTickWindow({
+        minimumRateBps: selectedConfig.minimumRateBps,
+        maximumRateBps: selectedConfig.maximumRateBps,
+        timeToMaturity,
+        tickSpacing
+      }),
+      tickSpacing
+    })
+    return {
+      reconciliation: {
+        preparedAtTimestamp: observedMarket.now,
+        bookCrossing: {
+          lower: { crossed: crossed.lower, clearable: clearable.lower },
+          higher: { crossed: crossed.higher, clearable: clearable.higher }
+        }
+      },
+      observedMarket
+    }
+  }
+
   const prepareUnsignedPublication = async (
     quote: LadderQuoteSet,
-    bookState?: Awaited<ReturnType<typeof completeBookOffers>>
+    observed: LadderObservedBook & { observedMarket?: LadderObservedMarket }
   ) => {
     const selectedConfig = config.ladder.find(item => item.marketId === quote.marketId)
     if (!selectedConfig) throw new LadderAdapterError('market-not-configured')
-    const [state, market, block] = await Promise.all([
-      bookState ?? completeBookOffers(quote.marketId),
-      midnight.getMarketData(quote.marketId),
-      client.getBlock({ blockTag: 'latest' })
-    ])
-    const bootstrapTickCeiling = ownBootstrapBuyTickCeiling(state.book, quote.marketId)
+    const { market, now } = observed.observedMarket ?? (await readObservedMarket(quote.marketId))
+    const bootstrapTickCeiling = ownBootstrapBuyTickCeiling(observed.book, quote.marketId)
+    const opposingBookTicks = retainedOpposingBookTicks({
+      marketId: quote.marketId,
+      replacedGroupIds: observed.replacedGroupIds,
+      book: observed.book,
+      depthFloor: { maker, minimumOpposingAssets: selectedConfig.minimumOfferAssets }
+    })
     const prepared = buildLadderTree({
       quote,
       market,
       maker,
       ratifier: config.setup.ratifier,
-      now: block.timestamp,
+      now,
       minimumRateBps: selectedConfig.minimumRateBps,
       maximumRateBps: selectedConfig.maximumRateBps,
+      opposingBookTicks,
       ...(bootstrapTickCeiling === undefined
         ? {}
         : { ownBootstrapBuyTickCeiling: bootstrapTickCeiling })
@@ -612,20 +777,39 @@ export const createProductionLadderAdapters = (
   }
 
   const validateReconcile: ProductionLadderAdapters['validateReconcile'] = async parameters => {
-    if (parameters.reason === 'rest' || !parameters.desired) return
+    if (parameters.reason === 'rest' || !parameters.desired) return undefined
     const [bookState, publications] = await Promise.all([
       completeBookOffers(parameters.marketId),
       ladderOwnership.read()
     ])
-    const prepared = await prepareUnsignedPublication(parameters.desired, bookState)
-    assertLadderProspectiveSpread({
-      marketId: parameters.marketId,
+    const observed = {
+      book: bookState.book,
       replacedGroupIds: new Set(
         activeOwnedLadderGroupIds(publications, bookState.groups, parameters.marketId)
-      ),
-      book: bookState.book,
+      )
+    }
+    const assessed = await assessBookCrossing(parameters.marketId, observed)
+    if (
+      parameters.reason === 'book-crossed' &&
+      !hasClearableCrossing(assessed.reconciliation.bookCrossing, parameters.bookCrossedSides)
+    ) {
+      return { reconciliation: { ...assessed.reconciliation, applied: false } }
+    }
+    const prepared = await prepareUnsignedPublication(parameters.desired, {
+      ...observed,
+      observedMarket: assessed.observedMarket
+    })
+    assertLadderProspectiveSpread({
+      marketId: parameters.marketId,
+      maker,
+      replacedGroupIds: observed.replacedGroupIds,
+      book: observed.book,
       prospective: ownedLadderProspectiveOffers(prepared.bookOffers)
     })
+    return {
+      reconciliation: { ...assessed.reconciliation, applied: true },
+      bookClearedRungs: prepared.bookClearedRungs
+    }
   }
 
   const readOnlyMake: LadderMakeService = {
@@ -676,8 +860,10 @@ export const createProductionLadderAdapters = (
       return activeOwnedLadderGroupIds(publications, groups, marketId)
     },
     listBookOffers: async marketId => (await completeBookOffers(marketId)).book,
-    preparePublication: async quote => {
-      const prepared = await prepareUnsignedPublication(quote)
+    assessBook: assessBookCrossing,
+    preparePublication: async (quote, observed) => {
+      const prepared = await prepareUnsignedPublication(quote, observed)
+      const { bookClearedRungs } = prepared
       const ratifierType = configuredRatifierType(config.setup.ratifier, config.chainId)
       const ratification = await prepareLadderRatification({
         type: ratifierType,
@@ -705,6 +891,7 @@ export const createProductionLadderAdapters = (
       return {
         groupIds,
         groups: prepared.groups,
+        bookClearedRungs,
         prospective: ownedLadderProspectiveOffers(prepared.bookOffers),
         publish: onTransactionSubmitted =>
           publishLadderPublication({
@@ -833,7 +1020,7 @@ export const createProductionLadderAdapters = (
   return {
     positions,
     rates,
-    make: Object.assign(new MidnightLadderMakeService(transport), { cleanupRemovedMarkets }),
+    make: Object.assign(new MidnightLadderMakeService(transport, maker), { cleanupRemovedMarkets }),
     validateReconcile
   }
 }

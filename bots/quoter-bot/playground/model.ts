@@ -207,6 +207,12 @@ export const LADDER_FIELDS = [
     'number'
   ],
   [
+    'bookCrossedCooldownSeconds',
+    'Book-crossed cooldown (seconds)',
+    'Seconds a side waits between replacements triggered by a third party crossing the resting ladder; empty = 3 \u00d7 loopIntervalSeconds',
+    'number'
+  ],
+  [
     'movementToleranceBps',
     'Movement tolerance (BPS)',
     'Keep the current centre until the target centre moves further than this',
@@ -247,6 +253,7 @@ export const createDefaultLadder = (marketId = DEFAULT_MARKET_ID): LadderInput =
   minimumOfferAssets: '101000000',
   groupMode: 'shared-rung',
   loopIntervalSeconds: '60',
+  bookCrossedCooldownSeconds: '180',
   movementToleranceBps: '10',
   minimumRateBps: '200',
   maximumRateBps: '800'
@@ -305,6 +312,7 @@ const ladderInput = (config: TargetRateConfigured<LadderConfig>): LadderInput =>
   minimumOfferAssets: String(config.minimumOfferAssets),
   groupMode: config.groupMode,
   loopIntervalSeconds: String(config.loopIntervalSeconds),
+  bookCrossedCooldownSeconds: String(config.bookCrossedCooldownSeconds),
   movementToleranceBps: String(config.movementToleranceBps),
   minimumRateBps: String(config.minimumRateBps),
   maximumRateBps: String(config.maximumRateBps)

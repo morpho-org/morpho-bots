@@ -4,7 +4,8 @@ import type { LadderQuoteSet } from '../../domain/ladder/ladder'
  * Compares two desired ladder sets by every publication-relevant domain value.
  * @param left - Previously reconciled desired set.
  * @param right - Freshly derived desired set.
- * @returns Whether market, center, grouping, rates, and sizes are exactly equal.
+ * @returns Whether market, center, observed reference, grouping, rates, and sizes are exactly
+ * equal.
  */
 export const sameLadderQuoteSet = (left: LadderQuoteSet, right: LadderQuoteSet) =>
   left.marketId === right.marketId &&
