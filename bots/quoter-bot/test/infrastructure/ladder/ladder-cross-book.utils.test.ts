@@ -19,6 +19,9 @@ const offer = (
   overrides: Partial<OwnedOverlapBookOffer> & Pick<OwnedOverlapBookOffer, 'buy' | 'tick'>
 ): OwnedOverlapBookOffer => ({ marketId, ...overrides })
 
+const maker: Address = '0x1111111111111111111111111111111111111111'
+const counterparty: Address = '0x2222222222222222222222222222222222222222'
+
 describe('retainedOpposingBookTicks', () => {
   test('selects the best tick on each side of the selected market', () => {
     expect(
@@ -73,6 +76,47 @@ describe('retainedOpposingBookTicks', () => {
     ).toEqual({ highestBuyTick: 3_900n })
   })
 
+  test('ignores third-party dust beyond the depth floor, but never own offers', () => {
+    const tick = 4_050n
+    const minimumUnits = TakeAmountsLib.toUnitsAtTick({ assets: 100n, tick, rounding: 'Up' })
+    const depthFloor = { maker, minimumOpposingAssets: 100n }
+    const dust = offer({
+      groupId: groupId('01'),
+      buy: true,
+      tick: 4_090n,
+      maker: counterparty,
+      units: 1n
+    })
+    const real = offer({
+      groupId: groupId('02'),
+      buy: true,
+      tick,
+      maker: counterparty,
+      units: minimumUnits
+    })
+    const ownSmall = offer({ groupId: groupId('03'), buy: true, tick: 4_070n, maker, units: 1n })
+
+    expect(
+      retainedOpposingBookTicks({
+        marketId,
+        replacedGroupIds: new Set(),
+        book: [dust, real],
+        depthFloor
+      })
+    ).toEqual({ highestBuyTick: tick })
+    expect(
+      retainedOpposingBookTicks({
+        marketId,
+        replacedGroupIds: new Set(),
+        book: [dust, real, ownSmall],
+        depthFloor
+      })
+    ).toEqual({ highestBuyTick: 4_070n })
+    expect(
+      retainedOpposingBookTicks({ marketId, replacedGroupIds: new Set(), book: [dust, real] })
+    ).toEqual({ highestBuyTick: 4_090n })
+  })
+
   test('keeps a book offer that carries no group ID', () => {
     expect(
       retainedOpposingBookTicks({
@@ -84,8 +128,6 @@ describe('retainedOpposingBookTicks', () => {
   })
 })
 
-const maker: Address = '0x1111111111111111111111111111111111111111'
-const counterparty: Address = '0x2222222222222222222222222222222222222222'
 const ownLadderSell = { groupId: groupId('aa'), buy: false, tick: 4_000n, maker } as const
 const ownLadderBuy = { groupId: groupId('bb'), buy: true, tick: 3_900n, maker } as const
 const activeLadderGroupIds = {

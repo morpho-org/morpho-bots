@@ -172,7 +172,9 @@ repricing for. It is not worth refusing to quote for.
 Unchanged from the branch, and unchanged in substance from
 [TIB-2026-08-14](./TIB-2026-08-14-quoter-cross-book-clearance.md) §2 — only its scope widens from
 the own bootstrap buy to every retained opposing offer, whatever its ratifier, at the tick the book
-reports for it now. Sells floor at the nearest aligned tick
+reports for it now — except third-party dust, an offer below the market's `minimumOfferAssets` at
+its own tick, which is ignored here for the same reason §3 ignores it: one free-to-post offer at an
+extreme tick would otherwise pin a whole side at the rate bound. Sells floor at the nearest aligned tick
 strictly above the highest retained buy tick, merged with the existing bootstrap floor; buys ceiling
 at the nearest aligned tick strictly below the lowest retained sell tick, which had no bound at all
 before. Both saturate into the hard rate window, and same-tick rungs merge as they already do.

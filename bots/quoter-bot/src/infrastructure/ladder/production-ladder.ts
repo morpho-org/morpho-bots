@@ -470,7 +470,8 @@ export const createProductionLadderAdapters = (
         book: markOwnBootstrapBuys(
           wholeBook,
           durableBootstrapGroupIds(bootstrapGroupIds, persistedBootstrapOffers)
-        )
+        ),
+        depthFloor: { maker, minimumOpposingAssets: selectedConfig.minimumOfferAssets }
       })
       const crossed = bookCrossesRestingLadder({
         marketId,
@@ -700,7 +701,8 @@ export const createProductionLadderAdapters = (
       ticks: retainedOpposingBookTicks({
         marketId,
         replacedGroupIds: observed.replacedGroupIds,
-        book: observed.book
+        book: observed.book,
+        depthFloor: { maker, minimumOpposingAssets: selectedConfig.minimumOfferAssets }
       }),
       window: rateTickWindow({
         minimumRateBps: selectedConfig.minimumRateBps,
@@ -733,7 +735,8 @@ export const createProductionLadderAdapters = (
     const opposingBookTicks = retainedOpposingBookTicks({
       marketId: quote.marketId,
       replacedGroupIds: observed.replacedGroupIds,
-      book: observed.book
+      book: observed.book,
+      depthFloor: { maker, minimumOpposingAssets: selectedConfig.minimumOfferAssets }
     })
     const prepared = buildLadderTree({
       quote,

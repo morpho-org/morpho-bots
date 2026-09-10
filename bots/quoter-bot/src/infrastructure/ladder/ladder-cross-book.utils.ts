@@ -35,25 +35,54 @@ const crosses = (buyTicks: readonly bigint[], sellTicks: readonly bigint[]) => {
   return buy !== undefined && sell !== undefined && buy >= sell
 }
 
+/** The smallest third-party size worth repricing for, and the maker whose own offers never count as dust. */
+type OpposingDepthFloor = { maker: Address; minimumOpposingAssets: bigint }
+
+/**
+ * Whether a book offer is a third-party offer too small to reprice for.
+ * @remarks An offer of unknown size is never dust. One at a tick whose price rounds to zero is
+ * worth zero assets whatever its units, so it always is. Own offers are never dust: the self-trade
+ * guard fails closed on them regardless of size.
+ */
+const isDust = (offer: OwnedOverlapBookOffer, floor: OpposingDepthFloor | undefined) => {
+  if (floor === undefined || offer.units === undefined) return false
+  if (offer.maker === undefined || isAddressEqual(offer.maker, floor.maker)) return false
+  if (TickLib.tickToPrice(offer.tick) === 0n) return true
+  return (
+    offer.units <
+    TakeAmountsLib.toUnitsAtTick({
+      assets: floor.minimumOpposingAssets,
+      tick: offer.tick,
+      rounding: 'Up'
+    })
+  )
+}
+
 /**
  * Selects the opposing ticks a prospective ladder must clear to leave the book uncrossed.
- * @param parameters - Selected market, groups this cycle replaces, and the complete market book.
+ * @param parameters - Selected market, groups this cycle replaces, the complete market book, and
+ * the optional depth floor below which a third-party offer is ignored.
  * @returns The highest retained buy tick and lowest retained sell tick, each omitted when that side
- * of the book is empty.
+ * of the book holds nothing worth clearing.
  * @remarks Pure projection, and best-effort against a book that keeps moving: the publication spread
  * guard reads the book again after preparation, so this bound narrows how often that guard trips
  * rather than proving it cannot. Passing a `replacedGroupIds` subset of the guard's own set keeps
- * the bound on the conservative side of it.
+ * the bound on the conservative side of it. Dust is excluded here, not only from the crossing
+ * signal, because one free-to-post offer at an extreme tick would otherwise pin a whole side at the
+ * rate bound and report every real crossing unclearable.
  */
 export const retainedOpposingBookTicks = (parameters: {
   marketId: Hex
   replacedGroupIds: ReadonlySet<Hex>
   book: readonly OwnedOverlapBookOffer[]
+  depthFloor?: OpposingDepthFloor
 }): OpposingBookTicks => {
   const retained = batchProspectiveBook({
     marketId: parameters.marketId,
     replacedGroupIds: parameters.replacedGroupIds,
-    book: parameters.book.filter(offer => offer.overlapOwner !== 'bootstrap-buy'),
+    book: parameters.book.filter(
+      offer => offer.overlapOwner !== 'bootstrap-buy' && !isDust(offer, parameters.depthFloor)
+    ),
     prospective: []
   })
   const highestBuyTick = highestTick(retained.filter(offer => offer.buy).map(offer => offer.tick))
@@ -88,20 +117,15 @@ export const bookCrossesRestingLadder = (parameters: {
   const market = parameters.book.filter(offer => offer.marketId === parameters.marketId)
   const ticks = (offers: readonly OwnedOverlapBookOffer[], buy: boolean) =>
     offers.filter(offer => offer.buy === buy).map(offer => offer.tick)
-  const minimum = parameters.minimumOpposingAssets
-  const meaningful = (offer: OwnedOverlapBookOffer) => {
-    if (minimum === undefined || offer.units === undefined) return true
-    if (TickLib.tickToPrice(offer.tick) === 0n) return false
-    return (
-      offer.units >=
-      TakeAmountsLib.toUnitsAtTick({ assets: minimum, tick: offer.tick, rounding: 'Up' })
-    )
-  }
+  const floor =
+    parameters.minimumOpposingAssets === undefined
+      ? undefined
+      : { maker: parameters.maker, minimumOpposingAssets: parameters.minimumOpposingAssets }
   const thirdParty = market.filter(
     offer =>
       offer.maker !== undefined &&
       !isAddressEqual(offer.maker, parameters.maker) &&
-      meaningful(offer)
+      !isDust(offer, floor)
   )
   const ownLadder = (side: 'lower' | 'higher') =>
     market.filter(
