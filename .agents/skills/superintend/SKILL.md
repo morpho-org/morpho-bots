@@ -46,9 +46,8 @@ the shape of the thing implies.
   findings stop existing before you write several patches.
 - **Discuss** — for TIBs only; see below.
 - **Decide, per finding: incorporate, drop, or defer as a Linear ticket.** State the call and the
-  reason, then make the edits — deciding to incorporate is not incorporating, and Synthesis ends
-  with an artifact that has actually changed. A dropped finding is a decision, not an oversight,
-  and reads as one only if you say why.
+  reason, then make the edits — deciding to incorporate is not incorporating. A dropped finding is
+  a decision, not an oversight, and reads as one only if you say why.
 
 **Convergence.** Tell the reviewer(s) how you addressed their findings (if any) and ask whether
 they accept it.
