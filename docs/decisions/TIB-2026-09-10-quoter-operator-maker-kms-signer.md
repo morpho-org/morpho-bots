@@ -20,8 +20,7 @@ Run the quoter with two accounts:
 | Signer  | AWS KMS  | Signs offers and transactions. Pays gas and owns the nonce.                                                     |
 
 The operator calls `Midnight.setIsAuthorized(signer, true, maker)`. This grants the signer full
-Midnight authority. The bot calls KMS directly. Do not add a Lambda, DynamoDB, custom ratifier, or
-third publisher.
+Midnight authority. The bot calls KMS directly.
 
 This decision replaces
 [TIB-2026-08-12](./TIB-2026-08-12-quoter-bot-kms-signing-middleware.md). Its middleware does not
