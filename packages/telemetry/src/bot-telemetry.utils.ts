@@ -95,7 +95,7 @@ const bounded = async <Result>(task: Promise<Result>, timeoutMs: number) => {
  * each gated by the standard `OTEL_EXPORTER_OTLP_ENDPOINT` or its signal-specific variant, and
  * each isolated at startup, so one signal's failed registration (reported as a per-signal
  * `otel.start-failed`) never suppresses the other — and export over OTLP/HTTP with JSON encoding. Outbound undici/fetch requests are auto-instrumented
- * through `diagnostics_channel` (bundle-safe, unlike module patching) with every URL-bearing span
+ * through `diagnostics_channel` (channel-based, no module patching needed) with every URL-bearing span
  * attribute reduced to its origin, because RPC URLs commonly embed credentials. SDK diagnostics
  * are reduced to a rate-limited sanitized classification; endpoint values are never logged.
  * `OTEL_SERVICE_NAME` overrides the configured service name, matching SDK convention. The `env`

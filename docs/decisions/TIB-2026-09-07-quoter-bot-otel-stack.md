@@ -32,12 +32,15 @@ metrics are exactly the shape OTel is for, and
 follow-up TIB once one curator running v1 actually asks for it". That ask has now landed for the
 quoter bot.
 
-One production constraint dominates the design: the shipped image runs a single self-contained
+One production constraint shapes the design: the shipped image runs a single self-contained
 esbuild bundle (`bots/quoter-bot/scripts/build.ts`, `bundle: true`; no `node_modules` in the
-runtime stage). OTel auto-instrumentation that patches modules through `require-in-the-middle` /
-`import-in-the-middle` cannot work there. Undici instrumentation is the exception: it observes
-Node's `diagnostics_channel`, which survives bundling — and viem plus the bot's own HTTP JSON
-reads all go through global `fetch` (undici).
+runtime stage). Generic module-patching auto-instrumentation is unreliable there — a top-level
+ESM import binds a frozen namespace before any patcher runs — but a review probe against the
+bundle showed the constraint is narrower than first claimed: the bundle's `createRequire` banner
+keeps CJS `require` paths hookable, so stock `instrumentation-http` does patch `node:http` for
+CJS consumers like the AWS SDK. Undici instrumentation is still the preferred mechanism because
+it needs no patching at all: it observes Node's `diagnostics_channel`, and viem plus the bot's
+own HTTP JSON reads all go through global `fetch` (undici).
 
 ## Goals / Non-Goals
 
@@ -56,8 +59,10 @@ reads all go through global `fetch` (undici).
 - Replacing Better Stack log shipping, the heartbeat, or any part of the monitoring-event
   contract. Logs stay logs; TIB-2026-07-14's rejection of OTel-for-logs stands.
 - OTel _logs_ export (the third signal). The stdout contract and Better Stack cover it.
-- Auto-instrumenting the AWS SDK (KMS / quoter-signer Lambda calls). It rides `node:http`, which
-  the bundle cannot patch; those calls stay inside the cycle span's duration, unattributed.
+- Auto-instrumenting the AWS SDK (KMS / quoter-signer Lambda calls). This is a redaction
+  deferral, not a bundle limit: `instrumentation-http` patches `node:http` in the bundle, but its
+  spans would need the same URL/exception sanitization treatment before they may export. Until
+  that lands, those calls stay inside the cycle span's duration, unattributed.
 - Dashboards, alerts, or a hosted collector. Like Better Stack, the backend is the operator's.
 
 ## Current Solution
@@ -129,10 +134,13 @@ rule rather than growing `@repo/bot-kit` or `@repo/observability`), consumed by 
 
 The turnkey NodeSDK plus `auto-instrumentations-node`.
 
-**Why rejected:** module-patching instrumentation is dead code inside the esbuild bundle, and
-`sdk-node` drags every exporter flavor (gRPC, proto, Zipkin) into a tree this repo would have to
-audit under `minimumReleaseAge`/`strictDepBuilds`. The manual composition is ~100 lines and every
-registered component is one the bot actually uses.
+**Why rejected:** audit surface, measured, not bundling folklore. This TIB's dependency set is 21
+packages / 0.77 MB; `sdk-node` is 52 / 2.75 MB and drags every exporter flavor (gRPC, proto,
+Zipkin) plus a `protobufjs` install script that `strictDepBuilds` would force into `allowBuilds`;
+`auto-instrumentations-node` is 117 / 4.2 MB, mostly patchers for frameworks this bot does not
+run. Every vendor distro wraps `sdk-node`, so the manual composition (~100 lines, every
+registered component one the bot actually uses) is genuinely the minimum, not an eccentric
+re-implementation.
 
 ### Alternative 2: Prometheus scrape endpoint instead of OTLP push
 
@@ -157,6 +165,22 @@ Ship the monitoring records as OTLP logs and drop the loglayer transport.
 
 **Why rejected:** relitigates TIB-2026-07-14 with no new force. The stdout JSON Lines contract and
 Better Stack dashboards are load-bearing operator interfaces.
+
+### Alternative 5: a `diagnostics_channel` subscriber feeding per-origin latency into the log stream
+
+No OTel at all: a ~50-line subscriber to Node's undici (and `node:http`) channels folding
+per-origin request count and duration into `cycle.completed` (or a sibling record), riding the
+existing loglayer → Better Stack path — zero new dependencies, zero new egress.
+
+**Why rejected — narrowly:** for the pure "which provider is slow" aggregate it would suffice,
+and it remains the right fallback if the OTel dependency set ever becomes a liability. What it
+cannot answer is causality within one specific bad cycle: whether an 8-second ladder cycle was
+one `eth_call` retrying five times, serialized Morpho API pagination, receipt polling, or
+mutation-queue wait needs the parent-child timing of individual requests under that cycle's
+span — per-origin sums over a cycle collapse exactly the structure the question is about. It
+also has no story for cross-referencing one anomalous cycle to its own requests (trace and span
+ids) rather than time-window correlation, and it would grow a second bespoke aggregation
+vocabulary on the log contract that OTel gives us as standard semconv.
 
 ## Assumptions & Constraints
 
@@ -189,9 +213,9 @@ observability" section.
 - **Redaction:** URL attributes are redacted at span creation (before any buffering), and
   exception events plus status messages are stripped at span end, before the batch processor
   buffers the span; the unit and wire-level tests pin both.
-- **Dependency surface:** ~20 new `@opentelemetry/*` packages plus `import-in-the-middle`/
-  `require-in-the-middle` (inert here), all install-script-free under `strictDepBuilds`, all
-  subject to `minimumReleaseAge`. No gRPC, no protobuf.
+- **Dependency surface:** 21 new packages / 0.77 MB — `@opentelemetry/*` plus
+  `import-in-the-middle`/`require-in-the-middle` (inert here) — all install-script-free under
+  `strictDepBuilds`, all subject to `minimumReleaseAge`. No gRPC, no protobuf.
 - **Runtime posture:** no listening sockets are added; the pipeline is push-only and opt-in.
 
 ## Future Considerations
@@ -200,6 +224,9 @@ observability" section.
   per-bot by design (each bot owns its event contract).
 - Span coverage inside a cycle (read / plan / reconcile phases) if origin-level request spans
   prove too coarse; the cycle span already includes shared mutation-queue wait.
+- AWS SDK (KMS / quoter-signer Lambda) spans via `instrumentation-http` — proven to patch
+  `node:http` inside the bundle — once its spans get the same URL and exception sanitization
+  treatment as the undici path.
 - The proto exporter, only if a curator's collector rejects JSON.
 
 ## References
