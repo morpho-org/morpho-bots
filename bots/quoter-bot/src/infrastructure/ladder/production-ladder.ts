@@ -373,6 +373,26 @@ export const createProductionLadderAdapters = (
   let cleanupRemovedMarkets: () => Promise<readonly Hex[] | void> = async () => []
   let removedGroupTombstones: ReadonlySet<Hex> = new Set()
 
+  // Observing third parties is best-effort: a book the reader rejects as oversized or malformed
+  // yields no crossing signal, never a withdrawn ladder. Provider failures keep failing the read.
+  const observeBookOffers = async (marketId: Hex) => {
+    try {
+      return await readLadderBookOffers({
+        baseUrl: config.morphoApiBaseUrl,
+        marketIds: [marketId],
+        timeoutMs: config.requestTimeoutMs
+      })
+    } catch (error) {
+      if (
+        error instanceof LadderAdapterError &&
+        ['book-response', 'book-timeout'].includes(error.operation)
+      ) {
+        return undefined
+      }
+      throw error
+    }
+  }
+
   const positions: LadderPositionService = {
     readMarket: async marketId => {
       const selectedConfig = configByMarket.get(marketId)
@@ -421,11 +441,7 @@ export const createProductionLadderAdapters = (
           })
         ),
         midnight.getMarketData(marketId),
-        readLadderBookOffers({
-          baseUrl: config.morphoApiBaseUrl,
-          marketIds: [marketId],
-          timeoutMs: config.requestTimeoutMs
-        })
+        observeBookOffers(marketId)
       ])
       const selectedPosition = positionSnapshots.find(item => item.marketId === marketId)
       if (!selectedPosition) throw new LadderAdapterError('position-unavailable')
@@ -464,41 +480,50 @@ export const createProductionLadderAdapters = (
       const activeLadderGroupIds = new Set(
         activeOwnedLadderGroupIds(publications, groups, marketId)
       )
-      const opposingBookTicks = retainedOpposingBookTicks({
-        marketId,
-        replacedGroupIds: activeLadderGroupIds,
-        book: markOwnBootstrapBuys(
-          wholeBook,
-          durableBootstrapGroupIds(bootstrapGroupIds, persistedBootstrapOffers)
-        ),
-        depthFloor: { maker, minimumOpposingAssets: selectedConfig.minimumOfferAssets }
-      })
-      const crossed = bookCrossesRestingLadder({
-        marketId,
-        maker,
-        book: wholeBook,
-        activeLadderGroupIds: activeOwnedLadderGroupIdsBySide(
-          publications,
+      const observedBookCrossing = (wholeBook: readonly OwnedOverlapBookOffer[]) => {
+        const opposingBookTicks = retainedOpposingBookTicks({
           marketId,
-          activeLadderGroupIds
-        ),
-        minimumOpposingAssets: selectedConfig.minimumOfferAssets
-      })
-      const tickSpacing = BigInt(marketData.tickSpacing)
-      const timeToMaturity = marketData.params.maturity - block.timestamp
-      const clearable =
-        timeToMaturity <= 0n
-          ? undefined
-          : clearableOpposingBook({
-              ticks: opposingBookTicks,
-              window: rateTickWindow({
-                minimumRateBps: selectedConfig.minimumRateBps,
-                maximumRateBps: selectedConfig.maximumRateBps,
-                timeToMaturity,
+          replacedGroupIds: activeLadderGroupIds,
+          book: markOwnBootstrapBuys(
+            wholeBook,
+            durableBootstrapGroupIds(bootstrapGroupIds, persistedBootstrapOffers)
+          ),
+          depthFloor: { maker, minimumOpposingAssets: selectedConfig.minimumOfferAssets }
+        })
+        const crossed = bookCrossesRestingLadder({
+          marketId,
+          maker,
+          book: wholeBook,
+          activeLadderGroupIds: activeOwnedLadderGroupIdsBySide(
+            publications,
+            marketId,
+            activeLadderGroupIds
+          ),
+          minimumOpposingAssets: selectedConfig.minimumOfferAssets
+        })
+        const tickSpacing = BigInt(marketData.tickSpacing)
+        const timeToMaturity = marketData.params.maturity - block.timestamp
+        const clearable =
+          timeToMaturity <= 0n
+            ? undefined
+            : clearableOpposingBook({
+                ticks: opposingBookTicks,
+                window: rateTickWindow({
+                  minimumRateBps: selectedConfig.minimumRateBps,
+                  maximumRateBps: selectedConfig.maximumRateBps,
+                  timeToMaturity,
+                  tickSpacing
+                }),
                 tickSpacing
-              }),
-              tickSpacing
-            })
+              })
+        return clearable === undefined
+          ? undefined
+          : {
+              lower: { crossed: crossed.lower, clearable: clearable.lower },
+              higher: { crossed: crossed.higher, clearable: clearable.higher }
+            }
+      }
+      const bookCrossing = wholeBook === undefined ? undefined : observedBookCrossing(wholeBook)
 
       return {
         ...calculateProductionLadderCapacities({
@@ -512,14 +537,7 @@ export const createProductionLadderAdapters = (
           reservations
         }),
         ...(bootstrapBuyRateBps === undefined ? {} : { bootstrapBuyRateBps }),
-        ...(clearable === undefined
-          ? {}
-          : {
-              bookCrossing: {
-                lower: { crossed: crossed.lower, clearable: clearable.lower },
-                higher: { crossed: crossed.higher, clearable: clearable.higher }
-              }
-            }),
+        ...(bookCrossing === undefined ? {} : { bookCrossing }),
         maturityTimestamp: marketData.params.maturity,
         observedTimestamp: block.timestamp
       }

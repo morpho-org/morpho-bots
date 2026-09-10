@@ -865,8 +865,8 @@ bootstrap buys keep their own clearance and their deliberate tie at the bound.
 The clearance itself is exact and lives in tick space, so it never appears as a rate, and rate-space
 quote drift stays governed by `movementToleranceBps` alone. Every cycle additionally reports, per
 side, whether a third party currently crosses the ladder resting on the book and whether the
-configured rate window could still clear it (`guardrail.book-crossed`). An opposing offer smaller
-than `minimumOfferAssets` at its own tick is dust and never counts as crossing, so a free-to-post
+configured rate window could still clear it (`guardrail.book-crossed`). A book the reader cannot parse leaves that signal absent for the cycle and
+never withdraws the ladder. An opposing offer smaller than `minimumOfferAssets` at its own tick is dust and never counts as crossing, so a free-to-post
 offer cannot buy a cancel-and-republish every cooldown. A side that is crossed,
 clearable, and past its `bookCrossedCooldownSeconds` upgrades that cycle's `rest` into a replacement
 with reason `book-crossed`. The crossing is then re-evaluated inside the mutation queue from a fresh

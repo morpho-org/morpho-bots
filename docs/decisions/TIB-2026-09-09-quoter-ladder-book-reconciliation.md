@@ -219,7 +219,11 @@ guard's concern, not a reason to reprice. Durable ladder publications already re
 side, so the sets cost nothing new.
 
 It is computed in `positions.readMarket`, which already reads the whole book, and surfaces on
-`LadderMarketState`. The application keeps the decision, so monitoring, the verbose plan, and the
+`LadderMarketState`. Observing third parties is best-effort there too: a book the reader rejects as
+oversized or malformed leaves the signal absent for the cycle, which suppresses only the
+`book-crossed` replacement. It must never fail the market read, because a failed market read
+withdraws the ladder, and a side that anyone can push past the reader's bound with free-to-post dust
+would then be a withdrawal switch. The application keeps the decision, so monitoring, the verbose plan, and the
 read-only dry-run path all continue to report what actually happens.
 
 **Detecting the cross and acting on it are separate decisions.** The relation is a correct signal:

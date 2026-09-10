@@ -64,6 +64,8 @@ export type LadderBookSideCrossing = { crossed: boolean; clearable: boolean }
  * cannot cross the own bootstrap offer.
  *
  * `bookCrossing` is observed fresh every cycle and compared against nothing; generation ignores it.
+ * It is absent when the book could not be observed this cycle, which suppresses only the
+ * `book-crossed` replacement and never withdraws the ladder.
  *
  * The trailing fields are observation-only accounting primitives. Generation ignores them entirely;
  * they exist because the capacities above are saturating minima from which no position value can be
