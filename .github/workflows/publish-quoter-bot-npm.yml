@@ -3,7 +3,7 @@ name: Publish quoter-bot npm
 # Publish-only job for quoter-bot's public npm package (`@morpho-org/quoter`, command
 # `morpho-quoter`). It runs when the Deploy production pipeline completes and publishes only a
 # main-history commit that carries a `quoter-bot-*` release tag AND that a Deploy production run
-# verifiably released (successful Release-quoter-bot job on that exact SHA), so npm can never ship
+# verifiably released (successful `quoter-bot / Release` job on that exact SHA), so npm can never ship
 # a build production did not accept — not even through a forged tag. The artifact is staged by `pnpm --filter @morpho-org/quoter-bot run npm:pack`: one
 # self-contained bundle plus a generated dependency-free manifest
 # (bots/quoter-bot/scripts/pack-npm.ts).
@@ -59,7 +59,7 @@ jobs:
     permissions:
       contents: read
       # Lets the release gate read Deploy production run/job history to verify the commit really
-      # shipped through Release-quoter-bot.
+      # shipped through the pipeline's quoter-bot Release job.
       actions: read
       # Mints the GitHub OIDC token the npm CLI exchanges for a short-lived publish token.
       id-token: write
@@ -84,7 +84,7 @@ jobs:
       # Select and validate the commit to publish before any working-tree code executes, using only
       # plain git against the just-fetched origin refs plus the Actions API. The commit must be an
       # ancestor of main, carry a `quoter-bot-*` release tag, AND have a Deploy production run on
-      # exactly that SHA whose Release-quoter-bot job succeeded — tags are pushable by any write
+      # exactly that SHA whose quoter-bot Release job succeeded — tags are pushable by any write
       # collaborator, but the run history of the main-owned pipeline is not, so a forged tag cannot
       # publish an unreleased commit through either trigger path. Every other completed pipeline
       # (other bots, no-release merges) ends here as a successful no-op. (A tag ruleset restricting
@@ -134,8 +134,9 @@ jobs:
             exit 0
           fi
           # The tag alone is forgeable; require the production pipeline's own record that this
-          # exact commit shipped: a Deploy production run with head_sha == sha whose
-          # Release-quoter-bot job succeeded. filter=all covers jobs from earlier attempts of a
+          # exact commit shipped: a Deploy production run with head_sha == sha whose quoter-bot
+          # Release job succeeded ("quoter-bot / Release" today; "Release-quoter-bot" on runs that
+          # predate the manifest-driven pipeline). filter=all covers jobs from earlier attempts of a
           # partially re-run pipeline. Reaching this point with a tag but no such run is anomalous
           # on every trigger path, so it fails loud rather than skipping. Actions API stderr is
           # third-party diagnostic text on a public log, so it is discarded — an API failure just
@@ -146,7 +147,7 @@ jobs:
             --jq '.workflow_runs[].id' 2>/dev/null); do
             if gh api --paginate \
               "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/jobs?filter=all&per_page=100" \
-              --jq '.jobs[] | select(.name == "Release-quoter-bot") | .conclusion' 2>/dev/null \
+              --jq '.jobs[] | select(.name == "quoter-bot / Release" or .name == "Release-quoter-bot") | .conclusion' 2>/dev/null \
               | grep -qx 'success'; then
               released='true'
               break
@@ -272,7 +273,7 @@ jobs:
               --jq '.workflow_runs[].id' 2>/dev/null); do
               if gh api --paginate \
                 "repos/${GITHUB_REPOSITORY}/actions/runs/$run_id/jobs?filter=all&per_page=100" \
-                --jq '.jobs[] | select(.name == "Release-quoter-bot") | .conclusion' 2>/dev/null \
+                --jq '.jobs[] | select(.name == "quoter-bot / Release" or .name == "Release-quoter-bot") | .conclusion' 2>/dev/null \
                 | grep -qx 'success'; then
                 return 0
               fi

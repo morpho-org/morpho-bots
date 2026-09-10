@@ -1,0 +1,40 @@
+name: Release labels
+
+# Projects a PR description's `Releases <bot>` intent onto `release-<bot>` labels. The description
+# is the single source of truth (deploy-production.yml reads it from the squash commit); labels are
+# a bot-owned visual cue only, so a hand-added release label is removed on the next sync and nothing
+# in the deploy path reads them. Logic: packages/ci-scripts/src/release-intent/orchestrate/label-sync.ts.
+#
+# Checks out main, never the PR head: the job holds a write token and must not execute PR code.
+
+on:
+  pull_request:
+    types: [opened, reopened, edited]
+    branches: [main]
+
+# Rapid edits fire overlapping runs; only the newest matters since it recomputes from live state.
+concurrency:
+  group: pr-release-label-sync-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  Sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+      - uses: ./.github/actions/setup
+        with:
+          install: 'false'
+          build-contracts: 'false'
+      - name: Install ci-scripts
+        run: pnpm install --filter @repo/ci-scripts --frozen-lockfile --ignore-scripts
+      - name: Sync release labels
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: pnpm --filter @repo/ci-scripts run release-label-sync

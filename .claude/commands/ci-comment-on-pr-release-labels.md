@@ -2,8 +2,12 @@
 
 ## Instructions
 
-For each of the release labels on this PR, compare the current HEAD to the most recent release tag
-for that app, analyze the diff, and post a concise summary as a GitHub comment.
+For each bot this PR releases, compare the current HEAD to the most recent release tag for that bot,
+analyze the diff, and post a concise summary as a GitHub comment.
+
+Release intent lives in the PR description as `Releases <bot>` (bot ids and their packages are in
+`packages/ci-scripts/manifest.json`). The `release-<bot>` labels are derived from that line by
+`pr-release-label-sync.yml`, so reading the labels is equivalent and simpler.
 
 ### Step 1: Identify Release Labels
 
@@ -17,45 +21,41 @@ gh pr view --json number,labels
 Parse the JSON output to extract:
 
 - The PR number (for posting the comment later)
-- Labels that start with `release-` (e.g., `release-curator`, `release-rewards`)
+- Labels that start with `release-` (e.g., `release-quoter-bot`, `release-midnight-liq`)
 
 If no release labels are found, you can stop here -- don't even both posting a comment.
 
 ### Step 2: Analyze Each App
 
-For each app identified by the `release-{app}` labels:
+For each bot identified by the `release-{bot}` labels:
 
-1. **Find the latest release tag** for that app:
-
-   ```bash
-   git tag -l "{app}-*" --sort=-version:refname | head -1
-   ```
-
-2. **Get the current package version** to determine what the new release will be:
+1. **Find the latest release tag** for that bot. Tags are `{bot}-{PR#}`, so sort by creation date,
+   not version:
 
    ```bash
-   jq -r .version packages/{bot}/package.json
+   git tag -l "{bot}-*" --sort=-creatordate | head -1
    ```
 
-   If the app version hasn't actually been bumped yet, skip remaining analysis and omit the app from
-   release notes.
+2. **Resolve the bot's directory** from `packages/ci-scripts/manifest.json` (`package` →
+   `bots/<dir>/package.json#name`). The new release will be `{bot}-{this PR's number}`; there is no
+   version bump to check.
 
 3. **Compare the diff** between the latest tag and the current HEAD:
 
    ```bash
-   git diff {latest-tag}...HEAD -- packages/{bot}
+   git diff {latest-tag}...HEAD -- bots/{dir} packages
    ```
 
    If no tag exists (initial release), compare against the base branch:
 
    ```bash
-   git diff origin/main...HEAD -- packages/{bot}
+   git diff origin/main...HEAD -- bots/{dir} packages
    ```
 
 4. **Get commit messages** in the release range for context:
 
    ```bash
-   git log {latest-tag}...HEAD --oneline -- packages/{bot}
+   git log {latest-tag}...HEAD --oneline -- bots/{dir} packages
    ```
 
    (or use `origin/main...HEAD` for initial releases)
@@ -81,18 +81,18 @@ Format your analysis as markdown and post it as a sticky comment. Use the PR num
 ### Changelog
 
 > [!IMPORTANT]
-> | App | Old Version | New Version | Diff |
-> | --- | ----------- | ----------- | ---- |
-> | {app-name} | `{old-version}` | `{new-version}` | https://github.com/morpho-org/morpho-bots/compare/{base-tag}...{head} |
-> | {another-app-name} | `{old-version}` | `{new-version}` | https://github.com/morpho-org/morpho-bots/compare/{another-base-tag}...{head} |
+> | Bot | Previous release | New release | Diff |
+> | --- | ---------------- | ----------- | ---- |
+> | {bot} | `{previous-tag}` | `{bot}-{PR#}` | https://github.com/morpho-org/morpho-bots/compare/{previous-tag}...{head} |
+> | {another-bot} | `{previous-tag}` | `{another-bot}-{PR#}` | https://github.com/morpho-org/morpho-bots/compare/{previous-tag}...{head} |
 
-#### {app-name}
+#### {bot}
 
 - {First key change or feature}
 - {Second key change or bug fix}
 - {Third change if notable, or omit if only 2 items}
 
-#### {another-app-name}
+#### {another-bot}
 
 - {Bullet point describing main change}
 - {Another bullet point}
@@ -140,9 +140,9 @@ _Claude will update this release summary on every push_
 
 If you encounter errors during processing:
 
-- **No release labels**: Post a comment explaining that no `release-*` labels were found
+- **No release intent**: Post a comment explaining that the description declares no `Releases <bot>`
 - **No tags found**: Treat as an initial release and compare against `origin/main`
-- **Git command failures**: Note the error in the summary for that specific app
-- **Empty diffs**: Mention that no changes were detected for that app
+- **Git command failures**: Note the error in the summary for that specific bot
+- **Empty diffs**: Mention that no changes were detected for that bot
 
-Continue processing all apps even if some fail. Partial information is better than no information.
+Continue processing all bots even if some fail. Partial information is better than no information.

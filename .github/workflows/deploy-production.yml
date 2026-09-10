@@ -1,125 +1,94 @@
 name: Deploy production
 
-# A PR merged to main carrying a `release-{bot}` label redeploys that bot to production and cuts a
-# GitHub release + git tag (CalVer `{bot}-YYYY.MM.DD-N`). Triggered on push:main (not
-# pull_request:closed) so the run's ref is refs/heads/main — satisfying a main-only environment
-# branch policy and giving the correct main HEAD in github.sha. Releasing publishes the tag, which
-# fires release-slack-notify.yml. A quoter-bot release also pushes the bot image to Docker Hub
-# (commit-hash + `latest` tags) after the Railway deploy succeeds, without gating the release.
-# Once this pipeline completes, publish-quoter-bot-npm.yml (a workflow_run chain, kept standalone
-# for npm trusted publishing) publishes the CLI to npm when the commit carries a quoter-bot
-# release tag. Runs on every push; when no release-* label is present, the deploy jobs are simply
-# skipped.
+# A PR whose description says `Releases <bot>` (bot ids in packages/ci-scripts/manifest.json)
+# redeploys that bot to production when it merges, then cuts GitHub release `<bot>-<PR#>` and posts
+# it to Slack. The description lands in the squash commit (repo setting: squash message = PR body),
+# so `Gate` reads the intent from the pushed commit, binds it to the merged PR, and authorizes a bot
+# only if a reviewer other than the author approved the PR *after* the intent was added. Intent
+# edited in after the last approval is refused with a comment on the PR and deploys nothing. Logic:
+# packages/ci-scripts/src/release-intent/orchestrate/gate.ts.
+#
+# Triggered on push:main (not pull_request:closed) so the run's ref is refs/heads/main — satisfying
+# the main-only environment branch policy — and so the gate runs reviewed workflow code. There is no
+# manual dispatch: it would bypass the gate. Re-ship or roll back with a new PR carrying the intent.
+#
+# A quoter-bot release also pushes the bot image to Docker Hub after the Railway deploy and release
+# succeed; publish-quoter-bot-npm.yml (a workflow_run chain, kept standalone for npm trusted
+# publishing) then publishes the CLI when the commit carries a quoter-bot release tag.
+#
+# No concurrency group, deliberately: GitHub keeps only ONE pending run per group, so serializing
+# on the ref would silently drop a release push whenever a third push lands. Release tags carry the
+# PR number, so runs need no shared counter; per-bot deploys serialize inside deploy-bot.yml.
 
 on:
   push:
     branches: [main]
-  workflow_dispatch:
-    inputs:
-      bot:
-        description: Bot to release to production
-        required: true
-        type: choice
-        options:
-          - blue-liq
-          - midnight-liq
-          - crossed-books
-          - quoter-bot
 
 permissions:
   contents: read
 
-concurrency:
-  # Serialize production runs so same-day CalVer `N` computation can't race between runs.
-  group: deploy-production
-  cancel-in-progress: false
-
 jobs:
-  Select:
+  Gate:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      pull-requests: read
+      pull-requests: write
     outputs:
-      # Output keys use underscores — a `-` in an Actions expression is the subtraction operator.
-      blue_liq: ${{ steps.pick.outputs.blue_liq }}
-      midnight_liq: ${{ steps.pick.outputs.midnight_liq }}
-      crossed_books: ${{ steps.pick.outputs.crossed_books }}
-      quoter_bot: ${{ steps.pick.outputs.quoter_bot }}
+      # JSON deploy-bot.yml matrix legs for the authorized bots; `[]` when nothing releases.
+      targets: ${{ steps.gate.outputs.targets }}
+      # JSON array of authorized bot ids, for per-bot follow-up jobs.
+      bots: ${{ steps.gate.outputs.bots }}
+      pr: ${{ steps.gate.outputs.pr }}
     steps:
-      - id: pick
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ github.sha }}
+      - uses: ./.github/actions/setup
+        with:
+          install: 'false'
+          build-contracts: 'false'
+      - name: Install ci-scripts
+        # --ignore-scripts skips the repo-root husky `prepare`; @repo/ci-scripts runs via tsx.
+        run: pnpm install --filter @repo/ci-scripts --frozen-lockfile --ignore-scripts
+      - name: Evaluate release intent
+        id: gate
         env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
-          SHA: ${{ github.sha }}
-          EVENT: ${{ github.event_name }}
-          DISPATCH_BOT: ${{ github.event.inputs.bot }}
-        run: |
-          set -euo pipefail
-          if [ "$EVENT" = "workflow_dispatch" ]; then
-            labels="release-$DISPATCH_BOT"
-          else
-            # Labels of the PR whose merge produced this commit.
-            labels="$(gh api "repos/$REPO/commits/$SHA/pulls" --jq '.[].labels[].name' 2>/dev/null || true)"
-          fi
-          has() { echo "$labels" | grep -qx "release-$1" && echo true || echo false; }
-          {
-            echo "blue_liq=$(has blue-liq)"
-            echo "midnight_liq=$(has midnight-liq)"
-            echo "crossed_books=$(has crossed-books)"
-            echo "quoter_bot=$(has quoter-bot)"
-          } >> "$GITHUB_OUTPUT"
+          GITHUB_TOKEN: ${{ github.token }}
+        run: pnpm --filter @repo/ci-scripts run release-gate
 
-  Blue:
-    needs: Select
-    if: ${{ needs.Select.outputs.blue_liq == 'true' }}
+  Deploy:
+    needs: Gate
+    if: ${{ needs.Gate.outputs.targets != '[]' }}
+    # Job display name "<bot>", so the nested jobs read "<bot> / Deploy", "<bot> / Release" —
+    # publish-quoter-bot-npm.yml proves a release by the "quoter-bot / Release" job name.
+    name: ${{ matrix.bot }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.Gate.outputs.targets) }}
+    # The callee's Release job needs contents:write; a called workflow can never hold more than its
+    # caller job grants.
+    permissions:
+      contents: write
     uses: ./.github/workflows/deploy-bot.yml
     # Environment secrets (RAILWAY_TOKEN) only populate in the reusable workflow when the callee job
     # declares `environment:` AND the caller passes `secrets: inherit`. Environment *variables*
-    # (RAILWAY_PROJECT_ID) flow without it, which is why the token — and only the token — came through
-    # empty before. See https://github.com/actions/runner/issues/1490.
+    # (RAILWAY_PROJECT_ID) flow without it. See https://github.com/actions/runner/issues/1490.
     secrets: inherit
     with:
-      bot: blue-liq
-      stage: production
+      bot: ${{ matrix.bot }}
+      package: ${{ matrix.package }}
+      stage: ${{ matrix.stage }}
+      github_environment: ${{ matrix.environment }}
       ref: ${{ github.sha }}
-
-  Midnight:
-    needs: Select
-    if: ${{ needs.Select.outputs.midnight_liq == 'true' }}
-    uses: ./.github/workflows/deploy-bot.yml
-    secrets: inherit
-    with:
-      bot: midnight-liq
-      stage: production
-      ref: ${{ github.sha }}
-
-  Crossed-books:
-    needs: Select
-    if: ${{ needs.Select.outputs.crossed_books == 'true' }}
-    uses: ./.github/workflows/deploy-bot.yml
-    secrets: inherit
-    with:
-      bot: crossed-books
-      stage: production
-      github_environment: crossed-books-prod
-      ref: ${{ github.sha }}
-
-  Quoter-bot:
-    needs: Select
-    if: ${{ needs.Select.outputs.quoter_bot == 'true' }}
-    uses: ./.github/workflows/deploy-quoter-bot-production.yml
-    secrets: inherit
-    with:
-      ref: ${{ github.sha }}
+      release_pr: ${{ needs.Gate.outputs.pr }}
 
   Quoter-bot-image:
-    # Wait for both the successful deploy and its GitHub release tag before publishing image tags.
-    # Release-quoter-bot still depends only on Quoter-bot, so Docker Hub cannot block the release.
-    needs: [Select, Quoter-bot, Release-quoter-bot]
-    if: ${{ needs.Select.outputs.quoter_bot == 'true' }}
-    # A called workflow can never hold more permissions than its caller job grants, so the OIDC
-    # token minting (id-token) the Docker Hub login needs must be granted here too.
+    # Publishes image tags only after the quoter-bot deploy and its GitHub release both succeeded;
+    # the image never gates the release.
+    needs: [Gate, Deploy]
+    if: ${{ contains(fromJSON(needs.Gate.outputs.bots), 'quoter-bot') }}
+    # The OIDC token minting (id-token) the Docker Hub login needs must be granted by the caller.
     permissions:
       contents: read
       id-token: write
@@ -127,116 +96,3 @@ jobs:
     secrets: inherit
     with:
       ref: ${{ github.sha }}
-
-  Release-blue:
-    # A skipped/failed Blue deploy skips this job too, so a bot is never tagged unless it deployed.
-    needs: Blue
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    env:
-      GH_TOKEN: ${{ github.token }}
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
-        with:
-          ref: ${{ github.sha }}
-          fetch-depth: 0
-      - name: Create release
-        env:
-          BOT: blue-liq
-          SHA: ${{ github.sha }}
-        run: |
-          set -euo pipefail
-          date="$(date -u +%Y.%m.%d)"
-          n=$(( $(git tag -l "${BOT}-${date}-*" | wc -l) + 1 ))
-          tag="${BOT}-${date}-${n}"
-          # `|| true` guards against SIGPIPE aborting the job under `set -o pipefail` (git is
-          # killed when head closes the pipe early once there are many tags).
-          prev="$(git tag -l "${BOT}-*" --sort=-version:refname | head -n 1 || true)"
-          echo "Creating release $tag (previous: ${prev:-none})"
-          gh release create "$tag" --target "$SHA" --title "$tag" --generate-notes \
-            ${prev:+--notes-start-tag "$prev"}
-
-  Release-midnight:
-    needs: Midnight
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    env:
-      GH_TOKEN: ${{ github.token }}
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
-        with:
-          ref: ${{ github.sha }}
-          fetch-depth: 0
-      - name: Create release
-        env:
-          BOT: midnight-liq
-          SHA: ${{ github.sha }}
-        run: |
-          set -euo pipefail
-          date="$(date -u +%Y.%m.%d)"
-          n=$(( $(git tag -l "${BOT}-${date}-*" | wc -l) + 1 ))
-          tag="${BOT}-${date}-${n}"
-          # `|| true` guards against SIGPIPE aborting the job under `set -o pipefail` (git is
-          # killed when head closes the pipe early once there are many tags).
-          prev="$(git tag -l "${BOT}-*" --sort=-version:refname | head -n 1 || true)"
-          echo "Creating release $tag (previous: ${prev:-none})"
-          gh release create "$tag" --target "$SHA" --title "$tag" --generate-notes \
-            ${prev:+--notes-start-tag "$prev"}
-
-  Release-crossed-books:
-    needs: Crossed-books
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    env:
-      GH_TOKEN: ${{ github.token }}
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
-        with:
-          ref: ${{ github.sha }}
-          fetch-depth: 0
-      - name: Create release
-        env:
-          BOT: crossed-books
-          SHA: ${{ github.sha }}
-        run: |
-          set -euo pipefail
-          date="$(date -u +%Y.%m.%d)"
-          n=$(( $(git tag -l "${BOT}-${date}-*" | wc -l) + 1 ))
-          tag="${BOT}-${date}-${n}"
-          # `|| true` guards against SIGPIPE aborting the job under `set -o pipefail` (git is
-          # killed when head closes the pipe early once there are many tags).
-          prev="$(git tag -l "${BOT}-*" --sort=-version:refname | head -n 1 || true)"
-          echo "Creating release $tag (previous: ${prev:-none})"
-          gh release create "$tag" --target "$SHA" --title "$tag" --generate-notes \
-            ${prev:+--notes-start-tag "$prev"}
-
-  Release-quoter-bot:
-    needs: Quoter-bot
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    env:
-      GH_TOKEN: ${{ github.token }}
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
-        with:
-          ref: ${{ github.sha }}
-          fetch-depth: 0
-      - name: Create release
-        env:
-          BOT: quoter-bot
-          SHA: ${{ github.sha }}
-        run: |
-          set -euo pipefail
-          date="$(date -u +%Y.%m.%d)"
-          n=$(( $(git tag -l "${BOT}-${date}-*" | wc -l) + 1 ))
-          tag="${BOT}-${date}-${n}"
-          # `|| true` guards against SIGPIPE aborting the job under `set -o pipefail` (git is
-          # killed when head closes the pipe early once there are many tags).
-          prev="$(git tag -l "${BOT}-*" --sort=-version:refname | head -n 1 || true)"
-          echo "Creating release $tag (previous: ${prev:-none})"
-          gh release create "$tag" --target "$SHA" --title "$tag" --generate-notes \
-            ${prev:+--notes-start-tag "$prev"}

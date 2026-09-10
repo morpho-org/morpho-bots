@@ -294,13 +294,24 @@ describe('Railway CLI output parsing', () => {
       new URL('../../../../.github/workflows/publish-quoter-bot-dockerhub.yml', import.meta.url),
       'utf8'
     )
-    const imageJob = deployWorkflow.slice(
-      deployWorkflow.indexOf('  Quoter-bot-image:'),
-      deployWorkflow.indexOf('  Release-blue:')
+    const botWorkflow = readFileSync(
+      new URL('../../../../.github/workflows/deploy-bot.yml', import.meta.url),
+      'utf8'
+    )
+    const imageJob = deployWorkflow.slice(deployWorkflow.indexOf('  Quoter-bot-image:'))
+    const releaseJob = botWorkflow.slice(
+      botWorkflow.indexOf('  Release:'),
+      botWorkflow.indexOf('  Notify:')
     )
 
-    expect(imageJob).toContain('needs: [Select, Quoter-bot, Release-quoter-bot]')
-    expect(imageJob).toContain("if: ${{ needs.Select.outputs.quoter_bot == 'true' }}")
+    // The image waits on the whole per-bot Deploy → Release chain for the authorized quoter-bot.
+    expect(imageJob).toContain('needs: [Gate, Deploy]')
+    expect(imageJob).toContain(
+      "if: ${{ contains(fromJSON(needs.Gate.outputs.bots), 'quoter-bot') }}"
+    )
+    // ...and that chain only tags after a successful deploy.
+    expect(releaseJob).toContain('needs: Deploy')
+    expect(releaseJob).toContain("if: ${{ inputs.release_pr != '' }}")
     // Ancestry against release tags needs full history in the checkout.
     expect(publishWorkflow).toContain('fetch-depth: 0')
     expect(publishWorkflow).toContain('- name: Gate the latest tag')

@@ -1,0 +1,55 @@
+{
+  "knownApps": ["markets-app", "delegate-app", "curator-v2-app"],
+  "cases": [
+    {
+      "name": "intent in original body",
+      "createdAt": "2026-06-01T10:00:00Z",
+      "currentBody": "Releases markets-app",
+      "revisions": [{ "editedAt": "2026-06-01T10:00:00Z", "body": "Releases markets-app" }],
+      "expected": { "markets-app": "2026-06-01T10:00:00Z" }
+    },
+    {
+      "name": "intent added by a later edit",
+      "createdAt": "2026-06-01T10:00:00Z",
+      "currentBody": "Releases markets-app",
+      "revisions": [
+        { "editedAt": "2026-06-01T10:00:00Z", "body": "Fixes a bug" },
+        { "editedAt": "2026-06-01T11:00:00Z", "body": "Fixes a bug\n\nReleases markets-app" }
+      ],
+      "expected": { "markets-app": "2026-06-01T11:00:00Z" }
+    },
+    {
+      "name": "removal and re-add resets the clock",
+      "createdAt": "2026-06-01T10:00:00Z",
+      "currentBody": "Releases markets-app",
+      "revisions": [
+        { "editedAt": "2026-06-01T10:00:00Z", "body": "Releases markets-app" },
+        { "editedAt": "2026-06-01T11:00:00Z", "body": "Fixes a bug" },
+        { "editedAt": "2026-06-01T12:00:00Z", "body": "Releases markets-app" }
+      ],
+      "expected": { "markets-app": "2026-06-01T12:00:00Z" }
+    },
+    {
+      "name": "cutoff excludes later revisions",
+      "createdAt": "2026-06-01T10:00:00Z",
+      "currentBody": "Releases delegate-app",
+      "until": "2026-06-01T11:30:00Z",
+      "revisions": [
+        { "editedAt": "2026-06-01T10:00:00Z", "body": "Fixes a bug" },
+        { "editedAt": "2026-06-01T11:00:00Z", "body": "Releases markets-app" },
+        { "editedAt": "2026-06-01T12:00:00Z", "body": "Releases delegate-app" }
+      ],
+      "expected": { "markets-app": "2026-06-01T11:00:00Z" }
+    },
+    {
+      "name": "current intent absent from earlier revisions",
+      "createdAt": "2026-06-01T10:00:00Z",
+      "currentBody": "Releases curator-v2-app",
+      "revisions": [
+        { "editedAt": "2026-06-01T10:00:00Z", "body": "Fixes a bug" },
+        { "editedAt": "2026-06-01T11:00:00Z", "body": "Releases curator-v2-app" }
+      ],
+      "expected": { "curator-v2-app": "2026-06-01T11:00:00Z" }
+    }
+  ]
+}

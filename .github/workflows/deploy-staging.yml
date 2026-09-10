@@ -1,8 +1,7 @@
 name: Deploy staging
 
-# Every commit that lands on main redeploys all bots to their Railway staging environment.
-# Main is already green (the merge queue gates checks.yml); the queue's gh-readonly-queue/* refs
-# fire merge_group, not push, so this runs once per merged PR.
+# Every commit that lands on main redeploys every bot with a staging environment in
+# packages/ci-scripts/manifest.json to its Railway staging environment.
 
 on:
   push:
@@ -13,31 +12,41 @@ permissions:
   contents: read
 
 jobs:
-  blue-liq:
+  Select:
+    runs-on: ubuntu-latest
+    outputs:
+      targets: ${{ steps.manifest.outputs.targets }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: ./.github/actions/setup
+        with:
+          install: 'false'
+          build-contracts: 'false'
+      - name: Install ci-scripts
+        run: pnpm install --filter @repo/ci-scripts --frozen-lockfile --ignore-scripts
+      - name: Read the staging manifest
+        id: manifest
+        run: pnpm --filter @repo/ci-scripts run release-manifest staging
+
+  Deploy:
+    needs: Select
+    name: ${{ matrix.bot }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.Select.outputs.targets) }}
+    # Staging never releases (no release_pr, so the callee's Release job is skipped), but a called
+    # workflow's declared permissions must still fit inside the caller job's grant.
+    permissions:
+      contents: write
     uses: ./.github/workflows/deploy-bot.yml
     # Environment secrets (RAILWAY_TOKEN) only populate in the reusable workflow when the callee job
     # declares `environment:` AND the caller passes `secrets: inherit`. Environment *variables*
-    # (RAILWAY_PROJECT_ID) flow without it, which is why the token — and only the token — came through
-    # empty before. See https://github.com/actions/runner/issues/1490.
+    # (RAILWAY_PROJECT_ID) flow without it. See https://github.com/actions/runner/issues/1490.
     secrets: inherit
     with:
-      bot: blue-liq
-      stage: staging
-      ref: ${{ github.sha }}
-
-  midnight-liq:
-    uses: ./.github/workflows/deploy-bot.yml
-    secrets: inherit
-    with:
-      bot: midnight-liq
-      stage: staging
-      ref: ${{ github.sha }}
-
-  crossed-books:
-    uses: ./.github/workflows/deploy-bot.yml
-    secrets: inherit
-    with:
-      bot: crossed-books
-      stage: staging
-      github_environment: crossed-books-staging
+      bot: ${{ matrix.bot }}
+      package: ${{ matrix.package }}
+      stage: ${{ matrix.stage }}
+      github_environment: ${{ matrix.environment }}
       ref: ${{ github.sha }}

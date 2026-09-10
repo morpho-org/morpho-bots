@@ -11,6 +11,9 @@
     "packages/utils": {},
     "packages/contracts": {},
     "packages/bot-kit": {},
+    "packages/ci-scripts": {
+      "entry": ["src/release-intent/orchestrate/*.ts"]
+    },
     "packages/logging": {},
     "packages/monitoring": {},
     "packages/observability": {},

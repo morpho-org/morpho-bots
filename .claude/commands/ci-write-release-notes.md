@@ -9,40 +9,44 @@ with a comprehensive summary.
 
 The release tags are provided in the `RELEASE_TAGS` environment variable as a space-separated list.
 
-Tag format: `{app-name}-{version}` where version follows CalVer pattern `YYYY.MM.DD-N`
+Tag format: `{bot}-{PR#}`, where `{bot}` is an id from `packages/ci-scripts/manifest.json` and
+`{PR#}` is the merged PR that released it.
 
-Example: `curator-app-2025.10.16-1`
+Example: `quoter-bot-214`
 
-Loop through each tag and extract the app name and version. Skip any tags that don't match the
+Loop through each tag and extract the bot id and PR number. Skip any tags that don't match the
 expected pattern.
 
 ### Step 2: Analyze Each App
 
 For each release tag:
 
-1. **Find the previous release tag** for that app:
+1. **Find the previous release tag** for that bot. PR numbers are not a recency order, so sort by
+   creation date:
 
    ```bash
-   git tag -l "{app}-*" --sort=-version:refname | head -5
+   git tag -l "{bot}-*" --sort=-creatordate | head -5
    ```
+
+   Resolve the bot's directory from the manifest (`package` → `bots/<dir>/package.json#name`).
 
 2. **Compare the diff** between the newly-published tag and the previous one:
 
    ```bash
-   git diff {previous-tag}...{new-tag} -- packages/{bot}
+   git diff {previous-tag}...{new-tag} -- bots/{dir} packages
    ```
 
 3. **Get commit messages** in the release range for context:
 
    ```bash
-   git log {previous-tag}...{new-tag} --oneline -- packages/{bot}
+   git log {previous-tag}...{new-tag} --oneline -- bots/{dir} packages
    ```
 
 4. **Extract PR numbers** from commit messages:
 
    ```bash
    # Get PR numbers from merge commits and PR references
-   git log {previous-tag}...{new-tag} --oneline -- packages/{bot} | \
+   git log {previous-tag}...{new-tag} --oneline -- bots/{dir} packages | \
      grep -oE '#[0-9]+' | \
      sort -u
    ```
