@@ -108,10 +108,6 @@ export const clearableOpposingBook = (parameters: {
   tickSpacing: bigint
 }) => {
   const { ticks, window, tickSpacing } = parameters
-  const clearedBuyTick =
-    ticks.lowestSellTick === undefined || ticks.lowestSellTick <= LOWEST_TICK
-      ? LOWEST_TICK
-      : alignTickDown(ticks.lowestSellTick - 1n, tickSpacing)
   return {
     lower:
       ticks.highestBuyTick === undefined ||
@@ -119,19 +115,20 @@ export const clearableOpposingBook = (parameters: {
       alignTickUp(ticks.highestBuyTick + 1n, tickSpacing) <= window.highestTick,
     higher:
       ticks.lowestSellTick === undefined ||
-      window.lowestTick === undefined ||
-      clearedBuyTick >= window.lowestTick
+      (ticks.lowestSellTick > LOWEST_TICK &&
+        (window.lowestTick === undefined ||
+          alignTickDown(ticks.lowestSellTick - 1n, tickSpacing) >= window.lowestTick))
   }
 }
 
 /**
- * Whether either side reports a crossing the configured rate window can still clear.
+ * Whether one of the given sides reports a crossing the configured rate window can still clear.
  * @param crossing - Per-side crossing and feasibility observed on one book read.
- * @returns `true` when a `book-crossed` replacement still has something to clear; an unclearable
- * cross is an operator condition and never a reason to mutate.
+ * @param sides - Sides the decision admitted the replacement for; defaults to both.
+ * @returns `true` when a `book-crossed` replacement still has something to clear on an admitted
+ * side; a cross that moved to a side still in cooldown, or that cannot be cleared, never mutates.
  */
-export const hasClearableCrossing = (crossing: {
-  lower: LadderBookSideCrossing
-  higher: LadderBookSideCrossing
-}) =>
-  (['lower', 'higher'] as const).some(side => crossing[side].crossed && crossing[side].clearable)
+export const hasClearableCrossing = (
+  crossing: { lower: LadderBookSideCrossing; higher: LadderBookSideCrossing },
+  sides: readonly ('lower' | 'higher')[] = ['lower', 'higher']
+) => sides.some(side => crossing[side].crossed && crossing[side].clearable)

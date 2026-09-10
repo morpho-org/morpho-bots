@@ -210,6 +210,12 @@ describe('clearableOpposingBook', () => {
     ).toEqual({ lower: true, higher: false })
   })
 
+  test('reports a sell resting at tick zero unclearable, since a buy can only tie it', () => {
+    expect(
+      clearableOpposingBook({ ticks: { lowestSellTick: 0n }, window: {}, tickSpacing: 5n })
+    ).toEqual({ lower: true, higher: false })
+  })
+
   test('clears every side against an unbounded window', () => {
     expect(
       clearableOpposingBook({

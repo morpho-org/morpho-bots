@@ -186,7 +186,10 @@ export class MidnightLadderMakeService implements LadderMakeService {
       // cancelling the ladder with nothing to republish, so absence fails closed here too.
       if (
         parameters.reason === 'book-crossed' &&
-        !(assessed && hasClearableCrossing(assessed.reconciliation.bookCrossing))
+        !(
+          assessed &&
+          hasClearableCrossing(assessed.reconciliation.bookCrossing, parameters.bookCrossedSides)
+        )
       ) {
         return {
           submittedTransactions,

@@ -768,7 +768,7 @@ export const createProductionLadderAdapters = (
     const assessed = await assessBookCrossing(parameters.marketId, observed)
     if (
       parameters.reason === 'book-crossed' &&
-      !hasClearableCrossing(assessed.reconciliation.bookCrossing)
+      !hasClearableCrossing(assessed.reconciliation.bookCrossing, parameters.bookCrossedSides)
     ) {
       return { ...assessed.reconciliation, applied: false }
     }

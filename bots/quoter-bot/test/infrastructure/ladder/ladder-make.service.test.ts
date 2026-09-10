@@ -548,6 +548,24 @@ describe('MidnightLadderMakeService', () => {
     expect(result).toMatchObject({ reconciliation: { applied: true } })
   })
 
+  test('mutates nothing when the cross moved to a side the decision did not admit', async () => {
+    const subject = harness()
+    subject.transport.assessBook = assessment({ higher: { crossed: true, clearable: true } })
+    subject.transport.preparePublication = async () => {
+      throw new Error('preparation must not run')
+    }
+
+    const result = await subject.service.reconcile({
+      marketId,
+      desired: quote,
+      reason: 'book-crossed',
+      bookCrossedSides: ['lower']
+    })
+
+    expect(result).toMatchObject({ reconciliation: { applied: false } })
+    expect(subject.events).toEqual([])
+  })
+
   test('publishes a resize over an uncrossed book and still reports the recheck', async () => {
     const subject = harness()
 

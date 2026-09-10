@@ -237,4 +237,30 @@ describe('read-only make adapters', () => {
       request: { reason: 'book-crossed' }
     })
   })
+
+  test('logs nothing when the read-only recheck found no clearable cross left', async () => {
+    const lines: string[] = []
+    const reconciliation = {
+      preparedAtTimestamp: 1_000n,
+      bookCrossing: {
+        lower: { crossed: false, clearable: true },
+        higher: { crossed: false, clearable: true }
+      },
+      applied: false
+    }
+    const service = new ReadOnlyLadderMakeService(
+      { readActive: async () => undefined },
+      line => {
+        lines.push(line)
+      },
+      async () => reconciliation
+    )
+
+    expect(await service.reconcile({ marketId, reason: 'book-crossed' })).toEqual({
+      submittedTransactions: [],
+      logged: true,
+      reconciliation
+    })
+    expect(lines).toEqual([])
+  })
 })

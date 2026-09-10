@@ -59,7 +59,9 @@ export class ReadOnlyLadderMakeService implements LadderMakeService {
    */
   async reconcile(parameters: Parameters<LadderMakeService['reconcile']>[0]) {
     const reconciliation = await this.validate(parameters)
-    await this.write(formatReadOnlyMakeEvent('ladder', 'reconcile', parameters))
+    if (reconciliation?.applied !== false) {
+      await this.write(formatReadOnlyMakeEvent('ladder', 'reconcile', parameters))
+    }
     return {
       submittedTransactions: [],
       logged: true as const,

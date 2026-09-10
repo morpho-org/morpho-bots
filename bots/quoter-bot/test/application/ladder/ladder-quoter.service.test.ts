@@ -59,11 +59,7 @@ const harness = (configs: readonly LadderConfig[] = [config()]) => {
   let reconcileFailure: Hex | undefined
   let reconcileResult: LadderMakeResult
   const reads: string[] = []
-  const reconciliations: Array<{
-    marketId: Hex
-    desired?: LadderQuoteSet
-    reason: string
-  }> = []
+  const reconciliations: Parameters<LadderMakeService['reconcile']>[0][] = []
   const liveDesired = new Map<Hex, LadderQuoteSet>()
   const halts: string[] = []
   const positions: LadderPositionService = {
@@ -848,6 +844,7 @@ describe('LadderQuoterService book-crossed replacement', () => {
       { status: 'applied', action: 'replace', reason: 'book-crossed' }
     ])
     expect(subject.reconciliations.at(-1)?.reason).toBe('book-crossed')
+    expect(subject.reconciliations.at(-1)?.bookCrossedSides).toEqual(['lower'])
   })
 
   test('rests on an unclearable cross and reports it unsuppressed', async () => {

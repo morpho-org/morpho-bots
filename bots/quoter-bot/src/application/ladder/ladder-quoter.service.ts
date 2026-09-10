@@ -127,6 +127,8 @@ export interface LadderMakeService {
       | 'book-crossed'
       | 'market-matured'
       | 'market-read-failed'
+    /** Sides whose cooldown admitted a `book-crossed` replacement; the recheck may mutate only for one of them. */
+    bookCrossedSides?: readonly ('lower' | 'higher')[]
     onTransactionSubmitted?: LadderTransactionSubmittedObserver
   }): Promise<LadderMakeResult>
   /**
@@ -623,17 +625,20 @@ export class LadderQuoterService {
       if (!active && !desiredPublication) decision = 'rest'
 
       const bookCrossing = this.bookCrossingReport(config, market)
+      const bookCrossedSides =
+        bookCrossing === undefined
+          ? []
+          : SIDES.filter(
+              side =>
+                bookCrossing[side].crossed &&
+                bookCrossing[side].clearable &&
+                !bookCrossing[side].suppressed
+            )
       if (
         decision === 'rest' &&
         active !== undefined &&
         desiredPublication !== undefined &&
-        bookCrossing !== undefined &&
-        SIDES.some(
-          side =>
-            bookCrossing[side].crossed &&
-            bookCrossing[side].clearable &&
-            !bookCrossing[side].suppressed
-        )
+        bookCrossedSides.length > 0
       ) {
         decision = 'book-crossed'
       }
@@ -657,6 +662,7 @@ export class LadderQuoterService {
           marketId: config.marketId,
           desired: desiredPublication,
           reason: decision,
+          ...(decision === 'book-crossed' ? { bookCrossedSides } : {}),
           onTransactionSubmitted: this.marketObserver(config.marketId, parameters)
         })
       } catch (error) {
