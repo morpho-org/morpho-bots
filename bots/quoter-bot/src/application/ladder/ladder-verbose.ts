@@ -67,6 +67,12 @@ export type LadderBookReconciliation = {
   applied: boolean
 }
 
+/** What read-only validation learned about a publication it would have made. */
+export type LadderReadOnlyValidation = {
+  reconciliation: LadderBookReconciliation
+  bookClearedRungs?: { lower: number; higher: number }
+}
+
 /** Result returned by a live or read-only ladder make adapter. */
 export type LadderMakeResult =
   | void

@@ -8,7 +8,11 @@ import type { TargetRateConfigured, TargetRateStrategyConfig } from '../domain/t
 import { BootstrapConfigurationError } from '../domain/bootstrap/bootstrap-configuration.error'
 import { validateBootstrapConfig } from '../domain/bootstrap/position-bootstrap'
 import { isBytes32, normalizeBytes32 } from '../domain/bytes32'
-import { assertLadderShapeAtReference, validateLadderConfig } from '../domain/ladder/ladder'
+import {
+  assertLadderShapeAtReference,
+  MAX_MONITOR_INTERVAL_SECONDS,
+  validateLadderConfig
+} from '../domain/ladder/ladder'
 import { LadderConfigurationError } from '../domain/ladder/ladder-configuration.error'
 import {
   hasAttainableMaturityPremiumBps,
@@ -492,7 +496,10 @@ export const ladderConfigsValue = (
       loopIntervalSeconds,
       bookCrossedCooldownSeconds:
         record.bookCrossedCooldownSeconds === undefined
-          ? DEFAULT_BOOK_CROSSED_COOLDOWN_LOOPS * loopIntervalSeconds
+          ? Math.min(
+              DEFAULT_BOOK_CROSSED_COOLDOWN_LOOPS * loopIntervalSeconds,
+              MAX_MONITOR_INTERVAL_SECONDS
+            )
           : safeInteger(record.bookCrossedCooldownSeconds, `${prefix}.bookCrossedCooldownSeconds`),
       movementToleranceBps: integerBigInt(
         required('movementToleranceBps'),

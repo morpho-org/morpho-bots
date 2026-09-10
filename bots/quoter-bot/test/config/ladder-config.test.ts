@@ -410,6 +410,15 @@ describe('ladder configuration loading', () => {
     expect(config.ladder[0]?.bookCrossedCooldownSeconds).toBe(180)
   })
 
+  test('caps the derived book-crossed cooldown at the interval limit', () => {
+    const config = ConfigService.from({
+      ...baseEnvironment,
+      LADDER_MARKETS: JSON.stringify([item({ loopIntervalSeconds: '2147483' })])
+    })
+
+    expect(config.ladder[0]?.bookCrossedCooldownSeconds).toBe(2_147_483)
+  })
+
   test('honours an explicitly configured book-crossed cooldown', () => {
     const config = ConfigService.from({
       ...baseEnvironment,

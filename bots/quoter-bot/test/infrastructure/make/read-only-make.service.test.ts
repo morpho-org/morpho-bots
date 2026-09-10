@@ -222,13 +222,14 @@ describe('read-only make adapters', () => {
       line => {
         lines.push(line)
       },
-      async () => reconciliation
+      async () => ({ reconciliation, bookClearedRungs: { lower: 2, higher: 0 } })
     )
 
     expect(await service.reconcile({ marketId, reason: 'book-crossed' })).toEqual({
       submittedTransactions: [],
       logged: true,
-      reconciliation
+      reconciliation,
+      bookClearedRungs: { lower: 2, higher: 0 }
     })
     expect(lines).toHaveLength(1)
     expect(JSON.parse(lines[0]!)).toMatchObject({
@@ -253,7 +254,7 @@ describe('read-only make adapters', () => {
       line => {
         lines.push(line)
       },
-      async () => reconciliation
+      async () => ({ reconciliation })
     )
 
     expect(await service.reconcile({ marketId, reason: 'book-crossed' })).toEqual({

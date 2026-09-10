@@ -1,5 +1,5 @@
 import type { LadderMakeService } from '../../application/ladder/ladder-quoter.service'
-import type { LadderBookReconciliation } from '../../application/ladder/ladder-verbose'
+import type { LadderReadOnlyValidation } from '../../application/ladder/ladder-verbose'
 
 import { formatReadOnlyMakeEvent } from './read-only-make.utils'
 
@@ -18,7 +18,7 @@ export class ReadOnlyLadderMakeService implements LadderMakeService {
     private readonly write: (line: string) => void | Promise<void> = console.log,
     private readonly validate: (
       parameters: Parameters<LadderMakeService['reconcile']>[0]
-    ) => Promise<LadderBookReconciliation | undefined> = async () => undefined
+    ) => Promise<LadderReadOnlyValidation | undefined> = async () => undefined
   ) {}
 
   /**
@@ -58,14 +58,14 @@ export class ReadOnlyLadderMakeService implements LadderMakeService {
    * publication, replacement, or invalidation occurs.
    */
   async reconcile(parameters: Parameters<LadderMakeService['reconcile']>[0]) {
-    const reconciliation = await this.validate(parameters)
-    if (reconciliation?.applied !== false) {
+    const validation = await this.validate(parameters)
+    if (validation?.reconciliation.applied !== false) {
       await this.write(formatReadOnlyMakeEvent('ladder', 'reconcile', parameters))
     }
     return {
       submittedTransactions: [],
       logged: true as const,
-      ...(reconciliation ? { reconciliation } : {})
+      ...validation
     }
   }
 

@@ -22,7 +22,8 @@ const bigintMin = (left: bigint, right: bigint) => (left < right ? left : right)
  * comfortably below Midnight SDK 1.2.0's height-20 tree limit while bounding local allocation.
  */
 const MAX_LADDER_RUNG_COUNT = 512
-const MAX_MONITOR_INTERVAL_SECONDS = 2_147_483
+/** Longest interval the runtime timer accepts; loop and cooldown intervals share it. */
+export const MAX_MONITOR_INTERVAL_SECONDS = 2_147_483
 
 /** Static shape, inventory and offer floors, cadence, and hard rate range for one ladder market. */
 export type LadderConfig = {

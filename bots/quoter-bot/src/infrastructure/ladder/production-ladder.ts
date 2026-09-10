@@ -19,7 +19,7 @@ import type {
   LadderReferenceRateService
 } from '../../application/ladder/ladder-quoter.service'
 import type {
-  LadderBookReconciliation,
+  LadderReadOnlyValidation,
   LadderSubmittedTransaction,
   LadderTransactionSubmittedObserver
 } from '../../application/ladder/ladder-verbose'
@@ -93,7 +93,7 @@ type ProductionLadderAdapters = {
   make: LadderMakeService
   validateReconcile: (
     parameters: Parameters<LadderMakeService['reconcile']>[0]
-  ) => Promise<LadderBookReconciliation | undefined>
+  ) => Promise<LadderReadOnlyValidation | undefined>
 }
 
 const minimum = (left: bigint, right: bigint) => (left < right ? left : right)
@@ -770,7 +770,7 @@ export const createProductionLadderAdapters = (
       parameters.reason === 'book-crossed' &&
       !hasClearableCrossing(assessed.reconciliation.bookCrossing, parameters.bookCrossedSides)
     ) {
-      return { ...assessed.reconciliation, applied: false }
+      return { reconciliation: { ...assessed.reconciliation, applied: false } }
     }
     const prepared = await prepareUnsignedPublication(parameters.desired, {
       ...observed,
@@ -783,7 +783,10 @@ export const createProductionLadderAdapters = (
       book: observed.book,
       prospective: ownedLadderProspectiveOffers(prepared.bookOffers)
     })
-    return { ...assessed.reconciliation, applied: true }
+    return {
+      reconciliation: { ...assessed.reconciliation, applied: true },
+      bookClearedRungs: prepared.bookClearedRungs
+    }
   }
 
   const readOnlyMake: LadderMakeService = {
