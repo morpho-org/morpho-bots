@@ -971,13 +971,7 @@ describe('createApplication', () => {
     expect(reconcile).not.toHaveBeenCalled()
     expect(hardHalt).not.toHaveBeenCalled()
     expect(events).toEqual([
-      expect.objectContaining({ event: 'readonly.make', workflow: 'bootstrap' }),
-      expect.objectContaining({
-        event: 'cycle.completed',
-        workflow: 'bootstrap',
-        marketId,
-        status: 'logged'
-      })
+      expect.objectContaining({ event: 'readonly.make', workflow: 'bootstrap' })
     ])
   })
 
@@ -1083,13 +1077,7 @@ describe('createApplication', () => {
       expect.objectContaining({ marketId, reason: 'publish' })
     )
     expect(events).toEqual([
-      expect.objectContaining({ event: 'readonly.make', workflow: 'ladder' }),
-      expect.objectContaining({
-        event: 'cycle.completed',
-        workflow: 'ladder',
-        marketId,
-        status: 'logged'
-      })
+      expect.objectContaining({ event: 'readonly.make', workflow: 'ladder' })
     ])
   })
 

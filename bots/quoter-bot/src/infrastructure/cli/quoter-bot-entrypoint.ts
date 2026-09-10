@@ -107,6 +107,10 @@ export const runQuoterBotEntrypoint = async (
       writeEvent: value => {
         if (isShippableRecord(value)) observability?.record(value)
         logger.result(value)
+      },
+      // One-shot record projections reach the sinks without joining the stdout result contract.
+      observeRecord: value => {
+        if (isShippableRecord(value)) observability?.record(value)
       }
     })
     logger.result(result)

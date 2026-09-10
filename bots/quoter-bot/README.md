@@ -669,8 +669,11 @@ failed request or cycle span carries only an error status plus low-cardinality c
 (`error.type`, the allowlisted `errorName`) — raw error text never reaches the exporter. A cycle
 whose result reports a handled failure — a `failed`/`halted` market result, a not-ready readiness
 report — carries the same error status, and one-shot `setup-check`, `bootstrap`, and `ladder`
-invocations wrap their single cycle in the same span and project their result through the same
-flat monitoring records, so trace and metric coverage match the monitors. AWS KMS and quoter-signer Lambda calls use the AWS SDK's `node:http` stack, not
+invocations wrap their single cycle in the same span and mirror their result into the same flat
+monitoring records for the sinks (never onto stdout, whose one-shot contract stays a single
+result), so trace and metric coverage match the monitors. Monitor and `start` service
+construction — the readiness preflight and removed-market cleanup that run before the first
+cycle — is traced as a `quoter-bot.startup` span. AWS KMS and quoter-signer Lambda calls use the AWS SDK's `node:http` stack, not
 undici, so they appear inside the cycle span's duration but not as child spans.
 
 **Metrics.** The `quoter_bot.*` instruments are derived from the same shipped monitoring records

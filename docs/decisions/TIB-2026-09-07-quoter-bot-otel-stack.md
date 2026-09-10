@@ -105,8 +105,10 @@ rule rather than growing `@repo/bot-kit` or `@repo/observability`), consumed by 
    error status plus the injected `operatorErrorName` classification, and an injected predicate
    flips the same error status for handled failures the cycle returns instead of throwing (a
    `failed`/`halted` market result, a not-ready readiness report) — raw error text never reaches
-   a span either way. This is the one deliberate departure from TIB-2026-08-23's "no second emit
-   seam" non-goal, confined to call sites wrapping existing invocations.
+   a span either way. Startup preflight (readiness gate, removed-market cleanup) before a monitor
+   or `start` lifecycle is traced as a sibling `quoter-bot.startup` span. This is the one
+   deliberate departure from TIB-2026-08-23's "no second emit seam" non-goal, confined to call
+   sites wrapping existing invocations.
 4. **Metrics derived from the shipped record stream.** `createTelemetryRecordObserver`
    (quoter-bot infrastructure) mirrors the same allowlisted monitoring records the Better Stack
    path ships into counters, histograms, and gauges — the log stream and the metric stream cannot

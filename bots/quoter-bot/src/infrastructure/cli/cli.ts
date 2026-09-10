@@ -102,6 +102,11 @@ export type CliRuntimeOptions = {
   signal?: AbortSignal
   /** Receives every completed monitoring cycle before the final lifecycle report. */
   writeEvent?: (value: unknown) => void | Promise<void>
+  /**
+   * Receives derived monitoring records that must reach observability sinks without joining the
+   * terminal output stream — one-shot commands keep their documented single-result stdout.
+   */
+  observeRecord?: (value: unknown) => void | Promise<void>
 }
 
 /** Infrastructure adapter: wires the `morpho-quoter` CLI (commander) to application services. */
@@ -124,16 +129,20 @@ export class Cli {
     project: (projection: MonitoringProjection) => readonly unknown[]
   ) {
     await this.runtime.writeEvent?.(value)
-    await this.writeCycleRecords(project)
+    try {
+      for (const event of project(this.monitoring)) await this.runtime.writeEvent?.(event)
+    } catch {
+      return
+    }
   }
 
-  // One-shot commands emit only the derived records: their raw result is already the captured
-  // CLI output, so writing the cycle envelope as well would print it twice.
+  // One-shot commands mirror derived records to the observability seam only: their raw result is
+  // the documented single stdout record, so nothing extra may join the terminal stream.
   private async writeCycleRecords(
     project: (projection: MonitoringProjection) => readonly unknown[]
   ) {
     try {
-      for (const event of project(this.monitoring)) await this.runtime.writeEvent?.(event)
+      for (const event of project(this.monitoring)) await this.runtime.observeRecord?.(event)
     } catch {
       return
     }
@@ -259,7 +268,14 @@ export class Cli {
       const verbose = bootstrapOptions.verbose === true
       const onTransactionSubmitted = this.eventObserver<BootstrapTransactionSubmittedEvent>(verbose)
       if (bootstrapOptions.monitor === true) {
-        const bootstrapService = await makeService()
+        const bootstrapService = await withActiveSpan(
+          {
+            name: 'quoter-bot.startup',
+            attributes: { workflow: 'bootstrap' },
+            errorName: operatorErrorName
+          },
+          async () => makeService()
+        )
         if (!bootstrapService.runContinuously) throw new CliUsageError()
         const result = await bootstrapService.runContinuously({
           signal: this.signal,
@@ -310,7 +326,14 @@ export class Cli {
       const verbose = ladderOptions.verbose === true
       const onTransactionSubmitted = this.eventObserver<LadderTransactionSubmittedEvent>(verbose)
       if (ladderOptions.monitor === true) {
-        const ladderService = await makeService()
+        const ladderService = await withActiveSpan(
+          {
+            name: 'quoter-bot.startup',
+            attributes: { workflow: 'ladder' },
+            errorName: operatorErrorName
+          },
+          async () => makeService()
+        )
         if (!ladderService.runContinuously) throw new CliUsageError()
         const result = await ladderService.runContinuously({
           signal: this.signal,
@@ -350,10 +373,14 @@ export class Cli {
       if (!quoterBot) throw new CliUsageError()
       const options = this.configurationOptions()
       const startOptions = startCommand.opts<{ verbose?: boolean }>()
-      const service = await quoterBot({
-        ...options,
-        writeEvent: this.runtime.writeEvent
-      })
+      const service = await withActiveSpan(
+        {
+          name: 'quoter-bot.startup',
+          attributes: { workflow: 'start' },
+          errorName: operatorErrorName
+        },
+        async () => quoterBot({ ...options, writeEvent: this.runtime.writeEvent })
+      )
       const result = await service.runContinuously({
         signal: this.signal,
         onEvent: event => this.writeCycle(event, monitoring => monitoring.combined(event)),
