@@ -252,9 +252,10 @@ describe('quoter-bot workflow on a pinned Base fork', () => {
       expect((await publishMakerSell(anvil, api, 0n)).status).toBe('success')
       const runtime = await createProductionLadderRuntime(config)
       expect(await runtime.runOnce()).toMatchObject([{ status: 'applied', action: 'publish' }])
-      expect(await api.activeOffers()).toHaveLength(4)
+      // Every buy rung saturates at the maximum-rate tick and merges into one offer.
+      expect(await api.activeOffers()).toHaveLength(2)
       expect(await runtime.runOnce()).toMatchObject([{ status: 'observed', action: 'rest' }])
-      expect(await api.activeOffers()).toHaveLength(4)
+      expect(await api.activeOffers()).toHaveLength(2)
     } finally {
       await anvil.client.revert({ id: crossing })
       await resetStateDirectory()
