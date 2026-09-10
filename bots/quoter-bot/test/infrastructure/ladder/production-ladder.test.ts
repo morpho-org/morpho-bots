@@ -13,7 +13,7 @@ import {
   cleanupRemovedLadderGroups,
   createProductionLadderAdapters,
   createRepeatableSingleFlight,
-  highestBootstrapBuyRateBps,
+  lowestBootstrapBuyRateBps,
   ownBootstrapBuyTickCeiling,
   publishLadderPublication
 } from '../../../src/infrastructure/ladder/production-ladder'
@@ -102,14 +102,14 @@ describe('calculateProductionLadderCapacities', () => {
   })
 })
 
-describe('highestBootstrapBuyRateBps', () => {
+describe('lowestBootstrapBuyRateBps', () => {
   test('derives the rate of a live configured bootstrap group without persisted intent', () => {
     const now = 1_000n
     const maturity = now + 31_536_000n
     const tick = 500n
 
     expect(
-      highestBootstrapBuyRateBps({
+      lowestBootstrapBuyRateBps({
         groups: [
           {
             id: groupId,
@@ -129,6 +129,48 @@ describe('highestBootstrapBuyRateBps', () => {
         now
       })
     ).toBe(TickLib.tickToApr(tick, maturity - now) / (10n ** 18n / 10_000n))
+  })
+
+  test('selects the lowest rate when several own bootstrap buys are live', () => {
+    const now = 1_000n
+    const maturity = now + 31_536_000n
+    const secondGroupId: Hex = `0x${'78'.repeat(32)}`
+    const group = (id: Hex, tick: bigint) => ({
+      id,
+      consumed: 0n,
+      maxAssets: 100n,
+      marketId,
+      tick,
+      maturity,
+      continuousFeeCap: 0n,
+      offers: [{ marketId, maker, buy: true, tick, maturity, continuousFeeCap: 0n }]
+    })
+    const rateOf = (tick: bigint) =>
+      TickLib.tickToApr(tick, maturity - now) / (10n ** 18n / 10_000n)
+    expect(rateOf(600n)).toBeLessThan(rateOf(500n))
+
+    expect(
+      lowestBootstrapBuyRateBps({
+        groups: [group(groupId, 500n), group(secondGroupId, 600n)],
+        ownedGroupIds: [groupId, secondGroupId],
+        persistedOffers: [],
+        pendingOffers: [],
+        marketId,
+        now
+      })
+    ).toBe(rateOf(600n))
+    expect(
+      lowestBootstrapBuyRateBps({
+        groups: [group(groupId, 500n)],
+        ownedGroupIds: [groupId],
+        persistedOffers: [],
+        pendingOffers: [
+          { groupId: secondGroupId, marketId, rateBps: 1n, assets: 1n, referenceObservationId: 'r' }
+        ],
+        marketId,
+        now
+      })
+    ).toBe(1n)
   })
 })
 

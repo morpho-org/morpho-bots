@@ -50,7 +50,7 @@ export type LadderConfig = {
  * Fresh inventory by rate side plus exposure-increasing lend capacity for one ladder market.
  * @remarks Lower-rate capacity is accrued credit for reduce-only sells. Higher-rate capacity is
  * available loan-token balance and allowance for lend buys; target and total capacities cap only
- * that higher-rate exposure-increasing side. `bootstrapBuyRateBps` is the highest live own
+ * that higher-rate exposure-increasing side. `bootstrapBuyRateBps` is the lowest live own
  * bootstrap-buy rate; sells quote at least {@link CROSS_BOOK_CLEARANCE_BPS} below it so the ladder
  * cannot cross the own bootstrap offer.
  *
