@@ -240,12 +240,15 @@ The package owns its production [Dockerfile](../Dockerfile), local
 repository root so pnpm can resolve every workspace dependency; the image builds the workspace and
 starts the combined setup, bootstrap, and ladder monitor as an unprivileged Node process.
 
-A full deployment creates the `quoter-bot` Railway service, selects the package Dockerfile,
-provisions a persistent volume at `/state`, and writes the effective environment configuration
-through stdin so values never appear in process arguments or logs:
+Each supported chain runs as its own Railway service, `quoter-bot-<chainId>` (`quoter-bot-1`,
+`quoter-bot-8453`), inside one project. A full deployment provisions the single chain named by
+`CHAIN_ID`: it creates that chain's service, selects the package Dockerfile, provisions a persistent
+volume at `/state`, and writes the effective environment configuration through stdin so values never
+appear in process arguments or logs. Every input keeps its unsuffixed runtime name, so run it once per
+chain with that chain's environment:
 
 ```sh
-RAILWAY_PROJECT_ID=... \
+RAILWAY_PROJECT_ID=... CHAIN_ID=1 \
 pnpm --filter @morpho-org/quoter-bot run deploy:railway
 ```
 
@@ -263,11 +266,14 @@ replace a working strategy with an empty list. Every remaining optional value is
 omitted timeouts return to their documented defaults, and omitted group IDs and BetterStack settings
 are disabled. `RAILWAY_ENVIRONMENT` defaults to `production`. CI uses `DEPLOY_ONLY=true` with the
 `quoter-bot-production` GitHub Environment, so it reads only `RAILWAY_PROJECT_ID` and
-`RAILWAY_TOKEN` and uses project-token deployment permissions to re-ship the pre-provisioned
-service. Deploy-only does not inspect or mutate Railway variables, volumes, or secrets. Before
-deploy-only, an authorized operator or full provisioning run must configure `RAILWAY_RUN_UID=0`,
-the current `RAILWAY_DOCKERFILE_PATH=bots/quoter-bot/Dockerfile`, `XDG_STATE_HOME=/state`, signer
-and application variables, and the state volume. A full provisioning run preserves root-level
+`RAILWAY_TOKEN` and uses project-token deployment permissions to re-ship every supported chain's
+pre-provisioned service. Deploy-only cannot create a service: it fails before any upload, naming the
+chain services a full run has not yet provisioned. It starts every service before waiting on any, so
+one chain's failure never blocks another's re-ship, and it fails when any service does not reach
+`SUCCESS`. Deploy-only does not inspect or mutate Railway variables, volumes, or secrets. Before
+deploy-only, an authorized operator or full provisioning run must configure, on each chain's service,
+`RAILWAY_RUN_UID=0`, the current `RAILWAY_DOCKERFILE_PATH=bots/quoter-bot/Dockerfile`,
+`XDG_STATE_HOME=/state`, signer and application variables, and the state volume. A full provisioning run preserves root-level
 ownership files in an attached volume at `/state`; when none is attached, it creates a fresh volume
 there and leaves any detached pre-rename volume untouched. A project token (`RAILWAY_TOKEN`) cannot
 manage that configuration; use authorized account or workspace credentials only for provisioning,
@@ -277,8 +283,8 @@ The local Compose service uses the same `/state` ownership path through a named 
 strategy arrays, and supplies the runtime timeout defaults when the corresponding host variables are
 absent.
 
-Both modes snapshot the previous deployment, start a detached upload, and poll the new deployment to
-a terminal state. A GitHub release is created only after Railway reports `SUCCESS`; failed, crashed,
+Both modes snapshot each service's previous deployment, start a detached upload, and poll the new
+deployment to a terminal state. A GitHub release is created only after Railway reports `SUCCESS`; failed, crashed,
 approval-blocked, removed, skipped, sleeping, unknown, or timed-out deployments fail the workflow.
 
 ## Configuration

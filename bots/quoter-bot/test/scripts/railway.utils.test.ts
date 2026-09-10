@@ -6,9 +6,12 @@ import {
   assertFullRailwaySignerProvisioning,
   isNonEmptyJsonArray,
   isTerminalRailwayDeploymentStatus,
+  missingRailwayServices,
   parseLatestRailwayDeployment,
   parseRailwayServices,
   parseRailwayVolumes,
+  railwayServiceName,
+  reshipRailwayServices,
   selectNewRailwayDeployment,
   synchronizedOptionalRailwayVariables
 } from '../../scripts/railway.utils'
@@ -171,11 +174,13 @@ describe('Railway CLI output parsing', () => {
       'utf8'
     )
     const contextSetup = deploy.indexOf('await ensureContext()')
-    const fullProvisioningBranch = deploy.indexOf('if (!DEPLOY_ONLY)')
-    const ensureService = deploy.indexOf('await ensureService()', fullProvisioningBranch)
+    const fullProvisioningBranch = deploy.indexOf(
+      'const service = railwayServiceName(chainIdValue(process.env))'
+    )
+    const ensureService = deploy.indexOf('await ensureService(service)', fullProvisioningBranch)
     const deployOnlySource = deploy.slice(contextSetup, fullProvisioningBranch)
     const fullProvisioningRuntimeUid = deploy.indexOf(
-      "await setRuntimeVariable(['RAILWAY_RUN_UID', '0'])",
+      "await setRuntimeVariable(service, ['RAILWAY_RUN_UID', '0'])",
       fullProvisioningBranch
     )
     const instructions = parseDockerfile(dockerfile)
@@ -198,7 +203,9 @@ describe('Railway CLI output parsing', () => {
     expect(contextSetup).toBeGreaterThan(-1)
     expect(deployOnlySource).not.toContain('setRuntimeVariable(')
     expect(fullProvisioningRuntimeUid).toBeGreaterThan(ensureService)
-    expect(fullProvisioningRuntimeUid).toBeLessThan(deploy.indexOf('await startDeployment()'))
+    expect(fullProvisioningRuntimeUid).toBeLessThan(
+      deploy.indexOf('await snapshotAndStart(service)', fullProvisioningBranch)
+    )
 
     // Two stages: the workspace builds in `build`; the runtime stage ships only the bot's bundle.
     expect(froms.map(({ value }) => value)).toEqual([
@@ -312,22 +319,28 @@ describe('Railway CLI output parsing', () => {
 
   test('creates fresh state only during authorized provisioning', () => {
     const deploy = readFileSync(new URL('../../scripts/deploy-railway.ts', import.meta.url), 'utf8')
-    const fullProvisioningBranch = deploy.indexOf('if (!DEPLOY_ONLY)')
-    const ensureService = deploy.indexOf('await ensureService()', fullProvisioningBranch)
-    const serviceLink = deploy.indexOf('await linkServiceContext(service.id)')
-    const runtimeUid = deploy.indexOf("await setRuntimeVariable(['RAILWAY_RUN_UID', '0'])")
+    const deployOnlyBranch = deploy.indexOf('if (DEPLOY_ONLY)')
+    const fullProvisioningBranch = deploy.indexOf(
+      'const service = railwayServiceName(chainIdValue(process.env))'
+    )
+    const ensureService = deploy.indexOf('await ensureService(service)', fullProvisioningBranch)
+    const serviceLink = deploy.indexOf('await linkServiceContext(railwayService.id)')
+    const runtimeUid = deploy.indexOf("await setRuntimeVariable(service, ['RAILWAY_RUN_UID', '0'])")
     const dockerfilePath = deploy.indexOf(
-      "await setRuntimeVariable(['RAILWAY_DOCKERFILE_PATH', DOCKERFILE_PATH])"
+      "await setRuntimeVariable(service, ['RAILWAY_DOCKERFILE_PATH', DOCKERFILE_PATH])"
     )
     const stateHome = deploy.indexOf(
-      "await setRuntimeVariable(['XDG_STATE_HOME', STATE_MOUNT_PATH])"
+      "await setRuntimeVariable(service, ['XDG_STATE_HOME', STATE_MOUNT_PATH])"
     )
-    const stateVolume = deploy.indexOf('await ensureStateVolume()')
+    const stateVolume = deploy.indexOf('await ensureStateVolume(service)')
     const deploymentSnapshot = deploy.indexOf(
-      'const previousDeployment = parseLatestRailwayDeployment'
+      'const previousDeploymentId = await snapshotAndStart(service)'
     )
 
     expect(deploy).toContain('if (process.env.RAILWAY_TOKEN) return')
+    expect(deployOnlyBranch).toBeGreaterThan(-1)
+    expect(fullProvisioningBranch).toBeGreaterThan(deployOnlyBranch)
+    expect(deploy.slice(deployOnlyBranch, fullProvisioningBranch)).toContain('process.exit(')
     expect(ensureService).toBeGreaterThan(fullProvisioningBranch)
     expect(serviceLink).toBeGreaterThan(ensureService)
     expect(runtimeUid).toBeGreaterThan(serviceLink)
@@ -441,5 +454,89 @@ describe('Railway CLI output parsing', () => {
     expect(isTerminalRailwayDeploymentStatus('NEEDS_APPROVAL')).toBe(true)
     expect(isTerminalRailwayDeploymentStatus('DEPLOYING')).toBe(false)
     expect(isTerminalRailwayDeploymentStatus('UNKNOWN')).toBe(false)
+  })
+})
+
+describe('per-chain Railway services', () => {
+  test('names one service per supported chain', () => {
+    expect(railwayServiceName(1)).toBe('quoter-bot-1')
+    expect(railwayServiceName(8453)).toBe('quoter-bot-8453')
+  })
+
+  test('reports expected services Railway does not list, in expected order', () => {
+    const existing = [
+      { id: 'a', name: 'quoter-bot-8453' },
+      { id: 'b', name: 'quoter-bot' }
+    ]
+
+    expect(missingRailwayServices(existing, ['quoter-bot-1', 'quoter-bot-8453'])).toEqual([
+      'quoter-bot-1'
+    ])
+    expect(missingRailwayServices(existing, ['quoter-bot-8453'])).toEqual([])
+    expect(missingRailwayServices([], ['quoter-bot-1', 'quoter-bot-8453'])).toEqual([
+      'quoter-bot-1',
+      'quoter-bot-8453'
+    ])
+  })
+
+  test('deploy-only re-ships every supported chain and never provisions', () => {
+    const deploy = readFileSync(new URL('../../scripts/deploy-railway.ts', import.meta.url), 'utf8')
+    const deployOnlyBranch = deploy.indexOf('if (DEPLOY_ONLY)')
+    const fullProvisioningBranch = deploy.indexOf(
+      'const service = railwayServiceName(chainIdValue(process.env))'
+    )
+    const deployOnlySource = deploy.slice(deployOnlyBranch, fullProvisioningBranch)
+
+    expect(deployOnlySource).toContain('SUPPORTED_CHAIN_IDS.map(railwayServiceName)')
+    expect(deployOnlySource).toContain('missingRailwayServices(await listServices(), services)')
+    expect(deployOnlySource).not.toContain('ensureService(')
+    expect(deployOnlySource).not.toContain('ensureStateVolume(')
+    expect(deployOnlySource).not.toContain('setRuntimeVariable(')
+    expect(deployOnlySource).toContain(
+      'await reshipRailwayServices(services, snapshotAndStart, waitForDeployment)'
+    )
+    expect(deployOnlySource).not.toContain('assertDeploymentSucceeded(')
+  })
+
+  test('one chain failing to start or report never blocks another chain re-ship', async () => {
+    const events: string[] = []
+    const statuses = await reshipRailwayServices(
+      ['quoter-bot-1', 'quoter-bot-8453', 'quoter-bot-999'],
+      async service => {
+        events.push(`start ${service}`)
+        if (service === 'quoter-bot-1') throw new Error('upload rejected')
+        return `${service}-snapshot`
+      },
+      async (service, snapshot) => {
+        events.push(`wait ${service} ${snapshot}`)
+        if (service === 'quoter-bot-999') throw new Error('status read failed')
+        return 'SUCCESS'
+      }
+    )
+
+    expect([...statuses]).toEqual([
+      ['quoter-bot-1', 'START_FAILED'],
+      ['quoter-bot-8453', 'SUCCESS'],
+      ['quoter-bot-999', 'POLL_FAILED']
+    ])
+    // Every start is attempted before any wait begins.
+    expect(events).toEqual([
+      'start quoter-bot-1',
+      'start quoter-bot-8453',
+      'start quoter-bot-999',
+      'wait quoter-bot-8453 quoter-bot-8453-snapshot',
+      'wait quoter-bot-999 quoter-bot-999-snapshot'
+    ])
+    expect([...statuses.values()].every(status => status === 'SUCCESS')).toBe(false)
+  })
+
+  test('re-ship reports success only when every chain succeeds', async () => {
+    const statuses = await reshipRailwayServices(
+      ['quoter-bot-1', 'quoter-bot-8453'],
+      async () => undefined,
+      async () => 'SUCCESS'
+    )
+
+    expect([...statuses.values()].every(status => status === 'SUCCESS')).toBe(true)
   })
 })

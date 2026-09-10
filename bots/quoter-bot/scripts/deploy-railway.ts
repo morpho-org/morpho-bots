@@ -1,30 +1,38 @@
 /**
- * Reproducible Railway provisioning and deployment for the quoter-bot bot.
+ * Reproducible Railway provisioning and deployment for the quoter-bot bot: one
+ * `quoter-bot-<chainId>` service per supported chain, all inside one Railway project.
  *
- * A full run creates the service, configures its package-owned Dockerfile, and uploads runtime
- * variables through stdin. CI sets DEPLOY_ONLY=true to re-ship the already-provisioned service using
- * only project-token deployment permissions. Both modes wait for the newly created deployment to
- * reach a terminal state and succeed only on Railway `SUCCESS`.
+ * A full run provisions the single chain named by `CHAIN_ID`: it creates that chain's service,
+ * configures its package-owned Dockerfile and state volume, and uploads runtime variables through
+ * stdin. Every input keeps its unsuffixed runtime name, so an operator runs it once per chain with
+ * that chain's environment. CI sets DEPLOY_ONLY=true to re-ship every already-provisioned chain
+ * service using only project-token deployment permissions; it creates nothing and names any chain
+ * service that a full run has not yet provisioned. Both modes wait for each new deployment to reach
+ * a terminal state and succeed only on Railway `SUCCESS`.
  */
 import { delay, tryCatch } from '@repo/utils'
 import { $ } from 'execa'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { chainIdValue } from '../src/config/config.utils'
+import { SUPPORTED_CHAIN_IDS } from '../src/config/supported-chains.utils'
 import { RailwayDeploymentError } from './railway-deployment.error'
 import {
   assertFreshRailwayReferenceProvisioning,
   assertFullRailwaySignerProvisioning,
   isNonEmptyJsonArray,
   isTerminalRailwayDeploymentStatus,
+  missingRailwayServices,
   parseLatestRailwayDeployment,
   parseRailwayServices,
   parseRailwayVolumes,
+  railwayServiceName,
+  reshipRailwayServices,
   selectNewRailwayDeployment,
   synchronizedOptionalRailwayVariables
 } from './railway.utils'
 
-const SERVICE = 'quoter-bot'
 const DOCKERFILE_PATH = 'bots/quoter-bot/Dockerfile'
 const STATE_MOUNT_PATH = '/state'
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..')
@@ -134,20 +142,20 @@ const listServices = async () => {
   return parseRailwayServices(data)
 }
 
-const ensureService = async () => {
+const ensureService = async (service: string) => {
   const services = await listServices()
-  const existingService = services.find(service => service.name === SERVICE)
+  const existingService = services.find(candidate => candidate.name === service)
   if (existingService) return { service: existingService, isFreshService: false }
 
   assertFreshRailwayReferenceProvisioning(process.env, true)
   const { data, error } = await tryCatch(
-    $`railway add --service ${SERVICE} --json`.then(result => result.stdout)
+    $`railway add --service ${service} --json`.then(result => result.stdout)
   )
   if (error || typeof data !== 'string') {
     throw new RailwayDeploymentError('Failed to create the Railway service')
   }
 
-  const createdService = parseRailwayServices(data).find(service => service.name === SERVICE)
+  const createdService = parseRailwayServices(data).find(candidate => candidate.name === service)
   if (!createdService) {
     throw new RailwayDeploymentError('Railway service creation returned incomplete identity')
   }
@@ -166,8 +174,8 @@ const listVolumes = async () => {
   return parseRailwayVolumes(data)
 }
 
-const configuredStateVolume = async () => {
-  const volumes = (await listVolumes()).filter(candidate => candidate.serviceName === SERVICE)
+const configuredStateVolume = async (service: string) => {
+  const volumes = (await listVolumes()).filter(candidate => candidate.serviceName === service)
   if (volumes.length > 1) {
     throw new RailwayDeploymentError('Railway service has multiple attached volumes')
   }
@@ -184,34 +192,34 @@ const configuredStateVolume = async () => {
   return volume
 }
 
-const ensureStateVolume = async () => {
-  if (await configuredStateVolume()) return
+const ensureStateVolume = async (service: string) => {
+  if (await configuredStateVolume(service)) return
 
   const { error } = await tryCatch($`railway volume add --mount-path ${STATE_MOUNT_PATH} --json`)
   if (error) throw new RailwayDeploymentError('Failed to create the Railway state volume')
 
   for (let attempt = 1; attempt <= 10; attempt++) {
-    if (await configuredStateVolume()) return
+    if (await configuredStateVolume(service)) return
     if (attempt < 10) await delay(1_000)
   }
 
   throw new RailwayDeploymentError('Railway state volume confirmation timed out')
 }
 
-const setRuntimeVariable = async ([name, value]: RuntimeVariable) => {
+const setRuntimeVariable = async (service: string, [name, value]: RuntimeVariable) => {
   const { error } = await tryCatch(
     $({
       input: value
-    })`railway variable set ${name} --stdin --service ${SERVICE} --environment ${ENVIRONMENT} --skip-deploys`
+    })`railway variable set ${name} --stdin --service ${service} --environment ${ENVIRONMENT} --skip-deploys`
   )
   if (error) throw new RailwayDeploymentError(`Failed to set Railway variable: ${name}`)
 
-  console.log(`Configured ${name}`)
+  console.log(`[${service}] configured ${name}`)
 }
 
-const latestDeploymentJson = async () => {
+const latestDeploymentJson = async (service: string) => {
   const { data, error } = await tryCatch(
-    $`railway deployment list --service ${SERVICE} --project ${PROJECT_ID} --environment ${ENVIRONMENT} --limit 1 --json`.then(
+    $`railway deployment list --service ${service} --project ${PROJECT_ID} --environment ${ENVIRONMENT} --limit 1 --json`.then(
       result => result.stdout
     )
   )
@@ -222,59 +230,83 @@ const latestDeploymentJson = async () => {
   return data
 }
 
-const startDeployment = async () => {
-  const message = `quoter-bot-${ENVIRONMENT}`
+const startDeployment = async (service: string) => {
+  const message = `${service}-${ENVIRONMENT}`
   const { error } = await tryCatch(
     $({
       cwd: REPO_ROOT
-    })`railway up --service ${SERVICE} --project ${PROJECT_ID} --environment ${ENVIRONMENT} --detach --message ${message}`
+    })`railway up --service ${service} --project ${PROJECT_ID} --environment ${ENVIRONMENT} --detach --message ${message}`
   )
   if (error) throw new RailwayDeploymentError('Failed to start the Railway deployment')
 }
 
 const waitForDeployment = async (
+  service: string,
   previousDeploymentId: string | undefined,
   maxAttempts = 60,
   intervalMs = 10_000
 ) => {
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     const deployment = selectNewRailwayDeployment(
-      await latestDeploymentJson(),
+      await latestDeploymentJson(service),
       previousDeploymentId
     )
-    if (deployment && isTerminalRailwayDeploymentStatus(deployment.status)) return deployment
+    if (deployment && isTerminalRailwayDeploymentStatus(deployment.status)) {
+      return deployment.status
+    }
 
-    console.log(`[${SERVICE}] deployment pending (${attempt}/${maxAttempts})`)
+    console.log(`[${service}] deployment pending (${attempt}/${maxAttempts})`)
     if (attempt < maxAttempts) await delay(intervalMs)
   }
 
-  throw new RailwayDeploymentError('Railway deployment confirmation timed out')
+  return 'TIMEOUT'
 }
 
-const assertDeploymentSucceeded = (status: string) => {
+const assertDeploymentSucceeded = (service: string, status: string) => {
   if (status !== 'SUCCESS') {
     throw new RailwayDeploymentError(`Railway deployment ended with status: ${status}`)
   }
 
-  console.log(`${SERVICE} deployment succeeded`)
+  console.log(`${service} deployment succeeded`)
+}
+
+const snapshotAndStart = async (service: string) => {
+  const previousDeployment = parseLatestRailwayDeployment(await latestDeploymentJson(service))
+  await startDeployment(service)
+
+  return previousDeployment?.id
 }
 
 await assertCli()
 await ensureContext()
 
-if (!DEPLOY_ONLY) {
-  const { service } = await ensureService()
+if (DEPLOY_ONLY) {
+  const services = SUPPORTED_CHAIN_IDS.map(railwayServiceName)
+  const missing = missingRailwayServices(await listServices(), services)
+  if (missing.length > 0) {
+    throw new RailwayDeploymentError(
+      `DEPLOY_ONLY cannot create services. Not provisioned in ${ENVIRONMENT}: ${missing.join(', ')}. ` +
+        'Run a full deploy of this script with that CHAIN_ID first.'
+    )
+  }
 
-  await linkServiceContext(service.id)
-  await setRuntimeVariable(['RAILWAY_RUN_UID', '0'])
-  await setRuntimeVariable(['RAILWAY_DOCKERFILE_PATH', DOCKERFILE_PATH])
-  await setRuntimeVariable(['XDG_STATE_HOME', STATE_MOUNT_PATH])
-  for (const variable of runtimeVariables()) await setRuntimeVariable(variable)
-  await ensureStateVolume()
+  const statuses = await reshipRailwayServices(services, snapshotAndStart, waitForDeployment)
+
+  console.log('')
+  console.log('=== Deploy-only status ===')
+  for (const [service, status] of statuses) console.log(`  ${service}: ${status}`)
+  process.exit([...statuses.values()].every(status => status === 'SUCCESS') ? 0 : 1)
 }
 
-const previousDeployment = parseLatestRailwayDeployment(await latestDeploymentJson())
-await startDeployment()
+const service = railwayServiceName(chainIdValue(process.env))
+const { service: railwayService } = await ensureService(service)
 
-const deployment = await waitForDeployment(previousDeployment?.id)
-assertDeploymentSucceeded(deployment.status)
+await linkServiceContext(railwayService.id)
+await setRuntimeVariable(service, ['RAILWAY_RUN_UID', '0'])
+await setRuntimeVariable(service, ['RAILWAY_DOCKERFILE_PATH', DOCKERFILE_PATH])
+await setRuntimeVariable(service, ['XDG_STATE_HOME', STATE_MOUNT_PATH])
+for (const variable of runtimeVariables()) await setRuntimeVariable(service, variable)
+await ensureStateVolume(service)
+
+const previousDeploymentId = await snapshotAndStart(service)
+assertDeploymentSucceeded(service, await waitForDeployment(service, previousDeploymentId))
