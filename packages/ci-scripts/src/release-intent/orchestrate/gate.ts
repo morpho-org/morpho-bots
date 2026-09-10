@@ -1,6 +1,6 @@
 import { getRepo, getSha, info, setFailed, setOutput, warning } from '../../lib/actions'
 import { githubApi, paginate } from '../../lib/github'
-import { bodyIntentTimes, type PullRequest } from '../common'
+import { bodyIntentTimes, EDIT_HISTORY_RETENTION, type PullRequest } from '../common'
 import { computeHumanApprovals, evaluateReleaseGate, type ReviewLike } from '../gate'
 import { findMergedPullRequest, parseReleaseIntents } from '../helpers'
 import { botIds, deployTargets, loadManifest } from '../manifest'
@@ -40,12 +40,18 @@ async function main(): Promise<void> {
 
   const reviews = await paginate<ReviewLike>(`/repos/${owner}/${repo}/pulls/${pr.number}/reviews`)
   const approvals = computeHumanApprovals(reviews, pr.user.login, pr.merged_at)
-  const intentTimes = await bodyIntentTimes({ owner, repo }, pr.number, knownBots, pr.merged_at)
-  const { authorized, refused } = evaluateReleaseGate({
-    intentBots: intents,
-    intentTimes,
-    approvals
-  })
+  const history = await bodyIntentTimes({ owner, repo }, pr.number, knownBots, pr.merged_at)
+  const { authorized, refused } = history.truncated
+    ? {
+        authorized: [],
+        refused: new Map(
+          intents.map(bot => [
+            bot,
+            `the PR body has ${EDIT_HISTORY_RETENTION}+ edits, so GitHub no longer holds the full history needed to date the intent`
+          ])
+        )
+      }
+    : evaluateReleaseGate({ intentBots: intents, intentTimes: history.times, approvals })
 
   for (const [bot, reason] of refused) warning(`Refusing to release ${bot}: ${reason}`)
   if (refused.size > 0) {

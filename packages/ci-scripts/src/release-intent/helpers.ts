@@ -27,9 +27,14 @@ export function parseReleaseIntents(
   knownBots: ReadonlySet<string>
 ): string[] {
   if (!text) return []
-  // Inline code/emphasis markers are stripped so `` `quoter-bot` ``-style markdown still parses;
-  // the grammar itself stays single-line and plain.
-  const normalized = text.replace(/\r\n?/g, '\n').toLowerCase().replace(/[`*_]/g, '')
+  // HTML comments are dropped first: GitHub does not render them, so intent inside one is invisible
+  // to the reviewer whose approval the gate counts. Inline code/emphasis markers are then stripped
+  // so `` `quoter-bot` ``-style markdown still parses; the grammar itself stays single-line.
+  const normalized = text
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .replace(/\r\n?/g, '\n')
+    .toLowerCase()
+    .replace(/[`*_]/g, '')
   const bots = new Set<string>()
   for (const match of normalized.matchAll(KEYWORD_RE)) {
     for (const token of (match[1] ?? '').split(LIST_SPLIT_RE)) {

@@ -17,6 +17,7 @@
   {
     "id": "quoter-bot",
     "package": "@morpho-org/quoter-bot",
-    "environments": { "production": "quoter-bot-production" }
+    "environments": { "production": "quoter-bot-production" },
+    "publishImage": true
   }
 ]

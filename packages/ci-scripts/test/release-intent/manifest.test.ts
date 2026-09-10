@@ -33,15 +33,21 @@ describe('manifest.json', () => {
         bot: 'blue-liq',
         package: '@morpho-org/blue-liquidation',
         stage: 'production',
-        environment: 'blue-liq-production'
+        environment: 'blue-liq-production',
+        publish_image: false
       },
       {
         bot: 'quoter-bot',
         package: '@morpho-org/quoter-bot',
         stage: 'production',
-        environment: 'quoter-bot-production'
+        environment: 'quoter-bot-production',
+        publish_image: true
       }
     ])
+  })
+
+  it('never publishes an image from staging', () => {
+    expect(deployTargets(manifest, 'staging').every(t => ! t.publish_image)).toBe(true)
   })
 })
 
@@ -61,6 +67,11 @@ describe('validateManifest', () => {
       name: 'missing production environment',
       input: [{ ...entry, environments: {} }],
       error: /environments.production is required/
+    },
+    {
+      name: 'non-boolean publishImage',
+      input: [{ ...entry, publishImage: 'yes' }],
+      error: /publishImage must be a boolean/
     }
   ])('rejects $name', ({ input, error }) => {
     expect(() => validateManifest(input)).toThrow(error)

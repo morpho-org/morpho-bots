@@ -46,6 +46,20 @@ interface BodyIntentPage {
 }
 
 /**
+ * GitHub keeps only this many revisions of a body; older intermediate edits are evicted and cannot be
+ * paged back. A history at the cap may be missing the removal/re-add that should have reset a bot's
+ * intent clock, so the gate treats it as unverifiable.
+ * https://docs.github.com/en/communities/moderating-comments-and-conversations/tracking-changes-in-a-comment#editing-history-limits
+ */
+export const EDIT_HISTORY_RETENTION = 100
+
+interface BodyIntentHistory {
+  times: Map<string, string>
+  /** True when the retained history may have lost revisions ({@link EDIT_HISTORY_RETENTION}). */
+  truncated: boolean
+}
+
+/**
  * Per-bot intent time replayed from the PR body's edit history (`userContentEdits.diff` is the full
  * body after each edit). See {@link deriveBodyIntentTimes} for the cutoff semantics.
  */
@@ -54,7 +68,7 @@ export async function bodyIntentTimes(
   prNumber: number,
   knownBots: ReadonlySet<string>,
   until?: string
-): Promise<Map<string, string>> {
+): Promise<BodyIntentHistory> {
   const revisions: BodyIntentRevision[] = []
   let after: string | null = null
   let pr: BodyIntentPage['repository']['pullRequest'] = null
@@ -68,11 +82,14 @@ export async function bodyIntentTimes(
     after = pr.userContentEdits.pageInfo.hasNextPage ? pr.userContentEdits.pageInfo.endCursor : null
   } while (after !== null)
 
-  return deriveBodyIntentTimes({
-    createdAt: pr.createdAt,
-    currentBody: pr.body,
-    revisions,
-    knownBots,
-    until
-  })
+  return {
+    times: deriveBodyIntentTimes({
+      createdAt: pr.createdAt,
+      currentBody: pr.body,
+      revisions,
+      knownBots,
+      until
+    }),
+    truncated: revisions.length >= EDIT_HISTORY_RETENTION
+  }
 }

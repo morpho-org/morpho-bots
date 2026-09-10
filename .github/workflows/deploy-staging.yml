@@ -35,10 +35,12 @@ jobs:
       fail-fast: false
       matrix:
         include: ${{ fromJSON(needs.Select.outputs.targets) }}
-    # Staging never releases (no release_pr, so the callee's Release job is skipped), but a called
-    # workflow's declared permissions must still fit inside the caller job's grant.
+    # Staging never releases or publishes an image (no release_pr / publish_image, so those callee
+    # jobs are skipped), but a called workflow's declared permissions must still fit inside the
+    # caller job's grant.
     permissions:
       contents: write
+      id-token: write
     uses: ./.github/workflows/deploy-bot.yml
     # Environment secrets (RAILWAY_TOKEN) only populate in the reusable workflow when the callee job
     # declares `environment:` AND the caller passes `secrets: inherit`. Environment *variables*

@@ -1,6 +1,6 @@
 import fs from 'node:fs'
 
-export type Stage = 'staging' | 'production'
+type Stage = 'staging' | 'production'
 
 interface BotManifestEntry {
   /** Stable bot id: the `Releases <id>` token, release tag prefix, and label suffix. */
@@ -9,6 +9,8 @@ interface BotManifestEntry {
   package: string
   /** GitHub Environment holding RAILWAY_TOKEN + RAILWAY_PROJECT_ID per stage. */
   environments: { staging?: string; production: string }
+  /** Publish the bot's Docker Hub image after a production release (publish-quoter-bot-dockerhub.yml). */
+  publishImage?: boolean
 }
 
 /** One deploy matrix leg, consumed by `deploy-bot.yml` inputs. */
@@ -17,6 +19,7 @@ interface DeployTarget {
   package: string
   stage: Stage
   environment: string
+  publish_image: boolean
 }
 
 const MANIFEST_URL = new URL('../../manifest.json', import.meta.url)
@@ -31,7 +34,12 @@ export function validateManifest(parsed: unknown): BotManifestEntry[] {
   if (!Array.isArray(parsed)) throw new Error('manifest.json must be an array')
   const ids = new Set<string>()
   return parsed.map((entry: unknown, index) => {
-    const { id, package: pkg, environments } = (entry ?? {}) as Partial<BotManifestEntry>
+    const {
+      id,
+      package: pkg,
+      environments,
+      publishImage
+    } = (entry ?? {}) as Partial<BotManifestEntry>
     if (typeof id !== 'string' || !ID_RE.test(id)) {
       throw new Error(`manifest.json[${index}]: id must match ${ID_RE}`)
     }
@@ -46,7 +54,15 @@ export function validateManifest(parsed: unknown): BotManifestEntry[] {
     if (environments.staging !== undefined && typeof environments.staging !== 'string') {
       throw new Error(`manifest.json[${index}] (${id}): environments.staging must be a string`)
     }
-    return { id, package: pkg, environments }
+    if (publishImage !== undefined && typeof publishImage !== 'boolean') {
+      throw new Error(`manifest.json[${index}] (${id}): publishImage must be a boolean`)
+    }
+    return {
+      id,
+      package: pkg,
+      environments,
+      ...(publishImage === undefined ? {} : { publishImage })
+    }
   })
 }
 
@@ -64,6 +80,15 @@ export function deployTargets(
     .filter(entry => bots === undefined || bots.includes(entry.id))
     .flatMap(entry => {
       const environment = entry.environments[stage]
-      return environment ? [{ bot: entry.id, package: entry.package, stage, environment }] : []
+      if (!environment) return []
+      return [
+        {
+          bot: entry.id,
+          package: entry.package,
+          stage,
+          environment,
+          publish_image: stage === 'production' && entry.publishImage === true
+        }
+      ]
     })
 }

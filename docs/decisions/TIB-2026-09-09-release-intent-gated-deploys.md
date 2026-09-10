@@ -63,13 +63,17 @@ prime and trimmed:
 - `release-intent/helpers.ts` — the `Releases <bot>` grammar (comma / "and" lists, `Releases
 nothing`), kept byte-for-byte on prime's golden fixture so the two repos parse identically.
 - `release-intent/common.ts` — replays the PR body's `userContentEdits` history to find when each
-  bot's intent was added, with a cutoff at `merged_at`.
+  bot's intent was added, with a cutoff at `merged_at`. GitHub retains only 100 revisions, so a
+  body at that cap is treated as unverifiable and every intent on it is refused.
 - `release-intent/gate.ts` — pure gate: latest verdict per reviewer, minus bots and the author,
   submitted at or before `merged_at`; a bot passes if some approval postdates its intent.
-- `manifest.json` — `{ id, package, environments: { staging?, production } }` per CI-deployable
-  bot. The `id` is the `Releases <id>` token, the release tag prefix, and the label suffix; the
-  environment names are the existing GitHub Environments, including the irregular
-  `crossed-books-prod`.
+- `manifest.json` — `{ id, package, environments: { staging?, production }, publishImage? }` per
+  CI-deployable bot. The `id` is the `Releases <id>` token, the release tag prefix, and the label
+  suffix; the environment names are the existing GitHub Environments, including the irregular
+  `crossed-books-prod`; `publishImage` marks quoter-bot's Docker Hub publish.
+
+The grammar drops HTML comments before parsing: GitHub does not render them, so intent hidden in
+one would be invisible to the reviewer whose approval the gate counts.
 
 **`deploy-production.yml`** on `push: main` becomes three jobs:
 
@@ -78,18 +82,21 @@ nothing`), kept byte-for-byte on prime's golden fixture so the two repos parse i
    never trusted), fetches reviews and body history, and evaluates the gate. Refused bots get a
    ⚠️ comment on the PR. Outputs: a matrix of authorized deploy targets, the bot ids, the PR number.
 2. `Deploy` — a matrix over those targets calling `deploy-bot.yml`, job-named `<bot>`.
-3. `Quoter-bot-image` — as before, gated on `quoter-bot` being authorized.
 
-**`deploy-bot.yml`** gains `package`, `github_environment`, and `release_pr` inputs (no more shell
-`case`; the quoter-bot variant folds in, on Railway CLI 5.30.4 with its 30-minute timeout) and two
-follow-on jobs: `Release`, which cuts `<bot>-<PR#>` only after a successful deploy and is idempotent
-on rerun (an existing tag on the same SHA is done; on another SHA it fails loud), and `Notify`, which
-chains `release-slack-notify.yml` via `workflow_call`, the fix for the dead `release` trigger.
+**`deploy-bot.yml`** gains `package`, `github_environment`, `release_pr`, and `publish_image` inputs
+(no more shell `case`; the quoter-bot variant folds in, on Railway CLI 5.30.4 with its 30-minute
+timeout) and three follow-on jobs: `Release`, which cuts `<bot>-<PR#>` only after a successful deploy
+and is idempotent on rerun (an existing tag on the same SHA is done; on another SHA it fails loud);
+`Notify`, which chains `release-slack-notify.yml` via `workflow_call`, the fix for the dead `release`
+trigger; and `Image`, which runs the Docker Hub publish after this bot's own release. The image lives
+inside the per-bot chain rather than in the caller so a sibling bot's failed deploy in the same PR
+cannot skip it.
 
 **`deploy-staging.yml`** reads the manifest's staging targets and runs the same matrix.
 
 **`pr-release-label-sync.yml`** (thin port of prime's) reconciles `release-<bot>` labels from the
-body on `opened|reopened|edited`, checking out `main` so no PR code runs under a write token.
+body on `opened|reopened|edited|labeled|unlabeled`, checking out `main` so no PR code runs under a
+write token. A hand-removed label is restored, so the label is a reliable cue of what the body says.
 
 The production `workflow_dispatch` is removed: it would bypass the gate. Re-ship or roll back with a
 new PR carrying the intent. The `deploy-production` concurrency group is removed too: PR numbers need
@@ -157,9 +164,11 @@ consumer that cared about tag shape, npm publishing, reads `package.json` instea
   is silently no intent; the label sync makes the mismatch visible on the PR before merge.
 - **Nested reusable workflows.** `deploy-production.yml` → `deploy-bot.yml` →
   `release-slack-notify.yml` is two levels; GitHub allows four.
-- **Staging callers grant `contents: write`.** A called workflow's declared job permissions must
-  fit the caller's grant even for jobs that end up skipped, so the staging matrix grants what the
-  callee's `Release` job declares although it never runs there.
+- **Staging callers grant `contents: write` and `id-token: write`.** A called workflow's declared
+  job permissions must fit the caller's grant even for jobs that end up skipped, so the staging
+  matrix grants what the callee's `Release` and `Image` jobs declare although neither runs there.
+- **Same-bot rapid releases are not serialized in order.** The per-bot concurrency group keeps one
+  pending run and does not order them; this predates the change and is tracked as BOTS-128.
 
 ## Security
 

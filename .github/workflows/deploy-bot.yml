@@ -39,6 +39,11 @@ on:
         required: false
         type: string
         default: ''
+      publish_image:
+        description: Push the bot's Docker Hub image after the release (manifest `publishImage`)
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -128,3 +133,17 @@ jobs:
     secrets: inherit
     with:
       tag: ${{ needs.Release.outputs.tag }}
+
+  Image:
+    # Image tags publish only after this bot's own deploy and release succeeded, and never gate
+    # either. Lives here rather than in the caller so a sibling bot's failed leg cannot skip it.
+    needs: Release
+    if: ${{ inputs.publish_image }}
+    # The OIDC token minting (id-token) the Docker Hub login needs must be granted by every caller.
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/publish-quoter-bot-dockerhub.yml
+    secrets: inherit
+    with:
+      ref: ${{ inputs.ref }}

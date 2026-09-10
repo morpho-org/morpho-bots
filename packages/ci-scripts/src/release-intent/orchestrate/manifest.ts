@@ -1,5 +1,5 @@
 import { setFailed, setOutput } from '../../lib/actions'
-import { deployTargets, loadManifest, type Stage } from '../manifest'
+import { deployTargets, loadManifest } from '../manifest'
 
 /** Emits the `deploy-bot.yml` matrix (`targets`) for the stage given as the first argument. */
 function main(): void {
@@ -7,7 +7,7 @@ function main(): void {
   if (stage !== 'staging' && stage !== 'production') {
     throw new Error(`usage: release-manifest <staging|production> (got ${stage ?? 'nothing'})`)
   }
-  setOutput('targets', JSON.stringify(deployTargets(loadManifest(), stage as Stage)))
+  setOutput('targets', JSON.stringify(deployTargets(loadManifest(), stage)))
 }
 
 try {

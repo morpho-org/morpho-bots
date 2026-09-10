@@ -6,10 +6,13 @@ name: Release labels
 # in the deploy path reads them. Logic: packages/ci-scripts/src/release-intent/orchestrate/label-sync.ts.
 #
 # Checks out main, never the PR head: the job holds a write token and must not execute PR code.
+#
+# `labeled`/`unlabeled` are included so a hand-removed (or hand-added) release label is put back in
+# line with the description; label writes made here use GITHUB_TOKEN and so trigger no further run.
 
 on:
   pull_request:
-    types: [opened, reopened, edited]
+    types: [opened, reopened, edited, labeled, unlabeled]
     branches: [main]
 
 # Rapid edits fire overlapping runs; only the newest matters since it recomputes from live state.

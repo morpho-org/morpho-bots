@@ -12,9 +12,10 @@ name: Deploy production
 # the main-only environment branch policy — and so the gate runs reviewed workflow code. There is no
 # manual dispatch: it would bypass the gate. Re-ship or roll back with a new PR carrying the intent.
 #
-# A quoter-bot release also pushes the bot image to Docker Hub after the Railway deploy and release
-# succeed; publish-quoter-bot-npm.yml (a workflow_run chain, kept standalone for npm trusted
-# publishing) then publishes the CLI when the commit carries a quoter-bot release tag.
+# Each authorized bot runs deploy-bot.yml: Railway deploy → GitHub release `<bot>-<PR#>` → Slack,
+# plus the Docker Hub image for bots the manifest marks `publishImage`. publish-quoter-bot-npm.yml
+# (a workflow_run chain, kept standalone for npm trusted publishing) then publishes the CLI when the
+# commit carries a quoter-bot release tag.
 #
 # No concurrency group, deliberately: GitHub keeps only ONE pending run per group, so serializing
 # on the ref would silently drop a release push whenever a third push lands. Release tags carry the
@@ -36,8 +37,6 @@ jobs:
     outputs:
       # JSON deploy-bot.yml matrix legs for the authorized bots; `[]` when nothing releases.
       targets: ${{ steps.gate.outputs.targets }}
-      # JSON array of authorized bot ids, for per-bot follow-up jobs.
-      bots: ${{ steps.gate.outputs.bots }}
       pr: ${{ steps.gate.outputs.pr }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
@@ -66,10 +65,11 @@ jobs:
       fail-fast: false
       matrix:
         include: ${{ fromJSON(needs.Gate.outputs.targets) }}
-    # The callee's Release job needs contents:write; a called workflow can never hold more than its
-    # caller job grants.
+    # The callee's Release job needs contents:write and its Image job id-token:write; a called
+    # workflow can never hold more than its caller job grants.
     permissions:
       contents: write
+      id-token: write
     uses: ./.github/workflows/deploy-bot.yml
     # Environment secrets (RAILWAY_TOKEN) only populate in the reusable workflow when the callee job
     # declares `environment:` AND the caller passes `secrets: inherit`. Environment *variables*
@@ -82,17 +82,4 @@ jobs:
       github_environment: ${{ matrix.environment }}
       ref: ${{ github.sha }}
       release_pr: ${{ needs.Gate.outputs.pr }}
-
-  Quoter-bot-image:
-    # Publishes image tags only after the quoter-bot deploy and its GitHub release both succeeded;
-    # the image never gates the release.
-    needs: [Gate, Deploy]
-    if: ${{ contains(fromJSON(needs.Gate.outputs.bots), 'quoter-bot') }}
-    # The OIDC token minting (id-token) the Docker Hub login needs must be granted by the caller.
-    permissions:
-      contents: read
-      id-token: write
-    uses: ./.github/workflows/publish-quoter-bot-dockerhub.yml
-    secrets: inherit
-    with:
-      ref: ${{ github.sha }}
+      publish_image: ${{ matrix.publish_image }}

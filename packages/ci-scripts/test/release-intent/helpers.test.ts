@@ -23,6 +23,13 @@ describe('parseReleaseIntents (golden fixture)', () => {
     expect(parseReleaseIntents(null, KNOWN)).toEqual([])
   })
 
+  it('ignores intent hidden in an HTML comment', () => {
+    expect(parseReleaseIntents('<!-- Releases markets-app -->', KNOWN)).toEqual([])
+    expect(
+      parseReleaseIntents('<!--\nReleases markets-app\n-->\nReleases delegate-app', KNOWN)
+    ).toEqual(['delegate-app'])
+  })
+
   it('matches the real bot ids', () => {
     const bots = new Set(['blue-liq', 'midnight-liq', 'crossed-books', 'quoter-bot'])
     expect(parseReleaseIntents('Releases quoter-bot and midnight-liq.', bots)).toEqual([
