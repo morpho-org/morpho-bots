@@ -46,12 +46,16 @@ the shape of the thing implies.
   findings stop existing before you write several patches.
 - **Discuss** — for TIBs only; see below.
 - **Decide, per finding: incorporate, drop, or defer as a Linear ticket.** State the call and the
-  reason. A dropped finding is a decision, not an oversight, and reads as one only if you say why.
+  reason, then make the edits — deciding to incorporate is not incorporating, and Synthesis ends
+  with an artifact that has actually changed. A dropped finding is a decision, not an oversight,
+  and reads as one only if you say why.
 
 **Convergence.** Tell the reviewer(s) how you addressed their findings (if any) and ask whether
 they accept it.
 
-When iteration is required, re-enter Independent Review + Own Pass → Synthesis. If rounds aren't
+When iteration is required, the reviewer's objections are themselves findings: re-enter Synthesis
+to decide and apply them, then converge again. Re-dispatch Independent Review + Own Pass only when
+the artifact has moved far enough that nobody has read what you now have. If rounds aren't
 converging, abandon the Independent Review session, prime a fresh one for a new set of eyes, and
 consider running Self-Check again — flagging the difficulty to the engineer either way. "This is a
 fool's errand" and "this is improperly scoped" are acceptable outcomes after genuine effort.
