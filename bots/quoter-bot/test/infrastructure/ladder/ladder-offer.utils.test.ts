@@ -404,6 +404,7 @@ describe('buildLadderTree', () => {
     expect(() =>
       assertLadderProspectiveSpread({
         marketId,
+        maker,
         replacedGroupIds,
         book,
         prospective: prospective()
@@ -413,6 +414,7 @@ describe('buildLadderTree', () => {
     expect(() =>
       assertLadderProspectiveSpread({
         marketId,
+        maker,
         replacedGroupIds,
         book,
         prospective: prospective(retainedOpposingBookTicks({ marketId, replacedGroupIds, book }))

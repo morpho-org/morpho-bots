@@ -1,4 +1,4 @@
-import type { Hex } from 'viem'
+import type { Address, Hex } from 'viem'
 
 import type { LadderMakeService } from '../../application/ladder/ladder-quoter.service'
 import type {
@@ -100,8 +100,11 @@ export class MidnightLadderMakeService implements LadderMakeService {
   private queue = Promise.resolve()
   private readonly confirmedCanceledGroups = new Set<Hex>()
 
-  /** Creates one mutation queue. @param transport - Protocol, book, and ownership transport. */
-  constructor(private readonly transport: LadderOfferTransport) {}
+  /** Creates one mutation queue. @param transport - Protocol, book, and ownership transport. @param maker - Configured maker whose offers the spread guard treats as own. */
+  constructor(
+    private readonly transport: LadderOfferTransport,
+    private readonly maker: Address
+  ) {}
 
   /** Reads active quote state. @param marketId - Selected market. @returns Reconstructed quote or no active quote. */
   readActive(marketId: Hex) {
@@ -152,6 +155,7 @@ export class MidnightLadderMakeService implements LadderMakeService {
       if (publication && book) {
         assertLadderProspectiveSpread({
           marketId: parameters.marketId,
+          maker: this.maker,
           replacedGroupIds: spreadReplacedGroupIds,
           book,
           prospective: publication.prospective

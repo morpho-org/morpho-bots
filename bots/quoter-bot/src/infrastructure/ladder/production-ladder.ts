@@ -549,6 +549,7 @@ export const createProductionLadderAdapters = (
           return {
             groupId: offer.groupId,
             marketId: offer.marketId,
+            maker,
             buy: true,
             tick: offer.tick,
             overlapOwner: 'bootstrap-buy' as const
@@ -568,6 +569,7 @@ export const createProductionLadderAdapters = (
         return {
           groupId: offer.groupId,
           marketId: offer.marketId,
+          maker,
           buy: true,
           tick: conservativeTick,
           overlapOwner: 'bootstrap-buy' as const
@@ -663,6 +665,7 @@ export const createProductionLadderAdapters = (
     const prepared = await prepareUnsignedPublication(parameters.desired, observed)
     assertLadderProspectiveSpread({
       marketId: parameters.marketId,
+      maker,
       replacedGroupIds: observed.replacedGroupIds,
       book: observed.book,
       prospective: ownedLadderProspectiveOffers(prepared.bookOffers)
@@ -877,7 +880,7 @@ export const createProductionLadderAdapters = (
   return {
     positions,
     rates,
-    make: Object.assign(new MidnightLadderMakeService(transport), { cleanupRemovedMarkets }),
+    make: Object.assign(new MidnightLadderMakeService(transport, maker), { cleanupRemovedMarkets }),
     validateReconcile
   }
 }

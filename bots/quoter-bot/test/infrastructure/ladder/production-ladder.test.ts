@@ -340,40 +340,43 @@ describe('createProductionLadderAdapters', () => {
 describe('publishLadderPublication', () => {
   test('retains the durable Setter reservation when publication receipt confirmation times out', async () => {
     const retained = new Set<Hex>()
-    const service = new MidnightLadderMakeService({
-      readActive: async () => undefined,
-      readActiveState: async () => ({ consumption: [] }),
-      listOwnedGroups: async () => [],
-      readGroupConsumed: async () => 0n,
-      listActiveGroupIds: async () => [],
-      listBookOffers: async () => [],
-      preparePublication: async () => ({
-        groupIds: [groupId],
-        groups: [{ groupId, side: 'lower', rungIndexes: [0] }],
-        bookClearedRungs: { lower: 0, higher: 0 },
-        bookObservationId: ':',
-        prospective: [],
-        publish: () =>
-          publishLadderPublication({
-            approve: async () => ({ operation: 'ratify', txHash: approvalHash }),
-            validate: async () => {},
-            sendPublication: async () => ({ operation: 'publish', txHash: publicationHash }),
-            confirmPublication: async () => {
-              throw new Error('receipt timeout')
-            }
-          })
-      }),
-      reservePublication: async publication => {
-        for (const group of publication.groups) retained.add(group.groupId)
+    const service = new MidnightLadderMakeService(
+      {
+        readActive: async () => undefined,
+        readActiveState: async () => ({ consumption: [] }),
+        listOwnedGroups: async () => [],
+        readGroupConsumed: async () => 0n,
+        listActiveGroupIds: async () => [],
+        listBookOffers: async () => [],
+        preparePublication: async () => ({
+          groupIds: [groupId],
+          groups: [{ groupId, side: 'lower', rungIndexes: [0] }],
+          bookClearedRungs: { lower: 0, higher: 0 },
+          bookObservationId: ':',
+          prospective: [],
+          publish: () =>
+            publishLadderPublication({
+              approve: async () => ({ operation: 'ratify', txHash: approvalHash }),
+              validate: async () => {},
+              sendPublication: async () => ({ operation: 'publish', txHash: publicationHash }),
+              confirmPublication: async () => {
+                throw new Error('receipt timeout')
+              }
+            })
+        }),
+        reservePublication: async publication => {
+          for (const group of publication.groups) retained.add(group.groupId)
+        },
+        confirmPublication: async () => {},
+        releasePublication: async groupIds => {
+          for (const id of groupIds) retained.delete(id)
+        },
+        invalidate: async () => {},
+        invalidateBatch: async () => {},
+        forgetGroups: async () => {}
       },
-      confirmPublication: async () => {},
-      releasePublication: async groupIds => {
-        for (const id of groupIds) retained.delete(id)
-      },
-      invalidate: async () => {},
-      invalidateBatch: async () => {},
-      forgetGroups: async () => {}
-    })
+      maker
+    )
 
     await expect(
       service.reconcile({ marketId, desired: quote, reason: 'recenter' })
@@ -386,40 +389,43 @@ describe('publishLadderPublication', () => {
 
   test('retains the durable Setter reservation when publication submission fails', async () => {
     const retained = new Set<Hex>()
-    const service = new MidnightLadderMakeService({
-      readActive: async () => undefined,
-      readActiveState: async () => ({ consumption: [] }),
-      listOwnedGroups: async () => [],
-      readGroupConsumed: async () => 0n,
-      listActiveGroupIds: async () => [],
-      listBookOffers: async () => [],
-      preparePublication: async () => ({
-        groupIds: [groupId],
-        groups: [{ groupId, side: 'lower', rungIndexes: [0] }],
-        bookClearedRungs: { lower: 0, higher: 0 },
-        bookObservationId: ':',
-        prospective: [],
-        publish: () =>
-          publishLadderPublication({
-            approve: async () => ({ operation: 'ratify', txHash: approvalHash }),
-            validate: async () => {},
-            sendPublication: async () => {
-              throw new Error('send failed')
-            },
-            confirmPublication: async () => {}
-          })
-      }),
-      reservePublication: async publication => {
-        for (const group of publication.groups) retained.add(group.groupId)
+    const service = new MidnightLadderMakeService(
+      {
+        readActive: async () => undefined,
+        readActiveState: async () => ({ consumption: [] }),
+        listOwnedGroups: async () => [],
+        readGroupConsumed: async () => 0n,
+        listActiveGroupIds: async () => [],
+        listBookOffers: async () => [],
+        preparePublication: async () => ({
+          groupIds: [groupId],
+          groups: [{ groupId, side: 'lower', rungIndexes: [0] }],
+          bookClearedRungs: { lower: 0, higher: 0 },
+          bookObservationId: ':',
+          prospective: [],
+          publish: () =>
+            publishLadderPublication({
+              approve: async () => ({ operation: 'ratify', txHash: approvalHash }),
+              validate: async () => {},
+              sendPublication: async () => {
+                throw new Error('send failed')
+              },
+              confirmPublication: async () => {}
+            })
+        }),
+        reservePublication: async publication => {
+          for (const group of publication.groups) retained.add(group.groupId)
+        },
+        confirmPublication: async () => {},
+        releasePublication: async groupIds => {
+          for (const id of groupIds) retained.delete(id)
+        },
+        invalidate: async () => {},
+        invalidateBatch: async () => {},
+        forgetGroups: async () => {}
       },
-      confirmPublication: async () => {},
-      releasePublication: async groupIds => {
-        for (const id of groupIds) retained.delete(id)
-      },
-      invalidate: async () => {},
-      invalidateBatch: async () => {},
-      forgetGroups: async () => {}
-    })
+      maker
+    )
 
     await expect(
       service.reconcile({ marketId, desired: quote, reason: 'recenter' })
