@@ -1,6 +1,6 @@
 ---
 name: superintend
-description: Use before presenting a plan or TIB, before implementing a ticket of unknown provenance, after finishing an implementation, and when responding to PR review comments. Runs the satisficing self-check, dispatches independent reviewers in the background, and synthesizes their findings into incorporate / drop / defer decisions.
+description: Use before starting a task, before presenting a plan or TIB, after finishing an implementation, and when responding to PR review comments. Defines the superintendent loop for planning and code quality assurance.
 version: 1.0.0
 author: Morpho
 license: Apache-2.0
@@ -48,18 +48,13 @@ the shape of the thing implies.
 - **Decide, per finding: incorporate, drop, or defer as a Linear ticket.** State the call and the
   reason. A dropped finding is a decision, not an oversight, and reads as one only if you say why.
 
-**Convergence.** Tell the reviewer(s) how you addressed their findings and ask whether they
-accept it. Not a second cold read — a reply. A reviewer re-reading a changed artifact without
-knowing what you did with round one just re-derives its own findings, and you learn nothing about
-whether your resolution held.
+**Convergence.** Tell the reviewer(s) how you addressed their findings (if any) and ask whether
+they accept it.
 
-A single round where the reviewer has nothing further _is_ convergence. The repetition exists for
-genuine disagreement, not to manufacture a second round on a one-line fix. Where it does repeat, it
-re-enters Independent Review + Own Pass → Synthesis, and it needs an exit: if the rounds stop
-converging, abandon that session and prime a fresh one for a new set of eyes, and consider running
-Self-Check again — flagging the difficulty to the engineer either way. "This is a fool's errand"
-and "this is improperly scoped" are acceptable outcomes **after** a genuine effort, not instead of
-one.
+When iteration is required, re-enter Independent Review + Own Pass → Synthesis. If rounds aren't
+converging, abandon the Independent Review session, prime a fresh one for a new set of eyes, and
+consider running Self-Check again — flagging the difficulty to the engineer either way. "This is a
+fool's errand" and "this is improperly scoped" are acceptable outcomes after genuine effort.
 
 ## Parameterization A — TIBs
 
@@ -68,11 +63,10 @@ one.
 The bar is high: a TIB is a persistent record of intent written _before_ implementation, so a
 framing error here is expensive later.
 
-**Self-Check runs first, against the request itself.** Do it as soon as you have fielded the ask or
-read the ticket — before the draft exists, not merely before the reviewers are dispatched. Its
-object is the framing you were handed, and a framing you accept here is one you will spend the rest
-of the TIB defending. Then think the problem through and get a draft together. Only once there is a
-draft do you dispatch these two agents in parallel:
+**Self-Check runs first, against the request itself.** Do it as soon as you have fielded the ask
+or read the ticket; a framing you accept here is one you will spend the rest of the TIB defending.
+Then think the problem through and get a draft together. Once you're confident in your draft,
+dispatch these two agents in parallel:
 
 **Clean-room agent** — a fresh subagent (never `fork`; a fork inherits your context, which is the
 whole thing you are trying to avoid). Omit the model override so it inherits the orchestrating
