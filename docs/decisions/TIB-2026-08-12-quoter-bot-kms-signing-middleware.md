@@ -1,11 +1,12 @@
 # TIB-2026-08-12: Quoter-bot KMS signing policy middleware
 
-| Field      | Value           |
-| ---------- | --------------- |
-| **Status** | Proposed        |
-| **Date**   | 2026-08-12      |
-| **Author** | @julien         |
-| **Scope**  | Bot: quoter-bot |
+| Field             | Value                                           |
+| ----------------- | ----------------------------------------------- |
+| **Status**        | Superseded                                      |
+| **Date**          | 2026-08-12                                      |
+| **Author**        | @julien                                         |
+| **Scope**         | Bot: quoter-bot                                 |
+| **Superseded by** | TIB-2026-09-10-quoter-operator-maker-kms-signer |
 
 ---
 
