@@ -40,7 +40,10 @@ is active. KMS prevents key export. Runtime checks do not stop an attacker who c
 - Keep `MAKER_ADDRESS` as each offer's maker and each Midnight call's `onBehalf` account.
 - Derive the signer from `AWS_KMS_KEY_ID` and `AWS_REGION`. Do not add a signer address setting.
 - Pass the signer to `EcrecoverRatifierUtils.ratify` while each offer keeps the maker.
-- For Setter, send `setIsRootRatified(MAKER_ADDRESS, root, true)` from the signer.
+- Require the canonical Ecrecover ratifier in AWS mode. Setter roots remain valid after signer
+  deauthorization, so delegated AWS signing must not use Setter.
+- In private-key and keystore modes, Setter may send
+  `setIsRootRatified(MAKER_ADDRESS, root, true)` from the maker.
 - Send publication and `setConsumed(..., onBehalf = MAKER_ADDRESS)` from the signer.
 
 Keep the existing KMS key and signature checks. AWS mode requires different maker and signer
@@ -61,15 +64,20 @@ Stop setup unless:
 - The maker has the required assets, allowances, and positions.
 - The maker holds emergency gas, and the signer holds operating gas.
 
+Setup does not define one global position-health rule. Bootstrap and ladder must keep their
+strategy-specific position and capacity reads as write gates.
+
 ## Rotate, respond, and cut over safely
 
 - **Rotate:** Stop the bot. Disable and deauthorize the old signer. Authorize a new KMS signer, then
   restart after setup passes. Never reauthorize a retired signer.
 - **Respond:** Disable KMS. Revoke the signer and any unknown delegates with the maker. Reconcile
   positions, allowances, offers, and pending transactions before restart.
-- **Cut over:** Use the old KMS maker to cancel offers, settle pending transactions, remove approvals
-  and delegates, unwind positions, and drain assets. Then remove `kms:Sign` access and retire the old
-  address. Unknown signatures may exist, so never reuse it. Start the new pair with low limits.
+- **Cut over:** Before deploying code that requires distinct AWS maker and signer addresses, use the
+  old build and old KMS maker to cancel offers, settle pending transactions, remove approvals and
+  delegates, unwind positions, and drain assets. Verify cleanup, then remove `kms:Sign` access and
+  retire the old address. Unknown signatures may exist, so never reuse it. Start the new pair with
+  low limits.
   Before raising them, deauthorize the new signer, confirm that setup and writes fail, then
   reauthorize it.
 
