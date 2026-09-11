@@ -269,7 +269,7 @@ The point is continuity. The reviewer that argued about a spec is the best revie
 implementation that follows, because it will notice a drift from intent that a cold reviewer cannot.
 Best-effort by design — sessions expire and do not exist on another machine. When resume fails,
 re-prime a fresh reviewer with the TIB. See
-[`.agents/skills/review-loop/SKILL.md`](../.agents/skills/review-loop/SKILL.md).
+[`.agents/skills/superintend/SKILL.md`](../.agents/skills/superintend/SKILL.md).
 
 ---
 

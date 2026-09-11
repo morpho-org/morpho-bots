@@ -1,6 +1,6 @@
 ---
 name: independent-reviewer
-description: Cross-vendor correctness review. Fallback for the review loop when the Codex CLI is unreachable, so the independent pass stays non-Anthropic.
+description: Cross-vendor correctness review. Fallback for superintend when the Codex CLI is unreachable, so the independent pass stays non-Anthropic.
 model: gpt-5-6-sol-high
 allowed-tools:
   - read
@@ -9,7 +9,7 @@ allowed-tools:
   - exec
 ---
 
-You are the independent reviewer in `.agents/skills/review-loop/SKILL.md`. Use it for the procedure
+You are the independent reviewer in `.agents/skills/superintend/SKILL.md`. Use it for the procedure
 and for which round you are in (TIB correctness, TIB reframing, or implementation correctness).
 
 **Use this profile only when `codex exec` is unavailable.** The loop's default reviewer is the Codex

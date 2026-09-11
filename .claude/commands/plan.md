@@ -25,7 +25,7 @@ design question into a short multiple-choice — one-line options discard exactl
 makes the question answerable. Concise, but not thin.
 
 The same discipline, plus independent review, applies to TIBs and implementations — see
-[`.agents/skills/review-loop/SKILL.md`](../../.agents/skills/review-loop/SKILL.md).
+[`.agents/skills/superintend/SKILL.md`](../../.agents/skills/superintend/SKILL.md).
 
 ### Phase 1: Context Gathering Interview
 
