@@ -1,6 +1,6 @@
 /** Sanitized signer-construction or remote-signing failure. */
-export class MakerAccountError extends Error {
-  readonly name = 'MakerAccountError'
+export class SignerAccountError extends Error {
+  readonly name = 'SignerAccountError'
 
   /**
    * Creates a sanitized account failure from an allowlisted operation only.
@@ -8,12 +8,12 @@ export class MakerAccountError extends Error {
    */
   constructor(
     readonly operation:
-      | 'maker-address'
+      | 'signer-address'
       | 'keystore-read'
       | 'keystore-decrypt'
       | 'kms-public-key'
       | 'kms-sign'
   ) {
-    super(`Maker account ${operation} failed`)
+    super(`Signer account ${operation} failed`)
   }
 }

@@ -21,7 +21,7 @@ export type ConfigurationLoadOptions = {
   configPath?: string
   cwd?: string
   fileSystem?: ConfigurationFileSystem
-  /** Selects address-only configuration and suppresses maker signing-secret loading. */
+  /** Selects address-only configuration and suppresses signer-secret loading. */
   readOnly?: boolean
   /** Reads a keystore password without echoing it when interactive storage is selected. */
   readPassword?: () => Promise<string>
@@ -65,7 +65,6 @@ const environmentKeys = [
   'KEYSTORE_INTERACTIVE',
   'AWS_KMS_KEY_ID',
   'AWS_REGION',
-  'QUOTER_SIGNER_LAMBDA_ARN',
   'MAKER_ADDRESS',
   'MIDNIGHT_ADDRESS',
   'LOAN_ASSET_ADDRESS',
@@ -73,6 +72,16 @@ const environmentKeys = [
   'MARKET_IDS',
   'REFERENCE_MARKET_ID',
   'NATIVE_RESERVE_WEI',
+  'SIGNER_NATIVE_RESERVE_WEI',
+  'MAX_FEE_GWEI',
+  'PRIORITY_FEE_GWEI',
+  'MAX_TRANSACTION_SPEND_WEI',
+  'MAX_PUBLICATION_GAS',
+  'MAX_PUBLICATION_DATA_BYTES',
+  'MAX_CANCELLATION_GAS',
+  'MAX_BATCH_CANCELLATION_GAS',
+  'MAX_BATCH_CANCELLATION_DATA_BYTES',
+  'MAX_RATIFICATION_GAS',
   'MORPHO_API_BASE_URL',
   'ROUTER_API_BASE_URL',
   'V0_OFFER_GROUP_IDS',
@@ -91,13 +100,26 @@ const yamlKeys = {
     'keystorePassword',
     'keystoreInteractive',
     'awsKmsKeyId',
-    'awsRegion',
-    'quoterSignerLambdaArn'
+    'awsRegion'
   ],
   contracts: ['midnightAddress', 'loanAssetAddress', 'ratifierAddress'],
   apis: ['morphoBaseUrl', 'routerBaseUrl'],
   markets: ['allowlist', 'referenceMarketId', 'v0OfferGroupIds'],
-  setup: ['nativeReserveWei', 'requestTimeoutMs', 'transactionReceiptTimeoutMs'],
+  setup: [
+    'nativeReserveWei',
+    'signerNativeReserveWei',
+    'maxFeeGwei',
+    'priorityFeeGwei',
+    'maxTransactionSpendWei',
+    'maxPublicationGas',
+    'maxPublicationDataBytes',
+    'maxCancellationGas',
+    'maxBatchCancellationGas',
+    'maxBatchCancellationDataBytes',
+    'maxRatificationGas',
+    'requestTimeoutMs',
+    'transactionReceiptTimeoutMs'
+  ],
   bootstrap: [
     'marketId',
     'targetRate',
@@ -168,6 +190,16 @@ const rejectUnsafeYamlNodes = (document: ReturnType<typeof parseDocument>) => {
 const yamlIntegerEnvironmentKeys = new Set([
   'CHAIN_ID',
   'NATIVE_RESERVE_WEI',
+  'SIGNER_NATIVE_RESERVE_WEI',
+  'MAX_FEE_GWEI',
+  'PRIORITY_FEE_GWEI',
+  'MAX_TRANSACTION_SPEND_WEI',
+  'MAX_PUBLICATION_GAS',
+  'MAX_PUBLICATION_DATA_BYTES',
+  'MAX_CANCELLATION_GAS',
+  'MAX_BATCH_CANCELLATION_GAS',
+  'MAX_BATCH_CANCELLATION_DATA_BYTES',
+  'MAX_RATIFICATION_GAS',
   'REQUEST_TIMEOUT_MS',
   'TRANSACTION_RECEIPT_TIMEOUT_MS'
 ])
@@ -236,8 +268,7 @@ const yamlSource = (input: unknown, readOnly: boolean): ConfigurationSource => {
           keystorePassword: 'KEYSTORE_PASSWORD',
           keystoreInteractive: 'KEYSTORE_INTERACTIVE',
           awsKmsKeyId: 'AWS_KMS_KEY_ID',
-          awsRegion: 'AWS_REGION',
-          quoterSignerLambdaArn: 'QUOTER_SIGNER_LAMBDA_ARN'
+          awsRegion: 'AWS_REGION'
         }
   )
   mapGroup('contracts', {
@@ -251,6 +282,16 @@ const yamlSource = (input: unknown, readOnly: boolean): ConfigurationSource => {
   })
   mapGroup('setup', {
     nativeReserveWei: 'NATIVE_RESERVE_WEI',
+    signerNativeReserveWei: 'SIGNER_NATIVE_RESERVE_WEI',
+    maxFeeGwei: 'MAX_FEE_GWEI',
+    priorityFeeGwei: 'PRIORITY_FEE_GWEI',
+    maxTransactionSpendWei: 'MAX_TRANSACTION_SPEND_WEI',
+    maxPublicationGas: 'MAX_PUBLICATION_GAS',
+    maxPublicationDataBytes: 'MAX_PUBLICATION_DATA_BYTES',
+    maxCancellationGas: 'MAX_CANCELLATION_GAS',
+    maxBatchCancellationGas: 'MAX_BATCH_CANCELLATION_GAS',
+    maxBatchCancellationDataBytes: 'MAX_BATCH_CANCELLATION_DATA_BYTES',
+    maxRatificationGas: 'MAX_RATIFICATION_GAS',
     requestTimeoutMs: 'REQUEST_TIMEOUT_MS',
     transactionReceiptTimeoutMs: 'TRANSACTION_RECEIPT_TIMEOUT_MS'
   })
@@ -356,7 +397,6 @@ const yamlEnvironmentPaths: Partial<
   KEYSTORE_INTERACTIVE: ['identity', 'keystoreInteractive'],
   AWS_KMS_KEY_ID: ['identity', 'awsKmsKeyId'],
   AWS_REGION: ['identity', 'awsRegion'],
-  QUOTER_SIGNER_LAMBDA_ARN: ['identity', 'quoterSignerLambdaArn'],
   MAKER_ADDRESS: ['identity', 'makerAddress'],
   MIDNIGHT_ADDRESS: ['contracts', 'midnightAddress'],
   LOAN_ASSET_ADDRESS: ['contracts', 'loanAssetAddress'],
@@ -364,6 +404,16 @@ const yamlEnvironmentPaths: Partial<
   MARKET_IDS: ['markets', 'allowlist'],
   REFERENCE_MARKET_ID: ['markets', 'referenceMarketId'],
   NATIVE_RESERVE_WEI: ['setup', 'nativeReserveWei'],
+  SIGNER_NATIVE_RESERVE_WEI: ['setup', 'signerNativeReserveWei'],
+  MAX_FEE_GWEI: ['setup', 'maxFeeGwei'],
+  PRIORITY_FEE_GWEI: ['setup', 'priorityFeeGwei'],
+  MAX_TRANSACTION_SPEND_WEI: ['setup', 'maxTransactionSpendWei'],
+  MAX_PUBLICATION_GAS: ['setup', 'maxPublicationGas'],
+  MAX_PUBLICATION_DATA_BYTES: ['setup', 'maxPublicationDataBytes'],
+  MAX_CANCELLATION_GAS: ['setup', 'maxCancellationGas'],
+  MAX_BATCH_CANCELLATION_GAS: ['setup', 'maxBatchCancellationGas'],
+  MAX_BATCH_CANCELLATION_DATA_BYTES: ['setup', 'maxBatchCancellationDataBytes'],
+  MAX_RATIFICATION_GAS: ['setup', 'maxRatificationGas'],
   MORPHO_API_BASE_URL: ['apis', 'morphoBaseUrl'],
   ROUTER_API_BASE_URL: ['apis', 'routerBaseUrl'],
   V0_OFFER_GROUP_IDS: ['markets', 'v0OfferGroupIds'],
@@ -379,7 +429,6 @@ type SignerEnvironmentKey =
   | 'KEYSTORE_INTERACTIVE'
   | 'AWS_KMS_KEY_ID'
   | 'AWS_REGION'
-  | 'QUOTER_SIGNER_LAMBDA_ARN'
 
 const signerEnvironmentKeys = new Set<SignerEnvironmentKey>([
   'MAKER_PRIVATE_KEY',
@@ -388,8 +437,7 @@ const signerEnvironmentKeys = new Set<SignerEnvironmentKey>([
   'KEYSTORE_PASSWORD',
   'KEYSTORE_INTERACTIVE',
   'AWS_KMS_KEY_ID',
-  'AWS_REGION',
-  'QUOTER_SIGNER_LAMBDA_ARN'
+  'AWS_REGION'
 ])
 
 const hasSignerEnvironmentOverride = (environment: Environment, key: SignerEnvironmentKey) => {
@@ -404,15 +452,13 @@ const hasSignerEnvironmentOverride = (environment: Environment, key: SignerEnvir
 const signerMethodSelectors: readonly (readonly [SignerEnvironmentKey, string])[] = [
   ['MAKER_PRIVATE_KEY', 'private-key'],
   ['KEYSTORE_PATH', 'keystore'],
-  ['AWS_KMS_KEY_ID', 'aws'],
-  ['QUOTER_SIGNER_LAMBDA_ARN', 'middleware']
+  ['AWS_KMS_KEY_ID', 'aws']
 ]
 
 const retainedIdentityKeysByMethod: Readonly<Record<string, readonly string[]>> = {
   'private-key': ['makerAddress', 'makerPrivateKey'],
   keystore: ['makerAddress', 'keystorePath', 'keystorePassword', 'keystoreInteractive'],
-  aws: ['makerAddress', 'awsKmsKeyId', 'awsRegion'],
-  middleware: ['makerAddress', 'quoterSignerLambdaArn']
+  aws: ['makerAddress', 'awsKmsKeyId', 'awsRegion']
 }
 
 const removeOverriddenYamlValues = (input: unknown, environment: Environment) => {

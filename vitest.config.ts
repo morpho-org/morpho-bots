@@ -20,8 +20,7 @@ export default defineConfig({
       'bots/vault-v2-reallocation',
       'bots/midnight-liquidation',
       'bots/midnight-crossed-books',
-      'bots/quoter-bot',
-      'services/quoter-signer'
+      'bots/quoter-bot'
     ]
   }
 })

@@ -14,7 +14,7 @@ import {
   chainCheck,
   hasOnlyTransientProviderFailures,
   providerFailure,
-  readOnlyMakerCheck,
+  readOnlySignerCheck,
   sameAddress,
   setupResult,
   unsafeOffersStatus
@@ -62,8 +62,11 @@ export type SetupCheck = {
   /** Stable identifier for the setup surface being checked. */
   name:
     | 'chain'
-    | 'maker'
+    | 'signer'
     | 'native-balance'
+    | 'signer-native-balance'
+    | 'signer-authorization'
+    | 'signer-nonce'
     | 'loan-allowance'
     | 'ratifier'
     | 'books'
@@ -123,12 +126,16 @@ export type SetupCheckMonitorReport =
 export type SetupCheckConfig = {
   /** Configured EVM chain identifier, narrowed to a chain the bot supports. */
   chainId: SupportedChainId
-  /** Expected maker derived from the configured signing key. */
+  /** Funded principal retained in every offer and Midnight `onBehalf` value. */
   maker: Address
+  /** Selected signer mode, used to enforce local equality or delegated AWS separation. */
+  signerMode: 'read-only' | 'private-key' | 'keystore' | 'aws'
   /** Expected Midnight singleton address. */
   midnight: Address
   /** Minimum native-token balance retained for transaction fees. */
   nativeReserve: bigint
+  /** AWS signer's operating-gas floor. Omitted when signer and maker are the same account. */
+  signerNativeReserve?: bigint
   /** ERC-20 asset lent by every configured market. */
   loanAsset: Address
   /** Canonical SDK Ecrecover or Setter ratifier expected to authorize the maker. */
@@ -165,8 +172,11 @@ export interface SetupStateService {
   getReferenceChainId(): Promise<number>
   /** Reads deployed runtime bytecode. @param address - Contract address to inspect. @returns Runtime bytecode, if deployed. */
   getCode(address: Address): Promise<Hex | undefined>
-  /** Derives the configured maker locally. @returns The maker derived from the configured signing key, or `undefined` when no key was loaded. */
-  getDerivedMaker(): Promise<Address | undefined>
+  /**
+   * Derives the configured signer locally or through KMS public-key discovery.
+   * @returns The derived signer, or `undefined` in read-only mode.
+   */
+  getDerivedSigner(): Promise<Address | undefined>
   /** Reads an account native-token balance. @param address - Account to inspect. @returns Its native-token balance. */
   getNativeBalance(address: Address): Promise<bigint>
   /**
@@ -197,6 +207,19 @@ export interface SetupStateService {
     surfaceMatches: boolean
     authorized: boolean
   }>
+  /**
+   * Reads whether the maker authorized a delegate through Midnight.
+   * @param maker - Funded principal granting authority.
+   * @param delegate - Address whose authority is checked.
+   * @returns Whether the delegate is authorized for the maker.
+   */
+  getAuthorization(maker: Address, delegate: Address): Promise<boolean>
+  /**
+   * Reads latest and pending transaction counts for restart reconciliation.
+   * @param address - Signer address whose nonce state is read.
+   * @returns Mined and pending transaction counts.
+   */
+  getTransactionCounts(address: Address): Promise<{ latest: number; pending: number }>
   /** Cross-checks one Midnight market. @param id - Midnight market identifier. @returns Cross-checked API and on-chain market facts. */
   getBook(id: Hex): Promise<BookSetup>
   /** Checks historical reference-market readability. @returns Archive-readability and exact reference-market identity facts. */
@@ -258,8 +281,9 @@ export class SetupCheckService {
    * overlap. Explicitly transient provider-only failures receive three total
    * read attempts within a cycle, and an unready report built only from them is emitted and then
    * retried on the next interval for up to ten consecutive cycles.
-   * Invariant and mixed failures halt immediately. No remediation, signing, transaction submission,
-   * or cleanup write is performed.
+   * Invariant and mixed failures halt immediately. The signer nonce is intentionally omitted: a
+   * pending transaction can be owned by the concurrently running executor. No remediation,
+   * signing, transaction submission, or cleanup write is performed.
    */
   async runContinuously(parameters: {
     signal: AbortSignal
@@ -277,7 +301,7 @@ export class SetupCheckService {
 
     while (!parameters.signal.aborted) {
       try {
-        const report = await this.checkWithTransientRetries(parameters.signal)
+        const report = await this.checkWithTransientRetries(parameters.signal, false)
         if (parameters.signal.aborted) break
 
         const transientOnly = hasOnlyTransientProviderFailures(report)
@@ -303,12 +327,12 @@ export class SetupCheckService {
       : { status: 'stopped', reason: 'signal', cycles }
   }
 
-  private async checkWithTransientRetries(signal?: AbortSignal) {
-    let report = await this.check()
+  private async checkWithTransientRetries(signal?: AbortSignal, checkSignerNonce = true) {
+    let report = await this.checkWithSignerNonce(checkSignerNonce)
 
     for (let attempt = 1; attempt < SETUP_CHECK_TRANSIENT_ATTEMPTS; attempt += 1) {
       if (signal?.aborted === true || !hasOnlyTransientProviderFailures(report)) break
-      report = await this.check()
+      report = await this.checkWithSignerNonce(checkSignerNonce)
     }
 
     return report
@@ -317,17 +341,22 @@ export class SetupCheckService {
   /**
    * Evaluates all setup surfaces while isolating provider failures into sanitized report entries.
    * @returns A complete report in stable check order; provider rejection does not short-circuit peers.
-   * @remarks Read-only. All independent reads, including per-book reads, start before the outer
-   * `Promise.all` is awaited so latency is bounded by the slowest check rather than their sum.
+   * @remarks Read-only. This one-time check includes signer-nonce reconciliation. All independent
+   * reads, including per-book reads, start before the outer `Promise.all` is awaited so latency is
+   * bounded by the slowest check rather than their sum.
    */
   async check(): Promise<SetupCheckReport> {
+    return this.checkWithSignerNonce(true)
+  }
+
+  private async checkWithSignerNonce(checkSignerNonce: boolean): Promise<SetupCheckReport> {
     const bookReads = this.config.marketIds.map(requestedId => ({
       requestedId,
       response: capture(() => this.state.getBook(requestedId))
     }))
-    const derivedMakerRead = this.readOnly
+    const derivedSignerRead = this.readOnly
       ? Promise.resolve(undefined)
-      : captureSigner(() => this.state.getDerivedMaker())
+      : captureSigner(() => this.state.getDerivedSigner())
     const referenceRead = this.referenceRequired
       ? capture(() => this.state.checkReference(), 'archive-rpc')
       : Promise.resolve(undefined)
@@ -339,7 +368,7 @@ export class SetupCheckService {
       capture(() => this.state.getChainId()),
       referenceChainIdRead,
       capture(() => this.state.getCode(this.config.midnight)),
-      derivedMakerRead,
+      derivedSignerRead,
       capture(() => this.state.getNativeBalance(this.config.maker)),
       capture(() => this.state.getLoanAllowance(this.config.maker, this.config.loanAsset)),
       capture(() => this.state.getRatifier(this.config.maker, this.config.ratifier)),
@@ -352,7 +381,7 @@ export class SetupCheckService {
       chainId,
       referenceChainId,
       midnightCode,
-      derivedMaker,
+      derivedSigner,
       nativeBalance,
       allowance,
       ratifier,
@@ -362,30 +391,127 @@ export class SetupCheckService {
       positionHealth
     ] = reads
 
-    const makerRequirement = 'private key derives configured maker'
-    const makerMatches =
-      derivedMaker !== undefined &&
-      derivedMaker.ok &&
-      derivedMaker.value !== undefined &&
-      sameAddress(derivedMaker.value, this.config.maker)
-    const makerCheck =
-      derivedMaker === undefined
-        ? readOnlyMakerCheck()
-        : !derivedMaker.ok
-          ? 'operation' in derivedMaker.error
+    const signerRequirement =
+      this.config.signerMode === 'aws'
+        ? 'AWS KMS signer differs from configured maker'
+        : 'local signer equals configured maker'
+    const signerMatches =
+      derivedSigner !== undefined &&
+      derivedSigner.ok &&
+      derivedSigner.value !== undefined &&
+      (this.config.signerMode === 'aws'
+        ? !sameAddress(derivedSigner.value, this.config.maker)
+        : sameAddress(derivedSigner.value, this.config.maker))
+    const signerCheck =
+      derivedSigner === undefined
+        ? readOnlySignerCheck()
+        : !derivedSigner.ok
+          ? 'operation' in derivedSigner.error
             ? {
-                name: 'maker' as const,
+                name: 'signer' as const,
                 status: 'failed' as const,
-                observed: derivedMaker.error,
-                required: makerRequirement
+                observed: derivedSigner.error,
+                required: signerRequirement
               }
-            : providerFailure('maker', derivedMaker.error, makerRequirement)
+            : providerFailure('signer', derivedSigner.error, signerRequirement)
           : setupResult(
-              'maker',
-              makerMatches,
-              { derived: derivedMaker.value !== undefined, matches: makerMatches },
-              makerRequirement
+              'signer',
+              signerMatches,
+              { derived: derivedSigner.value !== undefined, matches: signerMatches },
+              signerRequirement
             )
+    const signerAddress = derivedSigner?.ok ? derivedSigner.value : undefined
+    const signerReads =
+      signerAddress === undefined
+        ? undefined
+        : await Promise.all([
+            this.config.signerMode === 'aws'
+              ? capture(() => this.state.getNativeBalance(signerAddress))
+              : Promise.resolve(undefined),
+            this.config.signerMode === 'aws'
+              ? capture(() => this.state.getAuthorization(this.config.maker, signerAddress))
+              : Promise.resolve(undefined),
+            checkSignerNonce
+              ? capture(() => this.state.getTransactionCounts(signerAddress))
+              : Promise.resolve(undefined)
+          ])
+    const signerNative = signerReads?.[0]
+    const signerAuthorization = signerReads?.[1]
+    const signerNonce = signerReads?.[2]
+    const signerNativeCheck =
+      this.readOnly || this.config.signerMode !== 'aws'
+        ? {
+            name: 'signer-native-balance' as const,
+            status: 'not-required' as const,
+            observed: { reason: 'signer and maker are not separate' },
+            required: 'only for AWS signing'
+          }
+        : signerNative === undefined
+          ? setupResult(
+              'signer-native-balance',
+              false,
+              { derived: false },
+              this.config.signerNativeReserve
+            )
+          : !signerNative.ok
+            ? providerFailure(
+                'signer-native-balance',
+                signerNative.error,
+                this.config.signerNativeReserve
+              )
+            : setupResult(
+                'signer-native-balance',
+                signerNative.value >= (this.config.signerNativeReserve ?? 0n),
+                signerNative.value,
+                this.config.signerNativeReserve,
+                `fund the AWS signer with native token to at least ${this.config.signerNativeReserve}`
+              )
+    const signerAuthorizationCheck =
+      this.readOnly || this.config.signerMode !== 'aws'
+        ? {
+            name: 'signer-authorization' as const,
+            status: 'not-required' as const,
+            observed: { reason: 'delegated authorization is not used' },
+            required: 'only for AWS signing'
+          }
+        : signerAuthorization === undefined
+          ? setupResult('signer-authorization', false, { derived: false }, true)
+          : !signerAuthorization.ok
+            ? providerFailure('signer-authorization', signerAuthorization.error, true)
+            : setupResult(
+                'signer-authorization',
+                signerAuthorization.value,
+                signerAuthorization.value,
+                true,
+                'authorize the AWS signer for the configured maker through Midnight'
+              )
+    const signerNonceCheck = this.readOnly
+      ? {
+          name: 'signer-nonce' as const,
+          status: 'not-required' as const,
+          observed: { reason: 'read-only mode does not send transactions' },
+          required: 'only for write mode'
+        }
+      : !checkSignerNonce
+        ? {
+            name: 'signer-nonce' as const,
+            status: 'not-required' as const,
+            observed: {
+              reason: 'continuous monitoring permits executor-owned pending transactions'
+            },
+            required: 'one-time startup check'
+          }
+        : signerNonce === undefined
+          ? setupResult('signer-nonce', false, { derived: false }, 'latest equals pending')
+          : !signerNonce.ok
+            ? providerFailure('signer-nonce', signerNonce.error, 'latest equals pending')
+            : setupResult(
+                'signer-nonce',
+                signerNonce.value.latest === signerNonce.value.pending,
+                signerNonce.value,
+                'latest equals pending',
+                'wait for or replace the pending signer transaction before restarting'
+              )
     const nativeCheck = !nativeBalance.ok
       ? providerFailure('native-balance', nativeBalance.error, this.config.nativeReserve)
       : setupResult(
@@ -482,8 +608,11 @@ export class SetupCheckService {
 
     const checks: SetupCheck[] = [
       chainCheck(this.config, chainId, midnightCode, referenceChainId),
-      makerCheck,
+      signerCheck,
       nativeCheck,
+      signerNativeCheck,
+      signerAuthorizationCheck,
+      signerNonceCheck,
       allowanceCheck,
       ratifierCheck,
       booksCheck(this.config, books),

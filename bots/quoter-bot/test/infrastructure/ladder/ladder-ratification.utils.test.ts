@@ -16,6 +16,7 @@ const loanToken: Address = '0x3333333333333333333333333333333333333333'
 const collateral: Address = '0x4444444444444444444444444444444444444444'
 const oracle: Address = '0x5555555555555555555555555555555555555555'
 const setterRatifier: Address = '0x800B5F12A61B8198a5a6EfD794Cac6699B294d63'
+const maker: Address = '0x1111111111111111111111111111111111111111'
 
 const baseEcrecoverRatifier: Address = '0xd6e70365C8E8DDa9a4ca662C07bbE663b017755E'
 const mainnetSetterRatifier: Address = '0xb72c416382c8A6399D0765CebfB032F040B00B3c'
@@ -78,7 +79,7 @@ describe('prepareLadderRatification', () => {
           liquidatorGate: zeroAddress
         },
         buy: true,
-        maker: account.address,
+        maker,
         tick: 100n,
         expiry: 2_000n,
         ratifier: setterRatifier,
@@ -90,6 +91,7 @@ describe('prepareLadderRatification', () => {
     const prepared = await prepareLadderRatification({
       type: 'setter',
       tree,
+      maker,
       client,
       account
     })
@@ -98,7 +100,7 @@ describe('prepareLadderRatification', () => {
     expect(prepared.approval?.to).toBe(setterRatifier)
     expect(decodeFunctionData({ abi: setterRatifierAbi, data: prepared.approval!.data })).toEqual({
       functionName: 'setIsRootRatified',
-      args: [account.address, tree.root, true]
+      args: [maker, tree.root, true]
     })
     expect(SetterRatifierUtils.decodeRatifierData(prepared.items[0]!.ratifierData).root).toBe(
       tree.root

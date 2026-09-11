@@ -70,7 +70,7 @@ args:
 # string, exactly like quoter-bot.example.yaml does. Helm parses unquoted numbers as floats,
 # so an unquoted 10000000000000000 can re-render as 1e+16, which the bot rejects at startup.
 #
-# Prefer keeping the maker signing secret out of this block: leave `identity.makerPrivateKey`
+# Prefer keeping the signing secret out of this block: leave `identity.makerPrivateKey`
 # unset here and provide MAKER_PRIVATE_KEY (or the keystore/AWS alternatives) through
 # `envFrom` below — every environment variable overrides its YAML counterpart. Alternatively
 # set `existingConfigSecret` to manage the complete file outside Helm.
@@ -94,6 +94,16 @@ config: {}
 #     referenceMarketId: '0x7777777777777777777777777777777777777777777777777777777777777777'
 #   setup:
 #     nativeReserveWei: '10000000000000000'
+#     signerNativeReserveWei: ''
+#     maxFeeGwei: '100'
+#     priorityFeeGwei: '1'
+#     maxTransactionSpendWei: '100000000000000000'
+#     maxPublicationGas: '5000000'
+#     maxPublicationDataBytes: '65536'
+#     maxCancellationGas: '100000'
+#     maxBatchCancellationGas: '1000000'
+#     maxBatchCancellationDataBytes: '65536'
+#     maxRatificationGas: ''
 #   bootstrap: []
 #   ladder:
 #     - marketId: '0x5555555555555555555555555555555555555555555555555555555555555555'

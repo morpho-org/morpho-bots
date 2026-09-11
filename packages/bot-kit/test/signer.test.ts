@@ -1,14 +1,14 @@
 import type { Hex } from 'viem'
 
-import { parseTransaction } from 'viem'
+import { InvalidInputRpcError, keccak256, parseTransaction } from 'viem'
+import { privateKeyToAccount } from 'viem/accounts'
 import { base } from 'viem/chains'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { Policy } from '../src/policy'
 
 import { EXECUTOR_SELECTOR, PolicyViolationError } from '../src/policy'
-import { createSigner } from '../src/signer'
-import { TxSendError } from '../src/tx-send.error'
+import { createAccountSigner, createSigner } from '../src/signer'
 
 // The `eth_estimateGas` these tests mock (0x5208). The signer returns it so the queue can price its
 // own bump ladder against the spend ceiling.
@@ -37,16 +37,28 @@ const TXHASH: Hex = `0x${'ab'.repeat(32)}`
 const PROBE: Hex = `0x${'cd'.repeat(32)}`
 
 type RpcBody = { id: number; method: string; params?: unknown[] }
-type RpcResult = unknown
+type RpcFailure = { rpcError: { code: number; message: string } }
+
+const rpcFailure = (code: number, message: string): RpcFailure => ({
+  rpcError: { code, message }
+})
+
+const isRpcFailure = (value: unknown): value is RpcFailure =>
+  typeof value === 'object' && value !== null && 'rpcError' in value
+
+const signedTransactionHash = (body: RpcBody): Hex => keccak256(body.params?.[0] as Hex)
 
 // Canned JSON-RPC: maps method → result/function. Any unmocked method throws (surfaces a missing
 // stub).
-function mockRpc(results: Record<string, RpcResult>) {
+function mockRpc(results: Record<string, unknown>) {
   const handler = async (_url: unknown, init?: { body?: string }): Promise<Response> => {
     const body = JSON.parse(init?.body ?? '{}') as RpcBody
     if (!(body.method in results)) throw new Error(`unmocked RPC method ${body.method}`)
     const value = results[body.method]
     const result = typeof value === 'function' ? await value(body) : value
+    if (isRpcFailure(result)) {
+      return Response.json({ jsonrpc: '2.0', id: body.id, error: result.rpcError })
+    }
     return Response.json({ jsonrpc: '2.0', id: body.id, result })
   }
   vi.spyOn(globalThis, 'fetch').mockImplementation(handler as unknown as typeof fetch)
@@ -61,7 +73,7 @@ describe('createSigner', () => {
       eth_getTransactionCount: '0x5',
       eth_estimateGas: '0x5208',
       eth_getBlockByNumber: { baseFeePerGas: '0x7' },
-      eth_sendRawTransaction: TXHASH
+      eth_sendRawTransaction: signedTransactionHash
     })
     const { send } = createSigner(CONFIG)
     const result = await send({
@@ -70,7 +82,30 @@ describe('createSigner', () => {
       maxFeePerGas: 1_000_000_000n,
       maxPriorityFeePerGas: 1_000_000n
     })
-    expect(result).toEqual({ nonce: 5, txHash: TXHASH, gas: STUB_GAS })
+    expect(result).toMatchObject({ nonce: 5, txHash: expect.any(String), gas: STUB_GAS })
+    expect(result.broadcastUnknown).toBeUndefined()
+  })
+
+  it('uses a caller-provided local account through the same send path', async () => {
+    mockRpc({
+      eth_chainId: `0x${base.id.toString(16)}`,
+      eth_getTransactionCount: '0x5',
+      eth_estimateGas: '0x5208',
+      eth_getBlockByNumber: { baseFeePerGas: '0x7' },
+      eth_sendRawTransaction: signedTransactionHash
+    })
+    const account = privateKeyToAccount(KEY)
+    const signer = createAccountSigner({ ...CONFIG, account })
+
+    expect(signer.account.address).toBe(account.address)
+    await expect(
+      signer.send({
+        to: EXECUTOR,
+        data: '0x',
+        maxFeePerGas: 1_000_000_000n,
+        maxPriorityFeePerGas: 1_000_000n
+      })
+    ).resolves.toMatchObject({ nonce: 5, txHash: expect.any(String), gas: STUB_GAS })
   })
 
   it('claims sequential nonces, and syncNonce re-reads the chain pending nonce over the cursor', async () => {
@@ -80,7 +115,7 @@ describe('createSigner', () => {
       eth_getTransactionCount: () => pendingNonce,
       eth_estimateGas: '0x5208',
       eth_getBlockByNumber: { baseFeePerGas: '0x7' },
-      eth_sendRawTransaction: TXHASH
+      eth_sendRawTransaction: signedTransactionHash
     })
     const { send, syncNonce } = createSigner(CONFIG)
     const req = {
@@ -110,7 +145,7 @@ describe('createSigner', () => {
       },
       eth_estimateGas: '0x5208',
       eth_getBlockByNumber: { baseFeePerGas: '0x7' },
-      eth_sendRawTransaction: TXHASH
+      eth_sendRawTransaction: signedTransactionHash
     })
     const { send } = createSigner(CONFIG)
     const req = {
@@ -124,8 +159,9 @@ describe('createSigner', () => {
     expect(counts).toBe(1)
   })
 
-  it('rolls back the local nonce cursor when raw broadcast fails before returning a hash', async () => {
+  it('retains the nonce and deterministic hash when the RPC loses a broadcast response', async () => {
     const rawNonces: number[] = []
+    const rawTransactions: Hex[] = []
     let sendCalls = 0
     mockRpc({
       eth_chainId: `0x${base.id.toString(16)}`,
@@ -134,23 +170,111 @@ describe('createSigner', () => {
       eth_getBlockByNumber: { baseFeePerGas: '0x7' },
       eth_sendRawTransaction: (body: RpcBody) => {
         sendCalls += 1
-        const nonce = parseTransaction(body.params?.[0] as Hex).nonce
+        const rawTransaction = body.params?.[0] as Hex
+        const nonce = parseTransaction(rawTransaction).nonce
         if (nonce === undefined) throw new Error('expected serialized tx nonce')
         rawNonces.push(nonce)
+        rawTransactions.push(rawTransaction)
         if (sendCalls === 1) throw new Error('rpc timeout after broadcast')
-        return TXHASH
+        return signedTransactionHash(body)
       }
     })
-    const { send } = createSigner(CONFIG)
+    const { send } = createSigner({ ...CONFIG, rpcUrlFallback: 'http://localhost:8546' })
     const request = {
       to: `0x${'11'.repeat(20)}` as const,
       data: '0x' as Hex,
       maxFeePerGas: 1_000_000_000n,
       maxPriorityFeePerGas: 1_000_000n
     }
-    await expect(send(request)).rejects.toBeInstanceOf(TxSendError)
-    expect(await send(request)).toEqual({ nonce: 5, txHash: TXHASH, gas: STUB_GAS })
-    expect(rawNonces).toEqual([5, 5])
+    expect(await send(request)).toEqual({
+      nonce: 5,
+      txHash: keccak256(rawTransactions[0]!),
+      gas: STUB_GAS,
+      broadcastUnknown: true
+    })
+    expect(await send(request)).toEqual({
+      nonce: 6,
+      txHash: keccak256(rawTransactions[1]!),
+      gas: STUB_GAS
+    })
+    expect(rawNonces).toEqual([5, 6])
+  })
+
+  it('throws a definitive JSON-RPC rejection and reclaims the claimed nonce', async () => {
+    let sendCalls = 0
+    mockRpc({
+      eth_chainId: `0x${base.id.toString(16)}`,
+      eth_getTransactionCount: '0x5',
+      eth_estimateGas: '0x5208',
+      eth_getBlockByNumber: { baseFeePerGas: '0x7' },
+      eth_sendRawTransaction: (body: RpcBody) => {
+        sendCalls += 1
+        return sendCalls === 1
+          ? rpcFailure(-32000, 'insufficient funds for gas * price + value')
+          : signedTransactionHash(body)
+      }
+    })
+    const { send } = createSigner(CONFIG)
+    const request = {
+      to: EXECUTOR,
+      data: '0x' as Hex,
+      maxFeePerGas: 1_000_000_000n,
+      maxPriorityFeePerGas: 1_000_000n
+    }
+
+    await expect(send(request)).rejects.toBeInstanceOf(InvalidInputRpcError)
+    const result = await send(request)
+    expect(result.nonce).toBe(5)
+    expect(result.broadcastUnknown).toBeUndefined()
+  })
+
+  it('reconciles a transaction the RPC reports as already known', async () => {
+    mockRpc({
+      eth_chainId: `0x${base.id.toString(16)}`,
+      eth_getTransactionCount: '0x5',
+      eth_estimateGas: '0x5208',
+      eth_getBlockByNumber: { baseFeePerGas: '0x7' },
+      eth_sendRawTransaction: () => rpcFailure(-32000, 'already known')
+    })
+    const { send } = createSigner(CONFIG)
+    const request = {
+      to: EXECUTOR,
+      data: '0x' as Hex,
+      maxFeePerGas: 1_000_000_000n,
+      maxPriorityFeePerGas: 1_000_000n
+    }
+    const result = await send(request)
+
+    expect(result).toMatchObject({ nonce: 5, broadcastUnknown: true })
+    await expect(send(request)).resolves.toMatchObject({ nonce: 6, broadcastUnknown: true })
+  })
+
+  it('tracks the signed transaction hash when the RPC returns a different hash', async () => {
+    let rawTransaction: Hex | undefined
+    mockRpc({
+      eth_chainId: `0x${base.id.toString(16)}`,
+      eth_getTransactionCount: '0x5',
+      eth_estimateGas: '0x5208',
+      eth_getBlockByNumber: { baseFeePerGas: '0x7' },
+      eth_sendRawTransaction: (body: RpcBody) => {
+        rawTransaction = body.params?.[0] as Hex
+        return TXHASH
+      }
+    })
+
+    const result = await createSigner(CONFIG).send({
+      to: EXECUTOR,
+      data: '0x',
+      maxFeePerGas: 1_000_000_000n,
+      maxPriorityFeePerGas: 1_000_000n
+    })
+
+    expect(result).toEqual({
+      nonce: 5,
+      txHash: keccak256(rawTransaction!),
+      gas: STUB_GAS,
+      broadcastUnknown: true
+    })
   })
 
   it('getReceipt maps a found receipt to its status + block number', async () => {
@@ -202,9 +326,9 @@ describe('createSigner', () => {
       eth_getTransactionCount: '0x5',
       eth_estimateGas: '0x5208',
       eth_getBlockByNumber: { baseFeePerGas: '0x7' },
-      eth_sendRawTransaction: () => {
+      eth_sendRawTransaction: (body: RpcBody) => {
         sends += 1
-        return TXHASH
+        return signedTransactionHash(body)
       }
     })
     const { send } = createSigner({ ...CONFIG, policy: POLICY })
@@ -214,7 +338,8 @@ describe('createSigner', () => {
       maxFeePerGas: 1_000_000_000n,
       maxPriorityFeePerGas: 1_000_000n
     })
-    expect(result).toEqual({ nonce: 5, txHash: TXHASH, gas: STUB_GAS })
+    expect(result).toMatchObject({ nonce: 5, txHash: expect.any(String), gas: STUB_GAS })
+    expect(result.broadcastUnknown).toBeUndefined()
     expect(sends).toBe(1)
   })
 
@@ -225,9 +350,9 @@ describe('createSigner', () => {
       eth_getTransactionCount: '0x5',
       eth_estimateGas: '0x5208',
       eth_getBlockByNumber: { baseFeePerGas: '0x7' },
-      eth_sendRawTransaction: () => {
+      eth_sendRawTransaction: (body: RpcBody) => {
         sends += 1
-        return TXHASH
+        return signedTransactionHash(body)
       }
     })
     const { send } = createSigner({ ...CONFIG, policy: POLICY })
@@ -249,7 +374,7 @@ describe('createSigner', () => {
         maxFeePerGas: 1_000_000_000n,
         maxPriorityFeePerGas: 1_000_000n
       })
-    ).toEqual({ nonce: 5, txHash: TXHASH, gas: STUB_GAS })
+    ).toMatchObject({ nonce: 5, txHash: expect.any(String), gas: STUB_GAS })
   })
 
   it('rejects a non-exec selector before broadcasting', async () => {
@@ -259,9 +384,9 @@ describe('createSigner', () => {
       eth_getTransactionCount: '0x5',
       eth_estimateGas: '0x5208',
       eth_getBlockByNumber: { baseFeePerGas: '0x7' },
-      eth_sendRawTransaction: () => {
+      eth_sendRawTransaction: (body: RpcBody) => {
         sends += 1
-        return TXHASH
+        return signedTransactionHash(body)
       }
     })
     const { send } = createSigner({ ...CONFIG, policy: POLICY })

@@ -101,6 +101,61 @@ describe('evaluatePolicy', () => {
     })
   })
 
+  it('applies gas and calldata limits for the matching target and selector rule', () => {
+    const otherSelector = '0x12345678' as const
+    const ruled: Policy = {
+      ...POLICY,
+      rules: [
+        {
+          target: EXECUTOR,
+          selector: EXECUTOR_SELECTOR,
+          maxGasLimit: 2_000_000n,
+          maxDataBytes: 32
+        },
+        {
+          target: OTHER,
+          selector: otherSelector,
+          maxGasLimit: 50_000n,
+          maxDataBytes: 8
+        }
+      ]
+    }
+
+    expect(evaluatePolicy(ruled, tx({ gas: 2_000_000n }))).toEqual({ ok: true })
+    expect(evaluatePolicy(ruled, tx({ gas: 2_000_001n }))).toMatchObject({ check: 'gas' })
+    expect(
+      evaluatePolicy(ruled, tx({ to: OTHER, data: `${otherSelector}deadbeef`, gas: 50_000n }))
+    ).toEqual({ ok: true })
+    expect(
+      evaluatePolicy(ruled, tx({ to: OTHER, data: EXECUTOR_SELECTOR, gas: 50_000n }))
+    ).toMatchObject({ check: 'selector' })
+  })
+
+  it.each([['before'], ['after']] as const)(
+    'prefers an exact selector rule when a wildcard rule appears %s it',
+    order => {
+      const exact = {
+        target: EXECUTOR,
+        selector: EXECUTOR_SELECTOR,
+        maxGasLimit: 100_000n,
+        maxDataBytes: 8
+      }
+      const wildcard = {
+        target: EXECUTOR,
+        maxGasLimit: 2_000_000n,
+        maxDataBytes: 64
+      }
+      const rules = order === 'before' ? [wildcard, exact] : [exact, wildcard]
+      const policy: Policy = { ...POLICY, rules }
+
+      expect(evaluatePolicy(policy, tx({ gas: 100_000n }))).toEqual({ ok: true })
+      expect(evaluatePolicy(policy, tx({ gas: 100_001n }))).toMatchObject({
+        ok: false,
+        check: 'gas'
+      })
+    }
+  )
+
   it('defaults to zero value and exec_606BaXt', () => {
     expect(evaluatePolicy(POLICY, tx({ value: 1n }))).toMatchObject({ check: 'value' })
     expect(evaluatePolicy(POLICY, tx({ data: '0xdeadbeef' }))).toMatchObject({ check: 'selector' })

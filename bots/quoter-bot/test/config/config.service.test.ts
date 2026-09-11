@@ -25,6 +25,15 @@ const environment = {
   MARKET_IDS: marketId,
   REFERENCE_MARKET_ID: referenceMarketId,
   NATIVE_RESERVE_WEI: '10',
+  MAX_FEE_GWEI: '100',
+  PRIORITY_FEE_GWEI: '1',
+  MAX_TRANSACTION_SPEND_WEI: '100000000000000000',
+  MAX_PUBLICATION_GAS: '5000000',
+  MAX_PUBLICATION_DATA_BYTES: '65536',
+  MAX_CANCELLATION_GAS: '100000',
+  MAX_BATCH_CANCELLATION_GAS: '1000000',
+  MAX_BATCH_CANCELLATION_DATA_BYTES: '65536',
+  MAX_RATIFICATION_GAS: '100000',
   MORPHO_API_BASE_URL: 'https://api.example',
   ROUTER_API_BASE_URL: 'https://router.example',
   V0_OFFER_GROUP_IDS: groupId
@@ -62,6 +71,8 @@ describe('ConfigService', () => {
     expect(config.setup).toEqual({
       chainId: 8453,
       maker: environment.MAKER_ADDRESS,
+      signerMode: 'private-key',
+      signerNativeReserve: undefined,
       midnight: environment.MIDNIGHT_ADDRESS,
       nativeReserve: 10n,
       loanAsset: environment.LOAN_ASSET_ADDRESS,
@@ -174,6 +185,9 @@ describe('ConfigService', () => {
     )
     expect(() => ConfigService.from({ ...environment, NATIVE_RESERVE_WEI: '-1' })).toThrow(
       'NATIVE_RESERVE_WEI must be an unsigned decimal integer'
+    )
+    expect(() => ConfigService.from({ ...environment, NATIVE_RESERVE_WEI: '0' })).toThrow(
+      'NATIVE_RESERVE_WEI must be greater than zero'
     )
   })
 

@@ -6,10 +6,10 @@ import { getChainAddress } from '@morpho-org/morpho-ts'
 import {
   createPublicClient,
   createWalletClient,
+  custom,
   erc20Abi,
   http,
   isAddressEqual,
-  publicActions,
   type Hex
 } from 'viem'
 
@@ -49,11 +49,15 @@ import {
 } from '../bootstrap/bootstrap-reference-rate.service'
 import { invalidateOffersBatch } from '../invalidation/batch-offer-invalidation.utils'
 import { OfferInvalidationAdapterError } from '../invalidation/offer-invalidation-adapter.error'
-import { createMakerAccount } from '../make/maker-account.utils'
+import { createSignerAccount } from '../make/signer-account.utils'
 import { maturityReadsByMarket } from '../maturity-read.utils'
 import { createBlueReferenceReader } from '../reference/blue-reference-reader.utils'
 import { mapSelectedMarketItems } from '../selected-market-items.utils'
 import { rateTickWindow } from '../tick-window.utils'
+import {
+  createQuoterTransactionExecutor,
+  type QuoterTransactionExecutor
+} from '../transaction/quoter-transaction-executor'
 import {
   activeOwnedLadderGroupIds,
   activeOwnedLadderGroupIdsBySide,
@@ -80,6 +84,7 @@ import {
 import { buildLadderTree } from './ladder-offer.utils'
 import { configuredRatifierType, prepareLadderRatification } from './ladder-ratification.utils'
 import { assertLadderProspectiveSpread } from './ladder-spread.utils'
+import { executeLadderTransaction } from './ladder-transaction-executor.utils'
 import {
   assertLadderCancellationTransaction,
   assertLadderPublicationTransaction,
@@ -315,9 +320,10 @@ const ownedGroups = (publications: readonly OwnedLadderPublication[]) =>
  * Composes live chain, archive reference, Mempool, signing, and ownership ladder adapters.
  * @param config - Fully validated runtime configuration.
  * @param configuredAccount - Optional preconstructed account for write-mode adapter reuse.
+ * @param configuredExecutor - Optional invocation-scoped transaction executor shared with bootstrap.
  * @returns Production position, reference-rate, and make ports.
- * @throws `LadderAdapterError` when write-mode signer identity differs from the maker; later reads,
- * validation, signing, publication, storage, or receipt confirmation may also fail.
+ * @throws `SignerAccountError` for construction failures, or `LadderAdapterError` when an injected
+ * account violates the required maker relationship; later operations may also fail.
  * @remarks Read-only construction never derives an account or creates a wallet. Every published
  * tree is API-validated before and after signing and locally policy-checked. Ecrecover publication
  * uses one transaction. Setter publication uses an ordered approval transaction followed by the
@@ -326,7 +332,8 @@ const ownedGroups = (publications: readonly OwnedLadderPublication[]) =>
  */
 export const createProductionLadderAdapters = (
   config: ConfigService,
-  configuredAccount?: Awaited<ReturnType<typeof createMakerAccount>>
+  configuredAccount?: Awaited<ReturnType<typeof createSignerAccount>>,
+  configuredExecutor?: QuoterTransactionExecutor
 ): ProductionLadderAdapters | Promise<ProductionLadderAdapters> => {
   const maker = config.identity.maker
   const client = createPublicClient({
@@ -829,25 +836,26 @@ export const createProductionLadderAdapters = (
     return { positions, rates, make: readOnlyMake, validateReconcile }
   }
 
-  const account = configuredAccount ?? createMakerAccount(config.identity)
+  const account = configuredAccount ?? createSignerAccount(config.identity)
   if (account instanceof Promise) {
-    return account.then(
-      value => createProductionLadderAdapters(config, value),
-      () => {
-        throw new LadderAdapterError('maker-private-key-mismatch')
-      }
-    )
+    return account.then(value => createProductionLadderAdapters(config, value, configuredExecutor))
   }
-  if (!isAddressEqual(account.address, maker)) {
-    throw new LadderAdapterError('maker-private-key-mismatch')
+  if (
+    (config.identity.method === 'aws' && isAddressEqual(account.address, maker)) ||
+    (config.identity.method !== 'aws' && !isAddressEqual(account.address, maker))
+  ) {
+    throw new LadderAdapterError('signer-identity-mismatch')
   }
-  const wallet = createWalletClient({
+  const signingClient = createWalletClient({
     account,
     chain: supportedChain(config.chainId),
-    transport: http(config.rpcUrl, { timeout: config.requestTimeoutMs })
+    transport: custom({
+      request: async () => {
+        throw new LadderAdapterError('ratifier-signature')
+      }
+    })
   })
-    .extend(publicActions)
-    .extend(morphoViemExtension({ supportSignature: true, supportDeployless: true }))
+  const transactionExecutor = configuredExecutor ?? createQuoterTransactionExecutor(config, account)
   const mempool = getChainAddress(config.chainId, 'midnightMempool')
 
   const transport: LadderOfferTransport = {
@@ -868,7 +876,8 @@ export const createProductionLadderAdapters = (
       const ratification = await prepareLadderRatification({
         type: ratifierType,
         tree: prepared.tree,
-        client: wallet,
+        maker,
+        client: signingClient,
         account
       })
       if (ratification.approval === undefined) {
@@ -902,15 +911,17 @@ export const createProductionLadderAdapters = (
                 account: maker,
                 root: prepared.tree.root
               })
-              const txHash = await wallet.sendTransaction(ratification.approval)
-              await notifySubmitted(onTransactionSubmitted, 'ratify', txHash)
-              const receipt = await wallet.waitForTransactionReceipt({
-                hash: txHash,
-                timeout: config.transactionReceiptTimeoutMs
-              })
-              if (receipt.status !== 'success') {
-                throw new LadderAdapterError('ratifier-transaction-reverted')
-              }
+              const txHash = await executeLadderTransaction(
+                transactionExecutor,
+                {
+                  transaction: ratification.approval,
+                  operation: 'ratify',
+                  label: `ladder:ratify:${prepared.tree.root}`,
+                  onTransactionSubmitted: hash =>
+                    notifySubmitted(onTransactionSubmitted, 'ratify', hash)
+                },
+                'ratifier-transaction-reverted'
+              )
               return { operation: 'ratify', txHash }
             },
             validate: async () => {
@@ -926,23 +937,22 @@ export const createProductionLadderAdapters = (
               }
             },
             sendPublication: async () => {
-              const txHash = await wallet.sendTransaction(transaction)
-              await notifySubmitted(onTransactionSubmitted, 'publish', txHash)
+              const txHash = await executeLadderTransaction(
+                transactionExecutor,
+                {
+                  transaction,
+                  operation: 'publish',
+                  label: `ladder:publish:${prepared.tree.root}`,
+                  onTransactionSubmitted: hash =>
+                    notifySubmitted(onTransactionSubmitted, 'publish', hash)
+                },
+                ratifierType === 'setter'
+                  ? 'publication-transaction-reverted-after-ratification'
+                  : 'transaction-reverted'
+              )
               return { operation: 'publish', txHash }
             },
-            confirmPublication: async publication => {
-              const receipt = await wallet.waitForTransactionReceipt({
-                hash: publication.txHash,
-                timeout: config.transactionReceiptTimeoutMs
-              })
-              if (receipt.status !== 'success') {
-                throw new LadderAdapterError(
-                  ratification.approval === undefined
-                    ? 'transaction-reverted'
-                    : 'publication-transaction-reverted-after-ratification'
-                )
-              }
-            }
+            confirmPublication: async () => {}
           })
       }
     },
@@ -956,24 +966,27 @@ export const createProductionLadderAdapters = (
         groupId,
         account: maker
       })
-      const hash = await wallet.sendTransaction(transaction)
-      await notifySubmitted(onTransactionSubmitted, 'cancel', hash)
-      const receipt = await wallet.waitForTransactionReceipt({
-        hash,
-        timeout: config.transactionReceiptTimeoutMs
+      return executeLadderTransaction(transactionExecutor, {
+        transaction,
+        operation: 'cancel',
+        label: `ladder:cancel:${groupId}`,
+        onTransactionSubmitted: hash => notifySubmitted(onTransactionSubmitted, 'cancel', hash)
       })
-      if (receipt.status !== 'success') throw new LadderAdapterError('transaction-reverted')
-      return hash
     },
     invalidateBatch: async (groupIds, onTransactionSubmitted) => {
       try {
         return await invalidateOffersBatch({
-          wallet,
           midnight: config.setup.midnight,
           maker,
           groupIds,
-          receiptTimeoutMs: config.transactionReceiptTimeoutMs,
-          onTransactionSubmitted: hash => notifySubmitted(onTransactionSubmitted, 'cancel', hash)
+          execute: transaction =>
+            executeLadderTransaction(transactionExecutor, {
+              transaction,
+              operation: 'cancel-batch',
+              label: 'ladder:cancel-batch',
+              onTransactionSubmitted: hash =>
+                notifySubmitted(onTransactionSubmitted, 'cancel', hash)
+            })
         })
       } catch (error) {
         if (error instanceof OfferInvalidationAdapterError) {

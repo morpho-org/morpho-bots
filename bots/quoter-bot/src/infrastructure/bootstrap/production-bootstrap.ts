@@ -1,16 +1,14 @@
-import { midnightAbi, Offer, TickLib, Tree } from '@morpho-org/midnight-sdk'
+import {
+  EcrecoverRatifierUtils,
+  midnightAbi,
+  Offer,
+  Payload,
+  TickLib,
+  Tree
+} from '@morpho-org/midnight-sdk'
 import { morphoViemExtension } from '@morpho-org/morpho-sdk'
 import { getChainAddress } from '@morpho-org/morpho-ts'
-import {
-  createPublicClient,
-  createWalletClient,
-  erc20Abi,
-  http,
-  isAddressEqual,
-  publicActions,
-  type Address,
-  type Hex
-} from 'viem'
+import { createPublicClient, erc20Abi, http, isAddressEqual, type Address, type Hex } from 'viem'
 
 import type {
   BootstrapSubmittedTransaction,
@@ -34,11 +32,16 @@ import { readLadderBookOffers } from '../ladder/ladder-book.utils'
 import { pendingLadderBuyReservations } from '../ladder/ladder-cash-reservation.utils'
 import { createLadderGroupOwnership } from '../ladder/ladder-group-ownership.utils'
 import { buildLadderTree } from '../ladder/ladder-offer.utils'
-import { createMakerAccount } from '../make/maker-account.utils'
 import { ReadOnlyBootstrapMakeService } from '../make/read-only-bootstrap-make.service'
+import { createSignerAccount } from '../make/signer-account.utils'
 import { maturityReadsByMarket } from '../maturity-read.utils'
 import { createBlueReferenceReader } from '../reference/blue-reference-reader.utils'
 import { mapSelectedMarketItems } from '../selected-market-items.utils'
+import {
+  createQuoterTransactionExecutor,
+  type QuoterTransactionExecutor
+} from '../transaction/quoter-transaction-executor'
+import { QuoterTransactionError } from '../transaction/quoter-transaction.error'
 import { BootstrapAdapterError } from './bootstrap-adapter.error'
 import { resolveBootstrapProspectiveOffer } from './bootstrap-cross-book.utils'
 import { bootstrapExposureMarketIds } from './bootstrap-exposure.utils'
@@ -65,7 +68,6 @@ import {
   BlueBootstrapReferenceRateService,
   StrategyBootstrapReferenceRateService
 } from './bootstrap-reference-rate.service'
-import { createBootstrapRequirementClient } from './bootstrap-requirement-client.utils'
 import { prepareBootstrapRequirements } from './bootstrap-requirements.utils'
 import { bootstrapMarketGroupIds } from './bootstrap-spread.utils'
 import { assertBootstrapTransaction } from './bootstrap-transaction.utils'
@@ -189,9 +191,10 @@ type ProductionBootstrapAdapters = {
  * @param writeReadOnlyEvent - Optional terminal writer for read-only make records.
  * @param configuredAccount - Optional preconstructed account for write-mode adapter reuse.
  * @param ignoredOfferGroupIds - Recently canceled ladder groups still visible in the API index.
+ * @param configuredExecutor - Optional invocation-scoped transaction executor shared with the ladder.
  * @returns Production read ports and either a live mutation queue or terminal-only make adapter.
- * @throws `BootstrapAdapterError` when write-mode signer identity differs from the configured maker;
- * later provider reads, signing, publication, or invalidation may also fail.
+ * @throws `SignerAccountError` for construction failures, or `BootstrapAdapterError` when an
+ * injected account violates the required maker relationship; later operations may also fail.
  * @remarks No provider request or write occurs while this function constructs the adapters.
  * Read-only configuration never derives an account or constructs a wallet client. Write mode checks
  * the key-derived account before constructing any maker action, independently of the setup gate.
@@ -199,8 +202,9 @@ type ProductionBootstrapAdapters = {
 export const createProductionBootstrapAdapters = (
   config: ConfigService,
   writeReadOnlyEvent?: (line: string) => void | Promise<void>,
-  configuredAccount?: Awaited<ReturnType<typeof createMakerAccount>>,
-  ignoredOfferGroupIds: readonly Hex[] = []
+  configuredAccount?: Awaited<ReturnType<typeof createSignerAccount>>,
+  ignoredOfferGroupIds: readonly Hex[] = [],
+  configuredExecutor?: QuoterTransactionExecutor
 ): ProductionBootstrapAdapters | Promise<ProductionBootstrapAdapters> => {
   const maker = config.identity.maker
   const client = createPublicClient({
@@ -638,26 +642,25 @@ export const createProductionBootstrapAdapters = (
     }
   }
 
-  const account = configuredAccount ?? createMakerAccount(config.identity)
+  const account = configuredAccount ?? createSignerAccount(config.identity)
   if (account instanceof Promise) {
-    return account.then(
-      value =>
-        createProductionBootstrapAdapters(config, writeReadOnlyEvent, value, ignoredOfferGroupIds),
-      () => {
-        throw new BootstrapAdapterError('maker-private-key-mismatch')
-      }
+    return account.then(value =>
+      createProductionBootstrapAdapters(
+        config,
+        writeReadOnlyEvent,
+        value,
+        ignoredOfferGroupIds,
+        configuredExecutor
+      )
     )
   }
-  if (!isAddressEqual(account.address, maker)) {
-    throw new BootstrapAdapterError('maker-private-key-mismatch')
+  if (
+    (config.identity.method === 'aws' && isAddressEqual(account.address, maker)) ||
+    (config.identity.method !== 'aws' && !isAddressEqual(account.address, maker))
+  ) {
+    throw new BootstrapAdapterError('signer-identity-mismatch')
   }
-  const wallet = createWalletClient({
-    account,
-    chain: supportedChain(config.chainId),
-    transport: http(config.rpcUrl, { timeout: config.requestTimeoutMs })
-  })
-    .extend(publicActions)
-    .extend(morphoViemExtension({ supportSignature: true, supportDeployless: true }))
+  const transactionExecutor = configuredExecutor ?? createQuoterTransactionExecutor(config, account)
 
   const execute = async (
     transaction: { to: `0x${string}`; data: Hex; value: bigint },
@@ -667,14 +670,22 @@ export const createProductionBootstrapAdapters = (
     revertOperation = 'transaction-reverted'
   ) => {
     await assertBootstrapTransaction(transaction, policy)
-    const hash = await wallet.sendTransaction(transaction)
-    await onTransactionSubmitted?.({ operation, txHash: hash })
-    const receipt = await wallet.waitForTransactionReceipt({
-      hash,
-      timeout: config.transactionReceiptTimeoutMs
-    })
-    if (receipt.status !== 'success') throw new BootstrapAdapterError(revertOperation)
-    return hash
+    try {
+      return await transactionExecutor.execute({
+        transaction,
+        operation: operation === 'cancel' ? 'cancel' : operation,
+        label: `bootstrap:${operation}`,
+        onTransactionSubmitted: hash => onTransactionSubmitted?.({ operation, txHash: hash })
+      })
+    } catch (error) {
+      if (
+        error instanceof QuoterTransactionError &&
+        ['transaction-pending', 'transaction-dropped'].includes(error.operation)
+      ) {
+        throw new BootstrapAdapterError(error.operation)
+      }
+      throw new BootstrapAdapterError(revertOperation)
+    }
   }
 
   const preparedOffers = new Map<Hex, { created: Offer; assets: bigint; rateBps: bigint }>()
@@ -718,13 +729,17 @@ export const createProductionBootstrapAdapters = (
     invalidateBatch: async (groups, onTransactionSubmitted) => {
       try {
         return await invalidateOffersBatch({
-          wallet,
           midnight: config.setup.midnight,
           maker,
           groupIds: groups,
-          receiptTimeoutMs: config.transactionReceiptTimeoutMs,
-          onTransactionSubmitted: hash =>
-            onTransactionSubmitted?.({ operation: 'cancel', txHash: hash })
+          execute: transaction =>
+            transactionExecutor.execute({
+              transaction,
+              operation: 'cancel-batch',
+              label: 'bootstrap:cancel-batch',
+              onTransactionSubmitted: hash =>
+                onTransactionSubmitted?.({ operation: 'cancel', txHash: hash })
+            })
         })
       } catch (error) {
         if (error instanceof OfferInvalidationAdapterError) {
@@ -766,27 +781,33 @@ export const createProductionBootstrapAdapters = (
       if (tree.root !== output.root) {
         throw new BootstrapAdapterError('unexpected-requirement')
       }
-      const requirementClient = createBootstrapRequirementClient({
-        account,
-        chain: supportedChain(config.chainId),
-        tree
-      })
       const { signatures, transactions: ratificationTransactions } =
         await prepareBootstrapRequirements(
           await output.getRequirements(),
-          (requirement, requirementAccount) =>
-            requirement.sign(requirementClient, requirementAccount) as Promise<
-              import('@morpho-org/morpho-sdk').MidnightOfferRootSignature
-            >,
+          async (_requirement, requirementAccount) => {
+            if (!isAddressEqual(requirementAccount, account.address)) {
+              throw new BootstrapAdapterError('requirement-signing-policy')
+            }
+            try {
+              return await account.signTypedData(
+                EcrecoverRatifierUtils.typedData({
+                  tree,
+                  chainId: config.chainId
+                }) as unknown as Parameters<typeof account.signTypedData>[0]
+              )
+            } catch {
+              throw new BootstrapAdapterError('requirement-signing-policy')
+            }
+          },
           output.ratifierType === 'ecrecover'
             ? {
                 kind: 'ecrecover',
                 target: config.setup.ratifier,
                 root: output.root,
-                account: maker,
+                signer: account.address,
                 offers: tree.offers.length
               }
-            : { kind: 'setter', target: config.setup.ratifier, root: output.root, account: maker }
+            : { kind: 'setter', target: config.setup.ratifier, root: output.root, maker }
         )
       if (
         (output.ratifierType === 'setter' && signatures.length > 0) ||
@@ -795,7 +816,20 @@ export const createProductionBootstrapAdapters = (
       ) {
         throw new BootstrapAdapterError('unexpected-requirement')
       }
-      const transaction = output.buildTx(signatures)
+      const transaction =
+        output.ratifierType === 'ecrecover'
+          ? {
+              to: getChainAddress(config.chainId, 'midnightMempool'),
+              data: await Payload.encode(
+                await EcrecoverRatifierUtils.ratify({
+                  tree,
+                  account: account.address,
+                  signature: signatures[0]!
+                })
+              ),
+              value: 0n
+            }
+          : output.buildTx([])
       const publicationPolicy = {
         kind: 'publication' as const,
         target: getChainAddress(config.chainId, 'midnightMempool'),
@@ -803,7 +837,8 @@ export const createProductionBootstrapAdapters = (
         ratifierType: output.ratifierType,
         chainId: config.chainId,
         root: output.root,
-        maker
+        maker,
+        signer: account.address
       }
       await assertBootstrapTransaction(transaction, publicationPolicy)
       return {

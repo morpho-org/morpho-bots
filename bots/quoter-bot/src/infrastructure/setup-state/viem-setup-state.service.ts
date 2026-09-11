@@ -54,6 +54,16 @@ export interface ChainReader {
    */
   getBalance(parameters: { address: Address }): Promise<bigint>
   /**
+   * Reads the mined or pending transaction count for an account.
+   * @param parameters - Account address and requested block state.
+   * @returns The account transaction count at that state.
+   * @throws When the RPC transport rejects or returns a malformed count.
+   */
+  getTransactionCount(parameters: {
+    address: Address
+    blockTag: 'latest' | 'pending'
+  }): Promise<number>
+  /**
    * Reads a latest or historical block from the RPC provider.
    * @param parameters - Latest-block tag or exact historical block number.
    * @returns Block number and timestamp without mutating chain state.
@@ -96,7 +106,7 @@ type SetupStateOptions = {
 
 /** Read-only viem/API adapter that gathers setup facts and validates provider agreement. */
 export class ViemSetupStateService implements SetupStateService {
-  private readonly derivedMaker: Address | undefined
+  private readonly derivedSigner: Address | undefined
 
   /**
    * Creates a state adapter and derives the maker only when write authority is configured.
@@ -113,7 +123,7 @@ export class ViemSetupStateService implements SetupStateService {
     private readonly request: JsonRequest,
     private readonly options: SetupStateOptions
   ) {
-    this.derivedMaker =
+    this.derivedSigner =
       options.readOnly || 'deriveSignerAddress' in options
         ? undefined
         : 'privateKey' in options
@@ -165,9 +175,9 @@ export class ViemSetupStateService implements SetupStateService {
    * @throws The sanitized signer-construction failure when lazy keystore or KMS resolution fails.
    * @remarks Lazy resolution may read a keystore or call KMS, but performs no signing or chain write.
    */
-  async getDerivedMaker() {
+  async getDerivedSigner() {
     if ('deriveSignerAddress' in this.options) return this.options.deriveSignerAddress()
-    return this.derivedMaker
+    return this.derivedSigner
   }
 
   /**
@@ -181,6 +191,48 @@ export class ViemSetupStateService implements SetupStateService {
     return executeProviderRead('rpc', 'native-balance', () =>
       this.chain.getBalance({ address: owner })
     )
+  }
+
+  /**
+   * Reads mined and pending nonce state concurrently for restart reconciliation.
+   * @param address - Signer address whose nonce state is read.
+   * @returns Mined and pending transaction counts.
+   */
+  async getTransactionCounts(address: Address) {
+    const [latest, pending] = await Promise.all([
+      executeProviderRead('rpc', 'signer-latest-nonce', () =>
+        this.chain.getTransactionCount({ address, blockTag: 'latest' })
+      ),
+      executeProviderRead('rpc', 'signer-pending-nonce', () =>
+        this.chain.getTransactionCount({ address, blockTag: 'pending' })
+      )
+    ])
+    return { latest, pending }
+  }
+
+  /**
+   * Reads one maker-to-delegate Midnight authorization.
+   * @param maker - Funded principal granting authority.
+   * @param delegate - Address whose authority is checked.
+   * @returns Whether the delegate is authorized for the maker.
+   */
+  async getAuthorization(maker: Address, delegate: Address) {
+    const authorized = await executeProviderRead('rpc', 'signer-authorization', () =>
+      this.chain.readContract({
+        address: this.options.midnight,
+        abi: midnightAbi,
+        functionName: 'isAuthorized',
+        args: [maker, delegate]
+      })
+    )
+    if (typeof authorized !== 'boolean') {
+      throw new ProviderResponseError(
+        'rpc',
+        'signer-authorization',
+        'Midnight isAuthorized response must be boolean'
+      )
+    }
+    return authorized
   }
 
   /**

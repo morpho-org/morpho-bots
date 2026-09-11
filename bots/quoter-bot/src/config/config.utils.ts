@@ -135,6 +135,36 @@ export const unsignedBigIntValue = (environment: Environment, name: string) => {
   return BigInt(value)
 }
 
+/**
+ * Reads a required positive base-10 integer as bigint.
+ * @param environment - Environment map to inspect.
+ * @param name - Required integer variable name.
+ * @returns The exact positive bigint value.
+ * @throws When the value is absent, invalid, or zero.
+ */
+export const positiveBigIntValue = (environment: Environment, name: string) => {
+  const value = unsignedBigIntValue(environment, name)
+  if (value === 0n) {
+    throw new ConfigValidationError(name, 'out-of-range', `${name} must be greater than zero`)
+  }
+  return value
+}
+
+/**
+ * Reads a required positive safe integer.
+ * @param environment - Environment map to inspect.
+ * @param name - Required integer variable name.
+ * @returns The positive safe integer value.
+ * @throws When the value is absent, invalid, zero, or outside the safe-integer range.
+ */
+export const positiveIntegerValue = (environment: Environment, name: string) => {
+  const value = positiveBigIntValue(environment, name)
+  if (value > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new ConfigValidationError(name, 'out-of-range', `${name} must be a positive safe integer`)
+  }
+  return Number(value)
+}
+
 const boundedTimeoutValue = (
   environment: Environment,
   options: { name: string; defaultMs: number; maximumMs: number }

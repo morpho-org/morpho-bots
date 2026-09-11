@@ -1,6 +1,9 @@
-import type { Hex } from 'viem'
+import type { Address, Hex } from 'viem'
 
+import { getChainAddress } from '@morpho-org/morpho-ts'
+import { hasBumpHeadroom } from '@repo/bot-kit'
 import { inspect } from 'node:util'
+import { isAddressEqual } from 'viem'
 
 import type { SetupCheckConfig } from '../application/setup/setup-check.service'
 import type { BootstrapConfig } from '../domain/bootstrap/position-bootstrap'
@@ -8,7 +11,7 @@ import type { LadderConfig } from '../domain/ladder/ladder'
 import type { TargetRateConfigured } from '../domain/target-rate'
 import type { ConfigurationLoadOptions, ConfigurationSource } from './config-source.utils'
 import type { Environment } from './config.utils'
-import type { MakerIdentity } from './signer-identity.utils'
+import type { SignerIdentity } from './signer-identity.utils'
 
 import { configurationFromEnvironment, loadConfigurationSources } from './config-source.utils'
 import { ConfigValidationError } from './config-validation.error'
@@ -17,6 +20,8 @@ import {
   chainIdValue,
   optionalBytes32Value,
   optionalUrlValue,
+  positiveBigIntValue,
+  positiveIntegerValue,
   requestTimeoutValue,
   transactionReceiptTimeoutValue,
   unsignedBigIntValue,
@@ -24,8 +29,57 @@ import {
 } from './config.utils'
 import { bootstrapConfigsValue, hexListValue, ladderConfigsValue } from './market-collections'
 import { signerIdentity } from './signer-identity.utils'
+import { requiresMaxRatificationGas } from './write-policy.utils'
 
-export type { MakerIdentity } from './signer-identity.utils'
+export type { SignerIdentity } from './signer-identity.utils'
+
+/** Explicit transaction ceilings applied before any quoter transaction is signed. */
+export type QuoterWritePolicy = {
+  maxFeePerGasWei: bigint
+  priorityFeePerGasWei: bigint
+  maxTransactionSpendWei: bigint
+  maxPublicationGas: bigint
+  maxPublicationDataBytes: number
+  maxCancellationGas: bigint
+  maxBatchCancellationGas: bigint
+  maxBatchCancellationDataBytes: number
+  maxRatificationGas?: bigint
+}
+
+const GWEI = 1_000_000_000n
+
+const writePolicyValue = (
+  environment: Environment,
+  method: Exclude<SignerIdentity, { readOnly: true }>['method'],
+  ratifier: Address,
+  chainId: SetupCheckConfig['chainId']
+): QuoterWritePolicy => {
+  const maxFeePerGasWei = positiveBigIntValue(environment, 'MAX_FEE_GWEI') * GWEI
+  const priorityFeePerGasWei = positiveBigIntValue(environment, 'PRIORITY_FEE_GWEI') * GWEI
+  if (!hasBumpHeadroom(priorityFeePerGasWei, maxFeePerGasWei)) {
+    throw new ConfigValidationError(
+      'PRIORITY_FEE_GWEI',
+      'incoherent-bounds',
+      'PRIORITY_FEE_GWEI must leave room for a replacement below MAX_FEE_GWEI'
+    )
+  }
+  return {
+    maxFeePerGasWei,
+    priorityFeePerGasWei,
+    maxTransactionSpendWei: positiveBigIntValue(environment, 'MAX_TRANSACTION_SPEND_WEI'),
+    maxPublicationGas: positiveBigIntValue(environment, 'MAX_PUBLICATION_GAS'),
+    maxPublicationDataBytes: positiveIntegerValue(environment, 'MAX_PUBLICATION_DATA_BYTES'),
+    maxCancellationGas: positiveBigIntValue(environment, 'MAX_CANCELLATION_GAS'),
+    maxBatchCancellationGas: positiveBigIntValue(environment, 'MAX_BATCH_CANCELLATION_GAS'),
+    maxBatchCancellationDataBytes: positiveIntegerValue(
+      environment,
+      'MAX_BATCH_CANCELLATION_DATA_BYTES'
+    ),
+    ...(requiresMaxRatificationGas(method, ratifier, chainId)
+      ? { maxRatificationGas: positiveBigIntValue(environment, 'MAX_RATIFICATION_GAS') }
+      : {})
+  }
+}
 
 /** Immutable, validated quoter-bot runtime configuration loaded from YAML and environment values. */
 export class ConfigService {
@@ -90,9 +144,24 @@ export class ConfigService {
     const chainId = chainIdValue(environment)
 
     const maker = addressValue(environment, 'MAKER_ADDRESS')
-    const identity: MakerIdentity = readOnly
+    const identity: SignerIdentity = readOnly
       ? { readOnly: true, maker }
       : signerIdentity(environment, maker)
+    const ratifier = addressValue(environment, 'RATIFIER_ADDRESS')
+    if (
+      !identity.readOnly &&
+      identity.method === 'aws' &&
+      !isAddressEqual(ratifier, getChainAddress(chainId, 'ecrecoverRatifier'))
+    ) {
+      throw new ConfigValidationError(
+        'RATIFIER_ADDRESS',
+        'unsupported',
+        'AWS signing requires the canonical Ecrecover ratifier'
+      )
+    }
+    const writePolicy = identity.readOnly
+      ? undefined
+      : writePolicyValue(environment, identity.method, ratifier, chainId)
     const marketIds = hexListValue(environment, 'MARKET_IDS', false)
     const bootstrap = bootstrapConfigsValue(source.bootstrap, marketIds)
     const ladder = ladderConfigsValue(source.ladder, marketIds)
@@ -103,9 +172,16 @@ export class ConfigService {
         chainId,
         maker,
         midnight: addressValue(environment, 'MIDNIGHT_ADDRESS'),
-        nativeReserve: unsignedBigIntValue(environment, 'NATIVE_RESERVE_WEI'),
+        nativeReserve: identity.readOnly
+          ? unsignedBigIntValue(environment, 'NATIVE_RESERVE_WEI')
+          : positiveBigIntValue(environment, 'NATIVE_RESERVE_WEI'),
+        signerNativeReserve:
+          !identity.readOnly && identity.method === 'aws'
+            ? positiveBigIntValue(environment, 'SIGNER_NATIVE_RESERVE_WEI')
+            : undefined,
+        signerMode: identity.readOnly ? 'read-only' : identity.method,
         loanAsset: addressValue(environment, 'LOAN_ASSET_ADDRESS'),
-        ratifier: addressValue(environment, 'RATIFIER_ADDRESS'),
+        ratifier,
         marketIds,
         referenceMarketId: optionalBytes32Value(environment, 'REFERENCE_MARKET_ID')
       },
@@ -115,6 +191,7 @@ export class ConfigService {
       v0OfferGroupIds: hexListValue(environment, 'V0_OFFER_GROUP_IDS', false),
       requestTimeoutMs: requestTimeoutValue(environment),
       transactionReceiptTimeoutMs: transactionReceiptTimeoutValue(environment),
+      writePolicy,
       bootstrap,
       ladder
     })
@@ -122,7 +199,7 @@ export class ConfigService {
 
   private constructor(
     readonly values: {
-      identity: MakerIdentity
+      identity: SignerIdentity
       setup: SetupCheckConfig
       rpcUrl: string
       referenceRpcUrl?: string
@@ -130,6 +207,7 @@ export class ConfigService {
       v0OfferGroupIds: readonly Hex[]
       requestTimeoutMs: number
       transactionReceiptTimeoutMs: number
+      writePolicy?: QuoterWritePolicy
       bootstrap: readonly TargetRateConfigured<BootstrapConfig>[]
       ladder: readonly TargetRateConfigured<LadderConfig>[]
     }
@@ -205,6 +283,14 @@ export class ConfigService {
   /** Exposes the post-submission confirmation deadline. @returns Bounded receipt timeout in milliseconds, between 1 and 900,000 inclusive. */
   get transactionReceiptTimeoutMs() {
     return this.values.transactionReceiptTimeoutMs
+  }
+
+  /**
+   * Exposes required write ceilings.
+   * @returns Validated transaction ceilings, or `undefined` for read-only commands.
+   */
+  get writePolicy() {
+    return this.values.writePolicy
   }
 
   /** Exposes position-bootstrap settings. @returns The validated ordered market list; `BOOTSTRAP_MARKETS` replaces YAML `bootstrap` as a whole. */

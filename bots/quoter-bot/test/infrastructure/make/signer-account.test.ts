@@ -15,16 +15,16 @@ import {
 import { privateKeyToAccount } from 'viem/accounts'
 import { describe, expect, test, vi } from 'vitest'
 
-import { createMakerAccount } from '../../../src/infrastructure/make/maker-account.utils'
-import { MiddlewareSigningUnsupportedError } from '../../../src/infrastructure/make/middleware-signing-unsupported.error'
+import { createSignerAccount } from '../../../src/infrastructure/make/signer-account.utils'
 
 const privateKey = `0x${'11'.repeat(32)}` as const
 const maker = privateKeyToAccount(privateKey).address
+const operatorMaker = privateKeyToAccount(`0x${'22'.repeat(32)}`).address
 
-describe('maker signer selection', () => {
+describe('signer account selection', () => {
   test('reuses one AWS KMS client per region across public-key and signing calls', async () => {
     const source = await readFile(
-      new URL('../../../src/infrastructure/make/maker-account.utils.ts', import.meta.url),
+      new URL('../../../src/infrastructure/make/signer-account.utils.ts', import.meta.url),
       'utf8'
     )
 
@@ -32,20 +32,8 @@ describe('maker signer selection', () => {
     expect(source.match(/new KMSClient/g)).toHaveLength(1)
   })
 
-  test('fails closed for the middleware identity instead of exposing a generic signer', async () => {
-    await expect(
-      createMakerAccount({
-        readOnly: false,
-        maker,
-        method: 'middleware',
-        functionArn: 'arn:aws:lambda:eu-west-1:123456789012:function:quoter-signer-routine:prod',
-        region: 'eu-west-1'
-      })
-    ).rejects.toBeInstanceOf(MiddlewareSigningUnsupportedError)
-  })
-
   test('creates the legacy local private-key signer', async () => {
-    const account = await createMakerAccount({
+    const account = await createSignerAccount({
       readOnly: false,
       maker,
       method: 'private-key',
@@ -64,13 +52,13 @@ describe('maker signer selection', () => {
     const wrongMaker = privateKeyToAccount(`0x${'22'.repeat(32)}`).address
 
     await expect(
-      createMakerAccount({
+      createSignerAccount({
         readOnly: false,
         maker: wrongMaker,
         method: 'private-key',
         privateKey
       })
-    ).rejects.toMatchObject({ operation: 'maker-address' })
+    ).rejects.toMatchObject({ operation: 'signer-address' })
   })
 
   test('decrypts a keystore only at the signer boundary', async () => {
@@ -81,7 +69,7 @@ describe('maker signer selection', () => {
       expect(suppliedPassword).toBe(password)
       return privateKey
     })
-    const account = await createMakerAccount(
+    const account = await createSignerAccount(
       { readOnly: false, maker, method: 'keystore', path: '/secure/maker.json', password },
       { readFile, decryptKeystore }
     )
@@ -94,7 +82,7 @@ describe('maker signer selection', () => {
     const wrongMaker = privateKeyToAccount(`0x${'22'.repeat(32)}`).address
 
     await expect(
-      createMakerAccount(
+      createSignerAccount(
         {
           readOnly: false,
           maker: wrongMaker,
@@ -104,7 +92,7 @@ describe('maker signer selection', () => {
         },
         { readFile: async () => '{}', decryptKeystore: async () => privateKey }
       )
-    ).rejects.toMatchObject({ operation: 'maker-address' })
+    ).rejects.toMatchObject({ operation: 'signer-address' })
   })
 
   test('decrypts and signs with a real Web3 Secret Storage keystore', async () => {
@@ -114,7 +102,7 @@ describe('maker signer selection', () => {
     try {
       const wallet = Wallet.fromPrivateKey(Uint8Array.from(Buffer.from(privateKey.slice(2), 'hex')))
       await writeFile(path, await wallet.toV3String(password))
-      const account = await createMakerAccount({
+      const account = await createSignerAccount({
         readOnly: false,
         maker,
         method: 'keystore',
@@ -128,7 +116,7 @@ describe('maker signer selection', () => {
     }
   })
 
-  test('uses AWS KMS for non-exportable remote signing and recovers the configured maker', async () => {
+  test('uses AWS KMS for non-exportable remote signing and recovers the delegated signer', async () => {
     const secret = Uint8Array.from(Buffer.from(privateKey.slice(2), 'hex'))
     const publicKey = secp256k1.getPublicKey(secret, false)
     const spki = Uint8Array.from([
@@ -139,10 +127,10 @@ describe('maker signer selection', () => {
     const signDigest = vi.fn(async (_keyId: string, _region: string, digest: Uint8Array) =>
       secp256k1.sign(digest, secret, { lowS: false }).toDERRawBytes()
     )
-    const account = await createMakerAccount(
+    const account = await createSignerAccount(
       {
         readOnly: false,
-        maker,
+        maker: operatorMaker,
         method: 'aws',
         keyId: 'alias/quoter',
         region: 'eu-west-1'
@@ -174,6 +162,33 @@ describe('maker signer selection', () => {
     expect(bytesToHex(publicKey)).not.toBe(privateKey)
   })
 
+  test('rejects an AWS KMS key that derives the funded maker', async () => {
+    const secret = Uint8Array.from(Buffer.from(privateKey.slice(2), 'hex'))
+    const publicKey = secp256k1.getPublicKey(secret, false)
+    const spki = Uint8Array.from([
+      ...Buffer.from('3056301006072a8648ce3d020106052b8104000a034200', 'hex'),
+      ...publicKey
+    ])
+
+    await expect(
+      createSignerAccount(
+        {
+          readOnly: false,
+          maker,
+          method: 'aws',
+          keyId: 'alias/quoter',
+          region: 'eu-west-1'
+        },
+        {
+          kms: {
+            getPublicKey: async () => spki,
+            signDigest: async () => new Uint8Array()
+          }
+        }
+      )
+    ).rejects.toMatchObject({ operation: 'signer-address' })
+  })
+
   test('AWS KMS signs typed data plus legacy and EIP-2930 transactions', async () => {
     const secret = Uint8Array.from(Buffer.from(privateKey.slice(2), 'hex'))
     const publicKey = secp256k1.getPublicKey(secret, false)
@@ -181,8 +196,14 @@ describe('maker signer selection', () => {
       ...Buffer.from('3056301006072a8648ce3d020106052b8104000a034200', 'hex'),
       ...publicKey
     ])
-    const account = await createMakerAccount(
-      { readOnly: false, maker, method: 'aws', keyId: 'alias/maker', region: 'eu-west-1' },
+    const account = await createSignerAccount(
+      {
+        readOnly: false,
+        maker: operatorMaker,
+        method: 'aws',
+        keyId: 'alias/maker',
+        region: 'eu-west-1'
+      },
       {
         kms: {
           getPublicKey: async () => spki,
@@ -239,8 +260,14 @@ describe('maker signer selection', () => {
       ...Buffer.from('3056301006072a8648ce3d020106052b8104000a034200', 'hex'),
       ...publicKey
     ])
-    const account = await createMakerAccount(
-      { readOnly: false, maker, method: 'aws', keyId: 'alias/maker', region: 'eu-west-1' },
+    const account = await createSignerAccount(
+      {
+        readOnly: false,
+        maker: operatorMaker,
+        method: 'aws',
+        keyId: 'alias/maker',
+        region: 'eu-west-1'
+      },
       {
         kms: {
           getPublicKey: async () => spki,
@@ -292,8 +319,14 @@ describe('maker signer selection', () => {
     ]
   ])('rejects malformed or unsupported AWS KMS SPKI: %s', async (_name, spkiHex) => {
     await expect(
-      createMakerAccount(
-        { readOnly: false, maker, method: 'aws', keyId: 'alias/maker', region: 'eu-west-1' },
+      createSignerAccount(
+        {
+          readOnly: false,
+          maker: operatorMaker,
+          method: 'aws',
+          keyId: 'alias/maker',
+          region: 'eu-west-1'
+        },
         {
           kms: {
             getPublicKey: async () => Buffer.from(spkiHex, 'hex'),
@@ -337,8 +370,14 @@ describe('maker signer selection', () => {
       ...Buffer.from('3056301006072a8648ce3d020106052b8104000a034200', 'hex'),
       ...publicKey
     ])
-    const account = await createMakerAccount(
-      { readOnly: false, maker, method: 'aws', keyId: 'alias/maker', region: 'eu-west-1' },
+    const account = await createSignerAccount(
+      {
+        readOnly: false,
+        maker: operatorMaker,
+        method: 'aws',
+        keyId: 'alias/maker',
+        region: 'eu-west-1'
+      },
       {
         kms: { getPublicKey: async () => spki, signDigest: async () => Buffer.from(derHex, 'hex') }
       }
@@ -348,7 +387,7 @@ describe('maker signer selection', () => {
     })
   })
 
-  test('rejects an AWS KMS signature that cannot recover the configured maker', async () => {
+  test('rejects an AWS KMS signature that cannot recover the derived signer', async () => {
     const secret = Uint8Array.from(Buffer.from(privateKey.slice(2), 'hex'))
     const wrongSecret = Uint8Array.from(Buffer.from('22'.repeat(32), 'hex'))
     const publicKey = secp256k1.getPublicKey(secret, false)
@@ -356,8 +395,14 @@ describe('maker signer selection', () => {
       ...Buffer.from('3056301006072a8648ce3d020106052b8104000a034200', 'hex'),
       ...publicKey
     ])
-    const account = await createMakerAccount(
-      { readOnly: false, maker, method: 'aws', keyId: 'alias/maker', region: 'eu-west-1' },
+    const account = await createSignerAccount(
+      {
+        readOnly: false,
+        maker: operatorMaker,
+        method: 'aws',
+        keyId: 'alias/maker',
+        region: 'eu-west-1'
+      },
       {
         kms: {
           getPublicKey: async () => spki,

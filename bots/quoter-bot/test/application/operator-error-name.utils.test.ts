@@ -15,7 +15,7 @@ import { BootstrapHardHaltError } from '../../src/infrastructure/bootstrap/boots
 import { BootstrapMempoolValidationError } from '../../src/infrastructure/bootstrap/bootstrap-mempool-validation.error'
 import { LadderAdapterError } from '../../src/infrastructure/ladder/ladder-adapter.error'
 import { LadderHardHaltError } from '../../src/infrastructure/ladder/ladder-hard-halt.error'
-import { MakerAccountError } from '../../src/infrastructure/make/maker-account.error'
+import { SignerAccountError } from '../../src/infrastructure/make/signer-account.error'
 import { ReferenceAdapterError } from '../../src/infrastructure/reference/reference-adapter.error'
 
 describe('operatorErrorName', () => {
@@ -29,7 +29,7 @@ describe('operatorErrorName', () => {
   })
 
   test('keeps the bootstrap adapter classification', () => {
-    expect(operatorErrorName(new MakerAccountError('keystore-read'))).toBe('MakerAccountError')
+    expect(operatorErrorName(new SignerAccountError('keystore-read'))).toBe('SignerAccountError')
     expect(operatorErrorName(new BootstrapAdapterError('position-unavailable'))).toBe(
       'BootstrapAdapterError'
     )

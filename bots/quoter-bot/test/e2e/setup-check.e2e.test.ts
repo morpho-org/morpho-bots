@@ -44,6 +44,14 @@ const environment = (rpcUrl: string, apiBaseUrl: string) => ({
   MARKET_IDS: MARKET_ID,
   REFERENCE_MARKET_ID,
   NATIVE_RESERVE_WEI: String(NATIVE_RESERVE),
+  MAX_FEE_GWEI: '100',
+  PRIORITY_FEE_GWEI: '1',
+  MAX_TRANSACTION_SPEND_WEI: '100000000000000000',
+  MAX_PUBLICATION_GAS: '5000000',
+  MAX_PUBLICATION_DATA_BYTES: '65536',
+  MAX_CANCELLATION_GAS: '100000',
+  MAX_BATCH_CANCELLATION_GAS: '1000000',
+  MAX_BATCH_CANCELLATION_DATA_BYTES: '65536',
   MORPHO_API_BASE_URL: apiBaseUrl,
   REQUEST_TIMEOUT_MS: '30000'
 })
@@ -87,8 +95,11 @@ describe('quoter-bot setup check on a pinned Base fork', () => {
     expect(output.ready).toBe(true)
     expect(output.checks.map(check => [check.name, check.status])).toStrictEqual([
       ['chain', 'passed'],
-      ['maker', 'passed'],
+      ['signer', 'passed'],
       ['native-balance', 'passed'],
+      ['signer-native-balance', 'not-required'],
+      ['signer-authorization', 'not-required'],
+      ['signer-nonce', 'passed'],
       ['loan-allowance', 'passed'],
       ['ratifier', 'passed'],
       ['books', 'passed'],
@@ -105,7 +116,8 @@ describe('quoter-bot setup check on a pinned Base fork', () => {
       mutate: fork => fork.client.setCode({ address: MIDNIGHT, bytecode: '0x' })
     },
     {
-      name: 'maker',
+      name: 'signer',
+      additionallyFailed: ['signer-nonce'],
       environment: { MAKER_PRIVATE_KEY: ANVIL_TAKER_PRIVATE_KEY }
     },
     {
@@ -172,8 +184,11 @@ describe('quoter-bot setup check on a pinned Base fork', () => {
         const failed = new Set([failure.name, ...(failure.additionallyFailed ?? [])])
         expect(output.checks.map(check => [check.name, check.status])).toStrictEqual([
           ['chain', failed.has('chain') ? 'failed' : 'passed'],
-          ['maker', failed.has('maker') ? 'failed' : 'passed'],
+          ['signer', failed.has('signer') ? 'failed' : 'passed'],
           ['native-balance', failed.has('native-balance') ? 'failed' : 'passed'],
+          ['signer-native-balance', 'not-required'],
+          ['signer-authorization', 'not-required'],
+          ['signer-nonce', failed.has('signer-nonce') ? 'failed' : 'passed'],
           ['loan-allowance', failed.has('loan-allowance') ? 'failed' : 'passed'],
           ['ratifier', failed.has('ratifier') ? 'failed' : 'passed'],
           ['books', failed.has('books') ? 'failed' : 'passed'],

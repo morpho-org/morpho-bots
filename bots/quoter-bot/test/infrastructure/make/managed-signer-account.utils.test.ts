@@ -2,9 +2,9 @@ import { createPublicClient, custom } from 'viem'
 import { base } from 'viem/chains'
 import { describe, expect, test } from 'vitest'
 
-import { createManagedMakerAccount } from '../../../src/infrastructure/make/managed-maker-account.utils'
+import { createManagedSignerAccount } from '../../../src/infrastructure/make/managed-signer-account.utils'
 
-describe('createManagedMakerAccount', () => {
+describe('createManagedSignerAccount', () => {
   test('allocates sequential nonces when pending RPC truth briefly remains stale', async () => {
     let nonceReads = 0
     const client = createPublicClient({
@@ -17,7 +17,7 @@ describe('createManagedMakerAccount', () => {
         }
       })
     })
-    const account = createManagedMakerAccount(`0x${'11'.repeat(32)}`)
+    const account = createManagedSignerAccount(`0x${'11'.repeat(32)}`)
     const nonceManager = account.nonceManager
     if (!nonceManager) throw new TypeError('managed account is missing its nonce manager')
     const parameters = {

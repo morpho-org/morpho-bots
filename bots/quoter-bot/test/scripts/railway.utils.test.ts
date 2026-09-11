@@ -1,4 +1,6 @@
+import { getChainAddress } from '@morpho-org/morpho-ts'
 import { readFileSync } from 'node:fs'
+import { base } from 'viem/chains'
 import { describe, expect, test } from 'vitest'
 
 import {
@@ -12,6 +14,7 @@ import {
   selectNewRailwayDeployment,
   synchronizedOptionalRailwayVariables
 } from '../../scripts/railway.utils'
+import { requiresMaxRatificationGas } from '../../src/config/write-policy.utils'
 
 type DockerInstruction = { keyword: string; value: string }
 
@@ -67,6 +70,16 @@ describe('Railway CLI output parsing', () => {
     expect(() => assertFullRailwaySignerProvisioning('aws')).toThrow(
       'AWS KMS Railway deployment requires pre-provisioned credentials; use DEPLOY_ONLY=true'
     )
+  })
+
+  test('requires a ratification gas ceiling only for local Setter signing', () => {
+    const setter = getChainAddress(base.id, 'setterRatifier')
+    const ecrecover = getChainAddress(base.id, 'ecrecoverRatifier')
+
+    expect(requiresMaxRatificationGas('private-key', setter, base.id)).toBe(true)
+    expect(requiresMaxRatificationGas('keystore', setter, base.id)).toBe(true)
+    expect(requiresMaxRatificationGas('aws', setter, base.id)).toBe(false)
+    expect(requiresMaxRatificationGas('private-key', ecrecover, base.id)).toBe(false)
   })
 
   test('identifies only populated JSON arrays as deployable strategy lists', () => {
@@ -342,6 +355,18 @@ describe('Railway CLI output parsing', () => {
     expect(deploy).toContain('railway volume add --mount-path ${STATE_MOUNT_PATH} --json')
   })
 
+  test('validates all runtime variables before mutating Railway configuration', () => {
+    const deploy = readFileSync(new URL('../../scripts/deploy-railway.ts', import.meta.url), 'utf8')
+    const preflight = deploy.indexOf(
+      'const configuredRuntimeVariables = DEPLOY_ONLY ? [] : runtimeVariables()'
+    )
+    const firstVariableWrite = deploy.indexOf("await setRuntimeVariable(['RAILWAY_RUN_UID', '0'])")
+
+    expect(preflight).toBeGreaterThan(-1)
+    expect(preflight).toBeLessThan(firstVariableWrite)
+    expect(deploy).toContain('for (const variable of configuredRuntimeVariables)')
+  })
+
   test('synchronizes every optional variable with explicit safe defaults', () => {
     const variables = Object.fromEntries(
       synchronizedOptionalRailwayVariables({
@@ -409,6 +434,18 @@ describe('Railway CLI output parsing', () => {
 
     expect(compose).toContain('REFERENCE_RPC_URL: ${REFERENCE_RPC_URL:-}')
     expect(compose).toContain('REFERENCE_MARKET_ID: ${REFERENCE_MARKET_ID:-}')
+  })
+
+  test('exposes optional configuration for each supported signer backend', () => {
+    const compose = readFileSync(new URL('../../docker-compose.yml', import.meta.url), 'utf8')
+
+    expect(compose).toContain('KEY_STORAGE_METHOD: ${KEY_STORAGE_METHOD:-}')
+    expect(compose).toContain('MAKER_PRIVATE_KEY: ${MAKER_PRIVATE_KEY:-}')
+    expect(compose).toContain('KEYSTORE_PATH: ${KEYSTORE_PATH:-}')
+    expect(compose).toContain('KEYSTORE_PASSWORD: ${KEYSTORE_PASSWORD:-}')
+    expect(compose).toContain('KEYSTORE_INTERACTIVE: ${KEYSTORE_INTERACTIVE:-}')
+    expect(compose).toContain('AWS_KMS_KEY_ID: ${AWS_KMS_KEY_ID:-}')
+    expect(compose).toContain('AWS_REGION: ${AWS_REGION:-}')
   })
 
   test('reads the newest complete deployment and rejects incomplete output', () => {

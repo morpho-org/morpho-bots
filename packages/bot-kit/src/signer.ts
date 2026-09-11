@@ -1,7 +1,7 @@
-import type { Account, Chain, Hex, Transport } from 'viem'
+import type { Account, Chain, Hex, LocalAccount, Transport } from 'viem'
 
 import { tryCatch } from '@repo/utils'
-import { createWalletClient, TransactionReceiptNotFoundError } from 'viem'
+import { createWalletClient, keccak256, RpcError, TransactionReceiptNotFoundError } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
 import {
   getBalance,
@@ -9,7 +9,7 @@ import {
   getTransactionCount,
   getTransactionReceipt,
   prepareTransactionRequest,
-  sendTransaction
+  sendRawTransaction
 } from 'viem/actions'
 
 import type { Logger } from './logger'
@@ -24,7 +24,8 @@ import type {
 
 import { evaluatePolicy, PolicyViolationError } from './policy'
 import { createHttpTransport } from './transport'
-import { TxSendError } from './tx-send.error'
+
+const TRANSACTION_ALREADY_KNOWN = /already known|transaction already imported/i
 
 /** The signed-send primitives {@link createSigner} returns and `createPendingQueue` injects. */
 export type Signer = {
@@ -40,12 +41,12 @@ export type Signer = {
 }
 
 /**
- * Builds the signed-send path the pending queue needs: a plain HTTP (optionally `failover`) wallet
- * client — deliberately NOT the viem-dlc `deployless` transport, which only wraps `eth_call` for the
- * lens — with a local pending-nonce cursor so sequential sends claim sequential nonces. `rpcUrl`
- * must be a full RPC that relays sends: a read-only relay that acks `eth_sendRawTransaction`
- * without forwarding it to the sequencer would sink every tx. Returns the primitives
- * `createPendingQueue` injects: {@link SendTx}, {@link GetReceipt}, {@link GetBaseFee}, {@link SyncNonce}.
+ * Builds the signed-send path the pending queue needs with a local pending-nonce cursor so
+ * sequential sends claim sequential nonces. Reads may fail over, but raw transaction submission
+ * uses only the primary endpoint so an ambiguous response remains reconcilable. `rpcUrl` must be a
+ * full RPC that relays sends: a read-only relay that acknowledges `eth_sendRawTransaction` without
+ * forwarding it would sink every transaction. Returns the primitives `createPendingQueue` injects:
+ * {@link SendTx}, {@link GetReceipt}, {@link GetBaseFee}, and {@link SyncNonce}.
  */
 export function createSigner(options: {
   chain: Chain
@@ -62,12 +63,41 @@ export function createSigner(options: {
   /** Where a policy violation is logged before it throws. */
   logger?: Logger | undefined
 }): Signer {
+  return createAccountSigner({
+    ...options,
+    account: privateKeyToAccount(options.privateKey)
+  })
+}
+
+/**
+ * Builds the shared signed-send path around a caller-provided local account. This supports
+ * non-exportable accounts such as AWS KMS while retaining the same nonce, policy, receipt, and
+ * balance behavior as {@link createSigner}.
+ */
+export function createAccountSigner(options: {
+  chain: Chain
+  rpcUrl: string
+  rpcUrlFallback?: string | undefined
+  account: LocalAccount
+  policy?: Policy | undefined
+  logger?: Logger | undefined
+}): Signer {
   // viem-dlc's `failover` transport types its options as `unknown`, which isn't assignable to viem's
   // `Transport` (Record options) — the cast is safe (it's a valid runtime transport). The deployless
   // read client sidesteps this by re-wrapping the base transport in `deployless`.
   const transport = createHttpTransport(options.rpcUrl, options.rpcUrlFallback) as Transport
-  const account = privateKeyToAccount(options.privateKey)
+  const { account } = options
   const client = createWalletClient({ account, chain: options.chain, transport })
+  // A raw transaction is sent to exactly one endpoint. Falling through to a second endpoint after
+  // a lost response can turn "accepted, response lost" into a definitive-looking "already known"
+  // or "nonce too low" rejection, erasing the ambiguity the pending queue must reconcile.
+  const broadcastClient = options.rpcUrlFallback
+    ? createWalletClient({
+        account,
+        chain: options.chain,
+        transport: createHttpTransport(options.rpcUrl) as Transport
+      })
+    : client
   let nextNonce: number | undefined
   // In-flight first read of the cursor, shared by every concurrent first-send (cleared once settled).
   let cursorRead: Promise<number> | undefined
@@ -143,12 +173,30 @@ export function createSigner(options: {
         throw new PolicyViolationError(decision.message, decision.check)
       }
     }
+    let serializedTransaction: Hex
     try {
-      const txHash = await sendTransaction(client, request)
-      return { nonce, txHash, gas: request.gas ?? 0n }
+      serializedTransaction = await account.signTransaction(request)
     } catch (error) {
       if (req.nonce === undefined) nextNonce = Math.min(nextNonce ?? nonce, nonce)
-      throw new TxSendError(error, nonce)
+      throw error
+    }
+    const txHash = keccak256(serializedTransaction)
+    try {
+      const responseHash = await sendRawTransaction(broadcastClient, { serializedTransaction })
+      if (responseHash !== txHash) {
+        // The signed bytes are authoritative. A mismatched provider response is ambiguous in the
+        // same way as a lost response, so retain the nonce and reconcile the deterministic hash.
+        return { nonce, txHash, gas: request.gas ?? 0n, broadcastUnknown: true }
+      }
+      return { nonce, txHash, gas: request.gas ?? 0n }
+    } catch (error) {
+      if (error instanceof RpcError && !TRANSACTION_ALREADY_KNOWN.test(error.details)) {
+        if (req.nonce === undefined) nextNonce = Math.min(nextNonce ?? nonce, nonce)
+        throw error
+      }
+      // The RPC may have accepted the raw transaction before losing its response. The deterministic
+      // local hash lets the queue retain and reconcile it; reusing this nonce would be unsafe.
+      return { nonce, txHash, gas: request.gas ?? 0n, broadcastUnknown: true }
     }
   }
 

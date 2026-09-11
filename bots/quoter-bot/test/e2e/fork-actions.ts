@@ -227,7 +227,7 @@ const seedExternalMakerCredit = async (anvil: AnvilHandle, router: RouterApiHand
       kind: 'ecrecover',
       target: ECRECOVER_RATIFIER,
       root: Tree.create([lendOffer]).root,
-      account: ANVIL_TAKER_ACCOUNT.address,
+      signer: ANVIL_TAKER_ACCOUNT.address,
       offers: 1
     }
   )
@@ -331,7 +331,7 @@ export const publishMakerSell = async (
       kind: 'ecrecover',
       target: ECRECOVER_RATIFIER,
       root: Tree.create([offer]).root,
-      account: ANVIL_TAKER_ACCOUNT.address,
+      signer: ANVIL_TAKER_ACCOUNT.address,
       offers: 1
     }
   )

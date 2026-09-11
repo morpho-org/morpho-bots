@@ -17,12 +17,10 @@ identity:
   keystorePath: ''
   keystorePassword: ''
   keystoreInteractive: false
-  # AWS KMS alternatives remain blank while private-key is selected. KMS signing is remote.
+  # AWS KMS alternatives remain blank while private-key is selected. AWS signer must differ from
+  # makerAddress and may use only the canonical Ecrecover ratifier.
   awsKmsKeyId: ''
   awsRegion: ''
-  # Quoter-signer middleware alternative (TIB-2026-08-12): alias-qualified production-alias
-  # Lambda ARN; the region is derived from the ARN.
-  quoterSignerLambdaArn: ''
 
 contracts:
   midnightAddress: '0x2222222222222222222222222222222222222222'
@@ -43,6 +41,18 @@ markets:
 
 setup:
   nativeReserveWei: '10000000000000000'
+  # Required only for AWS write mode.
+  signerNativeReserveWei: ''
+  maxFeeGwei: 100
+  priorityFeeGwei: 1
+  maxTransactionSpendWei: '100000000000000000'
+  maxPublicationGas: 5000000
+  maxPublicationDataBytes: 65536
+  maxCancellationGas: 100000
+  maxBatchCancellationGas: 1000000
+  maxBatchCancellationDataBytes: 65536
+  # Required only for local or keystore Setter mode.
+  maxRatificationGas: ''
   requestTimeoutMs: 10000
   transactionReceiptTimeoutMs: 180000
 

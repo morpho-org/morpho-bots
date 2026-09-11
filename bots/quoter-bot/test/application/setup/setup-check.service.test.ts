@@ -12,8 +12,7 @@ import {
 } from '../../../src/application/setup/setup-check.service'
 import { SetupFailedError } from '../../../src/application/setup/setup-failed.error'
 import { SetupMonitorConfigurationError } from '../../../src/application/setup/setup-monitor-configuration.error'
-import { MakerAccountError } from '../../../src/infrastructure/make/maker-account.error'
-import { MiddlewareSigningUnsupportedError } from '../../../src/infrastructure/make/middleware-signing-unsupported.error'
+import { SignerAccountError } from '../../../src/infrastructure/make/signer-account.error'
 import { ProviderReadError } from '../../../src/infrastructure/setup-state/provider-read.error'
 import { ProviderResponseError } from '../../../src/infrastructure/setup-state/provider-response.error'
 
@@ -21,6 +20,7 @@ const maker = '0x1111111111111111111111111111111111111111'
 const midnight = '0x2222222222222222222222222222222222222222'
 const loanAsset = '0x3333333333333333333333333333333333333333'
 const ratifier = '0x4444444444444444444444444444444444444444'
+const delegatedSigner = '0x9999999999999999999999999999999999999999'
 const marketId: Hex = `0x${'55'.repeat(32)}`
 const secondMarketId: Hex = `0x${'66'.repeat(32)}`
 const referenceMarketId: Hex = `0x${'77'.repeat(32)}`
@@ -28,6 +28,7 @@ const referenceMarketId: Hex = `0x${'77'.repeat(32)}`
 const config: SetupCheckConfig = {
   chainId: 8453,
   maker,
+  signerMode: 'private-key',
   midnight,
   nativeReserve: 10n,
   loanAsset,
@@ -41,7 +42,9 @@ const readyState = (): SetupStateService => {
     getChainId: async () => 8453,
     getReferenceChainId: async () => 8453,
     getCode: async () => '0x1234',
-    getDerivedMaker: async () => maker,
+    getDerivedSigner: async () => maker,
+    getAuthorization: async () => true,
+    getTransactionCounts: async () => ({ latest: 0, pending: 0 }),
     getNativeBalance: async () => 10n,
     getLoanAllowance: async () => ({ spender: midnight, amount: maxUint256 }),
     getRatifier: async () => ({
@@ -613,8 +616,11 @@ describe('SetupCheckService', () => {
     expect(report.ready).toBe(true)
     expect(report.checks.map(check => [check.name, check.status])).toEqual([
       ['chain', 'passed'],
-      ['maker', 'passed'],
+      ['signer', 'passed'],
       ['native-balance', 'passed'],
+      ['signer-native-balance', 'not-required'],
+      ['signer-authorization', 'not-required'],
+      ['signer-nonce', 'passed'],
       ['loan-allowance', 'passed'],
       ['ratifier', 'passed'],
       ['books', 'passed'],
@@ -624,6 +630,88 @@ describe('SetupCheckService', () => {
     ])
   })
 
+  test('checks delegated AWS authorization, gas reserve, and nonce independently', async () => {
+    const state = readyState()
+    state.getDerivedSigner = async () => delegatedSigner
+    state.getNativeBalance = async address => (address === delegatedSigner ? 20n : 10n)
+    const report = await new SetupCheckService(state, {
+      ...config,
+      signerMode: 'aws',
+      signerNativeReserve: 20n
+    }).check()
+
+    expect(report.ready).toBe(true)
+    expect(
+      report.checks
+        .filter(check =>
+          ['signer', 'signer-native-balance', 'signer-authorization', 'signer-nonce'].includes(
+            check.name
+          )
+        )
+        .map(check => [check.name, check.status])
+    ).toEqual([
+      ['signer', 'passed'],
+      ['signer-native-balance', 'passed'],
+      ['signer-authorization', 'passed'],
+      ['signer-nonce', 'passed']
+    ])
+  })
+
+  test.each([
+    [
+      'signer-native-balance',
+      {
+        getNativeBalance: async (address: string) => (address === delegatedSigner ? 19n : 10n)
+      }
+    ],
+    ['signer-authorization', { getAuthorization: async () => false }],
+    ['signer-nonce', { getTransactionCounts: async () => ({ latest: 2, pending: 3 }) }]
+  ])('fails delegated AWS readiness at %s', async (failedName, override) => {
+    const state = {
+      ...readyState(),
+      getDerivedSigner: async () => delegatedSigner,
+      getNativeBalance: async (address: string) => (address === delegatedSigner ? 20n : 10n),
+      ...override
+    } as SetupStateService
+    const report = await new SetupCheckService(state, {
+      ...config,
+      signerMode: 'aws',
+      signerNativeReserve: 20n
+    }).check()
+
+    expect(report.ready).toBe(false)
+    expect(report.checks.find(check => check.name === failedName)?.status).toBe('failed')
+  })
+
+  test('permits a pending signer transaction during continuous readiness monitoring', async () => {
+    const controller = new AbortController()
+    const state = readyState()
+    let signerNonceReads = 0
+    state.getTransactionCounts = async () => {
+      signerNonceReads += 1
+      return { latest: 2, pending: 3 }
+    }
+    const reports: SetupCheckReport[] = []
+
+    const terminal = await new SetupCheckService(state, config).runContinuously({
+      signal: controller.signal,
+      intervalMs: 1,
+      onCycle: report => {
+        reports.push(report)
+        controller.abort()
+      }
+    })
+
+    expect(reports).toHaveLength(1)
+    expect(reports[0]?.ready).toBe(true)
+    expect(signerNonceReads).toBe(0)
+    expect(reports[0]?.checks.find(check => check.name === 'signer-nonce')).toMatchObject({
+      status: 'not-required',
+      required: 'one-time startup check'
+    })
+    expect(terminal).toEqual({ status: 'stopped', reason: 'signal', cycles: 1 })
+  })
+
   test('skips only private-key derivation and preserves maker observations in read-only mode', async () => {
     const reads: string[] = []
     const unavailable = async (): Promise<never> => {
@@ -631,7 +719,7 @@ describe('SetupCheckService', () => {
       throw new Error('signer-only read must not run')
     }
     const state = readyState()
-    state.getDerivedMaker = unavailable
+    state.getDerivedSigner = unavailable
     state.getNativeBalance = async () => {
       reads.push('native-balance')
       return 10n
@@ -656,59 +744,42 @@ describe('SetupCheckService', () => {
     expect(reads).toEqual(['native-balance', 'loan-allowance', 'ratifier'])
     expect(report.ready).toBe(true)
     expect(report.checks.slice(1, 5).map(check => [check.name, check.status])).toEqual([
-      ['maker', 'not-required'],
+      ['signer', 'not-required'],
       ['native-balance', 'passed'],
-      ['loan-allowance', 'passed'],
-      ['ratifier', 'passed']
+      ['signer-native-balance', 'not-required'],
+      ['signer-authorization', 'not-required']
     ])
   })
 
   test('fails maker readiness when write mode receives no derived signer identity', async () => {
     const state = readyState()
-    state.getDerivedMaker = async () => undefined
+    state.getDerivedSigner = async () => undefined
 
     const report = await new SetupCheckService(state, config).check()
 
     expect(report.ready).toBe(false)
-    expect(report.checks.find(check => check.name === 'maker')).toEqual({
-      name: 'maker',
+    expect(report.checks.find(check => check.name === 'signer')).toEqual({
+      name: 'signer',
       status: 'failed',
       observed: { derived: false, matches: false },
-      required: 'private key derives configured maker'
+      required: 'local signer equals configured maker'
     })
   })
 
   test('preserves a sanitized signer operation in the maker readiness check', async () => {
     const state = readyState()
-    state.getDerivedMaker = async () => {
-      throw new MakerAccountError('kms-public-key')
+    state.getDerivedSigner = async () => {
+      throw new SignerAccountError('kms-public-key')
     }
 
     const report = await new SetupCheckService(state, config).check()
 
     expect(report.ready).toBe(false)
-    expect(report.checks.find(check => check.name === 'maker')).toEqual({
-      name: 'maker',
+    expect(report.checks.find(check => check.name === 'signer')).toEqual({
+      name: 'signer',
       status: 'failed',
       observed: { kind: 'signer-error', operation: 'kms-public-key' },
-      required: 'private key derives configured maker'
-    })
-  })
-
-  test('reports the fail-closed middleware identity as a sanitized signer observation', async () => {
-    const state = readyState()
-    state.getDerivedMaker = async () => {
-      throw new MiddlewareSigningUnsupportedError()
-    }
-
-    const report = await new SetupCheckService(state, config).check()
-
-    expect(report.ready).toBe(false)
-    expect(report.checks.find(check => check.name === 'maker')).toEqual({
-      name: 'maker',
-      status: 'failed',
-      observed: { kind: 'signer-error', operation: 'middleware-unsupported' },
-      required: 'private key derives configured maker'
+      required: 'local signer equals configured maker'
     })
   })
 
@@ -895,7 +966,7 @@ describe('SetupCheckService', () => {
     const state = readyState()
     state.getChainId = () => wait('chain-id', 8453)
     state.getCode = () => wait('code', '0x1234')
-    state.getDerivedMaker = () => wait('maker', maker)
+    state.getDerivedSigner = () => wait('maker', maker)
     state.getNativeBalance = () => wait('balance', 10n)
     state.getLoanAllowance = () => wait('allowance', { spender: midnight, amount: maxUint256 })
     state.getRatifier = () =>
@@ -955,7 +1026,7 @@ describe('SetupCheckService', () => {
     const state = readyState()
     state.getChainId = unavailable
     state.getCode = unavailable
-    state.getDerivedMaker = unavailable
+    state.getDerivedSigner = unavailable
     state.getNativeBalance = unavailable
     state.getLoanAllowance = unavailable
     state.getRatifier = unavailable
@@ -975,8 +1046,11 @@ describe('SetupCheckService', () => {
       ])
     ).toEqual([
       ['chain', 'failed'],
-      ['maker', 'failed'],
+      ['signer', 'failed'],
       ['native-balance', 'failed'],
+      ['signer-native-balance', 'not-required'],
+      ['signer-authorization', 'not-required'],
+      ['signer-nonce', 'failed'],
       ['loan-allowance', 'failed'],
       ['ratifier', 'failed'],
       ['books', 'failed'],
@@ -1162,7 +1236,7 @@ describe('SetupCheckService', () => {
     const state = readyState()
     state.getChainId = async () => 1
     state.getCode = async () => '0x'
-    state.getDerivedMaker = async () => ratifier
+    state.getDerivedSigner = async () => ratifier
     state.getNativeBalance = async () => 9n
     state.getLoanAllowance = async () => ({ spender: ratifier, amount: 99n })
     state.getRatifier = async () => ({
@@ -1197,7 +1271,7 @@ describe('SetupCheckService', () => {
       report.checks.filter(check => check.status === 'failed').map(check => check.name)
     ).toEqual([
       'chain',
-      'maker',
+      'signer',
       'native-balance',
       'loan-allowance',
       'ratifier',

@@ -1130,3 +1130,107 @@ describe('submit serialization', () => {
     expect(queue.size).toBe(0)
   })
 })
+
+describe('tracked submissions', () => {
+  const trackedArgs = {
+    request: REQUEST,
+    label: 'publication:root',
+    maxFeePerGas: 1000n,
+    maxPriorityFeePerGas: 1000n
+  } as const
+
+  it('reports the initial identity and resolves the mined hash', async () => {
+    const { queue } = setup({
+      getReceipt: async () => ({ status: 'success', blockNumber: 10n })
+    })
+    const outcome = await queue.submitTracked(trackedArgs)
+    expect(outcome).toMatchObject({ sent: true, nonce: 7, txHash: hashOf(1) })
+    if (!outcome.sent) throw new Error('expected tracked send')
+
+    await queue.onBlock(10n)
+    await expect(outcome.settlement).resolves.toEqual({
+      kind: 'confirmed-success',
+      nonce: 7,
+      txHash: hashOf(1),
+      txHashes: [hashOf(1)]
+    })
+  })
+
+  it('tracks an ambiguous broadcast by its locally derived hash', async () => {
+    const { queue, events } = setup({
+      send: async request => ({
+        nonce: request.nonce ?? 7,
+        txHash: hashOf(1),
+        gas: STUB_GAS,
+        broadcastUnknown: true
+      }),
+      getReceipt: async () => ({ status: 'success', blockNumber: 10n })
+    })
+    const outcome = await queue.submitTracked(trackedArgs)
+    expect(outcome).toMatchObject({ sent: true, nonce: 7, txHash: hashOf(1) })
+    expect(queue.snapshot()).toEqual([{ nonce: 7, txHash: hashOf(1), attempt: 0 }])
+    expect(events.some(event => event.event === 'tx.broadcast_unknown')).toBe(true)
+    if (!outcome.sent) throw new Error('expected tracked send')
+
+    await queue.onBlock(10n)
+    await expect(outcome.settlement).resolves.toMatchObject({
+      kind: 'confirmed-success',
+      nonce: 7,
+      txHash: hashOf(1)
+    })
+  })
+
+  it('reports replacements and resolves with an earlier hash that mines', async () => {
+    let mined = false
+    const broadcasts: { kind: string; txHash: Hex }[] = []
+    const { queue } = setup({
+      baseFee: 100n,
+      getReceipt: async txHash =>
+        mined && txHash === hashOf(1) ? { status: 'success', blockNumber: 6n } : null
+    })
+    const outcome = await queue.submitTracked({
+      ...trackedArgs,
+      onBroadcast: broadcast => {
+        broadcasts.push(broadcast)
+      }
+    })
+    if (!outcome.sent) throw new Error('expected tracked send')
+
+    await queue.onBlock(0n)
+    await queue.onBlock(5n)
+    expect(broadcasts).toEqual([
+      { kind: 'initial', nonce: 7, txHash: hashOf(1) },
+      { kind: 'replacement', nonce: 7, txHash: hashOf(2) }
+    ])
+
+    mined = true
+    await queue.onBlock(6n)
+    await expect(outcome.settlement).resolves.toEqual({
+      kind: 'confirmed-success',
+      nonce: 7,
+      txHash: hashOf(1),
+      txHashes: [hashOf(2), hashOf(1)]
+    })
+  })
+
+  it('resolves a manual drop and ignores observer failures', async () => {
+    const { queue, events } = setup()
+    const outcome = await queue.submitTracked({
+      ...trackedArgs,
+      onBroadcast: () => {
+        throw new Error('diagnostic sink unavailable')
+      }
+    })
+    if (!outcome.sent) throw new Error('expected tracked send')
+
+    expect(queue.drop(outcome.nonce, 'operator_reconciliation')).toBe(true)
+    await expect(outcome.settlement).resolves.toEqual({
+      kind: 'dropped',
+      nonce: 7,
+      txHash: hashOf(1),
+      txHashes: [hashOf(1)],
+      reason: 'operator_reconciliation'
+    })
+    expect(events.some(event => event.event === 'tx.observer_failed')).toBe(true)
+  })
+})

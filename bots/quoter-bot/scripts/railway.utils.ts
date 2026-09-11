@@ -54,14 +54,12 @@ const stringField = (value: unknown) => (typeof value === 'string' ? value : '')
 /**
  * Rejects full Railway provisioning for signer modes whose credentials or files cannot be seeded.
  * @param method - Validated signer method selected by the invoking environment.
- * @throws `RailwayDeploymentError` for keystore, AWS KMS, or quoter-signer middleware full
+ * @throws `RailwayDeploymentError` for keystore or AWS KMS full
  * provisioning.
  * @remarks Existing services may use those modes only after out-of-band provisioning followed by
  * `DEPLOY_ONLY=true`; this guard performs no Railway or filesystem side effects.
  */
-export const assertFullRailwaySignerProvisioning = (
-  method: 'private-key' | 'keystore' | 'aws' | 'middleware'
-) => {
+export const assertFullRailwaySignerProvisioning = (method: 'private-key' | 'keystore' | 'aws') => {
   if (method === 'keystore') {
     throw new RailwayDeploymentError(
       'Keystore Railway deployment requires a pre-provisioned file; use DEPLOY_ONLY=true'
@@ -70,11 +68,6 @@ export const assertFullRailwaySignerProvisioning = (
   if (method === 'aws') {
     throw new RailwayDeploymentError(
       'AWS KMS Railway deployment requires pre-provisioned credentials; use DEPLOY_ONLY=true'
-    )
-  }
-  if (method === 'middleware') {
-    throw new RailwayDeploymentError(
-      'Middleware Railway deployment requires pre-provisioned invoke credentials; use DEPLOY_ONLY=true'
     )
   }
 }
