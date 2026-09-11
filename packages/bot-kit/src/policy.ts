@@ -36,6 +36,17 @@ export type MulticallPolicy = {
   innerTargetsByOuter: Readonly<Record<Address, readonly Address[]>>
 }
 
+/** One allowed operation on one contract, with limits specific to that operation. */
+export type PolicyRule = {
+  target: Address
+  /** Required function selector, or omitted for a raw-calldata endpoint. */
+  selector?: Hex
+  maxGasLimit: bigint
+  maxDataBytes: number
+  /** Optional deep authorization for a `multicall(bytes[])` operation. */
+  multicall?: MulticallPolicy
+}
+
 /** One signer authorizes one entrypoint on a fixed target set on one chain, under fixed fee/gas/size ceilings. */
 export type Policy = {
   chainId: number
@@ -66,6 +77,12 @@ export type Policy = {
   selector?: Hex
   /** When set, calldata must also satisfy the {@link MulticallPolicy} envelope rules. */
   multicall?: MulticallPolicy
+  /**
+   * Allowed target and selector pairs with operation-specific gas and calldata limits. When set,
+   * these rules replace `targets`, `selector`, `maxGasLimit`, `maxDataBytes`, and `multicall` for
+   * authorization. The legacy fields remain required to preserve existing callers.
+   */
+  rules?: readonly PolicyRule[]
 }
 
 /** The prepared-transaction fields the pre-broadcast guard evaluates against a {@link Policy}. */
@@ -125,14 +142,25 @@ export function evaluatePolicy(policy: Policy, tx: PolicyTx): PolicyDecision {
   if (tx.chainId !== policy.chainId) {
     return deny('chainId', `chainId ${tx.chainId} does not equal ${policy.chainId}`)
   }
-  if (!policy.targets.some(target => isAddressEqual(tx.to, target))) {
+  const txSelector = tx.data.slice(0, 10).toLowerCase()
+  const targetRules = policy.rules?.filter(rule => isAddressEqual(tx.to, rule.target))
+  const rule = targetRules?.find(
+    candidate => candidate.selector === undefined || candidate.selector.toLowerCase() === txSelector
+  )
+  if (policy.rules) {
+    if (targetRules?.length === 0) {
+      return deny('target', `target ${tx.to} is not among the configured targets`)
+    }
+    if (!rule) return deny('selector', 'calldata does not match an allowed target operation')
+  } else if (!policy.targets.some(target => isAddressEqual(tx.to, target))) {
     return deny('target', `target ${tx.to} is not among the configured targets`)
   }
   if (tx.value !== 0n) return deny('value', 'transaction value must be zero')
   if (tx.maxFeePerGas > policy.maxFeePerGasWei) {
     return deny('maxFeePerGas', `maxFeePerGas ${tx.maxFeePerGas} exceeds policy ceiling`)
   }
-  if (tx.gas > policy.maxGasLimit) {
+  const maxGasLimit = rule?.maxGasLimit ?? policy.maxGasLimit
+  if (tx.gas > maxGasLimit) {
     return deny('gas', `gas ${tx.gas} exceeds policy ceiling`)
   }
   const spendWei = tx.gas * tx.maxFeePerGas
@@ -140,14 +168,17 @@ export function evaluatePolicy(policy: Policy, tx: PolicyTx): PolicyDecision {
     return deny('spend', `gas x maxFeePerGas ${spendWei} exceeds policy spend ceiling`)
   }
   const dataBytes = (tx.data.length - 2) / 2
-  if (dataBytes > policy.maxDataBytes) {
+  const maxDataBytes = rule?.maxDataBytes ?? policy.maxDataBytes
+  if (dataBytes > maxDataBytes) {
     return deny('maxDataBytes', `calldata size ${dataBytes} exceeds policy ceiling`)
   }
-  const selector = (policy.selector ?? EXECUTOR_SELECTOR).toLowerCase()
-  if (tx.data.slice(0, 10).toLowerCase() !== selector) {
+  const selector = rule
+    ? rule.selector?.toLowerCase()
+    : (policy.selector ?? EXECUTOR_SELECTOR).toLowerCase()
+  if (selector !== undefined && txSelector !== selector) {
     return deny('selector', `calldata must call configured selector ${selector}`)
   }
-  const { multicall } = policy
+  const multicall = rule?.multicall ?? policy.multicall
   if (multicall) {
     // A throw out of the deep check must never escape the PolicyDecision contract — default-deny.
     const { data: reason, error } = tryCatch(() => checkMulticall(multicall, tx))

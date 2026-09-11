@@ -20,6 +20,15 @@ const environment = {
   MARKET_IDS: marketId,
   REFERENCE_MARKET_ID: `0x${'66'.repeat(32)}`,
   NATIVE_RESERVE_WEI: '10',
+  MAX_FEE_GWEI: '100',
+  PRIORITY_FEE_GWEI: '1',
+  MAX_TRANSACTION_SPEND_WEI: '100000000000000000',
+  MAX_PUBLICATION_GAS: '5000000',
+  MAX_PUBLICATION_DATA_BYTES: '65536',
+  MAX_CANCELLATION_GAS: '100000',
+  MAX_BATCH_CANCELLATION_GAS: '1000000',
+  MAX_BATCH_CANCELLATION_DATA_BYTES: '65536',
+  MAX_RATIFICATION_GAS: '100000',
   MORPHO_API_BASE_URL: 'https://api.example',
   ROUTER_API_BASE_URL: 'https://router.example'
 }
@@ -42,7 +51,7 @@ describe('createProductionOfferInvalidationPort', () => {
 
     await expect(
       Promise.resolve().then(() => createProductionOfferInvalidationPort(config))
-    ).rejects.toMatchObject({ name: 'MakerAccountError', operation: 'maker-address' })
+    ).rejects.toMatchObject({ name: 'SignerAccountError', operation: 'signer-address' })
   })
 
   test('preserves a sanitized signer-loading failure', async () => {
@@ -54,7 +63,7 @@ describe('createProductionOfferInvalidationPort', () => {
     })
 
     await expect(createProductionOfferInvalidationPort(config)).rejects.toMatchObject({
-      name: 'MakerAccountError',
+      name: 'SignerAccountError',
       operation: 'keystore-read'
     })
   })

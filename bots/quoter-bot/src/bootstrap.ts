@@ -41,12 +41,15 @@ import { readPasswordInteractively } from './infrastructure/cli/password-prompt.
 import { createProductionOfferInvalidationPort } from './infrastructure/invalidation/production-offer-invalidation'
 import { createLadderGroupOwnership } from './infrastructure/ladder/ladder-group-ownership.utils'
 import { createProductionLadderAdapters } from './infrastructure/ladder/production-ladder'
-import { createMakerAccount } from './infrastructure/make/maker-account.utils'
 import { ReadOnlyBootstrapMakeService } from './infrastructure/make/read-only-bootstrap-make.service'
 import { ReadOnlyLadderMakeService } from './infrastructure/make/read-only-ladder-make.service'
+import { createSignerAccount } from './infrastructure/make/signer-account.utils'
 import { createChainReader } from './infrastructure/setup-state/chain-reader.utils'
 import { requestJson } from './infrastructure/setup-state/http-json.utils'
 import { ViemSetupStateService } from './infrastructure/setup-state/viem-setup-state.service'
+import { createQuoterTransactionExecutor } from './infrastructure/transaction/quoter-transaction-executor'
+import { createQuoterTransactionLogger } from './infrastructure/transaction/quoter-transaction-logger.utils'
+import { QuoterTransactionError } from './infrastructure/transaction/quoter-transaction.error'
 
 type Environment = Record<string, string | undefined>
 
@@ -83,9 +86,21 @@ const assertReferenceConfigured = (
   }
 }
 
-const makerAccountAddress = async (
+const signerAccountAddress = async (
   identity: Exclude<ConfigService['identity'], { readOnly: true }>
-) => (await createMakerAccount(identity)).address
+) => (await createSignerAccount(identity)).address
+
+const assertStateHasNoPendingSignerNonce = async (state: SetupStateService) => {
+  try {
+    const signer = await state.getDerivedSigner()
+    if (!signer) throw new QuoterTransactionError('unknown-pending-nonce')
+    const { latest, pending } = await state.getTransactionCounts(signer)
+    if (latest !== pending) throw new QuoterTransactionError('unknown-pending-nonce')
+  } catch (error) {
+    if (error instanceof QuoterTransactionError) throw error
+    throw new QuoterTransactionError('unknown-pending-nonce')
+  }
+}
 
 type Dependencies = {
   createState?: (config: ConfigService) => SetupStateService
@@ -121,7 +136,7 @@ const defaultState = async (config: ConfigService, ignoredOfferGroupIds: readonl
     ? { readOnly: true as const }
     : {
         readOnly: false as const,
-        deriveSignerAddress: () => makerAccountAddress(identity)
+        deriveSignerAddress: () => signerAccountAddress(identity)
       }
   const ownership = createBootstrapGroupOwnership({
     chainId: config.chainId,
@@ -214,35 +229,18 @@ export const createApplication = (
         'KEYSTORE_PASSWORD',
         'KEYSTORE_INTERACTIVE',
         'AWS_KMS_KEY_ID',
-        'AWS_REGION',
-        'QUOTER_SIGNER_LAMBDA_ARN'
+        'AWS_REGION'
       ])
         delete effectiveEnvironment[key]
     } else if (method === 'keystore') {
-      for (const key of [
-        'MAKER_PRIVATE_KEY',
-        'AWS_KMS_KEY_ID',
-        'AWS_REGION',
-        'QUOTER_SIGNER_LAMBDA_ARN'
-      ])
+      for (const key of ['MAKER_PRIVATE_KEY', 'AWS_KMS_KEY_ID', 'AWS_REGION'])
         delete effectiveEnvironment[key]
     } else if (method === 'aws') {
       for (const key of [
         'MAKER_PRIVATE_KEY',
         'KEYSTORE_PATH',
         'KEYSTORE_PASSWORD',
-        'KEYSTORE_INTERACTIVE',
-        'QUOTER_SIGNER_LAMBDA_ARN'
-      ])
-        delete effectiveEnvironment[key]
-    } else if (method === 'middleware') {
-      for (const key of [
-        'MAKER_PRIVATE_KEY',
-        'KEYSTORE_PATH',
-        'KEYSTORE_PASSWORD',
-        'KEYSTORE_INTERACTIVE',
-        'AWS_KMS_KEY_ID',
-        'AWS_REGION'
+        'KEYSTORE_INTERACTIVE'
       ])
         delete effectiveEnvironment[key]
     }
@@ -272,15 +270,31 @@ export const createApplication = (
       const config = await loadConfig(options)
       assertReferenceConfigured(config, config.bootstrap)
       if (options.signal.aborted) throw new SetupCheckAbortedError()
+      const stateOverride = dependencies.createState?.(config)
+      const sharedAccount =
+        config.identity.readOnly ||
+        (dependencies.createBootstrapAdapters && dependencies.createLadderAdapters)
+          ? undefined
+          : await createSignerAccount(config.identity)
+      const sharedExecutor = sharedAccount
+        ? createQuoterTransactionExecutor(
+            config,
+            sharedAccount,
+            createQuoterTransactionLogger(options.writeEvent)
+          )
+        : undefined
       const ladderAdapters = await (dependencies.createLadderAdapters?.(config) ??
-        createProductionLadderAdapters(config))
+        createProductionLadderAdapters(config, sharedAccount, sharedExecutor))
       if (options.signal.aborted) throw new SetupCheckAbortedError()
+      if (!config.readOnly) {
+        if (stateOverride) await assertStateHasNoPendingSignerNonce(stateOverride)
+        else await sharedExecutor!.assertNoPendingNonce()
+      }
       const ignoredOfferGroupIds =
         config.readOnly || config.bootstrap.length === 0 || config.ladder.length === 0
           ? []
           : ((await ladderAdapters.make.cleanupRemovedMarkets?.()) ?? [])
-      const state =
-        dependencies.createState?.(config) ?? (await defaultState(config, ignoredOfferGroupIds))
+      const state = stateOverride ?? (await defaultState(config, ignoredOfferGroupIds))
       await new SetupCheckService(
         state,
         config.setup,
@@ -294,8 +308,9 @@ export const createApplication = (
         (await createProductionBootstrapAdapters(
           config,
           writeReadOnlyEvent,
-          undefined,
-          ignoredOfferGroupIds
+          sharedAccount,
+          ignoredOfferGroupIds,
+          sharedExecutor
         ))
       if (options.signal.aborted) throw new SetupCheckAbortedError()
       const make =
@@ -313,15 +328,30 @@ export const createApplication = (
       const config = await loadConfig(options)
       assertReferenceConfigured(config, config.ladder)
       if (options.signal.aborted) throw new SetupCheckAbortedError()
+      const stateOverride = dependencies.createState?.(config)
+      const sharedAccount =
+        config.identity.readOnly || dependencies.createLadderAdapters
+          ? undefined
+          : await createSignerAccount(config.identity)
+      const sharedExecutor = sharedAccount
+        ? createQuoterTransactionExecutor(
+            config,
+            sharedAccount,
+            createQuoterTransactionLogger(options.writeEvent)
+          )
+        : undefined
       const adapters = await (dependencies.createLadderAdapters?.(config) ??
-        createProductionLadderAdapters(config))
+        createProductionLadderAdapters(config, sharedAccount, sharedExecutor))
       if (options.signal.aborted) throw new SetupCheckAbortedError()
+      if (!config.readOnly) {
+        if (stateOverride) await assertStateHasNoPendingSignerNonce(stateOverride)
+        else await sharedExecutor!.assertNoPendingNonce()
+      }
       const ignoredOfferGroupIds =
         config.readOnly || config.ladder.length === 0
           ? []
           : ((await adapters.make.cleanupRemovedMarkets?.()) ?? [])
-      const state =
-        dependencies.createState?.(config) ?? (await defaultState(config, ignoredOfferGroupIds))
+      const state = stateOverride ?? (await defaultState(config, ignoredOfferGroupIds))
       await new SetupCheckService(
         state,
         config.setup,
@@ -340,8 +370,19 @@ export const createApplication = (
     },
     async options => {
       const config = await loadConfig(options)
+      const sharedAccount =
+        config.identity.readOnly || dependencies.createInvalidationPort
+          ? undefined
+          : await createSignerAccount(config.identity)
+      const sharedExecutor = sharedAccount
+        ? createQuoterTransactionExecutor(
+            config,
+            sharedAccount,
+            createQuoterTransactionLogger(options.writeEvent)
+          )
+        : undefined
       const port = await (dependencies.createInvalidationPort?.(config) ??
-        createProductionOfferInvalidationPort(config))
+        createProductionOfferInvalidationPort(config, sharedAccount, sharedExecutor))
       return new OfferInvalidationService(port)
     },
     async options => {
@@ -359,6 +400,7 @@ export const createApplication = (
         )
       }
       assertReferenceConfigured(config, [...config.bootstrap, ...config.ladder])
+      const stateOverride = dependencies.createState?.(config)
       for (const event of botConfiguredEvents({
         loanAsset: config.setup.loanAsset,
         readOnly: config.readOnly,
@@ -369,15 +411,28 @@ export const createApplication = (
         await options.writeEvent?.(event)
       }
       if (options.signal.aborted) throw new SetupCheckAbortedError()
+      const sharedAccount = config.identity.readOnly
+        ? undefined
+        : await createSignerAccount(config.identity)
+      const sharedExecutor = sharedAccount
+        ? createQuoterTransactionExecutor(
+            config,
+            sharedAccount,
+            createQuoterTransactionLogger(options.writeEvent)
+          )
+        : undefined
       const ladderAdapters = await (dependencies.createLadderAdapters?.(config) ??
-        createProductionLadderAdapters(config))
+        createProductionLadderAdapters(config, sharedAccount, sharedExecutor))
       if (options.signal.aborted) throw new SetupCheckAbortedError()
+      if (!config.readOnly) {
+        if (stateOverride) await assertStateHasNoPendingSignerNonce(stateOverride)
+        else await sharedExecutor!.assertNoPendingNonce()
+      }
       const ignoredOfferGroupIds = config.readOnly
         ? []
         : ((await ladderAdapters.make.cleanupRemovedMarkets?.()) ?? [])
 
-      const state =
-        dependencies.createState?.(config) ?? (await defaultState(config, ignoredOfferGroupIds))
+      const state = stateOverride ?? (await defaultState(config, ignoredOfferGroupIds))
       const setup = new SetupCheckService(
         state,
         config.setup,
@@ -394,8 +449,9 @@ export const createApplication = (
         createProductionBootstrapAdapters(
           config,
           readOnlyWriter(options.writeEvent),
-          undefined,
-          ignoredOfferGroupIds
+          sharedAccount,
+          ignoredOfferGroupIds,
+          sharedExecutor
         ))
       if (options.signal.aborted) throw new SetupCheckAbortedError()
       const bootstrapMake =

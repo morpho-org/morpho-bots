@@ -6,7 +6,7 @@ import {
   QUOTER_BOT_VERBOSE_COMMANDS,
   runQuoterBotEntrypoint
 } from '../../../src/infrastructure/cli/quoter-bot-entrypoint'
-import { MakerAccountError } from '../../../src/infrastructure/make/maker-account.error'
+import { SignerAccountError } from '../../../src/infrastructure/make/signer-account.error'
 
 describe('runQuoterBotEntrypoint observability', () => {
   test('ships only allowlisted monitoring records, not every named one', async () => {
@@ -63,11 +63,11 @@ describe('runQuoterBotEntrypoint observability', () => {
     expect(stderr.join('')).not.toContain('credential')
   })
 
-  test('surfaces sanitized maker-account failures without reporting them as unexpected', async () => {
+  test('surfaces sanitized signer-account failures without reporting them as unexpected', async () => {
     const stderr: string[] = []
     const record = vi.fn((_value: unknown) => undefined)
     const unexpected = vi.fn((_error: unknown, _origin: 'entrypoint') => undefined)
-    const error = new MakerAccountError('keystore-decrypt')
+    const error = new SignerAccountError('keystore-decrypt')
 
     const exitCode = await runQuoterBotEntrypoint(
       { run: async () => Promise.reject(error) },
@@ -78,9 +78,9 @@ describe('runQuoterBotEntrypoint observability', () => {
     )
 
     expect(exitCode).toBe(1)
-    expect(stderr).toEqual(['Error: Maker account keystore-decrypt failed'])
+    expect(stderr).toEqual(['Error: Signer account keystore-decrypt failed'])
     expect(record.mock.calls).toEqual([
-      [{ event: 'bot.failed', reason: 'maker-account', errorName: 'MakerAccountError' }]
+      [{ event: 'bot.failed', reason: 'signer-account', errorName: 'SignerAccountError' }]
     ])
     expect(unexpected).toHaveBeenCalledTimes(0)
   })

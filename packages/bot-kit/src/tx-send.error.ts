@@ -1,7 +1,6 @@
 /**
- * Raised by the signer when an initial broadcast fails after the bot has already claimed a nonce.
- * The tx hash is unknown, so the queue cannot track a pending hash; callers must treat this as a
- * tick-level failure and retry after the signer rolls its local nonce cursor back.
+ * Raised by a sender that claimed a nonce but cannot derive a transaction hash to reconcile.
+ * Account-backed bot-kit signers hash locally and do not use this path for RPC response loss.
  */
 export class TxSendError extends Error {
   readonly nonce: number | undefined

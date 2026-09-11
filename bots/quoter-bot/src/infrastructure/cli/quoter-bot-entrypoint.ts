@@ -19,7 +19,8 @@ import { ConfigFileError } from '../../config/config-file.error'
 import { ConfigValidationError } from '../../config/config-validation.error'
 import { BootstrapConfigurationError } from '../../domain/bootstrap/bootstrap-configuration.error'
 import { LadderConfigurationError } from '../../domain/ladder/ladder-configuration.error'
-import { MakerAccountError } from '../make/maker-account.error'
+import { SignerAccountError } from '../make/signer-account.error'
+import { QuoterTransactionError } from '../transaction/quoter-transaction.error'
 import { CliUsageError } from './cli-usage.error'
 
 type QuoterBotApplication = {
@@ -57,7 +58,8 @@ const failureMessage = (error: unknown) => {
     error instanceof CliUsageError ||
     error instanceof ConfigFileError ||
     error instanceof ConfigValidationError ||
-    error instanceof MakerAccountError ||
+    error instanceof SignerAccountError ||
+    error instanceof QuoterTransactionError ||
     error instanceof SafeProviderError ||
     error instanceof BootstrapConfigurationError ||
     error instanceof LadderConfigurationError
@@ -111,10 +113,10 @@ export const runQuoterBotEntrypoint = async (
       for (const event of terminalMonitoringEvents(details, operatorErrorName(error))) {
         observability?.record(event)
       }
-    } else if (error instanceof MakerAccountError) {
+    } else if (error instanceof SignerAccountError || error instanceof QuoterTransactionError) {
       const event = {
         event: 'bot.failed',
-        reason: 'maker-account',
+        reason: error instanceof SignerAccountError ? 'signer-account' : 'signer-transaction',
         errorName: operatorErrorName(error)
       } satisfies MonitoringEvent
       observability?.record(event)

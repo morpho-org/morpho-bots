@@ -17,6 +17,7 @@ import { createApplication } from '../src/bootstrap'
 import { ConfigValidationError } from '../src/config/config-validation.error'
 
 const maker: Address = '0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A'
+const delegatedSigner: Address = '0x1563915e194D8CfBA1943570603F7606A3115508'
 const midnight: Address = '0x2222222222222222222222222222222222222222'
 const loanAsset: Address = '0x3333333333333333333333333333333333333333'
 const ratifier: Address = '0xd6e70365C8E8DDa9a4ca662C07bbE663b017755E'
@@ -34,6 +35,15 @@ const environment = {
   MARKET_IDS: marketId,
   REFERENCE_MARKET_ID: referenceMarketId,
   NATIVE_RESERVE_WEI: '10',
+  MAX_FEE_GWEI: '100',
+  PRIORITY_FEE_GWEI: '1',
+  MAX_TRANSACTION_SPEND_WEI: '100000000000000000',
+  MAX_PUBLICATION_GAS: '5000000',
+  MAX_PUBLICATION_DATA_BYTES: '65536',
+  MAX_CANCELLATION_GAS: '100000',
+  MAX_BATCH_CANCELLATION_GAS: '1000000',
+  MAX_BATCH_CANCELLATION_DATA_BYTES: '65536',
+  MAX_RATIFICATION_GAS: '100000',
   MORPHO_API_BASE_URL: 'https://api.example',
   ROUTER_API_BASE_URL: 'https://router.example'
 }
@@ -73,7 +83,9 @@ const readyState = (): SetupStateService => {
     getChainId: async () => 8453,
     getReferenceChainId: async () => 8453,
     getCode: async () => '0x1234',
-    getDerivedMaker: async () => maker,
+    getDerivedSigner: async () => maker,
+    getAuthorization: async () => true,
+    getTransactionCounts: async () => ({ latest: 0, pending: 0 }),
     getNativeBalance: async () => 10n,
     getLoanAllowance: async () => ({ spender: midnight, amount: maxUint256 }),
     getRatifier: async () => ({
@@ -111,7 +123,7 @@ describe('createApplication', () => {
     const output = await application.run(['setup-check'])
 
     expect(output).toMatchObject({ ready: true })
-    expect((output as { checks: unknown[] }).checks).toHaveLength(9)
+    expect((output as { checks: unknown[] }).checks).toHaveLength(12)
   })
 
   test('applies CLI signer selection over environment configuration', async () => {
@@ -121,13 +133,12 @@ describe('createApplication', () => {
         ...environment,
         AWS_KMS_KEY_ID: 'alias/cli-selected',
         AWS_REGION: 'eu-west-1',
-        QUOTER_SIGNER_LAMBDA_ARN:
-          'arn:aws:lambda:eu-west-1:123456789012:function:quoter-signer:prod'
+        SIGNER_NATIVE_RESERVE_WEI: '10'
       },
       {
         createState: config => {
           method = config.keyStorageMethod
-          return readyState()
+          return { ...readyState(), getDerivedSigner: async () => delegatedSigner }
         }
       }
     )
@@ -135,30 +146,6 @@ describe('createApplication', () => {
     await application.run(['--aws', 'setup-check'])
 
     expect(method).toBe('aws')
-  })
-
-  test('applies CLI --middleware selection over ambient signer environment', async () => {
-    let identity: { method?: string; functionArn?: string } | undefined
-    const application = createApplication(
-      {
-        ...environment,
-        QUOTER_SIGNER_LAMBDA_ARN:
-          'arn:aws:lambda:eu-west-1:123456789012:function:quoter-signer:prod'
-      },
-      {
-        createState: config => {
-          identity = config.identity.readOnly ? undefined : config.identity
-          return readyState()
-        }
-      }
-    )
-
-    await application.run(['--middleware', 'setup-check'])
-
-    expect(identity).toMatchObject({
-      method: 'middleware',
-      functionArn: 'arn:aws:lambda:eu-west-1:123456789012:function:quoter-signer:prod'
-    })
   })
 
   test('CLI --interactive clears an environment keystore password', async () => {
@@ -233,7 +220,7 @@ describe('createApplication', () => {
       const configPath = join(directory, 'operator.yaml')
       await writeFile(
         configPath,
-        `chain:\n  id: 8453\n  rpcUrl: https://rpc.example\n  archiveRpcUrl: https://archive.example\nidentity:\n  makerAddress: ${maker}\n  keyStorageMethod: keystore\n  keystorePath: /yaml/maker.json\n  ${yamlPasswordMode}\ncontracts:\n  midnightAddress: ${midnight}\n  loanAssetAddress: ${loanAsset}\n  ratifierAddress: ${ratifier}\napis:\n  morphoBaseUrl: https://api.example\n  routerBaseUrl: https://router.example\nmarkets:\n  allowlist: [${marketId}]\n  referenceMarketId: ${referenceMarketId}\nsetup:\n  nativeReserveWei: 10\n`
+        `chain:\n  id: 8453\n  rpcUrl: https://rpc.example\n  archiveRpcUrl: https://archive.example\nidentity:\n  makerAddress: ${maker}\n  keyStorageMethod: keystore\n  keystorePath: /yaml/maker.json\n  ${yamlPasswordMode}\ncontracts:\n  midnightAddress: ${midnight}\n  loanAssetAddress: ${loanAsset}\n  ratifierAddress: ${ratifier}\napis:\n  morphoBaseUrl: https://api.example\n  routerBaseUrl: https://router.example\nmarkets:\n  allowlist: [${marketId}]\n  referenceMarketId: ${referenceMarketId}\nsetup:\n  nativeReserveWei: 10\n  maxFeeGwei: 100\n  priorityFeeGwei: 1\n  maxTransactionSpendWei: 100000000000000000\n  maxPublicationGas: 5000000\n  maxPublicationDataBytes: 65536\n  maxCancellationGas: 100000\n  maxBatchCancellationGas: 1000000\n  maxBatchCancellationDataBytes: 65536\n  maxRatificationGas: 100000\n`
       )
       let password: string | undefined
       try {
@@ -645,6 +632,44 @@ describe('createApplication', () => {
     expect(cleanupRemovedMarkets).toHaveBeenCalledTimes(1)
   })
 
+  test('refuses an unknown pending signer nonce before removed-market cleanup', async () => {
+    const state = readyState()
+    state.getTransactionCounts = async () => ({ latest: 2, pending: 3 })
+    const cleanupRemovedMarkets = vi.fn(async () => [])
+    const application = createApplication(
+      {
+        ...environment,
+        BOOTSTRAP_MARKETS: '[]',
+        LADDER_MARKETS: JSON.stringify([
+          {
+            ...ladderConfiguration,
+            targetRate: { strategy: 'hardcoded', hardcodedRateBps: '475' }
+          }
+        ])
+      },
+      {
+        createState: () => state,
+        createLadderAdapters: () => ({
+          positions: { readMarket: async () => ({}) },
+          rates: { readRate: async () => 475n },
+          make: {
+            cleanupRemovedMarkets,
+            readActive: async () => undefined,
+            reconcile: async () => {},
+            hardHalt: async () => {},
+            cleanup: async () => {}
+          }
+        })
+      }
+    )
+
+    await expect(application.run(['ladder'])).rejects.toMatchObject({
+      name: 'QuoterTransactionError',
+      operation: 'unknown-pending-nonce'
+    })
+    expect(cleanupRemovedMarkets).not.toHaveBeenCalled()
+  })
+
   test('starts a hardcoded-only ladder workflow without Blue reference readiness', async () => {
     const state = readyState()
     const checkReference = vi.fn(async () => {
@@ -917,7 +942,7 @@ describe('createApplication', () => {
     expect(output).toMatchObject({ ready: true })
     expect(
       (output as { checks: { status: string }[] }).checks.slice(1, 5).map(check => check.status)
-    ).toEqual(['not-required', 'passed', 'passed', 'passed'])
+    ).toEqual(['not-required', 'passed', 'not-required', 'not-required'])
   })
 
   test('routes --readonly bootstrap make operations to terminal output', async () => {
@@ -1512,6 +1537,15 @@ markets:
   referenceMarketId: "${referenceMarketId}"
 setup:
   nativeReserveWei: "10"
+  maxFeeGwei: "100"
+  priorityFeeGwei: "1"
+  maxTransactionSpendWei: "100000000000000000"
+  maxPublicationGas: "5000000"
+  maxPublicationDataBytes: "65536"
+  maxCancellationGas: "100000"
+  maxBatchCancellationGas: "1000000"
+  maxBatchCancellationDataBytes: "65536"
+  maxRatificationGas: "100000"
 `
     try {
       await writeFile(join(directory, 'quoter-bot.yml'), configuration)

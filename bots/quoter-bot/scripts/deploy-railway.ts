@@ -45,6 +45,14 @@ const requiredRuntimeVariableNames = [
   'MORPHO_API_BASE_URL',
   'MARKET_IDS',
   'NATIVE_RESERVE_WEI',
+  'MAX_FEE_GWEI',
+  'PRIORITY_FEE_GWEI',
+  'MAX_TRANSACTION_SPEND_WEI',
+  'MAX_PUBLICATION_GAS',
+  'MAX_PUBLICATION_DATA_BYTES',
+  'MAX_CANCELLATION_GAS',
+  'MAX_BATCH_CANCELLATION_GAS',
+  'MAX_BATCH_CANCELLATION_DATA_BYTES',
   'BOOTSTRAP_MARKETS',
   'LADDER_MARKETS'
 ] as const
@@ -70,10 +78,10 @@ const runtimeVariables = (): RuntimeVariable[] => {
   const method =
     process.env.KEY_STORAGE_METHOD?.trim() ||
     (process.env.MAKER_PRIVATE_KEY?.trim() ? 'private-key' : '')
-  if (!['private-key', 'keystore', 'aws', 'middleware'].includes(method)) {
+  if (!['private-key', 'keystore', 'aws'].includes(method)) {
     throw new RailwayDeploymentError('KEY_STORAGE_METHOD must select exactly one signer')
   }
-  assertFullRailwaySignerProvisioning(method as 'private-key' | 'keystore' | 'aws' | 'middleware')
+  assertFullRailwaySignerProvisioning(method as 'private-key' | 'keystore' | 'aws')
   const signerValues: Record<string, string> = {
     KEY_STORAGE_METHOD: method,
     MAKER_PRIVATE_KEY: ' ',
@@ -82,21 +90,22 @@ const runtimeVariables = (): RuntimeVariable[] => {
     KEYSTORE_INTERACTIVE: 'false',
     AWS_KMS_KEY_ID: ' ',
     AWS_REGION: ' ',
-    QUOTER_SIGNER_LAMBDA_ARN: ' '
+    SIGNER_NATIVE_RESERVE_WEI: ' ',
+    MAX_RATIFICATION_GAS: ' '
   }
   const signerRequired =
     method === 'private-key'
       ? ['MAKER_PRIVATE_KEY']
       : method === 'keystore'
         ? ['KEYSTORE_PATH', 'KEYSTORE_PASSWORD']
-        : method === 'aws'
-          ? ['AWS_KMS_KEY_ID', 'AWS_REGION']
-          : ['QUOTER_SIGNER_LAMBDA_ARN']
+        : ['AWS_KMS_KEY_ID', 'AWS_REGION', 'SIGNER_NATIVE_RESERVE_WEI']
   for (const name of signerRequired) {
     const value = process.env[name]?.trim()
     if (!value) throw new RailwayDeploymentError(`Missing required environment variable: ${name}`)
     signerValues[name] = value
   }
+  const maxRatificationGas = process.env.MAX_RATIFICATION_GAS?.trim()
+  if (maxRatificationGas) signerValues.MAX_RATIFICATION_GAS = maxRatificationGas
   const signerVariables = Object.entries(signerValues) as RuntimeVariable[]
 
   return [...requiredVariables, ...signerVariables, ...optionalVariables]

@@ -177,6 +177,16 @@ export type MonitoringEvent =
       operation: 'cancel' | 'ratify' | 'publish'
       txHash: Hex
     }
+  | {
+      event: 'transaction.lifecycle'
+      state: 'submitted' | 'broadcast-unknown' | 'replaced' | 'confirmed' | 'reverted' | 'dropped'
+      nonce: number
+      txHash: Hex
+      previousTxHash?: Hex
+      attempt?: number
+      blockNumber?: bigint
+      reason?: string
+    }
   | { event: 'setup.check-failed'; check: string; status: 'failed' }
   | { event: 'setup.check-warning'; check: string; status: 'warning' }
 
@@ -208,6 +218,7 @@ const MONITORING_EVENT_NAMES = [
   'book.observed',
   'offer.consumed',
   'transaction.settled',
+  'transaction.lifecycle',
   'setup.check-failed',
   'setup.check-warning'
 ] as const satisfies readonly MonitoringEvent['event'][]

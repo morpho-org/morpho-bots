@@ -63,6 +63,10 @@ morpho-quoter --keystore ./maker.json --interactive setup-check
 morpho-quoter --aws setup-check
 ```
 
+AWS mode calls KMS directly. Its signer must differ from `MAKER_ADDRESS`, be authorized by that
+maker through Midnight, use the canonical Ecrecover ratifier, and hold the configured gas reserve.
+Write mode also requires the fee, spend, gas, and calldata limits listed in the full reference.
+
 `--private-key <key>` and `--password <password>` exist for explicit automation but place secrets in
 argv, where process listings and shell history may expose them; prefer `MAKER_PRIVATE_KEY` and
 `KEYSTORE_PASSWORD`. Never commit real configuration.

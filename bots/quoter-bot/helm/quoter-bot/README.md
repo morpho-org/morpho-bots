@@ -58,6 +58,15 @@ config:
     referenceMarketId: '0x7777777777777777777777777777777777777777777777777777777777777777'
   setup:
     nativeReserveWei: '10000000000000000'
+    maxFeeGwei: '100'
+    priorityFeeGwei: '1'
+    maxTransactionSpendWei: '100000000000000000'
+    maxPublicationGas: '5000000'
+    maxPublicationDataBytes: '65536'
+    maxCancellationGas: '100000'
+    maxBatchCancellationGas: '1000000'
+    maxBatchCancellationDataBytes: '65536'
+    maxRatificationGas: '100000'
   bootstrap:
     - marketId: '0x5555555555555555555555555555555555555555555555555555555555555555'
       targetRate:
@@ -116,6 +125,11 @@ unset MAKER_PRIVATE_KEY
 helm install quoter-bot bots/quoter-bot/helm/quoter-bot \
   --namespace quoter-bot --create-namespace --values my-values.yaml
 ```
+
+For AWS mode, omit the private-key Secret. Give the pod direct `kms:GetPublicKey` and `kms:Sign`
+access to one `ECC_SECG_P256K1` key, set the AWS identity fields, and set
+`setup.signerNativeReserveWei`. The KMS signer must differ from the maker, and the ratifier must be
+the canonical Ecrecover ratifier.
 
 Start with a read-only rehearsal (`args: ['--readonly', 'start', '--verbose']`) to inspect
 every intended action before enabling signing, exactly as recommended in the package README.

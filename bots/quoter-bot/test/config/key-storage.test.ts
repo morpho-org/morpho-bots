@@ -8,6 +8,7 @@ import { ConfigValidationError } from '../../src/config/config-validation.error'
 import { ConfigService } from '../../src/config/config.service'
 
 const privateKey = `0x${'11'.repeat(32)}`
+const setterRatifier = '0x800B5F12A61B8198a5a6EfD794Cac6699B294d63'
 const baseEnvironment = {
   CHAIN_ID: '8453',
   RPC_URL: 'https://rpc.example',
@@ -15,24 +16,33 @@ const baseEnvironment = {
   MAKER_ADDRESS: '0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A' as const,
   MIDNIGHT_ADDRESS: '0x2222222222222222222222222222222222222222',
   LOAN_ASSET_ADDRESS: '0x3333333333333333333333333333333333333333',
-  RATIFIER_ADDRESS: '0x4444444444444444444444444444444444444444',
+  RATIFIER_ADDRESS: '0xd6e70365C8E8DDa9a4ca662C07bbE663b017755E',
   MARKET_IDS: `0x${'55'.repeat(32)}`,
   REFERENCE_MARKET_ID: `0x${'77'.repeat(32)}`,
   NATIVE_RESERVE_WEI: '10',
+  SIGNER_NATIVE_RESERVE_WEI: '10',
+  MAX_FEE_GWEI: '100',
+  PRIORITY_FEE_GWEI: '1',
+  MAX_TRANSACTION_SPEND_WEI: '100000000000000000',
+  MAX_PUBLICATION_GAS: '5000000',
+  MAX_PUBLICATION_DATA_BYTES: '65536',
+  MAX_CANCELLATION_GAS: '100000',
+  MAX_BATCH_CANCELLATION_GAS: '1000000',
+  MAX_BATCH_CANCELLATION_DATA_BYTES: '65536',
   MORPHO_API_BASE_URL: 'https://api.example',
   ROUTER_API_BASE_URL: 'https://router.example'
 }
 const directories: string[] = []
 
 const configurationYaml = (identity: string) =>
-  `chain:\n  id: 8453\n  rpcUrl: https://yaml-rpc.example\n  archiveRpcUrl: https://archive.example\nidentity:\n${identity}\ncontracts:\n  midnightAddress: 0x2222222222222222222222222222222222222222\n  loanAssetAddress: 0x3333333333333333333333333333333333333333\n  ratifierAddress: 0x4444444444444444444444444444444444444444\napis:\n  morphoBaseUrl: https://api.example\n  routerBaseUrl: https://router.example\nmarkets:\n  allowlist: [0x${'55'.repeat(32)}]\n  referenceMarketId: 0x${'77'.repeat(32)}\nsetup:\n  nativeReserveWei: 10\n`
+  `chain:\n  id: 8453\n  rpcUrl: https://yaml-rpc.example\n  archiveRpcUrl: https://archive.example\nidentity:\n${identity}\ncontracts:\n  midnightAddress: 0x2222222222222222222222222222222222222222\n  loanAssetAddress: 0x3333333333333333333333333333333333333333\n  ratifierAddress: 0xd6e70365C8E8DDa9a4ca662C07bbE663b017755E\napis:\n  morphoBaseUrl: https://api.example\n  routerBaseUrl: https://router.example\nmarkets:\n  allowlist: [0x${'55'.repeat(32)}]\n  referenceMarketId: 0x${'77'.repeat(32)}\nsetup:\n  nativeReserveWei: 10\n  signerNativeReserveWei: 10\n  maxFeeGwei: 100\n  priorityFeeGwei: 1\n  maxTransactionSpendWei: 100000000000000000\n  maxPublicationGas: 5000000\n  maxPublicationDataBytes: 65536\n  maxCancellationGas: 100000\n  maxBatchCancellationGas: 1000000\n  maxBatchCancellationDataBytes: 65536\n`
 
 afterEach(async () => {
   vi.restoreAllMocks()
   await Promise.all(directories.splice(0).map(path => rm(path, { recursive: true })))
 })
 
-describe('maker key storage configuration', () => {
+describe('signer key storage configuration', () => {
   test('preserves the legacy private-key path and derives an explicit method', () => {
     const config = ConfigService.from({ ...baseEnvironment, MAKER_PRIVATE_KEY: privateKey })
     expect(config.keyStorageMethod).toBe('private-key')
@@ -130,47 +140,75 @@ describe('maker key storage configuration', () => {
     expect(config.privateKey).toBeUndefined()
   })
 
-  test('selects the quoter-signer middleware when only its Lambda ARN is configured', () => {
-    const functionArn = 'arn:aws:lambda:eu-west-1:123456789012:function:quoter-signer-routine:prod'
-    const config = ConfigService.from({
-      ...baseEnvironment,
-      QUOTER_SIGNER_LAMBDA_ARN: functionArn
-    })
-    expect(config.keyStorageMethod).toBe('middleware')
-    expect(config.identity).toMatchObject({
-      method: 'middleware',
-      functionArn,
-      region: 'eu-west-1'
-    })
-    expect(config.privateKey).toBeUndefined()
+  test('rejects AWS signing without its gas floor or with the Setter ratifier', () => {
+    expect(() =>
+      ConfigService.from({
+        ...baseEnvironment,
+        KEY_STORAGE_METHOD: 'aws',
+        AWS_KMS_KEY_ID: 'alias/quoter',
+        AWS_REGION: 'eu-west-1',
+        SIGNER_NATIVE_RESERVE_WEI: undefined
+      })
+    ).toThrow(expect.objectContaining({ field: 'SIGNER_NATIVE_RESERVE_WEI', reason: 'missing' }))
+    expect(() =>
+      ConfigService.from({
+        ...baseEnvironment,
+        KEY_STORAGE_METHOD: 'aws',
+        AWS_KMS_KEY_ID: 'alias/quoter',
+        AWS_REGION: 'eu-west-1',
+        RATIFIER_ADDRESS: setterRatifier
+      })
+    ).toThrow(expect.objectContaining({ field: 'RATIFIER_ADDRESS', reason: 'unsupported' }))
   })
 
-  test('derives the middleware region from the alias ARN, ignoring the ambient AWS region', () => {
-    const config = ConfigService.from({
-      ...baseEnvironment,
-      KEY_STORAGE_METHOD: 'middleware',
-      QUOTER_SIGNER_LAMBDA_ARN:
-        'arn:aws:lambda:ap-southeast-2:123456789012:function:quoter_signer:prod-2',
-      AWS_REGION: 'us-east-1'
-    })
-    expect(config.identity).toMatchObject({ method: 'middleware', region: 'ap-southeast-2' })
+  test('requires Setter ratification gas only for local signing', () => {
+    expect(() =>
+      ConfigService.from({
+        ...baseEnvironment,
+        MAKER_PRIVATE_KEY: privateKey,
+        RATIFIER_ADDRESS: setterRatifier,
+        MAX_RATIFICATION_GAS: undefined
+      })
+    ).toThrow(expect.objectContaining({ field: 'MAX_RATIFICATION_GAS', reason: 'missing' }))
+    expect(
+      ConfigService.from({
+        ...baseEnvironment,
+        MAKER_PRIVATE_KEY: privateKey,
+        MAX_RATIFICATION_GAS: undefined
+      }).writePolicy?.maxRatificationGas
+    ).toBeUndefined()
   })
 
   test.each([
-    ['a truncated ARN', 'arn:aws:lambda:eu-west-1:123456789012:function'],
-    ['a non-Lambda ARN', 'arn:aws:kms:eu-west-1:123456789012:key/quoter'],
-    ['a $LATEST qualifier', 'arn:aws:lambda:eu-west-1:123456789012:function:quoter-signer:$LATEST'],
-    ['an unqualified function ARN', 'arn:aws:lambda:eu-west-1:123456789012:function:quoter-signer'],
-    [
-      'a published-version qualifier',
-      'arn:aws:lambda:eu-west-1:123456789012:function:quoter-signer:3'
-    ],
-    ['a malformed account id', 'arn:aws:lambda:eu-west-1:12345:function:quoter-signer:prod'],
-    ['a bare function name', 'quoter-signer-routine']
-  ])('rejects %s as the middleware Lambda ARN', (_name, value) => {
+    'MAX_FEE_GWEI',
+    'PRIORITY_FEE_GWEI',
+    'MAX_TRANSACTION_SPEND_WEI',
+    'MAX_PUBLICATION_GAS',
+    'MAX_PUBLICATION_DATA_BYTES',
+    'MAX_CANCELLATION_GAS',
+    'MAX_BATCH_CANCELLATION_GAS',
+    'MAX_BATCH_CANCELLATION_DATA_BYTES'
+  ])('requires a positive write-policy value for %s', field => {
     expect(() =>
-      ConfigService.from({ ...baseEnvironment, QUOTER_SIGNER_LAMBDA_ARN: value })
-    ).toThrow(expect.objectContaining({ field: 'QUOTER_SIGNER_LAMBDA_ARN', reason: 'invalid-arn' }))
+      ConfigService.from({ ...baseEnvironment, MAKER_PRIVATE_KEY: privateKey, [field]: '0' })
+    ).toThrow(expect.objectContaining({ field, reason: 'out-of-range' }))
+  })
+
+  test('requires fee-bump headroom below the maximum fee', () => {
+    expect(() =>
+      ConfigService.from({
+        ...baseEnvironment,
+        MAKER_PRIVATE_KEY: privateKey,
+        MAX_FEE_GWEI: '1',
+        PRIORITY_FEE_GWEI: '1'
+      })
+    ).toThrow(expect.objectContaining({ field: 'PRIORITY_FEE_GWEI', reason: 'incoherent-bounds' }))
+  })
+
+  test('rejects the removed middleware signing method', () => {
+    expect(() =>
+      ConfigService.from({ ...baseEnvironment, KEY_STORAGE_METHOD: 'middleware' })
+    ).toThrow(expect.objectContaining({ field: 'KEY_STORAGE_METHOD', reason: 'unsupported' }))
   })
 
   test('ignores ambient AWS region and blank companion sentinels outside KMS mode', () => {
@@ -222,41 +260,6 @@ describe('maker key storage configuration', () => {
     ['missing keystore password mode', { KEYSTORE_PATH: '/secure/maker.json' }],
     ['missing AWS key id', { KEY_STORAGE_METHOD: 'aws', AWS_REGION: 'eu-west-1' }],
     ['missing AWS region', { KEY_STORAGE_METHOD: 'aws', AWS_KMS_KEY_ID: 'alias/maker' }],
-    [
-      'missing middleware Lambda ARN',
-      { KEY_STORAGE_METHOD: 'middleware', AWS_REGION: 'eu-west-1' }
-    ],
-    [
-      'conflicting private key and middleware sources',
-      {
-        MAKER_PRIVATE_KEY: privateKey,
-        QUOTER_SIGNER_LAMBDA_ARN: 'arn:aws:lambda:eu-west-1:123456789012:function:quoter-signer'
-      }
-    ],
-    [
-      'conflicting keystore and middleware sources',
-      {
-        KEYSTORE_PATH: '/secure/maker.json',
-        KEYSTORE_PASSWORD: 'pw',
-        QUOTER_SIGNER_LAMBDA_ARN: 'arn:aws:lambda:eu-west-1:123456789012:function:quoter-signer'
-      }
-    ],
-    [
-      'conflicting AWS KMS and middleware sources',
-      {
-        AWS_KMS_KEY_ID: 'alias/maker',
-        AWS_REGION: 'eu-west-1',
-        QUOTER_SIGNER_LAMBDA_ARN: 'arn:aws:lambda:eu-west-1:123456789012:function:quoter-signer'
-      }
-    ],
-    [
-      'a declared middleware method with an interactive keystore sentinel',
-      {
-        KEY_STORAGE_METHOD: 'middleware',
-        QUOTER_SIGNER_LAMBDA_ARN: 'arn:aws:lambda:eu-west-1:123456789012:function:quoter-signer',
-        KEYSTORE_INTERACTIVE: 'true'
-      }
-    ],
     ['missing every source', {}]
   ])('rejects %s', (_name, values) => {
     expect(() => ConfigService.from({ ...baseEnvironment, ...values })).toThrow(
@@ -270,7 +273,7 @@ describe('maker key storage configuration', () => {
     const path = join(directory, 'operator.yaml')
     await writeFile(
       path,
-      `chain:\n  id: 8453\n  rpcUrl: https://yaml-rpc.example\n  archiveRpcUrl: https://archive.example\nidentity:\n  makerAddress: 0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A\n  keyStorageMethod: private-key\n  makerPrivateKey: ${privateKey}\ncontracts:\n  midnightAddress: 0x2222222222222222222222222222222222222222\n  loanAssetAddress: 0x3333333333333333333333333333333333333333\n  ratifierAddress: 0x4444444444444444444444444444444444444444\napis:\n  morphoBaseUrl: https://api.example\n  routerBaseUrl: https://router.example\nmarkets:\n  allowlist: [0x${'55'.repeat(32)}]\n  referenceMarketId: 0x${'77'.repeat(32)}\nsetup:\n  nativeReserveWei: 10\n`
+      `chain:\n  id: 8453\n  rpcUrl: https://yaml-rpc.example\n  archiveRpcUrl: https://archive.example\nidentity:\n  makerAddress: 0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A\n  keyStorageMethod: private-key\n  makerPrivateKey: ${privateKey}\ncontracts:\n  midnightAddress: 0x2222222222222222222222222222222222222222\n  loanAssetAddress: 0x3333333333333333333333333333333333333333\n  ratifierAddress: 0xd6e70365C8E8DDa9a4ca662C07bbE663b017755E\napis:\n  morphoBaseUrl: https://api.example\n  routerBaseUrl: https://router.example\nmarkets:\n  allowlist: [0x${'55'.repeat(32)}]\n  referenceMarketId: 0x${'77'.repeat(32)}\nsetup:\n  nativeReserveWei: 10\n  signerNativeReserveWei: 10\n  maxFeeGwei: 100\n  priorityFeeGwei: 1\n  maxTransactionSpendWei: 100000000000000000\n  maxPublicationGas: 5000000\n  maxPublicationDataBytes: 65536\n  maxCancellationGas: 100000\n  maxBatchCancellationGas: 1000000\n  maxBatchCancellationDataBytes: 65536\n`
     )
     const config = await ConfigService.load(
       {
@@ -284,31 +287,6 @@ describe('maker key storage configuration', () => {
     expect(config.keyStorageMethod).toBe('aws')
     expect(config.identity).toMatchObject({ method: 'aws', keyId: 'alias/from-env' })
     expect(config.rpcUrl).toBe('https://env-rpc.example')
-  })
-
-  test('an environment middleware Lambda ARN overrides a YAML AWS KMS identity', async () => {
-    const directory = await mkdtemp(join(tmpdir(), 'quoter-bot-key-storage-middleware-'))
-    directories.push(directory)
-    const path = join(directory, 'operator.yaml')
-    await writeFile(
-      path,
-      configurationYaml(
-        `  makerAddress: ${baseEnvironment.MAKER_ADDRESS}\n  keyStorageMethod: aws\n  awsKmsKeyId: alias/yaml-maker\n  awsRegion: eu-west-1`
-      )
-    )
-    const functionArn = 'arn:aws:lambda:us-east-2:123456789012:function:quoter-signer-routine:prod'
-
-    const config = await ConfigService.load(
-      { QUOTER_SIGNER_LAMBDA_ARN: functionArn },
-      { configPath: path }
-    )
-
-    expect(config.keyStorageMethod).toBe('middleware')
-    expect(config.identity).toMatchObject({
-      method: 'middleware',
-      functionArn,
-      region: 'us-east-2'
-    })
   })
 
   test.each([
@@ -334,16 +312,6 @@ describe('maker key storage configuration', () => {
       `  makerAddress: ${baseEnvironment.MAKER_ADDRESS}\n  keyStorageMethod: aws\n  awsKmsKeyId: alias/yaml-maker\n  awsRegion: eu-west-1`,
       { KEY_STORAGE_METHOD: '\n', AWS_KMS_KEY_ID: ' \t', AWS_REGION: '  ' },
       { method: 'aws', keyId: 'alias/yaml-maker', region: 'eu-west-1' }
-    ],
-    [
-      'middleware',
-      `  makerAddress: ${baseEnvironment.MAKER_ADDRESS}\n  keyStorageMethod: middleware\n  quoterSignerLambdaArn: arn:aws:lambda:eu-west-1:123456789012:function:quoter-signer:prod`,
-      { KEY_STORAGE_METHOD: '', QUOTER_SIGNER_LAMBDA_ARN: ' \t ' },
-      {
-        method: 'middleware',
-        functionArn: 'arn:aws:lambda:eu-west-1:123456789012:function:quoter-signer:prod',
-        region: 'eu-west-1'
-      }
     ]
   ])(
     'blank environment signer selectors do not override valid YAML %s configuration',

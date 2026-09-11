@@ -20,6 +20,7 @@ type RatifierType = 'ecrecover' | 'setter'
 type PrepareLadderRatificationParameters = {
   type: RatifierType
   tree: Tree
+  maker: Address
   client: EcrecoverSignParameters['client']
   account: LocalAccount
 }
@@ -44,7 +45,7 @@ export const configuredRatifierType = (
 
 /**
  * Prepares the Router-compatible ratifier payload and any prerequisite root-approval transaction.
- * @param parameters - Canonical tree, selected ratifier kind, local maker account, and wallet client.
+ * @param parameters - Canonical tree, maker, selected ratifier kind, signer account, and wallet client.
  * @returns Payload items, mempool validation input, and a Setter approval transaction when required.
  * @throws `LadderAdapterError` when Ecrecover signing fails; SDK tree validation errors pass through.
  * @remarks Setter preparation is pure: callers must submit and confirm `approval` before final
@@ -63,7 +64,7 @@ export const prepareLadderRatification = async (
         data: encodeFunctionData({
           abi: setterRatifierAbi,
           functionName: 'setIsRootRatified',
-          args: [parameters.account.address, parameters.tree.root, true]
+          args: [parameters.maker, parameters.tree.root, true]
         }),
         value: 0n
       }

@@ -61,17 +61,11 @@ type Captured<T> = { ok: true; value: T } | { ok: false; error: SafeProviderFail
 
 type SafeSignerFailure = {
   kind: 'signer-error'
-  operation:
-    | 'maker-address'
-    | 'keystore-read'
-    | 'keystore-decrypt'
-    | 'kms-public-key'
-    | 'kms-sign'
-    | 'middleware-unsupported'
+  operation: 'signer-address' | 'keystore-read' | 'keystore-decrypt' | 'kms-public-key' | 'kms-sign'
 }
 
 const SAFE_SIGNER_OPERATIONS = new Set<SafeSignerFailure['operation']>([
-  'maker-address',
+  'signer-address',
   'keystore-read',
   'keystore-decrypt',
   'kms-public-key',
@@ -166,8 +160,7 @@ export const capture = async <T>(
  * Captures signer derivation while preserving only an allowlisted signer operation.
  * @param read - Deferred signer-address derivation.
  * @returns A fulfilled capture containing the value, a sanitized signer operation — including the
- * fixed `middleware-unsupported` observation for the fail-closed middleware identity — or a
- * sanitized RPC-shaped fallback for an unexpected rejection.
+ * signer operation or a sanitized RPC-shaped fallback for an unexpected rejection.
  * @throws Never; synchronous throws and promise rejections are converted to failure values.
  */
 export const captureSigner = async <T>(
@@ -181,7 +174,7 @@ export const captureSigner = async <T>(
     const candidate =
       typeof error === 'object' && error !== null ? (error as Record<string, unknown>) : undefined
     if (
-      candidate?.name === 'MakerAccountError' &&
+      candidate?.name === 'SignerAccountError' &&
       typeof candidate.operation === 'string' &&
       SAFE_SIGNER_OPERATIONS.has(candidate.operation as SafeSignerFailure['operation'])
     ) {
@@ -192,9 +185,6 @@ export const captureSigner = async <T>(
           operation: candidate.operation as SafeSignerFailure['operation']
         }
       }
-    }
-    if (candidate?.name === 'MiddlewareSigningUnsupportedError') {
-      return { ok: false, error: { kind: 'signer-error', operation: 'middleware-unsupported' } }
     }
     return { ok: false, error: safeProviderFailure(error, 'rpc') }
   }
@@ -270,8 +260,8 @@ export const providerFailure = (
  * @returns A not-required maker identity check.
  * @remarks No provider reads, signing, or mutation side effects occur.
  */
-export const readOnlyMakerCheck = (): SetupCheck => ({
-  name: 'maker',
+export const readOnlySignerCheck = (): SetupCheck => ({
+  name: 'signer',
   status: 'not-required',
   observed: 'configured',
   required: 'maker address retained outside operator output'

@@ -32,9 +32,8 @@ Quick navigation for the morpho-bots documentation.
 
 ## Services
 
-| Service                                     | Description                                                                | Docs                                          |
-| ------------------------------------------- | -------------------------------------------------------------------------- | --------------------------------------------- |
-| [quoter-signer](../services/quoter-signer/) | Superseded KMS signing middleware; remove after TIB-2026-09-10 is accepted | [README](../services/quoter-signer/README.md) |
+| Service | Description | Docs |
+| ------- | ----------- | ---- |
 
 ---
 

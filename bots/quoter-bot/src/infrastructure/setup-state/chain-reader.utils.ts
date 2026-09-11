@@ -27,6 +27,7 @@ export const createChainReader = (
     getChainId: () => client.getChainId(),
     getCode: parameters => client.getCode(parameters),
     getBalance: parameters => client.getBalance(parameters),
+    getTransactionCount: parameters => client.getTransactionCount(parameters),
     getBlock: parameters =>
       parameters.blockNumber === undefined
         ? client.getBlock({ blockTag: 'latest' })

@@ -99,6 +99,7 @@ const createState = (
     getChainId: async () => 8453,
     getCode: async () => overrides.code ?? authoritativeRatifierRuntime,
     getBalance: async () => 10n,
+    getTransactionCount: async () => 0,
     getBlock: async () => ({ number: 100n, timestamp: 1_000n }),
     readContract: async (parameters: Record<string, unknown>) => {
       chainReadCalls.push(parameters)
@@ -226,7 +227,7 @@ describe('ViemSetupStateService', () => {
   test('does not derive or retain a signer identity in read-only mode', async () => {
     const { state } = createState({}, { readOnly: true })
 
-    expect(await state.getDerivedMaker()).toBeUndefined()
+    expect(await state.getDerivedSigner()).toBeUndefined()
   })
 
   test.each([
@@ -301,6 +302,7 @@ describe('ViemSetupStateService', () => {
         getChainId: () => rejectAt('chain-id', 8453),
         getCode: () => rejectAt('code', authoritativeRatifierRuntime),
         getBalance: () => rejectAt('balance', 10n),
+        getTransactionCount: () => rejectAt('nonce', 0),
         getBlock: () => rejectAt('latest', { number: 100n, timestamp: 1_000n }),
         readContract: ({ functionName }: { functionName?: unknown }) =>
           rejectAt(

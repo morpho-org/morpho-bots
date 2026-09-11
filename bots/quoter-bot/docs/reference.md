@@ -90,9 +90,8 @@ serialized as decimal strings. Failures always produce an explicit error on stan
 non-zero; with `--json`, that error is one `quoter-bot.error` JSON record with optional structured
 details. Any failed check throws `SetupFailedError` and identifies the failed check names. The check is
 strictly read-only; remediation transaction descriptions are reported but never submitted. With
-`--readonly`, only private-key/maker agreement is reported as `not-required`; balance, allowance,
-ratifier, chain, market, reference, and active-offer observations still run against the configured
-maker address.
+`--readonly`, signer-only checks are reported as `not-required`; maker balance, allowance, ratifier,
+chain, market, reference, and active-offer observations still run.
 
 `setup-check --monitor` runs the same complete read-only observation every minute and streams each
 report. A report containing only explicitly transient provider failures is retried up to two
@@ -104,7 +103,7 @@ before halting the same way, because halting cancels every live offer and a prov
 must not cost the book. `SIGINT` or `SIGTERM` after successful checks lets an
 in-flight check finish and emits a final `{"status":"stopped","reason":"signal","cycles":N}` record
 with exit code `0`. Monitoring never signs, submits remediation, or performs shutdown cleanup. Add
-the root `--readonly` flag when private-key/maker agreement should be omitted.
+the root `--readonly` flag when signer checks should be omitted.
 
 Read-only writer commands serialize desired bootstrap and ladder reconcile, hard-halt, and cleanup
 requests as one JSON line with event name `readonly.make`. They never sign or submit an operation.
@@ -184,11 +183,13 @@ including groups that are not owned by the bootstrap or ladder strategy. Because
 can cap several offers, one cancellation invalidates every offer in that group. With an optional
 0x-prefixed bytes32 argument, `invalidate <group-id>` directly invalidates only that group without
 depending on API indexing. Before a live cancellation it still verifies the connected chain,
-deployed configured Midnight contract, maker/private-key agreement, and configured native gas
-reserve. Maker-wide invalidation submits one zero-value native Midnight `multicall(bytes[])`; each
+deployed configured Midnight contract, signer identity and nonce, signer authorization, and the
+maker and signer gas reserves. Maker-wide invalidation submits one zero-value native Midnight
+`multicall(bytes[])`; each
 ordered inner call is exactly `setConsumed(groupId, MAX_OFFER_CAP, MAKER_ADDRESS)`. Midnight executes
-the inner calls with `delegatecall`, so the maker account that submits the outer transaction remains
-`msg.sender` throughout. The local transaction policy rejects any wrong target, selector, call count,
+the inner calls with `delegatecall`, so the authorized signer that submits the outer transaction
+remains `msg.sender` throughout while every `onBehalf` value remains the maker. The local transaction
+policy rejects any wrong target, selector, call count,
 order, group, amount, on-behalf account, or extra calldata. A reverted or failed multicall is reported
 without serial retry. Explicit single-group invalidation keeps the simpler direct Midnight
 `setConsumed` transaction. Successfully canceled bot-owned groups are removed from durable
@@ -253,7 +254,8 @@ Provide the required values from [`.env.example`](../.env.example) in the invoki
 A full provisioning run supports only `private-key`, because the script cannot safely seed a local
 keystore file or an AWS credential source into a newly created service. For `keystore`, first
 provision the encrypted file at `KEYSTORE_PATH` in the existing service. For `aws`, first provision
-an AWS SDK credential source with KMS access in the existing service. Then set the corresponding
+an AWS SDK credential source with direct `kms:GetPublicKey` and `kms:Sign` access in the existing
+service. Then set the corresponding
 signer variables out of band and use `DEPLOY_ONLY=true`; deploy-only does not inspect or mutate those
 credentials or files. Full provisioning fails closed for both modes instead of launching a service
 that cannot resolve its signer.
@@ -327,35 +329,45 @@ pnpm --filter @morpho-org/quoter-bot run start -- --readonly setup-check
 Every supported environment variable is listed below. “Raw assets” means the loan token's smallest
 unit; for six-decimal USDC, `101000000` is 101 USDC. No value is inferred from another variable.
 
-| Environment variable             | YAML key                            | Requirement and behavior                                                                                                                                                                                     |
-| -------------------------------- | ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `CHAIN_ID`                       | `chain.id`                          | Required. Must be `1` (Ethereum mainnet) or `8453` (Base); all protocol, token, market, and transaction operations run on the selected chain.                                                                |
-| `RPC_URL`                        | `chain.rpcUrl`                      | Required. Current-state JSON-RPC endpoint for the configured chain, used for blocks, balances, allowances, positions, contract reads, simulation, transaction submission, and receipts.                      |
-| `REFERENCE_RPC_URL`              | `chain.archiveRpcUrl`               | Required when the selected command has an active `variable_rate_avg` target. Archive-capable JSON-RPC endpoint for the configured chain, used to read the reference Morpho Blue market at historical blocks. |
-| `MAKER_ADDRESS`                  | `identity.makerAddress`             | Required. EVM address whose balance, allowance, credit, offers, and exposure the bot manages. In write mode it must match the selected signer.                                                               |
-| `KEY_STORAGE_METHOD`             | `identity.keyStorageMethod`         | Optional only for backward-compatible `MAKER_PRIVATE_KEY` use; otherwise `private-key`, `keystore`, or `aws`. Exactly one effective source is required in write mode.                                        |
-| `MAKER_PRIVATE_KEY`              | `identity.makerPrivateKey`          | Local private-key source. Must be a 0x-prefixed 32-byte secp256k1 key. `--private-key` overrides config. Never include it in committed configuration or logs.                                                |
-| `KEYSTORE_PATH`                  | `identity.keystorePath`             | Encrypted Web3 Secret Storage file used by the `keystore` method. CLI equivalent: `--keystore <path>`.                                                                                                       |
-| `KEYSTORE_PASSWORD`              | `identity.keystorePassword`         | Keystore password. Exactly one direct or interactive mode is required; see the argv exposure warning above. Never logged or included in diagnostics.                                                         |
-| `KEYSTORE_INTERACTIVE`           | `identity.keystoreInteractive`      | `true` prompts without echoing for the keystore password; CLI equivalent: `--interactive`. Not suitable for unattended deployment.                                                                           |
-| `AWS_KMS_KEY_ID`                 | `identity.awsKmsKeyId`              | KMS key ID/ARN/alias for an asymmetric `ECC_SECG_P256K1` signing key. `--aws` selects this backend.                                                                                                          |
-| `AWS_REGION`                     | `identity.awsRegion`                | AWS region containing the KMS key. AWS credentials use the standard AWS SDK credential chain.                                                                                                                |
-| `MIDNIGHT_ADDRESS`               | `contracts.midnightAddress`         | Required. Expected deployed Midnight singleton. Setup verifies its bytecode before a writer starts.                                                                                                          |
-| `LOAN_ASSET_ADDRESS`             | `contracts.loanAssetAddress`        | Required. Loan token used by every configured Midnight market. Balances, allowances, budgets, offer sizes, and exposure values use this token's raw units.                                                   |
-| `RATIFIER_ADDRESS`               | `contracts.ratifierAddress`         | Required. Canonical SDK Ecrecover or Setter ratifier authorized by the maker. The bot signs Ecrecover trees or approves Setter roots onchain, then verifies the selected deployment and Midnight binding.    |
-| `MORPHO_API_BASE_URL`            | `apis.morphoBaseUrl`                | Required. Morpho API origin used for Midnight books, market metadata, prospective-offer validation, and cursor-paginated maker offer groups. No API-key header is supported.                                 |
-| `ROUTER_API_BASE_URL`            | `apis.routerBaseUrl`                | Deprecated compatibility key. Accepted and ignored; ratifier identity comes from the pinned Morpho SDK catalog.                                                                                              |
-| `MARKET_IDS`                     | `markets.allowlist`                 | Required comma-separated list of unique 0x-prefixed bytes32 Midnight market IDs. Every bootstrap or ladder `marketId` must appear here.                                                                      |
-| `REFERENCE_MARKET_ID`            | `markets.referenceMarketId`         | Required when the selected command has an active `variable_rate_avg` target. Must be a 0x-prefixed bytes32 Morpho Blue market ID.                                                                            |
-| `V0_OFFER_GROUP_IDS`             | `markets.v0OfferGroupIds`           | Optional comma-separated list of unique, explicitly strategy-owned bytes32 offer-group IDs; defaults to empty. Use it to adopt known pre-existing groups safely.                                             |
-| `NATIVE_RESERVE_WEI`             | `setup.nativeReserveWei`            | Required unsigned integer. Minimum maker native-token balance, in wei, required by readiness for transaction fees.                                                                                           |
-| `REQUEST_TIMEOUT_MS`             | `setup.requestTimeoutMs`            | Optional provider-operation and aggregate pagination timeout in milliseconds. Defaults to `10000`; accepted range is `1` through `120000`.                                                                   |
-| `TRANSACTION_RECEIPT_TIMEOUT_MS` | `setup.transactionReceiptTimeoutMs` | Optional timeout for confirming an already-submitted transaction, in milliseconds. Defaults to `180000`; accepted range is `1` through `900000`.                                                             |
-| `BOOTSTRAP_MARKETS`              | `bootstrap`                         | Optional exact JSON array of position-bootstrap entries documented below; defaults to `[]` and replaces the complete YAML `bootstrap` list when supplied.                                                    |
-| `LADDER_MARKETS`                 | `ladder`                            | Optional exact JSON array of ladder entries documented below; defaults to `[]` and replaces the complete YAML `ladder` list when supplied.                                                                   |
-| `BETTERSTACK_SOURCE_TOKEN`       | —                                   | Optional Better Stack source token. Must be set together with `BETTERSTACK_INGESTING_HOST`; partial configuration emits `logship.misconfigured` and ships nothing.                                           |
-| `BETTERSTACK_INGESTING_HOST`     | —                                   | Optional Better Stack ingest host, with or without an `https://` prefix. Must be set together with `BETTERSTACK_SOURCE_TOKEN`.                                                                               |
-| `BETTERSTACK_HEARTBEAT_URL`      | —                                   | Optional HTTP(S) heartbeat URL pinged at startup and once per minute. Invalid URLs and ping failures are reported safely and never interrupt quoter-bot.                                                     |
+| Environment variable                | YAML key                              | Requirement and behavior                                                                                                                                                                                     |
+| ----------------------------------- | ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `CHAIN_ID`                          | `chain.id`                            | Required. Must be `1` (Ethereum mainnet) or `8453` (Base); all protocol, token, market, and transaction operations run on the selected chain.                                                                |
+| `RPC_URL`                           | `chain.rpcUrl`                        | Required. Current-state JSON-RPC endpoint for the configured chain, used for blocks, balances, allowances, positions, contract reads, simulation, transaction submission, and receipts.                      |
+| `REFERENCE_RPC_URL`                 | `chain.archiveRpcUrl`                 | Required when the selected command has an active `variable_rate_avg` target. Archive-capable JSON-RPC endpoint for the configured chain, used to read the reference Morpho Blue market at historical blocks. |
+| `MAKER_ADDRESS`                     | `identity.makerAddress`               | Required funded principal used as every offer maker and Midnight `onBehalf` value. It matches local signers and differs from an AWS signer.                                                                  |
+| `KEY_STORAGE_METHOD`                | `identity.keyStorageMethod`           | Optional only for backward-compatible `MAKER_PRIVATE_KEY` use; otherwise `private-key`, `keystore`, or `aws`. Exactly one effective source is required in write mode.                                        |
+| `MAKER_PRIVATE_KEY`                 | `identity.makerPrivateKey`            | Local private-key source. Must be a 0x-prefixed 32-byte secp256k1 key. `--private-key` overrides config. Never include it in committed configuration or logs.                                                |
+| `KEYSTORE_PATH`                     | `identity.keystorePath`               | Encrypted Web3 Secret Storage file used by the `keystore` method. CLI equivalent: `--keystore <path>`.                                                                                                       |
+| `KEYSTORE_PASSWORD`                 | `identity.keystorePassword`           | Keystore password. Exactly one direct or interactive mode is required; see the argv exposure warning above. Never logged or included in diagnostics.                                                         |
+| `KEYSTORE_INTERACTIVE`              | `identity.keystoreInteractive`        | `true` prompts without echoing for the keystore password; CLI equivalent: `--interactive`. Not suitable for unattended deployment.                                                                           |
+| `AWS_KMS_KEY_ID`                    | `identity.awsKmsKeyId`                | KMS key ID/ARN/alias for a distinct asymmetric `ECC_SECG_P256K1` signer. The bot calls KMS directly. `--aws` selects this backend.                                                                           |
+| `AWS_REGION`                        | `identity.awsRegion`                  | AWS region containing the KMS key. AWS credentials use the standard AWS SDK credential chain.                                                                                                                |
+| `MIDNIGHT_ADDRESS`                  | `contracts.midnightAddress`           | Required. Expected deployed Midnight singleton. Setup verifies its bytecode before a writer starts.                                                                                                          |
+| `LOAN_ASSET_ADDRESS`                | `contracts.loanAssetAddress`          | Required. Loan token used by every configured Midnight market. Balances, allowances, budgets, offer sizes, and exposure values use this token's raw units.                                                   |
+| `RATIFIER_ADDRESS`                  | `contracts.ratifierAddress`           | Required canonical ratifier authorized by the maker. AWS mode requires Ecrecover; local and keystore modes may use Ecrecover or Setter.                                                                      |
+| `MORPHO_API_BASE_URL`               | `apis.morphoBaseUrl`                  | Required. Morpho API origin used for Midnight books, market metadata, prospective-offer validation, and cursor-paginated maker offer groups. No API-key header is supported.                                 |
+| `ROUTER_API_BASE_URL`               | `apis.routerBaseUrl`                  | Deprecated compatibility key. Accepted and ignored; ratifier identity comes from the pinned Morpho SDK catalog.                                                                                              |
+| `MARKET_IDS`                        | `markets.allowlist`                   | Required comma-separated list of unique 0x-prefixed bytes32 Midnight market IDs. Every bootstrap or ladder `marketId` must appear here.                                                                      |
+| `REFERENCE_MARKET_ID`               | `markets.referenceMarketId`           | Required when the selected command has an active `variable_rate_avg` target. Must be a 0x-prefixed bytes32 Morpho Blue market ID.                                                                            |
+| `V0_OFFER_GROUP_IDS`                | `markets.v0OfferGroupIds`             | Optional comma-separated list of unique, explicitly strategy-owned bytes32 offer-group IDs; defaults to empty. Use it to adopt known pre-existing groups safely.                                             |
+| `NATIVE_RESERVE_WEI`                | `setup.nativeReserveWei`              | Required unsigned integer. Minimum maker native-token balance, in wei, required by readiness for transaction fees.                                                                                           |
+| `SIGNER_NATIVE_RESERVE_WEI`         | `setup.signerNativeReserveWei`        | Required positive integer in AWS write mode. Minimum signer native-token balance in wei.                                                                                                                     |
+| `MAX_FEE_GWEI`                      | `setup.maxFeeGwei`                    | Required positive integer in write mode. Maximum EIP-1559 fee per gas.                                                                                                                                       |
+| `PRIORITY_FEE_GWEI`                 | `setup.priorityFeeGwei`               | Required positive integer in write mode. Initial priority fee with replacement headroom below `MAX_FEE_GWEI`.                                                                                                |
+| `MAX_TRANSACTION_SPEND_WEI`         | `setup.maxTransactionSpendWei`        | Required positive integer in write mode. Maximum `gas × maxFeePerGas` for one transaction.                                                                                                                   |
+| `MAX_PUBLICATION_GAS`               | `setup.maxPublicationGas`             | Required positive publication gas ceiling.                                                                                                                                                                   |
+| `MAX_PUBLICATION_DATA_BYTES`        | `setup.maxPublicationDataBytes`       | Required positive publication calldata ceiling.                                                                                                                                                              |
+| `MAX_CANCELLATION_GAS`              | `setup.maxCancellationGas`            | Required positive single-cancellation gas ceiling.                                                                                                                                                           |
+| `MAX_BATCH_CANCELLATION_GAS`        | `setup.maxBatchCancellationGas`       | Required positive batch-cancellation gas ceiling.                                                                                                                                                            |
+| `MAX_BATCH_CANCELLATION_DATA_BYTES` | `setup.maxBatchCancellationDataBytes` | Required positive batch-cancellation calldata ceiling.                                                                                                                                                       |
+| `MAX_RATIFICATION_GAS`              | `setup.maxRatificationGas`            | Required only for local or keystore Setter mode.                                                                                                                                                             |
+| `REQUEST_TIMEOUT_MS`                | `setup.requestTimeoutMs`              | Optional provider-operation and aggregate pagination timeout in milliseconds. Defaults to `10000`; accepted range is `1` through `120000`.                                                                   |
+| `TRANSACTION_RECEIPT_TIMEOUT_MS`    | `setup.transactionReceiptTimeoutMs`   | Optional timeout for confirming an already-submitted transaction, in milliseconds. Defaults to `180000`; accepted range is `1` through `900000`.                                                             |
+| `BOOTSTRAP_MARKETS`                 | `bootstrap`                           | Optional exact JSON array of position-bootstrap entries documented below; defaults to `[]` and replaces the complete YAML `bootstrap` list when supplied.                                                    |
+| `LADDER_MARKETS`                    | `ladder`                              | Optional exact JSON array of ladder entries documented below; defaults to `[]` and replaces the complete YAML `ladder` list when supplied.                                                                   |
+| `BETTERSTACK_SOURCE_TOKEN`          | —                                     | Optional Better Stack source token. Must be set together with `BETTERSTACK_INGESTING_HOST`; partial configuration emits `logship.misconfigured` and ships nothing.                                           |
+| `BETTERSTACK_INGESTING_HOST`        | —                                     | Optional Better Stack ingest host, with or without an `https://` prefix. Must be set together with `BETTERSTACK_SOURCE_TOKEN`.                                                                               |
+| `BETTERSTACK_HEARTBEAT_URL`         | —                                     | Optional HTTP(S) heartbeat URL pinged at startup and once per minute. Invalid URLs and ping failures are reported safely and never interrupt quoter-bot.                                                     |
 
 There is no separate Mempool endpoint or API-key field. Books and cursor-paginated maker offer groups
 are read through `MORPHO_API_BASE_URL`. Ratifier identity is validated from the pinned Morpho SDK
@@ -602,7 +614,10 @@ and `ladder`; unknown keys at any level are rejected. Every supported key appear
 - `contracts`: `midnightAddress`, `loanAssetAddress`, `ratifierAddress`.
 - `apis`: `morphoBaseUrl`, `routerBaseUrl`.
 - `markets`: `allowlist`, `referenceMarketId`, `v0OfferGroupIds`.
-- `setup`: `nativeReserveWei`, `requestTimeoutMs`, `transactionReceiptTimeoutMs`.
+- `setup`: `nativeReserveWei`, `signerNativeReserveWei`, `maxFeeGwei`, `priorityFeeGwei`,
+  `maxTransactionSpendWei`, `maxPublicationGas`, `maxPublicationDataBytes`, `maxCancellationGas`,
+  `maxBatchCancellationGas`, `maxBatchCancellationDataBytes`, `maxRatificationGas`,
+  `requestTimeoutMs`, `transactionReceiptTimeoutMs`.
 - `bootstrap`: an ordered list of the exact per-market objects documented below.
 - `ladder`: an ordered list of the exact per-market objects documented below.
 
@@ -628,7 +643,7 @@ after outer environment whitespace is trimmed.
 Setup verifies all of the following from the typed configuration:
 
 - Configured chain identity and configured Midnight bytecode.
-- Native reserve, loan-token allowance, and ratifier readiness for the configured maker address.
+- The maker emergency-gas reserve, loan-token allowance, and ratifier authorization.
   The allowance check requires an unbounded (`type(uint256).max`) approval to Midnight: an ERC-20
   allowance is a cumulative lifetime spend budget, not an outstanding-exposure cap, so a finite
   approval is consumed by ordinary relending and fails readiness. Exposure is bounded by maker
@@ -638,9 +653,10 @@ Setup verifies all of the following from the typed configuration:
   does not block readiness — group ownership is a local durable record, so redeploying onto a fresh
   filesystem orphans the bot's own groups, and halting on that cannot recover until every orphan
   expires. Exposure is derived from live on-chain groups either way.
-- Maker/private-key agreement in write mode; only this signer-identity check is `not-required` with
-  `--readonly`. Maker identity is reduced to configured/derived/matches status and the address is
-  never included in operator output.
+- Signer identity, signer nonce, and the required identity relationship: local and keystore signers
+  equal the maker; an AWS signer differs. AWS mode also checks the signer gas reserve and Midnight
+  authorization. Signer-only checks are `not-required` with `--readonly`. Addresses are not included
+  in operator output.
 - Every allowlisted market is active, uses the configured loan asset, has valid tick spacing and
   maturity, and agrees between API and chain state.
 - The exact Blue reference market is readable from the archive provider.

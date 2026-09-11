@@ -129,10 +129,12 @@ confirmation. A failed broadcast removes the reservation; a successful broadcast
 storage failure leaves enough ownership evidence to recognize the group when provider indexing
 catches up.
 
-All transaction-producing adapters enforce a blocking sequence: derive and validate, persist the
-pending ownership state, sign, broadcast, and confirm. Receipt timeouts are independent from general
-provider request timeouts. Transaction assertion utilities restrict outgoing calls to the expected
-Midnight publication or cancellation operation.
+One invocation-scoped executor owns the signer nonce and pending queue. Each write is structurally
+validated, simulated from the signer, prepared, checked against operation-specific target, selector,
+gas, calldata, fee, and spend limits, then signed, broadcast, replaced if needed, and reconciled.
+AWS mode uses a distinct KMS signer authorized by the funded maker; the KMS key never becomes the
+offer maker. A receipt timeout retains the pending transaction and ownership reservation and blocks
+later writes until an operator reconciles the nonce.
 
 ## Error and output boundaries
 

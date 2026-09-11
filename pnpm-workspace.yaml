@@ -1,7 +1,6 @@
 packages:
   - bots/*
   - packages/*
-  - services/*
 
 engineStrict: true
 saveExact: true
@@ -30,8 +29,7 @@ enablePrePostScripts: true
 # resolved to a lower version are pinned exactly here. This keeps the migration a no-op on
 # dependency versions, per the TIB's non-goal; relaxing any of these is a separate, deliberate bump.
 catalog:
-  # Pinned exactly and shared by the quoter-bot direct-KMS path and the quoter-signer middleware:
-  # both sides of the maker-key custody boundary must run the same audited KMS and curve code.
+  # Pinned exactly for the quoter-bot direct-KMS path.
   '@aws-sdk/client-kms': 3.1101.0
   '@internationalized/date': 3.12.1
   '@tanstack/react-form': 1.20.0

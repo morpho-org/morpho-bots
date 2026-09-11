@@ -34,9 +34,6 @@
     },
     "bots/quoter-bot": {
       "entry": ["src/index.ts", "playground/app.tsx"]
-    },
-    "services/quoter-signer": {
-      "entry": ["src/index.ts"]
     }
   }
 }

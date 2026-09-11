@@ -35,14 +35,16 @@ const SUBMIT_RESOURCE_KEY = 'submit'
 export type TxRequest = { to: Address; data: Hex }
 
 /**
- * Broadcasts a transaction and returns its assigned nonce + hash. On first submit `nonce` is omitted
- * and the signer claims the next one; on replacement the queue passes the original `nonce`
- * explicitly. If a first submit fails after claiming a nonce, the signer throws `TxSendError` with
- * that nonce so the queue can abort the tick instead of silently skipping a nonce-bearing send.
+ * Signs and attempts to broadcast a transaction, then returns its assigned nonce and deterministic
+ * hash. On first submit `nonce` is omitted and the signer claims the next one; on replacement the
+ * queue passes the original `nonce` explicitly. `broadcastUnknown` means the RPC lost or rejected
+ * the response after the raw transaction existed, so the queue must reconcile that hash rather than
+ * reuse its nonce. A custom signer that cannot derive a hash may instead throw `TxSendError` with its
+ * claimed nonce so the queue can abort the tick.
  */
 export type SendTx = (
   request: TxRequest & { maxFeePerGas: bigint; maxPriorityFeePerGas: bigint; nonce?: number }
-) => Promise<{ nonce: number; txHash: Hex; gas: bigint }>
+) => Promise<{ nonce: number; txHash: Hex; gas: bigint; broadcastUnknown?: true }>
 
 export type TxReceiptLite = { status: 'success' | 'reverted'; blockNumber: bigint }
 export type GetReceipt = (txHash: Hex) => Promise<TxReceiptLite | null>
@@ -97,6 +99,34 @@ export type SubmitOutcome =
   | { sent: false; reason: 'refused' }
   | { sent: false; reason: 'send_failed'; executionRevert: boolean; selector?: Hex }
 
+/** A hash emitted for the initial broadcast or a fee replacement. */
+export type TrackedBroadcast = {
+  nonce: number
+  txHash: Hex
+  kind: 'initial' | 'replacement'
+}
+
+/** Terminal chain outcome for a transaction tracked by {@link PendingQueue.submitTracked}. */
+export type TrackedSettlement =
+  | { kind: 'confirmed-success'; nonce: number; txHash: Hex; txHashes: readonly Hex[] }
+  | { kind: 'confirmed-revert'; nonce: number; txHash: Hex; txHashes: readonly Hex[] }
+  | { kind: 'dropped'; nonce: number; txHash: Hex; txHashes: readonly Hex[]; reason: string }
+
+/** The tracked equivalent of {@link SubmitOutcome}; attempted broadcasts expose identity and settlement. */
+export type TrackedSubmitOutcome =
+  | {
+      sent: true
+      nonce: number
+      txHash: Hex
+      settlement: Promise<TrackedSettlement>
+    }
+  | Exclude<SubmitOutcome, { sent: true }>
+
+/** Optional diagnostic observer for initial and replacement broadcasts. Its failures are ignored. */
+export type TrackedSubmitArgs = SubmitArgs & {
+  onBroadcast?: (broadcast: TrackedBroadcast) => void | Promise<void>
+}
+
 /** One tracked tx — the queue's full per-nonce record. */
 type Pending = {
   nonce: number
@@ -121,6 +151,8 @@ type Pending = {
   /** Gas the node estimated for this tx — the other half of what a bump is allowed to cost. */
   gas: bigint
   attempt: number
+  resolveSettlement?: ((settlement: TrackedSettlement) => void) | undefined
+  onBroadcast?: TrackedSubmitArgs['onBroadcast']
 }
 
 export type PendingQueue = {
@@ -141,6 +173,12 @@ export type PendingQueue = {
    * rewind the cursor past an in-flight send.
    */
   submit(args: SubmitArgs): Promise<SubmitOutcome>
+  /**
+   * Broadcasts like {@link PendingQueue.submit}, but returns the assigned nonce and first hash, then
+   * resolves `settlement` when any broadcast confirms, reverts, or is dropped. Replacement hashes
+   * are reported through `onBroadcast`; observer failures never affect queue reconciliation.
+   */
+  submitTracked(args: TrackedSubmitArgs): Promise<TrackedSubmitOutcome>
   /**
    * Advances the queue by one block. For every pending transaction it scans all tracked hashes for
    * receipts; if any hash mined, the entry is settled and removed. For entries that have not yet
@@ -287,10 +325,32 @@ export function createPendingQueue({
   // Remove a finished tx from `pending` and, when a `blockNumber` was supplied and the cooldown is
   // enabled, start its re-submission cooldown. A `drop` (nonce-consumed / manual) passes no
   // `blockNumber`, so it evicts without cooling the label down.
-  function settle(entry: Pending, blockNumber?: bigint): void {
+  function settle(entry: Pending, settlement: TrackedSettlement, blockNumber?: bigint): void {
     pending.delete(entry.nonce)
     if (blockNumber !== undefined && settledCooldownBlocks > 0n) {
       settledAt.set(entry.label, blockNumber)
+    }
+    entry.resolveSettlement?.(settlement)
+  }
+
+  function notifyBroadcast(entry: Pending, broadcast: TrackedBroadcast): void {
+    if (!entry.onBroadcast) return
+    try {
+      void Promise.resolve(entry.onBroadcast(broadcast)).catch(error => {
+        logger.warn('tx.observer_failed', {
+          id: entry.label,
+          nonce: entry.nonce,
+          txHash: broadcast.txHash,
+          reason: revertReason(error)
+        })
+      })
+    } catch (error) {
+      logger.warn('tx.observer_failed', {
+        id: entry.label,
+        nonce: entry.nonce,
+        txHash: broadcast.txHash,
+        reason: revertReason(error)
+      })
     }
   }
 
@@ -318,7 +378,14 @@ export function createPendingQueue({
     const scan = await scanReceipts(getReceipt, entry.txHashes)
     if (scan.kind === 'unknown') return { kind: 'unreadable', error: scan.error }
     if (scan.kind === 'none') return { kind: 'unmined' }
-    settle(entry, blockNumber)
+    const txHashes = [...entry.txHashes]
+    settle(
+      entry,
+      scan.receipt.status === 'success'
+        ? { kind: 'confirmed-success', nonce: entry.nonce, txHash: scan.txHash, txHashes }
+        : { kind: 'confirmed-revert', nonce: entry.nonce, txHash: scan.txHash, txHashes },
+      blockNumber
+    )
     const fields = {
       id: entry.label,
       nonce: entry.nonce,
@@ -335,7 +402,7 @@ export function createPendingQueue({
   // `pending` snapshot. In particular the `pending.size === 0` test has to sit INSIDE the lock — a
   // slow sync racing a concurrent send would otherwise rewind the cursor onto a nonce already in
   // flight, and the resulting replacement-underpriced send drops one of the two txs.
-  async function submitLocked(args: SubmitArgs): Promise<SubmitOutcome> {
+  async function submitLocked(args: TrackedSubmitArgs): Promise<TrackedSubmitOutcome> {
     // Latched by a prior hashless send: skip until the next `onBlock` clears it. The signer has
     // rolled its cursor back, so broadcasting again now would race that rollback.
     if (sendAborted) {
@@ -398,8 +465,12 @@ export function createPendingQueue({
         ...(selector ? { selector } : {})
       }
     }
-    const { nonce, txHash, gas } = sent.data
-    pending.set(nonce, {
+    const { nonce, txHash, gas, broadcastUnknown } = sent.data
+    let resolveSettlement: ((settlement: TrackedSettlement) => void) | undefined
+    const settlement = new Promise<TrackedSettlement>(resolve => {
+      resolveSettlement = resolve
+    })
+    const entry: Pending = {
       nonce,
       txHashes: [txHash],
       request: args.request,
@@ -408,24 +479,38 @@ export function createPendingQueue({
       maxFeePerGas: args.maxFeePerGas,
       maxPriorityFeePerGas: args.maxPriorityFeePerGas,
       gas,
-      attempt: 0
-    })
-    logger.info('tx.sent', {
-      id: args.label,
-      nonce,
-      txHash,
-      maxFee: args.maxFeePerGas,
-      priority: args.maxPriorityFeePerGas
-    })
-    return { sent: true }
+      attempt: 0,
+      resolveSettlement,
+      onBroadcast: args.onBroadcast
+    }
+    pending.set(nonce, entry)
+    logger[broadcastUnknown ? 'warn' : 'info'](
+      broadcastUnknown ? 'tx.broadcast_unknown' : 'tx.sent',
+      {
+        id: args.label,
+        nonce,
+        txHash,
+        maxFee: args.maxFeePerGas,
+        priority: args.maxPriorityFeePerGas
+      }
+    )
+    notifyBroadcast(entry, { nonce, txHash, kind: 'initial' })
+    return { sent: true, nonce, txHash, settlement }
   }
 
   // A handler that throws rejects only its own caller and the mutex moves straight to the next queued
   // one, so `TxSendError` still surfaces to the tick that caused it without wedging the lock.
-  const submit = (args: SubmitArgs): Promise<SubmitOutcome> =>
-    submitMutex.coalesce<SubmitArgs, SubmitOutcome>(SUBMIT_RESOURCE_KEY, args, async locked => ({
-      leader: { action: 'resolve', result: await submitLocked(locked) }
-    }))
+  const submitTracked = (args: TrackedSubmitArgs): Promise<TrackedSubmitOutcome> =>
+    submitMutex.coalesce<TrackedSubmitArgs, TrackedSubmitOutcome>(
+      SUBMIT_RESOURCE_KEY,
+      args,
+      async locked => ({ leader: { action: 'resolve', result: await submitLocked(locked) } })
+    )
+
+  const submit = async (args: SubmitArgs): Promise<SubmitOutcome> => {
+    const outcome = await submitTracked(args)
+    return outcome.sent ? { sent: true } : outcome
+  }
 
   // What this tx's bumps may reach: the fee ceiling, or the per-gas price its own spend budget
   // affords, whichever binds. Applying the budget HERE means an unaffordable bump retires the entry
@@ -440,7 +525,17 @@ export function createPendingQueue({
 
   async function replaceStuck(entry: Pending, blockNumber: bigint, baseFee: bigint): Promise<void> {
     if (entry.attempt >= maxBumpAttempts) {
-      settle(entry, blockNumber)
+      settle(
+        entry,
+        {
+          kind: 'dropped',
+          nonce: entry.nonce,
+          txHash: entry.txHashes[0],
+          txHashes: [...entry.txHashes],
+          reason: 'max_bump_attempts'
+        },
+        blockNumber
+      )
       latchNonceHole(entry.nonce)
       logger.warn('tx.dropped', {
         id: entry.label,
@@ -457,7 +552,17 @@ export function createPendingQueue({
       maxFeeWei: bumpCeiling(entry)
     })
     if (result.kind === 'drop') {
-      settle(entry, blockNumber)
+      settle(
+        entry,
+        {
+          kind: 'dropped',
+          nonce: entry.nonce,
+          txHash: entry.txHashes[0],
+          txHashes: [...entry.txHashes],
+          reason: 'fee_ceiling'
+        },
+        blockNumber
+      )
       latchNonceHole(entry.nonce)
       logger.warn('tx.dropped', {
         id: entry.label,
@@ -478,7 +583,17 @@ export function createPendingQueue({
         : null
       if (checked?.kind === 'settled') return
       if (checked?.kind === 'unmined') {
-        settle(entry, blockNumber)
+        settle(
+          entry,
+          {
+            kind: 'dropped',
+            nonce: entry.nonce,
+            txHash: entry.txHashes[0],
+            txHashes: [...entry.txHashes],
+            reason: 'reverts_on_replace'
+          },
+          blockNumber
+        )
         latchNonceHole(entry.nonce)
         logger.warn('tx.dropped', {
           id: entry.label,
@@ -509,6 +624,14 @@ export function createPendingQueue({
     // receipt read per entry and a gas estimation, so its own block can be stale too.
     entry.submittedAtBlock = null
     entry.attempt += 1
+    if (replaced.data.broadcastUnknown) {
+      logger.warn('tx.broadcast_unknown', {
+        id: entry.label,
+        nonce: entry.nonce,
+        txHash: replaced.data.txHash,
+        attempt: entry.attempt
+      })
+    }
     logger.info('tx.bumped', {
       id: entry.label,
       nonce: entry.nonce,
@@ -517,6 +640,11 @@ export function createPendingQueue({
       attempt: entry.attempt,
       maxFee: result.fees.maxFeePerGas,
       priority: result.fees.maxPriorityFeePerGas
+    })
+    notifyBroadcast(entry, {
+      nonce: entry.nonce,
+      txHash: replaced.data.txHash,
+      kind: 'replacement'
     })
   }
 
@@ -626,12 +754,19 @@ export function createPendingQueue({
       txHash: entry.txHashes[0],
       reason
     })
-    settle(entry)
+    settle(entry, {
+      kind: 'dropped',
+      nonce: entry.nonce,
+      txHash: entry.txHashes[0],
+      txHashes: [...entry.txHashes],
+      reason
+    })
     return true
   }
 
   return {
     submit,
+    submitTracked,
     onBlock,
     get size() {
       return pending.size

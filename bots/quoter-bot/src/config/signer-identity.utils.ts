@@ -7,23 +7,21 @@ import type { Environment } from './config.utils'
 import { ConfigValidationError } from './config-validation.error'
 import { privateKeyValue } from './config.utils'
 
-/** Validated maker identity selected by the CLI runtime mode. */
-export type MakerIdentity =
+/** Validated signer identity selected by the CLI runtime mode. */
+export type SignerIdentity =
   | { readOnly: true; maker: Address }
   | { readOnly: false; maker: Address; method: 'private-key'; privateKey: Hex }
   | { readOnly: false; maker: Address; method: 'keystore'; path: string; password: string }
   | { readOnly: false; maker: Address; method: 'aws'; keyId: string; region: string }
-  | { readOnly: false; maker: Address; method: 'middleware'; functionArn: string; region: string }
 
-const SIGNER_METHODS = ['private-key', 'keystore', 'aws', 'middleware'] as const
+const SIGNER_METHODS = ['private-key', 'keystore', 'aws'] as const
 
 type SignerMethod = (typeof SIGNER_METHODS)[number]
 
 const SIGNER_METHOD_SELECTORS: Readonly<Record<SignerMethod, readonly string[]>> = {
   'private-key': ['MAKER_PRIVATE_KEY'],
   keystore: ['KEYSTORE_PATH'],
-  aws: ['AWS_KMS_KEY_ID'],
-  middleware: ['QUOTER_SIGNER_LAMBDA_ARN']
+  aws: ['AWS_KMS_KEY_ID']
 }
 
 const selectsMethod = (environment: Environment, method: SignerMethod) =>
@@ -37,13 +35,7 @@ const hasForeignSignerSource = (environment: Environment, method: SignerMethod) 
         (candidate === 'keystore' && environment.KEYSTORE_INTERACTIVE?.trim() === 'true'))
   )
 
-// Alias-qualified AWS Lambda ARN in the standard partition. TIB-2026-08-12 requires the bot to
-// invoke exact production-alias ARNs only, so the qualifier is mandatory and must be an alias
-// name: all-digit version qualifiers are excluded by the lookahead and `$LATEST` by the charset.
-const LAMBDA_ALIAS_ARN_PATTERN =
-  /^arn:aws:lambda:([a-z]{2}(?:-[a-z]+)+-\d):\d{12}:function:[A-Za-z0-9_-]{1,64}:(?![0-9]+$)[A-Za-z0-9_-]{1,128}$/
-
-const protectedIdentity = <Identity extends Exclude<MakerIdentity, { readOnly: true }>>(
+const protectedIdentity = <Identity extends Exclude<SignerIdentity, { readOnly: true }>>(
   identity: Identity
 ) => {
   for (const secret of ['privateKey', 'password'] as const) {
@@ -61,7 +53,7 @@ const protectedIdentity = <Identity extends Exclude<MakerIdentity, { readOnly: t
       value: () => ({ readOnly: false, maker: identity.maker, method: identity.method })
     },
     [inspect.custom]: {
-      value: () => `MakerIdentity ${inspect({ maker: identity.maker, method: identity.method })}`
+      value: () => `SignerIdentity ${inspect({ maker: identity.maker, method: identity.method })}`
     }
   })
 }
@@ -72,38 +64,22 @@ const required = (values: Environment, name: string) => {
   return value
 }
 
-const middlewareFunctionArn = (environment: Environment) => {
-  const functionArn = required(environment, 'QUOTER_SIGNER_LAMBDA_ARN')
-  const region = LAMBDA_ALIAS_ARN_PATTERN.exec(functionArn)?.[1]
-  if (region === undefined) {
-    throw new ConfigValidationError(
-      'QUOTER_SIGNER_LAMBDA_ARN',
-      'invalid-arn',
-      'QUOTER_SIGNER_LAMBDA_ARN must be an alias-qualified AWS Lambda ARN'
-    )
-  }
-  return { functionArn, region }
-}
-
 /**
  * Selects and validates one write-enabled signer identity.
  * @param environment - Merged signer configuration after source precedence has been applied.
  * @param maker - Checksummed maker address the selected credential must control.
- * @returns A serialization-protected private-key, keystore, AWS KMS, or quoter-signer middleware
- * identity.
+ * @returns A serialization-protected private-key, keystore, or AWS KMS identity.
  * @throws `ConfigValidationError` when signer selection or required companion values are invalid.
  * @remarks This function performs no filesystem, network, prompt, or signing side effects. The
- * `middleware` method (TIB-2026-08-12) is selected by `QUOTER_SIGNER_LAMBDA_ARN` and derives its
- * AWS region from the ARN itself; it holds no key material — signing flows must go through the
- * middleware intent ports, and any generic signing path fails closed.
+ * AWS mode calls KMS directly and derives the signer from the configured key.
  */
-export const signerIdentity = (environment: Environment, maker: Address): MakerIdentity => {
+export const signerIdentity = (environment: Environment, maker: Address): SignerIdentity => {
   const declared = environment.KEY_STORAGE_METHOD?.trim()
   if (declared && !(SIGNER_METHODS as readonly string[]).includes(declared)) {
     throw new ConfigValidationError(
       'KEY_STORAGE_METHOD',
       'unsupported',
-      'KEY_STORAGE_METHOD must be private-key, keystore, aws, or middleware'
+      'KEY_STORAGE_METHOD must be private-key, keystore, or aws'
     )
   }
   const selected = SIGNER_METHODS.filter(candidate => selectsMethod(environment, candidate))
@@ -111,7 +87,7 @@ export const signerIdentity = (environment: Environment, maker: Address): MakerI
     throw new ConfigValidationError(
       'KEY_STORAGE_METHOD',
       'conflicting-sources',
-      'Exactly one maker key storage method must be configured'
+      'Exactly one signer key storage method must be configured'
     )
   }
   const method = (declared ?? selected[0]) as SignerMethod | undefined
@@ -126,7 +102,7 @@ export const signerIdentity = (environment: Environment, maker: Address): MakerI
     throw new ConfigValidationError(
       'KEY_STORAGE_METHOD',
       'conflicting-sources',
-      'Exactly one maker key storage method must be configured'
+      'Exactly one signer key storage method must be configured'
     )
   }
   if (method === 'private-key') {
@@ -172,19 +148,11 @@ export const signerIdentity = (environment: Environment, maker: Address): MakerI
       password
     })
   }
-  if (method === 'aws') {
-    return protectedIdentity({
-      readOnly: false,
-      maker,
-      method,
-      keyId: required(environment, 'AWS_KMS_KEY_ID'),
-      region: required(environment, 'AWS_REGION')
-    })
-  }
   return protectedIdentity({
     readOnly: false,
     maker,
     method,
-    ...middlewareFunctionArn(environment)
+    keyId: required(environment, 'AWS_KMS_KEY_ID'),
+    region: required(environment, 'AWS_REGION')
   })
 }

@@ -1,7 +1,20 @@
-import { OfferUtils } from '@morpho-org/midnight-sdk'
+import {
+  midnightAbi,
+  Offer,
+  OfferUtils,
+  Payload,
+  SetterRatifierUtils,
+  setterRatifierAbi,
+  Tree
+} from '@morpho-org/midnight-sdk'
+import { morphoViemExtension } from '@morpho-org/morpho-sdk'
+import { getChainAddress } from '@morpho-org/morpho-ts'
 import { mkdir, mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { createWalletClient, http, publicActions } from 'viem'
+import { privateKeyToAccount } from 'viem/accounts'
+import { base } from 'viem/chains'
 import { afterAll, beforeAll, beforeEach, describe, expect, test, vi } from 'vitest'
 
 import type { AnvilHandle } from './anvil'
@@ -12,7 +25,9 @@ import { LadderQuoterService } from '../../src/application/ladder/ladder-quoter.
 import { createApplication } from '../../src/bootstrap'
 import { ConfigService } from '../../src/config/config.service'
 import { createProductionBootstrapAdapters } from '../../src/infrastructure/bootstrap/production-bootstrap'
+import { createProductionOfferInvalidationPort } from '../../src/infrastructure/invalidation/production-offer-invalidation'
 import { createProductionLadderAdapters } from '../../src/infrastructure/ladder/production-ladder'
+import { createQuoterTransactionExecutor } from '../../src/infrastructure/transaction/quoter-transaction-executor'
 import { startAnvil, stopAnvil } from './anvil'
 import {
   ANVIL_DEFAULT_ACCOUNT,
@@ -36,6 +51,9 @@ import { setupMaker } from './setup-maker'
 
 const PINNED_FORK_TIMESTAMP = 1_784_589_348n
 const PINNED_WALL_TIMESTAMP = PINNED_FORK_TIMESTAMP + 150n
+const DELEGATED_SIGNER = privateKeyToAccount(
+  '0x5de4111afa1c4b3ebab8959708c3fe2503b7e5146ff7e53ecf0c8d132d13e5de'
+)
 
 const bootstrapConfiguration = JSON.stringify([
   {
@@ -90,12 +108,49 @@ const environment = (rpcUrl: string, apiBaseUrl: string) => ({
   MARKET_IDS: MARKET_ID,
   REFERENCE_MARKET_ID,
   NATIVE_RESERVE_WEI: String(NATIVE_RESERVE),
+  MAX_FEE_GWEI: '100',
+  PRIORITY_FEE_GWEI: '1',
+  MAX_TRANSACTION_SPEND_WEI: '100000000000000000',
+  MAX_PUBLICATION_GAS: '5000000',
+  MAX_PUBLICATION_DATA_BYTES: '65536',
+  MAX_CANCELLATION_GAS: '100000',
+  MAX_BATCH_CANCELLATION_GAS: '1000000',
+  MAX_BATCH_CANCELLATION_DATA_BYTES: '65536',
   MORPHO_API_BASE_URL: apiBaseUrl,
   ROUTER_API_BASE_URL: apiBaseUrl,
   REQUEST_TIMEOUT_MS: '30000',
   BOOTSTRAP_MARKETS: bootstrapConfiguration,
   LADDER_MARKETS: ladderConfiguration('0')
 })
+
+const delegatedEnvironment = (rpcUrl: string, apiBaseUrl: string) => ({
+  ...environment(rpcUrl, apiBaseUrl),
+  MAKER_PRIVATE_KEY: undefined,
+  KEY_STORAGE_METHOD: 'aws',
+  AWS_KMS_KEY_ID: 'alias/fork-delegated-signer',
+  AWS_REGION: 'us-east-1',
+  SIGNER_NATIVE_RESERVE_WEI: String(NATIVE_RESERVE)
+})
+
+const setMakerAuthorization = async (
+  handle: AnvilHandle,
+  delegate: `0x${string}`,
+  authorized: boolean
+) => {
+  const wallet = createWalletClient({
+    account: ANVIL_DEFAULT_ACCOUNT,
+    chain: base,
+    transport: http(handle.rpcUrl)
+  })
+  const hash = await wallet.writeContract({
+    address: MIDNIGHT,
+    abi: midnightAbi,
+    functionName: 'setIsAuthorized',
+    args: [delegate, authorized, ANVIL_DEFAULT_ACCOUNT.address]
+  })
+  const receipt = await handle.client.waitForTransactionReceipt({ hash })
+  if (receipt.status !== 'success') throw new TypeError('Maker authorization reverted')
+}
 
 const createProductionLadderRuntime = async (config: ConfigService) => {
   const adapters = await createProductionLadderAdapters(config)
@@ -352,5 +407,144 @@ describe('quoter-bot workflow on a pinned Base fork', () => {
     ])
     await sellRuntime.shutdown(true)
     expect(await api.activeOffers()).toHaveLength(0)
+  }, 180_000)
+
+  test('uses a distinct delegated signer for offers, deauthorization, and cancellation', async () => {
+    expect(anvil).toBeDefined()
+    expect(api).toBeDefined()
+    if (!anvil || !api) return
+
+    const fillSnapshot = await anvil.client.snapshot()
+    try {
+      await setMakerAuthorization(anvil, DELEGATED_SIGNER.address, true)
+      const config = ConfigService.from(delegatedEnvironment(anvil.rpcUrl, api.baseUrl))
+      const executor = createQuoterTransactionExecutor(config, DELEGATED_SIGNER)
+      const adapters = await createProductionBootstrapAdapters(
+        config,
+        undefined,
+        DELEGATED_SIGNER,
+        [],
+        executor
+      )
+      const bootstrap = new PositionBootstrapService(
+        adapters.positions,
+        adapters.rates,
+        adapters.make,
+        config.bootstrap
+      )
+
+      expect(await bootstrap.runOnce()).toMatchObject([{ status: 'applied', action: 'publish' }])
+      const published = await api.activeOffers()
+      expect(published).toHaveLength(1)
+      expect(OfferUtils.toStruct({ offer: published[0]!.offer }).maker).toBe(
+        ANVIL_DEFAULT_ACCOUNT.address
+      )
+      expect((await takeMakerLend(anvil, api, 100_000_000n)).receipt.status).toBe('success')
+    } finally {
+      await anvil.client.revert({ id: fillSnapshot })
+      await resetStateDirectory()
+    }
+
+    const revocationSnapshot = await anvil.client.snapshot()
+    try {
+      await setMakerAuthorization(anvil, DELEGATED_SIGNER.address, true)
+      const config = ConfigService.from(delegatedEnvironment(anvil.rpcUrl, api.baseUrl))
+      const executor = createQuoterTransactionExecutor(config, DELEGATED_SIGNER)
+      const adapters = await createProductionBootstrapAdapters(
+        config,
+        undefined,
+        DELEGATED_SIGNER,
+        [],
+        executor
+      )
+      const bootstrap = new PositionBootstrapService(
+        adapters.positions,
+        adapters.rates,
+        adapters.make,
+        config.bootstrap
+      )
+      expect(await bootstrap.runOnce()).toMatchObject([{ status: 'applied', action: 'publish' }])
+      const published = await api.activeOffers()
+      const offer = OfferUtils.toStruct({ offer: published[0]!.offer })
+
+      await setMakerAuthorization(anvil, DELEGATED_SIGNER.address, false)
+      await expect(takeMakerLend(anvil, api, 100_000_000n)).rejects.toBeDefined()
+
+      await setMakerAuthorization(anvil, DELEGATED_SIGNER.address, true)
+      const invalidation = await createProductionOfferInvalidationPort(
+        config,
+        DELEGATED_SIGNER,
+        executor
+      )
+      await invalidation.preflight()
+      await expect(invalidation.invalidate(offer.group)).resolves.toBeDefined()
+      expect(await api.activeOffers()).toHaveLength(0)
+    } finally {
+      await anvil.client.revert({ id: revocationSnapshot })
+      await resetStateDirectory()
+    }
+  }, 240_000)
+
+  test('keeps an approved Setter root valid after its delegated signer is removed', async () => {
+    expect(anvil).toBeDefined()
+    expect(api).toBeDefined()
+    if (!anvil || !api) return
+    const snapshot = await anvil.client.snapshot()
+    try {
+      const setterRatifier = getChainAddress(base.id, 'setterRatifier')
+      await setMakerAuthorization(anvil, setterRatifier, true)
+      await setMakerAuthorization(anvil, DELEGATED_SIGNER.address, true)
+      const wallet = createWalletClient({
+        account: DELEGATED_SIGNER,
+        chain: base,
+        transport: http(anvil.rpcUrl)
+      }).extend(publicActions)
+      const midnight = wallet
+        .extend(morphoViemExtension({ supportSignature: true, supportDeployless: true }))
+        .morpho.midnight(base.id)
+      const marketData = await midnight.getMarketData(MARKET_ID)
+      const offer = Offer.create({
+        market: marketData.params,
+        buy: true,
+        maker: ANVIL_DEFAULT_ACCOUNT.address,
+        tick: 6_744n,
+        expiry: marketData.params.maturity,
+        ratifier: setterRatifier,
+        maxAssets: 500_000_000n,
+        continuousFeeCap: BigInt(marketData.continuousFee)
+      })
+      const tree = Tree.create([offer])
+      const items = SetterRatifierUtils.ratify({ tree })
+      const approvalHash = await wallet.writeContract({
+        address: setterRatifier,
+        abi: setterRatifierAbi,
+        functionName: 'setIsRootRatified',
+        args: [ANVIL_DEFAULT_ACCOUNT.address, tree.root, true]
+      })
+      expect((await wallet.waitForTransactionReceipt({ hash: approvalHash })).status).toBe(
+        'success'
+      )
+      const publicationHash = await wallet.sendTransaction({
+        to: getChainAddress(base.id, 'midnightMempool'),
+        data: await Payload.encode(items)
+      })
+      expect((await wallet.waitForTransactionReceipt({ hash: publicationHash })).status).toBe(
+        'success'
+      )
+
+      await setMakerAuthorization(anvil, DELEGATED_SIGNER.address, false)
+      expect(
+        await anvil.client.readContract({
+          address: setterRatifier,
+          abi: setterRatifierAbi,
+          functionName: 'isRootRatified',
+          args: [ANVIL_DEFAULT_ACCOUNT.address, tree.root]
+        })
+      ).toBe(true)
+      expect((await takeMakerLend(anvil, api, 100_000_000n)).receipt.status).toBe('success')
+    } finally {
+      await anvil.client.revert({ id: snapshot })
+      await resetStateDirectory()
+    }
   }, 180_000)
 })

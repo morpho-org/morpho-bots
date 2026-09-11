@@ -9,8 +9,6 @@ This is a [pnpm workspaces](https://pnpm.io/workspaces) monorepo:
 - `packages/` — shared libraries (`@repo/bot-kit`, `@repo/swaps`, `@repo/contracts`,
   `@repo/observability`, `@repo/monitoring`, `@repo/logging`, `@repo/offers`, `@repo/utils`,
   `@repo/typescript-config`)
-- `services/` — deployable non-bot services (`quoter-signer`, the quoter-bot KMS signing
-  policy middleware Lambda image)
 
 ## Getting started
 

@@ -21,11 +21,10 @@ import {
 import { privateKeyToAccount, publicKeyToAddress, toAccount } from 'viem/accounts'
 import { createNonceManager, jsonRpc } from 'viem/nonce'
 
-import type { MakerIdentity } from '../../config/config.service'
+import type { SignerIdentity } from '../../config/config.service'
 
-import { MakerAccountError } from './maker-account.error'
-import { createManagedMakerAccount } from './managed-maker-account.utils'
-import { MiddlewareSigningUnsupportedError } from './middleware-signing-unsupported.error'
+import { createManagedSignerAccount } from './managed-signer-account.utils'
+import { SignerAccountError } from './signer-account.error'
 
 const SECP256K1_ORDER = 0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n
 const HALF_SECP256K1_ORDER = SECP256K1_ORDER / 2n
@@ -35,7 +34,7 @@ type KmsSigner = {
   signDigest(keyId: string, region: string, digest: Uint8Array): Promise<Uint8Array>
 }
 
-type MakerAccountDependencies = {
+type SignerAccountDependencies = {
   readFile?: (path: string) => Promise<string>
   decryptKeystore?: (json: string, password: string) => Promise<Hex>
   kms?: KmsSigner
@@ -59,7 +58,7 @@ const awsKmsSigner: KmsSigner = {
       response.KeyUsage !== 'SIGN_VERIFY' ||
       !response.SigningAlgorithms?.includes('ECDSA_SHA_256')
     )
-      throw new MakerAccountError('kms-public-key')
+      throw new SignerAccountError('kms-public-key')
     return response.PublicKey
   },
   async signDigest(keyId, region, digest) {
@@ -71,7 +70,7 @@ const awsKmsSigner: KmsSigner = {
         SigningAlgorithm: 'ECDSA_SHA_256'
       })
     )
-    if (!response.Signature) throw new MakerAccountError('kms-sign')
+    if (!response.Signature) throw new SignerAccountError('kms-sign')
     return response.Signature
   }
 }
@@ -80,7 +79,7 @@ const decryptKeystore = async (json: string, password: string): Promise<Hex> => 
   try {
     return bytesToHex((await Wallet.fromV3(json, password)).getPrivateKey())
   } catch {
-    throw new MakerAccountError('keystore-decrypt')
+    throw new SignerAccountError('keystore-decrypt')
   }
 }
 
@@ -96,7 +95,7 @@ const publicKeyFromSpki = (spki: Uint8Array): Hex => {
       decoded.result.lenBlock.longFormUsed ||
       decoded.result.warnings.length !== 0
     ) {
-      throw new MakerAccountError('kms-public-key')
+      throw new SignerAccountError('kms-public-key')
     }
     const [algorithmValue, subjectPublicKeyValue, ...spkiTrailing] = decoded.result.valueBlock.value
     if (
@@ -104,7 +103,7 @@ const publicKeyFromSpki = (spki: Uint8Array): Hex => {
       !(subjectPublicKeyValue instanceof BitString) ||
       spkiTrailing.length !== 0
     ) {
-      throw new MakerAccountError('kms-public-key')
+      throw new SignerAccountError('kms-public-key')
     }
     const [algorithm, curve, ...algorithmTrailing] = algorithmValue.valueBlock.value
     const derBlocks = [algorithmValue, subjectPublicKeyValue, algorithm, curve]
@@ -123,27 +122,27 @@ const publicKeyFromSpki = (spki: Uint8Array): Hex => {
       algorithmTrailing.length !== 0 ||
       subjectPublicKeyValue.valueBlock.unusedBits !== 0
     ) {
-      throw new MakerAccountError('kms-public-key')
+      throw new SignerAccountError('kms-public-key')
     }
     const publicKey = Uint8Array.from(subjectPublicKeyValue.valueBlock.valueHexView)
     if (publicKey.length !== 65 || publicKey[0] !== 4) {
-      throw new MakerAccountError('kms-public-key')
+      throw new SignerAccountError('kms-public-key')
     }
     secp256k1.ProjectivePoint.fromHex(publicKey)
     return bytesToHex(publicKey)
   } catch (error) {
-    if (error instanceof MakerAccountError) throw error
-    throw new MakerAccountError('kms-public-key')
+    if (error instanceof SignerAccountError) throw error
+    throw new SignerAccountError('kms-public-key')
   }
 }
 
 const derInteger = (bytes: Uint8Array, offset: number) => {
-  if (bytes[offset] !== 2) throw new MakerAccountError('kms-sign')
+  if (bytes[offset] !== 2) throw new SignerAccountError('kms-sign')
   const length = bytes[offset + 1]
-  if (length === undefined || length === 0 || length > 33) throw new MakerAccountError('kms-sign')
+  if (length === undefined || length === 0 || length > 33) throw new SignerAccountError('kms-sign')
   const start = offset + 2
   const end = start + length
-  if (end > bytes.length) throw new MakerAccountError('kms-sign')
+  if (end > bytes.length) throw new SignerAccountError('kms-sign')
   const first = bytes[start]
   const second = bytes[start + 1]
   if (
@@ -152,12 +151,12 @@ const derInteger = (bytes: Uint8Array, offset: number) => {
     (first === 0 && length > 1 && second !== undefined && (second & 0x80) === 0) ||
     (length === 33 && first !== 0)
   )
-    throw new MakerAccountError('kms-sign')
+    throw new SignerAccountError('kms-sign')
   return { value: BigInt(bytesToHex(bytes.slice(start, end))), offset: end }
 }
 
 const parseDerSignature = (bytes: Uint8Array) => {
-  if (bytes[0] !== 0x30 || bytes[1] !== bytes.length - 2) throw new MakerAccountError('kms-sign')
+  if (bytes[0] !== 0x30 || bytes[1] !== bytes.length - 2) throw new SignerAccountError('kms-sign')
   const r = derInteger(bytes, 2)
   const s = derInteger(bytes, r.offset)
   if (
@@ -167,24 +166,24 @@ const parseDerSignature = (bytes: Uint8Array) => {
     r.value >= SECP256K1_ORDER ||
     s.value >= SECP256K1_ORDER
   ) {
-    throw new MakerAccountError('kms-sign')
+    throw new SignerAccountError('kms-sign')
   }
   return { r: r.value, s: s.value > HALF_SECP256K1_ORDER ? SECP256K1_ORDER - s.value : s.value }
 }
 
 const createKmsAccount = async (
-  identity: Extract<MakerIdentity, { method: 'aws' }>,
+  identity: Extract<SignerIdentity, { method: 'aws' }>,
   kms: KmsSigner
 ): Promise<LocalAccount> => {
   let publicKey: Hex
   try {
     publicKey = publicKeyFromSpki(await kms.getPublicKey(identity.keyId, identity.region))
   } catch (error) {
-    if (error instanceof MakerAccountError) throw error
-    throw new MakerAccountError('kms-public-key')
+    if (error instanceof SignerAccountError) throw error
+    throw new SignerAccountError('kms-public-key')
   }
   const address = publicKeyToAddress(publicKey)
-  if (!isAddressEqual(address, identity.maker)) throw new MakerAccountError('kms-public-key')
+  if (isAddressEqual(address, identity.maker)) throw new SignerAccountError('signer-address')
 
   const signHash = async (hash: Hex) => {
     let parsed: ReturnType<typeof parseDerSignature>
@@ -193,8 +192,8 @@ const createKmsAccount = async (
         await kms.signDigest(identity.keyId, identity.region, hexToBytes(hash))
       )
     } catch (error) {
-      if (error instanceof MakerAccountError) throw error
-      throw new MakerAccountError('kms-sign')
+      if (error instanceof SignerAccountError) throw error
+      throw new SignerAccountError('kms-sign')
     }
     const r = numberToHex(parsed.r, { size: 32 })
     const s = numberToHex(parsed.s, { size: 32 })
@@ -206,7 +205,7 @@ const createKmsAccount = async (
         // Try the other recovery parity; malformed/unrecoverable signatures fail below.
       }
     }
-    throw new MakerAccountError('kms-sign')
+    throw new SignerAccountError('kms-sign')
   }
 
   const signTransaction: LocalAccount['signTransaction'] = async (transaction, options) => {
@@ -228,27 +227,23 @@ const createKmsAccount = async (
 }
 
 /**
- * Creates the configured local or remote maker account without ever exporting an AWS KMS key.
+ * Creates the configured local or remote signer account without ever exporting an AWS KMS key.
  * @param identity - Validated write-enabled signer identity.
  * @param dependencies - Optional file, decryption, and KMS dependency overrides.
  * @returns Local-compatible account backed by the selected signing method.
- * @throws `MakerAccountError` when credential loading, decryption, KMS validation/signing, or the
- * configured-maker address check fails. `MiddlewareSigningUnsupportedError` always, for the
- * `middleware` identity: TIB-2026-08-12 removes the generic digest-signing surface from the bot,
- * and the replacing intent ports are not implemented yet, so the residual path fails closed.
+ * @throws `SignerAccountError` when credential loading, decryption, KMS validation/signing, or the
+ * required maker/signer relationship check fails.
  * @remarks Keystore mode reads and decrypts one local file. AWS mode reuses one client per region,
  * calls KMS for public-key discovery and later signatures, and never exports remote private keys.
- * Middleware mode never signs here by design.
  */
-export const createMakerAccount = async (
-  identity: Exclude<MakerIdentity, { readOnly: true }>,
-  dependencies: MakerAccountDependencies = {}
+export const createSignerAccount = async (
+  identity: Exclude<SignerIdentity, { readOnly: true }>,
+  dependencies: SignerAccountDependencies = {}
 ): Promise<LocalAccount> => {
-  if (identity.method === 'middleware') throw new MiddlewareSigningUnsupportedError()
   if (identity.method === 'private-key') {
-    const account = createManagedMakerAccount(identity.privateKey)
+    const account = createManagedSignerAccount(identity.privateKey)
     if (!isAddressEqual(account.address, identity.maker)) {
-      throw new MakerAccountError('maker-address')
+      throw new SignerAccountError('signer-address')
     }
     return account
   }
@@ -257,7 +252,7 @@ export const createMakerAccount = async (
     try {
       json = await (dependencies.readFile ?? (path => readFile(path, 'utf8')))(identity.path)
     } catch {
-      throw new MakerAccountError('keystore-read')
+      throw new SignerAccountError('keystore-read')
     }
     const privateKey = await (dependencies.decryptKeystore ?? decryptKeystore)(
       json,
@@ -267,7 +262,7 @@ export const createMakerAccount = async (
       nonceManager: createNonceManager({ source: jsonRpc() })
     })
     if (!isAddressEqual(account.address, identity.maker)) {
-      throw new MakerAccountError('maker-address')
+      throw new SignerAccountError('signer-address')
     }
     return account
   }

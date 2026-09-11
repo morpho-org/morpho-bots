@@ -29,6 +29,15 @@ const environment = {
   MARKET_IDS: marketId,
   REFERENCE_MARKET_ID: referenceMarketId,
   NATIVE_RESERVE_WEI: '10',
+  MAX_FEE_GWEI: '100',
+  PRIORITY_FEE_GWEI: '1',
+  MAX_TRANSACTION_SPEND_WEI: '100000000000000000',
+  MAX_PUBLICATION_GAS: '5000000',
+  MAX_PUBLICATION_DATA_BYTES: '65536',
+  MAX_CANCELLATION_GAS: '100000',
+  MAX_BATCH_CANCELLATION_GAS: '1000000',
+  MAX_BATCH_CANCELLATION_DATA_BYTES: '65536',
+  MAX_RATIFICATION_GAS: '100000',
   MORPHO_API_BASE_URL: 'https://api.env.example',
   ROUTER_API_BASE_URL: 'https://router.env.example'
 }
@@ -96,6 +105,15 @@ markets:
   v0OfferGroupIds: []
 setup:
   nativeReserveWei: "10"
+  maxFeeGwei: "100"
+  priorityFeeGwei: "1"
+  maxTransactionSpendWei: "100000000000000000"
+  maxPublicationGas: "5000000"
+  maxPublicationDataBytes: "65536"
+  maxCancellationGas: "100000"
+  maxBatchCancellationGas: "1000000"
+  maxBatchCancellationDataBytes: "65536"
+  maxRatificationGas: "100000"
   requestTimeoutMs: 10000
   transactionReceiptTimeoutMs: 180000
 bootstrap:

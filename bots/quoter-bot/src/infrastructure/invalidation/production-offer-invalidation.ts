@@ -1,5 +1,6 @@
+import { midnightAbi } from '@morpho-org/midnight-sdk'
 import { morphoViemExtension } from '@morpho-org/morpho-sdk'
-import { createPublicClient, createWalletClient, http, isAddressEqual, publicActions } from 'viem'
+import { createPublicClient, http, isAddressEqual } from 'viem'
 
 import type { OfferInvalidationPort } from '../../application/invalidation/offer-invalidation.service'
 import type { ConfigService } from '../../config/config.service'
@@ -8,7 +9,11 @@ import { supportedChain } from '../../config/supported-chains.utils'
 import { createBootstrapGroupOwnership } from '../bootstrap/bootstrap-group-ownership.utils'
 import { readBootstrapGroups } from '../bootstrap/bootstrap-groups.utils'
 import { createLadderGroupOwnership } from '../ladder/ladder-group-ownership.utils'
-import { createMakerAccount } from '../make/maker-account.utils'
+import { createSignerAccount } from '../make/signer-account.utils'
+import {
+  createQuoterTransactionExecutor,
+  type QuoterTransactionExecutor
+} from '../transaction/quoter-transaction-executor'
 import { invalidateOffersBatch } from './batch-offer-invalidation.utils'
 import { OfferInvalidationAdapterError } from './offer-invalidation-adapter.error'
 import { offerInvalidationGroupIds } from './offer-invalidation-group.utils'
@@ -30,6 +35,7 @@ const providerOperation = async <Result>(
  * Composes the cancellation-specific provider, signer, and ownership port.
  * @param config - Fully validated runtime configuration and selected mutation mode.
  * @param configuredAccount - Optional preconstructed account for write-mode adapter reuse.
+ * @param configuredExecutor - Optional invocation-scoped transaction executor.
  * @returns A port that targets every active maker group or an explicit bytes32 group.
  * @throws `OfferInvalidationAdapterError` when write-mode signer identity differs from the maker.
  * @remarks The preflight checks connected Base identity, deployed Midnight bytecode, and write-mode
@@ -38,9 +44,11 @@ const providerOperation = async <Result>(
  */
 export const createProductionOfferInvalidationPort = (
   config: ConfigService,
-  configuredAccount?: Awaited<ReturnType<typeof createMakerAccount>>
+  configuredAccount?: Awaited<ReturnType<typeof createSignerAccount>>,
+  configuredExecutor?: QuoterTransactionExecutor
 ): OfferInvalidationPort | Promise<OfferInvalidationPort> => {
-  const maker = config.identity.maker
+  const identity = config.identity
+  const maker = identity.maker
   const client = createPublicClient({
     chain: supportedChain(config.chainId),
     transport: http(config.rpcUrl, { timeout: config.requestTimeoutMs })
@@ -92,7 +100,7 @@ export const createProductionOfferInvalidationPort = (
       return offerInvalidationGroupIds(groups, bootstrapGroupIds, ladderGroupIds)
     })
 
-  if (config.identity.readOnly) {
+  if (identity.readOnly) {
     return {
       mode: () => 'readonly',
       preflight,
@@ -103,32 +111,60 @@ export const createProductionOfferInvalidationPort = (
     }
   }
 
-  const account = configuredAccount ?? createMakerAccount(config.identity)
+  const account = configuredAccount ?? createSignerAccount(identity)
   if (account instanceof Promise) {
-    return account.then(value => createProductionOfferInvalidationPort(config, value))
+    return account.then(value =>
+      createProductionOfferInvalidationPort(config, value, configuredExecutor)
+    )
   }
-  if (!isAddressEqual(account.address, maker)) {
+  if (
+    (identity.method === 'aws' && isAddressEqual(account.address, maker)) ||
+    (identity.method !== 'aws' && !isAddressEqual(account.address, maker))
+  ) {
     throw new OfferInvalidationAdapterError('maker-private-key-mismatch')
   }
-  const wallet = createWalletClient({
-    account,
-    chain: supportedChain(config.chainId),
-    transport: http(config.rpcUrl, { timeout: config.requestTimeoutMs })
-  }).extend(publicActions)
+  const transactionExecutor = configuredExecutor ?? createQuoterTransactionExecutor(config, account)
+  const writePreflight = () =>
+    providerOperation('preflight', async () => {
+      await preflight()
+      const [signerBalance, signerAuthorized] = await Promise.all([
+        client.getBalance({ address: account.address }),
+        identity.method === 'aws'
+          ? client.readContract({
+              address: config.setup.midnight,
+              abi: midnightAbi,
+              functionName: 'isAuthorized',
+              args: [maker, account.address]
+            })
+          : Promise.resolve(true)
+      ])
+      const signerFloor =
+        identity.method === 'aws'
+          ? (config.setup.signerNativeReserve ?? 0n)
+          : config.setup.nativeReserve
+      if (signerBalance < signerFloor || !signerAuthorized) {
+        throw new OfferInvalidationAdapterError('preflight')
+      }
+      await transactionExecutor.assertNoPendingNonce()
+    })
 
   return {
     mode: () => 'write',
-    preflight,
+    preflight: writePreflight,
     listActiveGroupIds,
     invalidateBatch: (groupIds, onTransactionSubmitted) =>
       providerOperation('batch-transaction', () =>
         invalidateOffersBatch({
-          wallet,
           midnight: config.setup.midnight,
           maker,
           groupIds,
-          receiptTimeoutMs: config.transactionReceiptTimeoutMs,
-          onTransactionSubmitted
+          execute: transaction =>
+            transactionExecutor.execute({
+              transaction,
+              operation: 'cancel-batch',
+              label: 'invalidation:cancel-batch',
+              onTransactionSubmitted
+            })
         })
       ),
     invalidate: (groupId, onTransactionSubmitted) =>
@@ -142,20 +178,12 @@ export const createProductionOfferInvalidationPort = (
           account: maker
         })
 
-        const txHash = await wallet.sendTransaction(transaction)
-        try {
-          await onTransactionSubmitted?.(txHash)
-        } catch {
-          // Application observers are diagnostic and cannot interrupt receipt handling.
-        }
-        const receipt = await wallet.waitForTransactionReceipt({
-          hash: txHash,
-          timeout: config.transactionReceiptTimeoutMs
+        return transactionExecutor.execute({
+          transaction,
+          operation: 'cancel',
+          label: `invalidation:cancel:${groupId}`,
+          onTransactionSubmitted
         })
-        if (receipt.status !== 'success') {
-          throw new OfferInvalidationAdapterError('transaction-reverted')
-        }
-        return txHash
       }),
     forgetGroups: groupIds =>
       providerOperation('ownership-cleanup', async () => {

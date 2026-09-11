@@ -226,6 +226,15 @@ describe('createProductionBootstrapAdapters', () => {
       MARKET_IDS: marketId,
       REFERENCE_MARKET_ID: secondMarketId,
       NATIVE_RESERVE_WEI: '10',
+      MAX_FEE_GWEI: '100',
+      PRIORITY_FEE_GWEI: '1',
+      MAX_TRANSACTION_SPEND_WEI: '100000000000000000',
+      MAX_PUBLICATION_GAS: '5000000',
+      MAX_PUBLICATION_DATA_BYTES: '65536',
+      MAX_CANCELLATION_GAS: '100000',
+      MAX_BATCH_CANCELLATION_GAS: '1000000',
+      MAX_BATCH_CANCELLATION_DATA_BYTES: '65536',
+      MAX_RATIFICATION_GAS: '100000',
       MORPHO_API_BASE_URL: 'https://api.example',
       ROUTER_API_BASE_URL: 'https://router.example'
     })

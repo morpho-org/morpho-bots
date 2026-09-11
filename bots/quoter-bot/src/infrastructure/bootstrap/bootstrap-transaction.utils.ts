@@ -26,6 +26,7 @@ type BootstrapTransactionPolicy =
       chainId: number
       root: Hex
       maker: Address
+      signer?: Address
     }
 
 /**
@@ -36,7 +37,7 @@ type BootstrapTransactionPolicy =
  * @throws `BootstrapAdapterError` when any transaction field falls outside the allowlist.
  * @remarks Cancellation and Setter ratification calldata must be exact fixed-width calls;
  *   publication calldata must decode as a bounded canonical Midnight payload whose ratifier data
- *   proves the expected root and, for Ecrecover, recovers the configured maker.
+ *   proves the expected root and, for Ecrecover, recovers the configured signer.
  */
 export const assertBootstrapTransaction = async (
   transaction: BootstrapTransaction,
@@ -109,7 +110,10 @@ export const assertBootstrapTransaction = async (
         chainId: policy.chainId,
         ...item
       })
-      if (verified.root !== policy.root || !isAddressEqual(verified.signer, policy.maker)) {
+      if (
+        verified.root !== policy.root ||
+        !isAddressEqual(verified.signer, policy.signer ?? policy.maker)
+      ) {
         throw new BootstrapAdapterError('transaction-policy')
       }
     }
