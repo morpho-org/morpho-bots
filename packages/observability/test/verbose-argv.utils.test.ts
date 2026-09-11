@@ -41,4 +41,39 @@ describe('enhanceVerboseArgv', () => {
   ])('is inert when shipping config is %s', (_name, env) => {
     expect(enhanceVerboseArgv(['start'], { commands, env })).toEqual(['start'])
   })
+
+  test('enables safe diagnostics for an additional sink without shipping config', () => {
+    expect(enhanceVerboseArgv(['start'], { commands, env: {}, hasAdditionalSink: true })).toEqual([
+      'start',
+      '--verbose'
+    ])
+  })
+
+  test('skips declared value-taking root options before the command', () => {
+    const valueOptions = ['--config', '-c', '--keystore', '--password', '--private-key']
+    expect(
+      enhanceVerboseArgv(['--keystore', './maker.json', '--password', 'secret', 'start'], {
+        commands,
+        env: full,
+        valueOptions
+      })
+    ).toEqual(['--keystore', './maker.json', '--password', 'secret', 'start', '--verbose'])
+    expect(
+      enhanceVerboseArgv(['--private-key', '0xaa', 'ladder'], {
+        commands,
+        env: {},
+        hasAdditionalSink: true,
+        valueOptions
+      })
+    ).toEqual(['--private-key', '0xaa', 'ladder', '--verbose'])
+  })
+
+  test('an absent additional sink changes nothing', () => {
+    expect(enhanceVerboseArgv(['start'], { commands, env: {}, hasAdditionalSink: false })).toEqual([
+      'start'
+    ])
+    expect(
+      enhanceVerboseArgv(['start'], { commands, env: full, hasAdditionalSink: false })
+    ).toEqual(['start', '--verbose'])
+  })
 })

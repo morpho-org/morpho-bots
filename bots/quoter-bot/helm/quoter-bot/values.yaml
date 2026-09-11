@@ -124,7 +124,8 @@ existingConfigSecret: ''
 # Extra environment variables (list of EnvVar objects). Environment values override their YAML
 # counterparts, so this is the place for the signer secret and for the environment-only Better
 # Stack settings (BETTERSTACK_SOURCE_TOKEN, BETTERSTACK_INGESTING_HOST,
-# BETTERSTACK_HEARTBEAT_URL). XDG_STATE_HOME is chart-managed and reserved: entries with that
+# BETTERSTACK_HEARTBEAT_URL) and OpenTelemetry export settings (OTEL_EXPORTER_OTLP_ENDPOINT,
+# OTEL_EXPORTER_OTLP_HEADERS). XDG_STATE_HOME is chart-managed and reserved: entries with that
 # name are ignored so durable ownership state cannot be detached from the retained PVC.
 # Rotating a referenced Secret in place does not reach the running process — environment
 # variables are captured at container start — so follow a signer rotation with

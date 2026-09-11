@@ -40,17 +40,18 @@ Quick navigation for the morpho-bots documentation.
 
 ## Packages
 
-| Package                                                   | Description                                                                  | Docs |
-| --------------------------------------------------------- | ---------------------------------------------------------------------------- | ---- |
-| [@repo/bot-kit](../packages/bot-kit/)                     | Shared bot runtime: clients, logger, watcher/runner, tx queue, state, policy | —    |
-| [@repo/contracts](../packages/contracts/)                 | Shared contract ABIs and Executor sources                                    | —    |
-| [@repo/logging](../packages/logging/)                     | CLI presenter: stdout results, stderr errors, bigint-safe JSON Lines         | —    |
-| [@repo/monitoring](../packages/monitoring/)               | Monitor interval waits, serial operation queue, cycle-failure predicate      | —    |
-| [@repo/observability](../packages/observability/)         | Bot lifecycle/record shipping, process observers, verbose argv gating        | —    |
-| [@repo/offers](../packages/offers/)                       | Maker offer-book model: prospective batching and negative-spread checks      | —    |
-| [@repo/swaps](../packages/swaps/)                         | Multi-venue DEX quoting, routing, unwrap seam, and venue selection           | —    |
-| [@repo/typescript-config](../packages/typescript-config/) | Shared TypeScript configuration                                              | —    |
-| [@repo/utils](../packages/utils/)                         | Shared server-safe utilities                                                 | —    |
+| Package                                                   | Description                                                                    | Docs |
+| --------------------------------------------------------- | ------------------------------------------------------------------------------ | ---- |
+| [@repo/bot-kit](../packages/bot-kit/)                     | Shared bot runtime: clients, logger, watcher/runner, tx queue, state, policy   | —    |
+| [@repo/contracts](../packages/contracts/)                 | Shared contract ABIs and Executor sources                                      | —    |
+| [@repo/logging](../packages/logging/)                     | CLI presenter: stdout results, stderr errors, bigint-safe JSON Lines           | —    |
+| [@repo/monitoring](../packages/monitoring/)               | Monitor interval waits, serial operation queue, cycle-failure predicate        | —    |
+| [@repo/observability](../packages/observability/)         | Bot lifecycle/record shipping, process observers, verbose argv gating          | —    |
+| [@repo/offers](../packages/offers/)                       | Maker offer-book model: prospective batching and negative-spread checks        | —    |
+| [@repo/swaps](../packages/swaps/)                         | Multi-venue DEX quoting, routing, unwrap seam, and venue selection             | —    |
+| [@repo/telemetry](../packages/telemetry/)                 | Opt-in OpenTelemetry pipeline: OTLP export, redacted undici spans, cycle spans | —    |
+| [@repo/typescript-config](../packages/typescript-config/) | Shared TypeScript configuration                                                | —    |
+| [@repo/utils](../packages/utils/)                         | Shared server-safe utilities                                                   | —    |
 
 ---
 
@@ -98,6 +99,7 @@ not-yet-built bots sit in `docs/decisions/` alongside their siblings._
 - [TIB-2026-08-25: Quoter-bot ladder maturity premium](./decisions/TIB-2026-08-25-quoter-ladder-maturity-premium.md) — proposed
 - [TIB-2026-08-25: Quoter-bot npm publishing](./decisions/TIB-2026-08-25-quoter-bot-npm-publishing.md) — `@morpho-org/quoter` on production release — proposed
 - [TIB-2026-08-28: Midnight loan-as-collateral](./decisions/TIB-2026-08-28-midnight-loan-as-collateral.md) — off-chain slot choice and the swap-free path — proposed
+- [TIB-2026-09-07: OpenTelemetry stack for the quoter bot](./decisions/TIB-2026-09-07-quoter-bot-otel-stack.md) — opt-in OTLP traces + metrics via new `@repo/telemetry`: redacted undici request spans, `quoter-bot.cycle` spans, metrics derived from the shipped monitoring records, `grafana/otel-lgtm` compose profile — proposed
 - [TIB-2026-09-09: Quoter-bot ladder reconciliation against the resting book](./decisions/TIB-2026-09-09-quoter-ladder-book-reconciliation.md) — supersedes TIB-2026-08-14's third-party non-goal: the fail-closed crossing invariant narrows to the maker's own offers, classified by the `maker` field the book response already carries (a third party's order can no longer wedge a market); clearing third parties becomes best-effort one-tick pricing; a crossed resting ladder is detected per side from the current book alone — third-party ticks against this strategy's active ladder groups, nothing persisted or converted — and replaced after an in-queue recheck under a per-side cooldown. Rate-ratifier semantics are deferred to a second TIB written once the ABI is installed — proposed
 
 ---

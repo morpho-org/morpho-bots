@@ -1,17 +1,22 @@
+import { createLogger } from '@repo/bot-kit'
 import {
   createBotObservability,
   enhanceVerboseArgv,
   installProcessObservers
 } from '@repo/observability'
+import { hasTelemetryConfig, startBotTelemetry } from '@repo/telemetry'
 
 import { operatorErrorName } from './application/operator-error-name.utils'
+import { VersionService } from './application/version.service'
 import { createApplication } from './bootstrap'
 import { resolveObservabilityChainId } from './config/observability-chain.utils'
 import {
+  QUOTER_BOT_ROOT_VALUE_OPTIONS,
   QUOTER_BOT_VERBOSE_COMMANDS,
   runQuoterBotEntrypoint
 } from './infrastructure/cli/quoter-bot-entrypoint'
 import { createMonitoringLogger } from './infrastructure/observability/monitoring-logger.utils'
+import { createTelemetryRecordObserver } from './infrastructure/observability/telemetry-metrics.utils'
 
 // oxlint-disable-next-line eslint/no-extend-native -- CLI root policy requested by maintainers.
 Object.defineProperty(BigInt.prototype, 'toJSON', {
@@ -31,32 +36,67 @@ process.once('SIGTERM', requestShutdown)
 // Base, and reading only the environment mislabels a mainnet run configured through YAML alone.
 const chainId = await resolveObservabilityChainId(process.env, process.argv.slice(2))
 
+const monitoringLogger = createMonitoringLogger({ bot: 'quoter-bot', chainId })
+// The stderr-only fallback keeps `otel.*` lifecycle lines visible whenever telemetry is on and
+// shipping is not fully configured — including a partial Better Stack setup, where it is built
+// against an empty environment so it neither ships nor emits a second `logship.misconfigured`.
+// A plain local run (no telemetry opt-in) stays silent.
+const telemetryLogger =
+  monitoringLogger ??
+  (hasTelemetryConfig(process.env)
+    ? createLogger('info', { env: {}, context: { bot: 'quoter-bot', chainId } })
+    : undefined)
+// Registered before any application work so outbound-request instrumentation observes every
+// provider call. Disabled entirely without an OTLP endpoint opt-in; never throws.
+const telemetry = startBotTelemetry({
+  serviceName: 'quoter-bot',
+  serviceVersion: new VersionService().getVersion(),
+  attributes: { chainId },
+  logger: telemetryLogger
+})
+
 const observability = createBotObservability({
   bot: 'quoter-bot',
   chainId,
   errorName: operatorErrorName,
-  logger: createMonitoringLogger({ bot: 'quoter-bot', chainId })
+  logger: monitoringLogger
 })
 const removeProcessObservers = installProcessObservers(observability)
 await observability.start()
+
+const recordObserver = telemetry.enabled ? createTelemetryRecordObserver() : undefined
+const entrypointObservability = recordObserver
+  ? {
+      record(value: unknown) {
+        recordObserver.record(value)
+        observability.record(value)
+      },
+      unexpected(error: unknown, origin: 'entrypoint') {
+        observability.unexpected(error, origin)
+      }
+    }
+  : observability
 
 try {
   process.exitCode = await runQuoterBotEntrypoint(
     createApplication(),
     enhanceVerboseArgv(process.argv.slice(2), {
       commands: QUOTER_BOT_VERBOSE_COMMANDS,
-      env: process.env
+      env: process.env,
+      hasAdditionalSink: telemetry.enabled,
+      valueOptions: QUOTER_BOT_ROOT_VALUE_OPTIONS
     }),
     {
       writeOut: value => console.log(value),
       writeError: value => console.error(value)
     },
     { signal: shutdown.signal },
-    observability
+    entrypointObservability
   )
 } finally {
   observability.stop(process.exitCode === 0 ? 'completed' : 'failed')
   removeProcessObservers()
   process.removeListener('SIGINT', requestShutdown)
   process.removeListener('SIGTERM', requestShutdown)
+  await telemetry.shutdown()
 }

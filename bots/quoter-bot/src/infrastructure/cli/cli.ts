@@ -1,6 +1,7 @@
 import type { Hex } from 'viem'
 
 import { cycleHasFailure } from '@repo/monitoring'
+import { withActiveSpan } from '@repo/telemetry'
 import { Command, CommanderError } from 'commander'
 
 import type { BootstrapTransactionSubmittedEvent } from '../../application/bootstrap/position-bootstrap-verbose'
@@ -27,6 +28,7 @@ import { PositionBootstrapMonitorHaltedError } from '../../application/bootstrap
 import { LadderCycleHaltedError } from '../../application/ladder/ladder-cycle-halted.error'
 import { LadderMonitorHaltedError } from '../../application/ladder/ladder-monitor-halted.error'
 import { createMonitoringProjection } from '../../application/monitoring/monitoring-projection.utils'
+import { operatorErrorName } from '../../application/operator-error-name.utils'
 import { QuoterBotMonitorHaltedError } from '../../application/quoter-bot/quoter-bot-monitor-halted.error'
 import { SetupMonitorHaltedError } from '../../application/setup/setup-monitor-halted.error'
 import { CliUsageError } from './cli-usage.error'
@@ -100,6 +102,11 @@ export type CliRuntimeOptions = {
   signal?: AbortSignal
   /** Receives every completed monitoring cycle before the final lifecycle report. */
   writeEvent?: (value: unknown) => void | Promise<void>
+  /**
+   * Receives derived monitoring records that must reach observability sinks without joining the
+   * terminal output stream — one-shot commands keep their documented single-result stdout.
+   */
+  observeRecord?: (value: unknown) => void | Promise<void>
 }
 
 /** Infrastructure adapter: wires the `morpho-quoter` CLI (commander) to application services. */
@@ -124,6 +131,18 @@ export class Cli {
     await this.runtime.writeEvent?.(value)
     try {
       for (const event of project(this.monitoring)) await this.runtime.writeEvent?.(event)
+    } catch {
+      return
+    }
+  }
+
+  // One-shot commands mirror derived records to the observability seam only: their raw result is
+  // the documented single stdout record, so nothing extra may join the terminal stream.
+  private async writeCycleRecords(
+    project: (projection: MonitoringProjection) => readonly unknown[]
+  ) {
+    try {
+      for (const event of project(this.monitoring)) await this.runtime.observeRecord?.(event)
     } catch {
       return
     }
@@ -219,7 +238,16 @@ export class Cli {
         return
       }
 
-      this.capture(await setupService.assertReady(this.signal))
+      const report = await withActiveSpan(
+        {
+          name: 'quoter-bot.cycle',
+          attributes: { workflow: 'setup-check' },
+          errorName: operatorErrorName
+        },
+        () => setupService.assertReady(this.signal)
+      )
+      await this.writeCycleRecords(monitoring => monitoring.setup(report))
+      this.capture(report)
     })
 
     const bootstrapCommand = this.program
@@ -234,13 +262,20 @@ export class Cli {
     bootstrapCommand.action(async () => {
       const options = this.configurationOptions()
       const bootstrapOptions = bootstrapCommand.opts<{ monitor?: boolean; verbose?: boolean }>()
-      const bootstrapService = await bootstrap({
-        ...options,
-        writeEvent: this.runtime.writeEvent
-      })
+      // Deferred so the one-shot span below also covers construction, whose readiness preflight
+      // and removed-market cleanup already reach providers.
+      const makeService = () => bootstrap({ ...options, writeEvent: this.runtime.writeEvent })
       const verbose = bootstrapOptions.verbose === true
       const onTransactionSubmitted = this.eventObserver<BootstrapTransactionSubmittedEvent>(verbose)
       if (bootstrapOptions.monitor === true) {
+        const bootstrapService = await withActiveSpan(
+          {
+            name: 'quoter-bot.startup',
+            attributes: { workflow: 'bootstrap' },
+            errorName: operatorErrorName
+          },
+          async () => makeService()
+        )
         if (!bootstrapService.runContinuously) throw new CliUsageError()
         const result = await bootstrapService.runContinuously({
           signal: this.signal,
@@ -255,7 +290,18 @@ export class Cli {
         return
       }
 
-      const result = await bootstrapService.runOnce({ verbose, onTransactionSubmitted })
+      const result = await withActiveSpan(
+        {
+          name: 'quoter-bot.cycle',
+          attributes: { workflow: 'bootstrap' },
+          errorName: operatorErrorName,
+          failed: cycle => Array.isArray(cycle) && cycleHasFailure(cycle)
+        },
+        async () => (await makeService()).runOnce({ verbose, onTransactionSubmitted })
+      )
+      if (Array.isArray(result)) {
+        await this.writeCycleRecords(monitoring => monitoring.bootstrap(result))
+      }
       if (Array.isArray(result) && cycleHasFailure(result)) {
         throw new PositionBootstrapHaltedError(result)
       }
@@ -274,13 +320,20 @@ export class Cli {
     ladderCommand.action(async () => {
       const options = this.configurationOptions()
       const ladderOptions = ladderCommand.opts<{ monitor?: boolean; verbose?: boolean }>()
-      const ladderService = await ladder({
-        ...options,
-        writeEvent: this.runtime.writeEvent
-      })
+      // Deferred so the one-shot span below also covers construction, whose readiness preflight
+      // and removed-market cleanup already reach providers.
+      const makeService = () => ladder({ ...options, writeEvent: this.runtime.writeEvent })
       const verbose = ladderOptions.verbose === true
       const onTransactionSubmitted = this.eventObserver<LadderTransactionSubmittedEvent>(verbose)
       if (ladderOptions.monitor === true) {
+        const ladderService = await withActiveSpan(
+          {
+            name: 'quoter-bot.startup',
+            attributes: { workflow: 'ladder' },
+            errorName: operatorErrorName
+          },
+          async () => makeService()
+        )
         if (!ladderService.runContinuously) throw new CliUsageError()
         const result = await ladderService.runContinuously({
           signal: this.signal,
@@ -295,7 +348,16 @@ export class Cli {
         return
       }
 
-      const result = await ladderService.runOnce({ verbose, onTransactionSubmitted })
+      const result = await withActiveSpan(
+        {
+          name: 'quoter-bot.cycle',
+          attributes: { workflow: 'ladder' },
+          errorName: operatorErrorName,
+          failed: cycleHasFailure
+        },
+        async () => (await makeService()).runOnce({ verbose, onTransactionSubmitted })
+      )
+      await this.writeCycleRecords(monitoring => monitoring.ladder(result))
       if (cycleHasFailure(result)) {
         throw new LadderCycleHaltedError(result)
       }
@@ -311,10 +373,14 @@ export class Cli {
       if (!quoterBot) throw new CliUsageError()
       const options = this.configurationOptions()
       const startOptions = startCommand.opts<{ verbose?: boolean }>()
-      const service = await quoterBot({
-        ...options,
-        writeEvent: this.runtime.writeEvent
-      })
+      const service = await withActiveSpan(
+        {
+          name: 'quoter-bot.startup',
+          attributes: { workflow: 'start' },
+          errorName: operatorErrorName
+        },
+        async () => quoterBot({ ...options, writeEvent: this.runtime.writeEvent })
+      )
       const result = await service.runContinuously({
         signal: this.signal,
         onEvent: event => this.writeCycle(event, monitoring => monitoring.combined(event)),

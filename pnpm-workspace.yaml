@@ -33,6 +33,9 @@ catalog:
   # Pinned exactly and shared by the quoter-bot direct-KMS path and the quoter-signer middleware:
   # both sides of the maker-key custody boundary must run the same audited KMS and curve code.
   '@aws-sdk/client-kms': 3.1101.0
+  # Shared by @repo/telemetry (SDK setup) and quoter-bot (metric derivation): one copy keeps the
+  # global tracer/meter provider registration coherent across packages.
+  '@opentelemetry/api': 1.9.1
   '@internationalized/date': 3.12.1
   '@tanstack/react-form': 1.20.0
   '@tanstack/react-table': 8.21.3

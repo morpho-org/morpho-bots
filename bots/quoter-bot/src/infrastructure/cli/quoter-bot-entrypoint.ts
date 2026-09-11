@@ -34,6 +34,15 @@ type EntrypointObservability = {
 /** CLI commands whose safe verbose event stream may be auto-enabled by observability shipping. */
 export const QUOTER_BOT_VERBOSE_COMMANDS = ['start', 'bootstrap', 'ladder'] as const
 
+/** Value-taking root options whose values must not be mistaken for the command. */
+export const QUOTER_BOT_ROOT_VALUE_OPTIONS = [
+  '--config',
+  '-c',
+  '--keystore',
+  '--password',
+  '--private-key'
+] as const
+
 const REPORTED_ERRORS = [
   QuoterBotMonitorHaltedError,
   SetupMonitorHaltedError,
@@ -98,6 +107,10 @@ export const runQuoterBotEntrypoint = async (
       writeEvent: value => {
         if (isShippableRecord(value)) observability?.record(value)
         logger.result(value)
+      },
+      // One-shot record projections reach the sinks without joining the stdout result contract.
+      observeRecord: value => {
+        if (isShippableRecord(value)) observability?.record(value)
       }
     })
     logger.result(result)
