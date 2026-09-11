@@ -131,6 +131,31 @@ describe('evaluatePolicy', () => {
     ).toMatchObject({ check: 'selector' })
   })
 
+  it.each([['before'], ['after']] as const)(
+    'prefers an exact selector rule when a wildcard rule appears %s it',
+    order => {
+      const exact = {
+        target: EXECUTOR,
+        selector: EXECUTOR_SELECTOR,
+        maxGasLimit: 100_000n,
+        maxDataBytes: 8
+      }
+      const wildcard = {
+        target: EXECUTOR,
+        maxGasLimit: 2_000_000n,
+        maxDataBytes: 64
+      }
+      const rules = order === 'before' ? [wildcard, exact] : [exact, wildcard]
+      const policy: Policy = { ...POLICY, rules }
+
+      expect(evaluatePolicy(policy, tx({ gas: 100_000n }))).toEqual({ ok: true })
+      expect(evaluatePolicy(policy, tx({ gas: 100_001n }))).toMatchObject({
+        ok: false,
+        check: 'gas'
+      })
+    }
+  )
+
   it('defaults to zero value and exec_606BaXt', () => {
     expect(evaluatePolicy(POLICY, tx({ value: 1n }))).toMatchObject({ check: 'value' })
     expect(evaluatePolicy(POLICY, tx({ data: '0xdeadbeef' }))).toMatchObject({ check: 'selector' })

@@ -84,6 +84,7 @@ import {
 import { buildLadderTree } from './ladder-offer.utils'
 import { configuredRatifierType, prepareLadderRatification } from './ladder-ratification.utils'
 import { assertLadderProspectiveSpread } from './ladder-spread.utils'
+import { executeLadderTransaction } from './ladder-transaction-executor.utils'
 import {
   assertLadderCancellationTransaction,
   assertLadderPublicationTransaction,
@@ -321,8 +322,8 @@ const ownedGroups = (publications: readonly OwnedLadderPublication[]) =>
  * @param configuredAccount - Optional preconstructed account for write-mode adapter reuse.
  * @param configuredExecutor - Optional invocation-scoped transaction executor shared with bootstrap.
  * @returns Production position, reference-rate, and make ports.
- * @throws `LadderAdapterError` when write-mode signer identity differs from the maker; later reads,
- * validation, signing, publication, storage, or receipt confirmation may also fail.
+ * @throws `SignerAccountError` for construction failures, or `LadderAdapterError` when an injected
+ * account violates the required maker relationship; later operations may also fail.
  * @remarks Read-only construction never derives an account or creates a wallet. Every published
  * tree is API-validated before and after signing and locally policy-checked. Ecrecover publication
  * uses one transaction. Setter publication uses an ordered approval transaction followed by the
@@ -837,18 +838,13 @@ export const createProductionLadderAdapters = (
 
   const account = configuredAccount ?? createSignerAccount(config.identity)
   if (account instanceof Promise) {
-    return account.then(
-      value => createProductionLadderAdapters(config, value, configuredExecutor),
-      () => {
-        throw new LadderAdapterError('maker-private-key-mismatch')
-      }
-    )
+    return account.then(value => createProductionLadderAdapters(config, value, configuredExecutor))
   }
   if (
     (config.identity.method === 'aws' && isAddressEqual(account.address, maker)) ||
     (config.identity.method !== 'aws' && !isAddressEqual(account.address, maker))
   ) {
-    throw new LadderAdapterError('maker-private-key-mismatch')
+    throw new LadderAdapterError('signer-identity-mismatch')
   }
   const signingClient = createWalletClient({
     account,
@@ -915,13 +911,17 @@ export const createProductionLadderAdapters = (
                 account: maker,
                 root: prepared.tree.root
               })
-              const txHash = await transactionExecutor.execute({
-                transaction: ratification.approval,
-                operation: 'ratify',
-                label: `ladder:ratify:${prepared.tree.root}`,
-                onTransactionSubmitted: hash =>
-                  notifySubmitted(onTransactionSubmitted, 'ratify', hash)
-              })
+              const txHash = await executeLadderTransaction(
+                transactionExecutor,
+                {
+                  transaction: ratification.approval,
+                  operation: 'ratify',
+                  label: `ladder:ratify:${prepared.tree.root}`,
+                  onTransactionSubmitted: hash =>
+                    notifySubmitted(onTransactionSubmitted, 'ratify', hash)
+                },
+                'ratifier-transaction-reverted'
+              )
               return { operation: 'ratify', txHash }
             },
             validate: async () => {
@@ -937,13 +937,19 @@ export const createProductionLadderAdapters = (
               }
             },
             sendPublication: async () => {
-              const txHash = await transactionExecutor.execute({
-                transaction,
-                operation: 'publish',
-                label: `ladder:publish:${prepared.tree.root}`,
-                onTransactionSubmitted: hash =>
-                  notifySubmitted(onTransactionSubmitted, 'publish', hash)
-              })
+              const txHash = await executeLadderTransaction(
+                transactionExecutor,
+                {
+                  transaction,
+                  operation: 'publish',
+                  label: `ladder:publish:${prepared.tree.root}`,
+                  onTransactionSubmitted: hash =>
+                    notifySubmitted(onTransactionSubmitted, 'publish', hash)
+                },
+                ratifierType === 'setter'
+                  ? 'publication-transaction-reverted-after-ratification'
+                  : 'transaction-reverted'
+              )
               return { operation: 'publish', txHash }
             },
             confirmPublication: async () => {}
@@ -960,7 +966,7 @@ export const createProductionLadderAdapters = (
         groupId,
         account: maker
       })
-      return transactionExecutor.execute({
+      return executeLadderTransaction(transactionExecutor, {
         transaction,
         operation: 'cancel',
         label: `ladder:cancel:${groupId}`,
@@ -974,7 +980,7 @@ export const createProductionLadderAdapters = (
           maker,
           groupIds,
           execute: transaction =>
-            transactionExecutor.execute({
+            executeLadderTransaction(transactionExecutor, {
               transaction,
               operation: 'cancel-batch',
               label: 'ladder:cancel-batch',

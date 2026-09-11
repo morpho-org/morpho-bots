@@ -281,8 +281,9 @@ export class SetupCheckService {
    * overlap. Explicitly transient provider-only failures receive three total
    * read attempts within a cycle, and an unready report built only from them is emitted and then
    * retried on the next interval for up to ten consecutive cycles.
-   * Invariant and mixed failures halt immediately. No remediation, signing, transaction submission,
-   * or cleanup write is performed.
+   * Invariant and mixed failures halt immediately. The signer nonce is intentionally omitted: a
+   * pending transaction can be owned by the concurrently running executor. No remediation,
+   * signing, transaction submission, or cleanup write is performed.
    */
   async runContinuously(parameters: {
     signal: AbortSignal
@@ -300,7 +301,7 @@ export class SetupCheckService {
 
     while (!parameters.signal.aborted) {
       try {
-        const report = await this.checkWithTransientRetries(parameters.signal)
+        const report = await this.checkWithTransientRetries(parameters.signal, false)
         if (parameters.signal.aborted) break
 
         const transientOnly = hasOnlyTransientProviderFailures(report)
@@ -326,12 +327,12 @@ export class SetupCheckService {
       : { status: 'stopped', reason: 'signal', cycles }
   }
 
-  private async checkWithTransientRetries(signal?: AbortSignal) {
-    let report = await this.check()
+  private async checkWithTransientRetries(signal?: AbortSignal, checkSignerNonce = true) {
+    let report = await this.checkWithSignerNonce(checkSignerNonce)
 
     for (let attempt = 1; attempt < SETUP_CHECK_TRANSIENT_ATTEMPTS; attempt += 1) {
       if (signal?.aborted === true || !hasOnlyTransientProviderFailures(report)) break
-      report = await this.check()
+      report = await this.checkWithSignerNonce(checkSignerNonce)
     }
 
     return report
@@ -340,10 +341,15 @@ export class SetupCheckService {
   /**
    * Evaluates all setup surfaces while isolating provider failures into sanitized report entries.
    * @returns A complete report in stable check order; provider rejection does not short-circuit peers.
-   * @remarks Read-only. All independent reads, including per-book reads, start before the outer
-   * `Promise.all` is awaited so latency is bounded by the slowest check rather than their sum.
+   * @remarks Read-only. This one-time check includes signer-nonce reconciliation. All independent
+   * reads, including per-book reads, start before the outer `Promise.all` is awaited so latency is
+   * bounded by the slowest check rather than their sum.
    */
   async check(): Promise<SetupCheckReport> {
+    return this.checkWithSignerNonce(true)
+  }
+
+  private async checkWithSignerNonce(checkSignerNonce: boolean): Promise<SetupCheckReport> {
     const bookReads = this.config.marketIds.map(requestedId => ({
       requestedId,
       response: capture(() => this.state.getBook(requestedId))
@@ -425,7 +431,9 @@ export class SetupCheckService {
             this.config.signerMode === 'aws'
               ? capture(() => this.state.getAuthorization(this.config.maker, signerAddress))
               : Promise.resolve(undefined),
-            capture(() => this.state.getTransactionCounts(signerAddress))
+            checkSignerNonce
+              ? capture(() => this.state.getTransactionCounts(signerAddress))
+              : Promise.resolve(undefined)
           ])
     const signerNative = signerReads?.[0]
     const signerAuthorization = signerReads?.[1]
@@ -484,17 +492,26 @@ export class SetupCheckService {
           observed: { reason: 'read-only mode does not send transactions' },
           required: 'only for write mode'
         }
-      : signerNonce === undefined
-        ? setupResult('signer-nonce', false, { derived: false }, 'latest equals pending')
-        : !signerNonce.ok
-          ? providerFailure('signer-nonce', signerNonce.error, 'latest equals pending')
-          : setupResult(
-              'signer-nonce',
-              signerNonce.value.latest === signerNonce.value.pending,
-              signerNonce.value,
-              'latest equals pending',
-              'wait for or replace the pending signer transaction before restarting'
-            )
+      : !checkSignerNonce
+        ? {
+            name: 'signer-nonce' as const,
+            status: 'not-required' as const,
+            observed: {
+              reason: 'continuous monitoring permits executor-owned pending transactions'
+            },
+            required: 'one-time startup check'
+          }
+        : signerNonce === undefined
+          ? setupResult('signer-nonce', false, { derived: false }, 'latest equals pending')
+          : !signerNonce.ok
+            ? providerFailure('signer-nonce', signerNonce.error, 'latest equals pending')
+            : setupResult(
+                'signer-nonce',
+                signerNonce.value.latest === signerNonce.value.pending,
+                signerNonce.value,
+                'latest equals pending',
+                'wait for or replace the pending signer transaction before restarting'
+              )
     const nativeCheck = !nativeBalance.ok
       ? providerFailure('native-balance', nativeBalance.error, this.config.nativeReserve)
       : setupResult(

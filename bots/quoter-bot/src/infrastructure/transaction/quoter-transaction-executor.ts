@@ -184,25 +184,37 @@ export const createQuoterTransactionExecutor = (
       })
       if (!submitted.sent) throw new QuoterTransactionError('submission-refused')
 
-      const deadline = Date.now() + config.transactionReceiptTimeoutMs
-      let settlement: Awaited<typeof submitted.settlement> | undefined
-      while (Date.now() < deadline) {
-        await queue.onBlock(await client.getBlockNumber())
-        settlement = await Promise.race([
-          submitted.settlement,
-          wait(Math.min(1_000, Math.max(1, deadline - Date.now()))).then(() => undefined)
-        ])
-        if (settlement !== undefined) break
-      }
-      if (settlement === undefined) {
-        reconciliationRequired = true
+      reconciliationRequired = true
+      try {
+        const deadline = Date.now() + config.transactionReceiptTimeoutMs
+        let settlement: Awaited<typeof submitted.settlement> | undefined
+        while (Date.now() < deadline) {
+          await queue.onBlock(await client.getBlockNumber())
+          settlement = await Promise.race([
+            submitted.settlement,
+            wait(Math.min(1_000, Math.max(1, deadline - Date.now()))).then(() => undefined)
+          ])
+          if (settlement !== undefined) break
+        }
+        if (settlement === undefined) throw new QuoterTransactionError('transaction-pending')
+
+        reconciliationRequired = false
+        if (settlement.kind === 'confirmed-success') return settlement.txHash
+        if (settlement.kind === 'confirmed-revert') {
+          throw new QuoterTransactionError('transaction-reverted')
+        }
+        throw new QuoterTransactionError('transaction-dropped')
+      } catch (error) {
+        if (
+          error instanceof QuoterTransactionError &&
+          ['transaction-pending', 'transaction-reverted', 'transaction-dropped'].includes(
+            error.operation
+          )
+        ) {
+          throw error
+        }
         throw new QuoterTransactionError('transaction-pending')
       }
-      if (settlement.kind === 'confirmed-success') return settlement.txHash
-      if (settlement.kind === 'confirmed-revert') {
-        throw new QuoterTransactionError('transaction-reverted')
-      }
-      throw new QuoterTransactionError('transaction-dropped')
     }
   }
 }

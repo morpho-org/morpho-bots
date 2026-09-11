@@ -77,6 +77,7 @@
     "src/infrastructure/ladder/ladder-ratification.utils.ts",
     "src/infrastructure/ladder/ladder-signature.utils.ts",
     "src/infrastructure/ladder/ladder-spread.utils.ts",
+    "src/infrastructure/ladder/ladder-transaction-executor.utils.ts",
     "src/infrastructure/ladder/ladder-transaction.utils.ts",
     "src/infrastructure/ladder/production-ladder.ts",
     "src/infrastructure/make/managed-signer-account.utils.ts",

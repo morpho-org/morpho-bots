@@ -411,6 +411,18 @@ describe('Railway CLI output parsing', () => {
     expect(compose).toContain('REFERENCE_MARKET_ID: ${REFERENCE_MARKET_ID:-}')
   })
 
+  test('exposes optional configuration for each supported signer backend', () => {
+    const compose = readFileSync(new URL('../../docker-compose.yml', import.meta.url), 'utf8')
+
+    expect(compose).toContain('KEY_STORAGE_METHOD: ${KEY_STORAGE_METHOD:-}')
+    expect(compose).toContain('MAKER_PRIVATE_KEY: ${MAKER_PRIVATE_KEY:-}')
+    expect(compose).toContain('KEYSTORE_PATH: ${KEYSTORE_PATH:-}')
+    expect(compose).toContain('KEYSTORE_PASSWORD: ${KEYSTORE_PASSWORD:-}')
+    expect(compose).toContain('KEYSTORE_INTERACTIVE: ${KEYSTORE_INTERACTIVE:-}')
+    expect(compose).toContain('AWS_KMS_KEY_ID: ${AWS_KMS_KEY_ID:-}')
+    expect(compose).toContain('AWS_REGION: ${AWS_REGION:-}')
+  })
+
   test('reads the newest complete deployment and rejects incomplete output', () => {
     const raw = JSON.stringify({
       deployments: [

@@ -187,8 +187,8 @@ type ProductionBootstrapAdapters = {
  * @param ignoredOfferGroupIds - Recently canceled ladder groups still visible in the API index.
  * @param configuredExecutor - Optional invocation-scoped transaction executor shared with the ladder.
  * @returns Production read ports and either a live mutation queue or terminal-only make adapter.
- * @throws `BootstrapAdapterError` when write-mode signer identity differs from the configured maker;
- * later provider reads, signing, publication, or invalidation may also fail.
+ * @throws `SignerAccountError` for construction failures, or `BootstrapAdapterError` when an
+ * injected account violates the required maker relationship; later operations may also fail.
  * @remarks No provider request or write occurs while this function constructs the adapters.
  * Read-only configuration never derives an account or constructs a wallet client. Write mode checks
  * the key-derived account before constructing any maker action, independently of the setup gate.
@@ -638,25 +638,21 @@ export const createProductionBootstrapAdapters = (
 
   const account = configuredAccount ?? createSignerAccount(config.identity)
   if (account instanceof Promise) {
-    return account.then(
-      value =>
-        createProductionBootstrapAdapters(
-          config,
-          writeReadOnlyEvent,
-          value,
-          ignoredOfferGroupIds,
-          configuredExecutor
-        ),
-      () => {
-        throw new BootstrapAdapterError('maker-private-key-mismatch')
-      }
+    return account.then(value =>
+      createProductionBootstrapAdapters(
+        config,
+        writeReadOnlyEvent,
+        value,
+        ignoredOfferGroupIds,
+        configuredExecutor
+      )
     )
   }
   if (
     (config.identity.method === 'aws' && isAddressEqual(account.address, maker)) ||
     (config.identity.method !== 'aws' && !isAddressEqual(account.address, maker))
   ) {
-    throw new BootstrapAdapterError('maker-private-key-mismatch')
+    throw new BootstrapAdapterError('signer-identity-mismatch')
   }
   const transactionExecutor = configuredExecutor ?? createQuoterTransactionExecutor(config, account)
 

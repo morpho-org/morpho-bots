@@ -396,8 +396,7 @@ describe('createProductionLadderAdapters', () => {
       return undefined
     })()
 
-    expect(error).toBeInstanceOf(LadderAdapterError)
-    expect((error as LadderAdapterError).operation).toBe('maker-private-key-mismatch')
+    expect(error).toMatchObject({ name: 'SignerAccountError', operation: 'signer-address' })
   })
 })
 

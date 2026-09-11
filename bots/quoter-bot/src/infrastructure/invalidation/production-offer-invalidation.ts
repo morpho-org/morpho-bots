@@ -37,7 +37,8 @@ const providerOperation = async <Result>(
  * @param configuredAccount - Optional preconstructed account for write-mode adapter reuse.
  * @param configuredExecutor - Optional invocation-scoped transaction executor.
  * @returns A port that targets every active maker group or an explicit bytes32 group.
- * @throws `OfferInvalidationAdapterError` when write-mode signer identity differs from the maker.
+ * @throws `SignerAccountError` for construction failures, or `OfferInvalidationAdapterError` when
+ * an injected account violates the required maker relationship.
  * @remarks The preflight checks connected Base identity, deployed Midnight bytecode, and write-mode
  * native reserve without requiring healthy books, archive data, ratifier state, allowance, or
  * known offer namespaces. Read-only mode never derives an account, signs, submits, or edits state.
@@ -121,7 +122,7 @@ export const createProductionOfferInvalidationPort = (
     (identity.method === 'aws' && isAddressEqual(account.address, maker)) ||
     (identity.method !== 'aws' && !isAddressEqual(account.address, maker))
   ) {
-    throw new OfferInvalidationAdapterError('maker-private-key-mismatch')
+    throw new OfferInvalidationAdapterError('signer-identity-mismatch')
   }
   const transactionExecutor = configuredExecutor ?? createQuoterTransactionExecutor(config, account)
   const writePreflight = () =>

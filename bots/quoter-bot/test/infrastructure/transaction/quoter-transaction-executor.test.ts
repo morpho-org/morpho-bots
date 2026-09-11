@@ -186,4 +186,49 @@ describe('createQuoterTransactionExecutor', () => {
     expect(signTransaction).toHaveBeenCalledTimes(1)
     expect(broadcasts).toBe(1)
   })
+
+  test('retains a broadcast transaction when receipt reconciliation cannot read a block', async () => {
+    const { account, signTransaction } = accountWithSigningProbe()
+    let broadcasts = 0
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (_url, init) => {
+      const body = rpcBody(init?.body)
+      const result =
+        body.method === 'eth_call'
+          ? '0x'
+          : body.method === 'eth_getBlockByNumber'
+            ? { baseFeePerGas: '0x1', number: '0x1' }
+            : body.method === 'eth_getTransactionCount'
+              ? '0x0'
+              : body.method === 'eth_estimateGas'
+                ? '0x5208'
+                : body.method === 'eth_chainId'
+                  ? '0x2105'
+                  : body.method === 'eth_sendRawTransaction'
+                    ? `0x${'ab'.repeat(32)}`
+                    : undefined
+      if (body.method === 'eth_sendRawTransaction') broadcasts += 1
+      if (body.method === 'eth_blockNumber') throw new Error('receipt reconciliation unavailable')
+      if (result === undefined) throw new Error(`unexpected RPC method ${body.method}`)
+      return Response.json({ jsonrpc: '2.0', id: body.id, result })
+    })
+    const executor = createQuoterTransactionExecutor(config, account)
+    const request = {
+      transaction: {
+        to: getChainAddress(8453, 'midnightMempool'),
+        data: '0xdeadbeef' as Hex,
+        value: 0n
+      },
+      operation: 'publish' as const,
+      label: 'test:reconciliation-read-failure'
+    }
+
+    await expect(executor.execute(request)).rejects.toMatchObject({
+      operation: 'transaction-pending'
+    })
+    await expect(executor.execute(request)).rejects.toMatchObject({
+      operation: 'reconciliation-required'
+    })
+    expect(signTransaction).toHaveBeenCalledTimes(1)
+    expect(broadcasts).toBe(1)
+  })
 })

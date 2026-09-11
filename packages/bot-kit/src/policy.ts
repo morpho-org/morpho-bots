@@ -144,9 +144,9 @@ export function evaluatePolicy(policy: Policy, tx: PolicyTx): PolicyDecision {
   }
   const txSelector = tx.data.slice(0, 10).toLowerCase()
   const targetRules = policy.rules?.filter(rule => isAddressEqual(tx.to, rule.target))
-  const rule = targetRules?.find(
-    candidate => candidate.selector === undefined || candidate.selector.toLowerCase() === txSelector
-  )
+  const rule =
+    targetRules?.find(candidate => candidate.selector?.toLowerCase() === txSelector) ??
+    targetRules?.find(candidate => candidate.selector === undefined)
   if (policy.rules) {
     if (targetRules?.length === 0) {
       return deny('target', `target ${tx.to} is not among the configured targets`)

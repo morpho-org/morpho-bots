@@ -246,8 +246,7 @@ describe('createProductionBootstrapAdapters', () => {
       error = value
     }
 
-    expect(error).toBeInstanceOf(BootstrapAdapterError)
-    expect(error).toMatchObject({ operation: 'maker-private-key-mismatch' })
+    expect(error).toMatchObject({ name: 'SignerAccountError', operation: 'signer-address' })
   })
 })
 

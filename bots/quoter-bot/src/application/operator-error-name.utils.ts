@@ -35,7 +35,6 @@ const ADAPTER_OPERATIONS = [
   'cross-book-evidence-missing',
   'group-consumption-read',
   'group-ownership-state',
-  'maker-private-key-mismatch',
   'market-continuous-fee',
   'mempool-validation',
   'mempool-validation-after-ratification',
@@ -53,6 +52,7 @@ const ADAPTER_OPERATIONS = [
   'prospective-offer-missing',
   'publication-after-ratification',
   'publication-reservation-cleanup',
+  'publication-transaction-reverted-after-ratification',
   'rate-window-empty',
   'reference-checkpoint',
   'reference-rate',
@@ -60,6 +60,7 @@ const ADAPTER_OPERATIONS = [
   'requirement-signing-policy',
   'retained-group-metadata-refresh',
   'shared-group-reconciliation',
+  'signer-identity-mismatch',
   'target-rate-strategy-missing',
   'transaction-policy',
   'unexpected-requirement'

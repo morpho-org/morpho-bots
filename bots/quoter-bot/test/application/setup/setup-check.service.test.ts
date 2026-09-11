@@ -683,6 +683,35 @@ describe('SetupCheckService', () => {
     expect(report.checks.find(check => check.name === failedName)?.status).toBe('failed')
   })
 
+  test('permits a pending signer transaction during continuous readiness monitoring', async () => {
+    const controller = new AbortController()
+    const state = readyState()
+    let signerNonceReads = 0
+    state.getTransactionCounts = async () => {
+      signerNonceReads += 1
+      return { latest: 2, pending: 3 }
+    }
+    const reports: SetupCheckReport[] = []
+
+    const terminal = await new SetupCheckService(state, config).runContinuously({
+      signal: controller.signal,
+      intervalMs: 1,
+      onCycle: report => {
+        reports.push(report)
+        controller.abort()
+      }
+    })
+
+    expect(reports).toHaveLength(1)
+    expect(reports[0]?.ready).toBe(true)
+    expect(signerNonceReads).toBe(0)
+    expect(reports[0]?.checks.find(check => check.name === 'signer-nonce')).toMatchObject({
+      status: 'not-required',
+      required: 'one-time startup check'
+    })
+    expect(terminal).toEqual({ status: 'stopped', reason: 'signal', cycles: 1 })
+  })
+
   test('skips only private-key derivation and preserves maker observations in read-only mode', async () => {
     const reads: string[] = []
     const unavailable = async (): Promise<never> => {
