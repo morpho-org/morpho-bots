@@ -1,0 +1,23 @@
+[
+  {
+    "id": "blue-liq",
+    "package": "@morpho-org/blue-liquidation",
+    "environments": { "staging": "blue-liq-staging", "production": "blue-liq-production" }
+  },
+  {
+    "id": "midnight-liq",
+    "package": "@morpho-org/midnight-liquidation",
+    "environments": { "staging": "midnight-liq-staging", "production": "midnight-liq-production" }
+  },
+  {
+    "id": "crossed-books",
+    "package": "@morpho-org/midnight-crossed-books",
+    "environments": { "staging": "crossed-books-staging", "production": "crossed-books-prod" }
+  },
+  {
+    "id": "quoter-bot",
+    "package": "@morpho-org/quoter-bot",
+    "environments": { "production": "quoter-bot-production" },
+    "publishImage": true
+  }
+]

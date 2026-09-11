@@ -10,6 +10,7 @@ export default defineConfig({
       { test: { name: 'workspace', root: import.meta.dirname, include: ['test/**/*.test.ts'] } },
       'packages/utils',
       'packages/bot-kit',
+      'packages/ci-scripts',
       'packages/swaps',
       'packages/logging',
       'packages/monitoring',

@@ -31,6 +31,14 @@ pnpm run knip        # dead-code detection
 pnpm test            # vitest projects plus Node playground suites
 ```
 
+## Releasing
+
+A merged PR deploys to production only if its description says `Releases <bot>` (bot ids:
+`blue-liq`, `midnight-liq`, `crossed-books`, `quoter-bot`; see `packages/ci-scripts/manifest.json`)
+and a reviewer other than the author approved it **after** that line was added. Every `main` push
+redeploys staging. Releases are tagged `<bot>-<PR#>`. Details and rationale:
+[TIB-2026-09-09](./docs/decisions/TIB-2026-09-09-release-intent-gated-deploys.md).
+
 ## Pointers
 
 - `docs/INDEX.md` — documentation discovery index (guides, bots, packages, TIBs)

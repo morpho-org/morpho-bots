@@ -6,28 +6,44 @@ name: Deploy bot
 # It runs that same script in DEPLOY_ONLY mode, which re-ships services and touches nothing else. The
 # only credential is a RAILWAY_TOKEN scoped to the target project + environment, read from the
 # per-bot-per-stage GitHub Environment (never passed by callers, never a fork-readable repo secret).
+#
+# With `release_pr` set (production only), a successful deploy also cuts the GitHub release
+# `<bot>-<PR#>` and posts it to Slack, so "tag exists" always means "that commit deployed".
+# Callers take bot/package/environment from packages/ci-scripts/manifest.json.
 
 on:
   workflow_call:
     inputs:
       bot:
-        description: Which bot to deploy (blue-liq | midnight-liq | crossed-books)
+        description: Stable bot id (manifest `id`; also the release tag prefix)
+        required: true
+        type: string
+      package:
+        description: Workspace package whose deploy:railway script ships the bot
         required: true
         type: string
       stage:
-        description: Target stage (staging | production)
+        description: Railway environment (staging | production)
         required: true
         type: string
       github_environment:
-        description: GitHub Environment override (defaults to <bot>-<stage>)
-        required: false
+        description: GitHub Environment holding RAILWAY_TOKEN + RAILWAY_PROJECT_ID
+        required: true
         type: string
-        default: ''
       ref:
-        description: Git SHA/ref to deploy (defaults to the triggering ref)
+        description: Git SHA to deploy
+        required: true
+        type: string
+      release_pr:
+        description: Merged PR number; when set, a successful deploy cuts release <bot>-<PR#>
         required: false
         type: string
         default: ''
+      publish_image:
+        description: Push the bot's Docker Hub image after the release (manifest `publishImage`)
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -35,10 +51,10 @@ permissions:
 jobs:
   Deploy:
     runs-on: ubuntu-latest
-    # The GitHub Environment defaults to "<bot>-<stage>" and can be overridden for an established
-    # environment name. It holds secret RAILWAY_TOKEN and var RAILWAY_PROJECT_ID; scope its
-    # deployment branches to `main` so the token is unreachable from arbitrary PR branches.
-    environment: ${{ inputs.github_environment || format('{0}-{1}', inputs.bot, inputs.stage) }}
+    timeout-minutes: 30
+    # Holds secret RAILWAY_TOKEN and var RAILWAY_PROJECT_ID; its deployment branches are scoped to
+    # `main` so the token is unreachable from arbitrary PR branches.
+    environment: ${{ inputs.github_environment }}
     concurrency:
       group: deploy-${{ inputs.bot }}-${{ inputs.stage }}
       cancel-in-progress: false
@@ -54,23 +70,82 @@ jobs:
           build-contracts: 'false'
 
       - name: Install Railway CLI
-        run: npm install -g @railway/cli@5.26.1
+        run: npm install -g @railway/cli@5.30.4
 
       - name: Deploy
         env:
-          BOT: ${{ inputs.bot }}
           RAILWAY_ENVIRONMENT: ${{ inputs.stage }}
           RAILWAY_PROJECT_ID: ${{ vars.RAILWAY_PROJECT_ID }}
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
           # Re-ship the pre-provisioned services only; set no secrets/variables (CI holds none).
           DEPLOY_ONLY: 'true'
+        # --fail-if-no-match: a package name that matches no workspace member would otherwise exit 0
+        # having deployed nothing, and the Release job downstream would tag a deploy that never ran.
+        run: pnpm --filter "${{ inputs.package }}" --fail-if-no-match run deploy:railway
+
+  Release:
+    # A failed deploy skips this job, so a bot is never tagged unless it deployed.
+    needs: Deploy
+    if: ${{ inputs.release_pr != '' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
+      - name: Create release
+        id: release
+        env:
+          BOT: ${{ inputs.bot }}
+          PR: ${{ inputs.release_pr }}
+          SHA: ${{ inputs.ref }}
         run: |
           set -euo pipefail
-          # Map the stable bot id (also the release-label suffix) to its workspace package.
-          case "$BOT" in
-            blue-liq) pkg='@morpho-org/blue-liquidation' ;;
-            midnight-liq) pkg='@morpho-org/midnight-liquidation' ;;
-            crossed-books) pkg='@morpho-org/midnight-crossed-books' ;;
-            *) echo "Unknown bot: $BOT" >&2; exit 1 ;;
-          esac
-          pnpm --filter "$pkg" run deploy:railway
+          tag="${BOT}-${PR}"
+          # Idempotent on rerun: the PR number is unique, so an existing tag is either this release
+          # (done) or a forged/foreign one on another commit (fail loud).
+          if existing="$(git rev-parse --verify --quiet "refs/tags/${tag}^{commit}")"; then
+            if [ "$existing" = "$SHA" ]; then
+              echo "Release $tag already exists for $SHA"
+              echo "tag=$tag" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "::error::tag $tag already points at $existing, not $SHA"
+            exit 1
+          fi
+          # PR numbers are not a recency order, so the previous release is the newest by creation
+          # date. `|| true` guards against SIGPIPE aborting the job under `set -o pipefail`.
+          prev="$(git tag -l "${BOT}-*" --sort=-creatordate | head -n 1 || true)"
+          echo "Creating release $tag (previous: ${prev:-none})"
+          gh release create "$tag" --target "$SHA" --title "$tag" --generate-notes \
+            ${prev:+--notes-start-tag "$prev"}
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+  Notify:
+    # Releases created with the workflow token fire no `release` event, so the Slack post is chained
+    # explicitly instead of relying on release-slack-notify.yml's `release: published` trigger.
+    needs: Release
+    uses: ./.github/workflows/release-slack-notify.yml
+    secrets: inherit
+    with:
+      tag: ${{ needs.Release.outputs.tag }}
+
+  Image:
+    # Image tags publish only after this bot's own deploy and release succeeded, and never gate
+    # either. Lives here rather than in the caller so a sibling bot's failed leg cannot skip it.
+    needs: Release
+    if: ${{ inputs.publish_image }}
+    # The OIDC token minting (id-token) the Docker Hub login needs must be granted by every caller.
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/publish-quoter-bot-dockerhub.yml
+    secrets: inherit
+    with:
+      ref: ${{ inputs.ref }}

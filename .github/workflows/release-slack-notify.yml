@@ -1,8 +1,18 @@
 name: Release Slack Notify
 
+# Posts a GitHub release to Slack. deploy-bot.yml calls this after cutting a release: releases
+# created with the workflow token fire no `release` event, so the `release: published` trigger
+# only covers releases published by hand.
+
 on:
   release:
     types: [published]
+  workflow_call:
+    inputs:
+      tag:
+        description: Release tag to notify
+        required: true
+        type: string
   workflow_dispatch:
     inputs:
       tag:
@@ -15,6 +25,9 @@ permissions:
 env:
   SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
   SLACK_RELEASE_CHANNEL_ID: ${{ vars.SLACK_RELEASE_CHANNEL_ID }}
+  # workflow_call and workflow_dispatch both surface their input here; the release event carries
+  # the release in its payload instead.
+  RELEASE_TAG: ${{ inputs.tag }}
 
 jobs:
   Notify:
@@ -55,10 +68,10 @@ jobs:
               }
             }
 
-            // Resolve the release: from the event payload, or by tag on manual dispatch.
+            // Resolve the release: from the event payload, or by tag when called or dispatched.
             let release = context.payload.release;
             if (!release) {
-              const tag = context.payload.inputs && context.payload.inputs.tag;
+              const tag = process.env.RELEASE_TAG;
               if (!tag) {
                 core.warning('No release payload or tag input; nothing to do.');
                 return;

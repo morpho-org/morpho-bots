@@ -103,8 +103,8 @@ jobs:
       # `latest` must only move forward. A rerun may legitimately backfill an older release's
       # commit tag, but when a quoter-bot release tag descends from the built commit a newer
       # release already shipped — leave `latest` where it is. Release tags are cut by
-      # deploy-production.yml, whose concurrency group serializes release runs, so the newest
-      # release cannot change mid-run.
+      # deploy-bot.yml after a deploy that serializes per bot, so the newest quoter-bot release
+      # cannot change mid-run.
       - name: Gate the latest tag
         id: tags
         env:

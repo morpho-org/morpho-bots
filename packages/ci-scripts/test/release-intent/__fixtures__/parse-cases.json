@@ -1,0 +1,123 @@
+{
+  "$comment": "Golden cases for parseReleaseIntents(text, knownApps). Consumed by helpers.test.ts, which runs every case against both the TS parser and the JS twin (scripts/lib/release-intent.js). knownApps for all cases: markets-app, curator-v2-app, delegate-app, storybook-app (excluded).",
+  "knownApps": ["markets-app", "curator-v2-app", "delegate-app", "storybook-app"],
+  "cases": [
+    { "name": "empty text", "text": "", "expected": [] },
+    { "name": "plain prose, no keyword", "text": "Fixes a bug in the sidebar.", "expected": [] },
+    {
+      "name": "keyword on its own line",
+      "text": "Fixes a bug.\n\nReleases markets-app",
+      "expected": ["markets-app"]
+    },
+    {
+      "name": "colon form",
+      "text": "Releases: markets-app",
+      "expected": ["markets-app"]
+    },
+    {
+      "name": "mid-sentence",
+      "text": "Once merged, this releases markets-app to production.",
+      "expected": ["markets-app"]
+    },
+    {
+      "name": "comma list",
+      "text": "Releases markets-app, curator-v2-app",
+      "expected": ["curator-v2-app", "markets-app"]
+    },
+    {
+      "name": "and list",
+      "text": "Releases markets-app and delegate-app",
+      "expected": ["delegate-app", "markets-app"]
+    },
+    {
+      "name": "comma+and list",
+      "text": "Releases markets-app, curator-v2-app and delegate-app",
+      "expected": ["curator-v2-app", "delegate-app", "markets-app"]
+    },
+    {
+      "name": "oxford comma list",
+      "text": "Releases markets-app, curator-v2-app, and delegate-app",
+      "expected": ["curator-v2-app", "delegate-app", "markets-app"]
+    },
+    {
+      "name": "token starting with and- is not eaten by the list grammar",
+      "text": "Releases markets-app, and-app",
+      "expected": ["markets-app"]
+    },
+    {
+      "name": "case-insensitive keyword and app",
+      "text": "RELEASES Markets-App",
+      "expected": ["markets-app"]
+    },
+    {
+      "name": "CRLF line endings",
+      "text": "Body text.\r\n\r\nReleases markets-app\r\nReleases delegate-app\r\n",
+      "expected": ["delegate-app", "markets-app"]
+    },
+    {
+      "name": "unknown token ignored",
+      "text": "Releases makrets-app",
+      "expected": []
+    },
+    {
+      "name": "list keeps known apps and drops prose continuation",
+      "text": "Releases markets-app and then updates the docs",
+      "expected": ["markets-app"]
+    },
+    {
+      "name": "excluded app never matches",
+      "text": "Releases storybook-app",
+      "expected": []
+    },
+    {
+      "name": "keyword must be the word releases",
+      "text": "Prereleases markets-app",
+      "expected": []
+    },
+    {
+      "name": "no app token after keyword",
+      "text": "This has three releases.\nAnd releases: are fun.",
+      "expected": []
+    },
+    {
+      "name": "duplicate mentions dedupe",
+      "text": "Releases markets-app.\n\nAlso releases markets-app again.",
+      "expected": ["markets-app"]
+    },
+    {
+      "name": "squash commit message shape",
+      "text": "feat(markets): add xyz (#4712)\n\nAdds the xyz feature.\n\nReleases markets-app",
+      "expected": ["markets-app"]
+    },
+    {
+      "name": "trailing punctuation excluded from token",
+      "text": "This releases markets-app.",
+      "expected": ["markets-app"]
+    },
+    {
+      "name": "backticked app token",
+      "text": "Releases `markets-app`",
+      "expected": ["markets-app"]
+    },
+    {
+      "name": "bold keyword and app",
+      "text": "**Releases** **markets-app**",
+      "expected": ["markets-app"]
+    },
+    {
+      "name": "italic underscore emphasis",
+      "text": "Releases _markets-app_ and `delegate-app`",
+      "expected": ["delegate-app", "markets-app"]
+    },
+    {
+      "name": "backticked comma list",
+      "text": "Releases `markets-app`, `curator-v2-app`",
+      "expected": ["curator-v2-app", "markets-app"]
+    },
+    {
+      "name": "bulleted list on following lines never matches (grammar is single-line)",
+      "text": "Releases:\n- markets-app\n- curator-v2-app",
+      "expected": []
+    }
+  ]
+}

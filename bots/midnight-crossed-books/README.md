@@ -107,8 +107,9 @@ requires a valid key.
 
 CI subsequently runs the same command with `DEPLOY_ONLY=true`, so GitHub holds only a
 project/environment-scoped Railway token. Pushes to `main` deploy staging through the
-`crossed-books-staging` GitHub Environment. Production deploys use the `release-crossed-books`
-label or a manual production workflow dispatch and the `crossed-books-prod` GitHub Environment.
+`crossed-books-staging` GitHub Environment. Production deploys when a merged PR's description says
+`Releases crossed-books` and a reviewer approved it after that line was added, through the
+`crossed-books-prod` GitHub Environment (see `docs/decisions/TIB-2026-09-09-release-intent-gated-deploys.md`).
 Each GitHub Environment defines `RAILWAY_PROJECT_ID` as a variable and `RAILWAY_TOKEN` as a secret;
 bot runtime secrets remain on Railway.
 

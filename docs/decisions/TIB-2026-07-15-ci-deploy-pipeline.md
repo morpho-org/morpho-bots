@@ -196,3 +196,15 @@ deploy pipeline's shape is unchanged — same triggers, `<bot>-<stage>` GitHub E
 - The signing key stored as a GitHub/Railway secret is each bot's `LIQUIDATOR_PRIVATE_KEY`, not
   `SIGNER_PRIVATE_KEY` — there is no separate signer daemon; the `apps/` + `packages/` + `deploy/`
   monorepo shape referenced above is now `bots/` + `packages/`.
+
+### 2026-09-09 — production trigger superseded
+
+[TIB-2026-09-09](./TIB-2026-09-09-release-intent-gated-deploys.md) replaces the `release-{bot}`
+label trigger, the CalVer tags, the production `workflow_dispatch`, and the `deploy-production`
+concurrency group. Release intent is now `Releases <bot>` in the PR description, gated at deploy time
+on a post-intent approval; tags are `<bot>-<PR#>`; bots are enumerated in
+`packages/ci-scripts/manifest.json`. The environment model, the deploy-only `railway up` path, and
+the `push: main` rationale above are unchanged. Two assumptions in this TIB were found to be false
+on the live repository: no merge queue is configured and no status checks are required on `main`,
+and `release-slack-notify.yml` never fired for CI-created releases (GitHub suppresses `release`
+events for `GITHUB_TOKEN` writes); the new TIB records both.
