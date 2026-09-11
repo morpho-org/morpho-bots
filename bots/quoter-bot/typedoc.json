@@ -31,6 +31,7 @@
     "src/config/config-validation.error.ts",
     "src/config/config.service.ts",
     "src/config/config.utils.ts",
+    "src/config/write-policy.utils.ts",
     "src/domain/bootstrap/bootstrap-configuration.error.ts",
     "src/domain/bootstrap/position-bootstrap.ts",
     "src/domain/cross-book.ts",

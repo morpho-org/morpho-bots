@@ -29,6 +29,7 @@ import {
 } from './config.utils'
 import { bootstrapConfigsValue, hexListValue, ladderConfigsValue } from './market-collections'
 import { signerIdentity } from './signer-identity.utils'
+import { requiresMaxRatificationGas } from './write-policy.utils'
 
 export type { SignerIdentity } from './signer-identity.utils'
 
@@ -62,7 +63,6 @@ const writePolicyValue = (
       'PRIORITY_FEE_GWEI must leave room for a replacement below MAX_FEE_GWEI'
     )
   }
-  const setter = isAddressEqual(ratifier, getChainAddress(chainId, 'setterRatifier'))
   return {
     maxFeePerGasWei,
     priorityFeePerGasWei,
@@ -75,7 +75,7 @@ const writePolicyValue = (
       environment,
       'MAX_BATCH_CANCELLATION_DATA_BYTES'
     ),
-    ...(method !== 'aws' && setter
+    ...(requiresMaxRatificationGas(method, ratifier, chainId)
       ? { maxRatificationGas: positiveBigIntValue(environment, 'MAX_RATIFICATION_GAS') }
       : {})
   }

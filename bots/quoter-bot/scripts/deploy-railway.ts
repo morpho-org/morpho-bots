@@ -11,6 +11,8 @@ import { $ } from 'execa'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { addressValue, chainIdValue } from '../src/config/config.utils'
+import { requiresMaxRatificationGas } from '../src/config/write-policy.utils'
 import { RailwayDeploymentError } from './railway-deployment.error'
 import {
   assertFreshRailwayReferenceProvisioning,
@@ -105,6 +107,16 @@ const runtimeVariables = (): RuntimeVariable[] => {
     signerValues[name] = value
   }
   const maxRatificationGas = process.env.MAX_RATIFICATION_GAS?.trim()
+  if (
+    requiresMaxRatificationGas(
+      method as 'private-key' | 'keystore' | 'aws',
+      addressValue(process.env, 'RATIFIER_ADDRESS'),
+      chainIdValue(process.env)
+    ) &&
+    !maxRatificationGas
+  ) {
+    throw new RailwayDeploymentError('Missing required environment variable: MAX_RATIFICATION_GAS')
+  }
   if (maxRatificationGas) signerValues.MAX_RATIFICATION_GAS = maxRatificationGas
   const signerVariables = Object.entries(signerValues) as RuntimeVariable[]
 
@@ -268,6 +280,8 @@ const assertDeploymentSucceeded = (status: string) => {
   console.log(`${SERVICE} deployment succeeded`)
 }
 
+const configuredRuntimeVariables = DEPLOY_ONLY ? [] : runtimeVariables()
+
 await assertCli()
 await ensureContext()
 
@@ -278,7 +292,7 @@ if (!DEPLOY_ONLY) {
   await setRuntimeVariable(['RAILWAY_RUN_UID', '0'])
   await setRuntimeVariable(['RAILWAY_DOCKERFILE_PATH', DOCKERFILE_PATH])
   await setRuntimeVariable(['XDG_STATE_HOME', STATE_MOUNT_PATH])
-  for (const variable of runtimeVariables()) await setRuntimeVariable(variable)
+  for (const variable of configuredRuntimeVariables) await setRuntimeVariable(variable)
   await ensureStateVolume()
 }
 

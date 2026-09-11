@@ -82,8 +82,6 @@ is not a status.
   metric expressions, so renaming one breaks them silently.
 - **A lens or soltag change needs `pnpm build`.** The CLI compiles at optimizer runs=1 and degrades
   to an empty ABI while still exiting 0.
-- **A new bot's `Dockerfile` must `COPY services/`** — `pnpm install --frozen-lockfile` needs the
-  full workspace importer set or the image build fails.
 - **Production may not be running `main`.** Check the deployed image before diagnosing a live bot
   from local code.
 - **Old TIBs describe roads not taken** — a reverted op-pipeline architecture, a former Bun

@@ -187,6 +187,7 @@ describe('quoter-bot workflow on a pinned Base fork', () => {
     await anvil.client.mine({ blocks: 1 })
     api = await startRouterApi(anvil.rpcUrl)
     await setupMaker(anvil)
+    await anvil.client.setBalance({ address: DELEGATED_SIGNER.address, value: NATIVE_RESERVE })
   }, 60_000)
 
   beforeEach(resetStateDirectory)

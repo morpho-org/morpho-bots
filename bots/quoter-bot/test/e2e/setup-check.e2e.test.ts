@@ -117,6 +117,7 @@ describe('quoter-bot setup check on a pinned Base fork', () => {
     },
     {
       name: 'signer',
+      additionallyFailed: ['signer-nonce'],
       environment: { MAKER_PRIVATE_KEY: ANVIL_TAKER_PRIVATE_KEY }
     },
     {
@@ -187,7 +188,7 @@ describe('quoter-bot setup check on a pinned Base fork', () => {
           ['native-balance', failed.has('native-balance') ? 'failed' : 'passed'],
           ['signer-native-balance', 'not-required'],
           ['signer-authorization', 'not-required'],
-          ['signer-nonce', 'passed'],
+          ['signer-nonce', failed.has('signer-nonce') ? 'failed' : 'passed'],
           ['loan-allowance', failed.has('loan-allowance') ? 'failed' : 'passed'],
           ['ratifier', failed.has('ratifier') ? 'failed' : 'passed'],
           ['books', failed.has('books') ? 'failed' : 'passed'],
