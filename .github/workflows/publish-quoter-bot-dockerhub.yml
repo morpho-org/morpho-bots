@@ -1,11 +1,13 @@
-name: Publish quoter-bot Docker Hub
+name: Publish quoter Docker Hub images
 
-# Reusable publish-only job for quoter-bot's public Docker Hub image. Production's release selector
-# calls this workflow after the Railway deploy succeeds: the repo-root build of
-# bots/quoter-bot/Dockerfile is pushed tagged with the release commit hash and, when no newer
-# release has shipped, `latest`. The push never gates the GitHub release. Authentication exchanges
-# the run's GitHub OIDC token through the Docker org's OIDC connection (docker/login-action v4.5+), so CI stores no static Docker Hub
-# credential.
+# Reusable publish-only job for the public Docker Hub images of quoter-bot and its quoter-signer
+# KMS middleware (TIB-2026-08-12 Addendum A ties the signer image to this pipeline). Production's
+# release selector calls this workflow after the Railway deploy succeeds: one job matrix builds
+# each image's Dockerfile at repo-root context and pushes it tagged with the release commit hash
+# and, when no newer release has shipped, `latest`. The signer has no release selector of its own —
+# it rides the quoter-bot release train. The pushes never gate the GitHub release. Authentication
+# exchanges the run's GitHub OIDC token through the Docker org's OIDC connection
+# (docker/login-action v4.5+), so CI stores no static Docker Hub credential.
 
 on:
   workflow_call:
@@ -22,19 +24,36 @@ jobs:
   Publish:
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    # Holds secret DOCKERHUB_OIDC_CONNECTIONID plus vars DOCKER_USERNAME and DOCKER_REPOSITORY;
-    # scope its deployment branches to `main` so the OIDC exchange is unreachable from arbitrary PR
-    # branches. Referencing an environment also makes GitHub mint the OIDC token with an
-    # environment-based subject (`repo:morpho-org/morpho-bots:environment:quoter-bot-dockerhub`) —
-    # the Docker-side connection ruleset must match that subject, not a `ref:refs/heads/*` one.
+    strategy:
+      # One image's registry failure must not cancel the other's build or push mid-flight.
+      fail-fast: false
+      # The matrix carries each repository's environment *var name*, not its value: repository
+      # names are environment configuration, and steps resolve them fail-loud via
+      # `vars[matrix.repository_var]`.
+      matrix:
+        include:
+          - image: quoter-bot
+            dockerfile: bots/quoter-bot/Dockerfile
+            repository_var: DOCKER_REPOSITORY
+          - image: quoter-signer
+            dockerfile: services/quoter-signer/Dockerfile
+            repository_var: DOCKER_SIGNER_REPOSITORY
+    # Holds secret DOCKERHUB_OIDC_CONNECTIONID plus vars DOCKER_USERNAME, DOCKER_REPOSITORY, and
+    # DOCKER_SIGNER_REPOSITORY; scope its deployment branches to `main` so the OIDC exchange is
+    # unreachable from arbitrary PR branches. Referencing an environment also makes GitHub mint the
+    # OIDC token with an environment-based subject
+    # (`repo:morpho-org/morpho-bots:environment:quoter-bot-dockerhub`) — the Docker-side connection
+    # ruleset must match that subject, not a `ref:refs/heads/*` one, and must permit pushing both
+    # repositories.
     environment: quoter-bot-dockerhub
     permissions:
       contents: read
       # Mints the GitHub OIDC token docker/login-action exchanges for a Docker Hub access token.
       id-token: write
     concurrency:
-      # Serialize pushes so `latest` cannot land out of order across overlapping runs.
-      group: publish-quoter-bot-dockerhub
+      # Serialize each image's pushes so its `latest` cannot land out of order across overlapping
+      # runs; the two images are independent, so their legs may run concurrently.
+      group: publish-quoter-bot-dockerhub-${{ matrix.image }}
       cancel-in-progress: false
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
@@ -48,12 +67,13 @@ jobs:
       - name: Check environment configuration
         env:
           DOCKER_USERNAME: ${{ vars.DOCKER_USERNAME }}
-          DOCKER_REPOSITORY: ${{ vars.DOCKER_REPOSITORY }}
+          DOCKER_REPOSITORY: ${{ vars[matrix.repository_var] }}
+          REPOSITORY_VAR: ${{ matrix.repository_var }}
           DOCKERHUB_OIDC_CONNECTIONID: ${{ secrets.DOCKERHUB_OIDC_CONNECTIONID }}
         run: |
           set -euo pipefail
           : "${DOCKER_USERNAME:?var unset in the quoter-bot-dockerhub environment}"
-          : "${DOCKER_REPOSITORY:?var unset in the quoter-bot-dockerhub environment}"
+          : "${DOCKER_REPOSITORY:?${REPOSITORY_VAR} var unset in the quoter-bot-dockerhub environment}"
           : "${DOCKERHUB_OIDC_CONNECTIONID:?secret unset in the quoter-bot-dockerhub environment}"
 
       # Tag with the resolved hash so a branch/tag `ref` input still produces an immutable tag.
@@ -81,7 +101,7 @@ jobs:
         id: sha-tag
         env:
           DOCKER_USERNAME: ${{ vars.DOCKER_USERNAME }}
-          DOCKER_REPOSITORY: ${{ vars.DOCKER_REPOSITORY }}
+          DOCKER_REPOSITORY: ${{ vars[matrix.repository_var] }}
           COMMIT_SHA: ${{ steps.commit.outputs.sha }}
         run: |
           set -euo pipefail
@@ -102,14 +122,15 @@ jobs:
 
       # `latest` must only move forward. A rerun may legitimately backfill an older release's
       # commit tag, but when a quoter-bot release tag descends from the built commit a newer
-      # release already shipped — leave `latest` where it is. Release tags are cut by
-      # deploy-production.yml, whose concurrency group serializes release runs, so the newest
-      # release cannot change mid-run.
+      # release already shipped — leave `latest` where it is. Both images publish per quoter-bot
+      # release, so the same `quoter-bot-*` tag family gates the signer's `latest` too. Release
+      # tags are cut by deploy-production.yml, whose concurrency group serializes release runs, so
+      # the newest release cannot change mid-run.
       - name: Gate the latest tag
         id: tags
         env:
           DOCKER_USERNAME: ${{ vars.DOCKER_USERNAME }}
-          DOCKER_REPOSITORY: ${{ vars.DOCKER_REPOSITORY }}
+          DOCKER_REPOSITORY: ${{ vars[matrix.repository_var] }}
           COMMIT_SHA: ${{ steps.commit.outputs.sha }}
         run: |
           set -euo pipefail
@@ -140,9 +161,11 @@ jobs:
           # rebuild from the triggering ref instead. The context must be the repository root so
           # workspace packages resolve.
           context: .
-          file: bots/quoter-bot/Dockerfile
+          file: ${{ matrix.dockerfile }}
           push: true
           tags: ${{ steps.tags.outputs.tags }}
+          # These `--label` values override same-key LABELs baked into a Dockerfile, so the signer
+          # image's revision is stamped correctly without passing its GIT_REVISION build arg.
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ steps.commit.outputs.sha }}
@@ -153,7 +176,7 @@ jobs:
         if: ${{ steps.sha-tag.outputs.exists == 'true' && steps.tags.outputs.move_latest == 'true' }}
         env:
           DOCKER_USERNAME: ${{ vars.DOCKER_USERNAME }}
-          DOCKER_REPOSITORY: ${{ vars.DOCKER_REPOSITORY }}
+          DOCKER_REPOSITORY: ${{ vars[matrix.repository_var] }}
           COMMIT_SHA: ${{ steps.commit.outputs.sha }}
         run: |
           set -euo pipefail

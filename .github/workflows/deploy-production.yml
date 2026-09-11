@@ -4,8 +4,9 @@ name: Deploy production
 # GitHub release + git tag (CalVer `{bot}-YYYY.MM.DD-N`). Triggered on push:main (not
 # pull_request:closed) so the run's ref is refs/heads/main — satisfying a main-only environment
 # branch policy and giving the correct main HEAD in github.sha. Releasing publishes the tag, which
-# fires release-slack-notify.yml. A quoter-bot release also pushes the bot image to Docker Hub
-# (commit-hash + `latest` tags) after the Railway deploy succeeds, without gating the release.
+# fires release-slack-notify.yml. A quoter-bot release also pushes the bot and quoter-signer
+# middleware images to Docker Hub (commit-hash + `latest` tags each) after the Railway deploy
+# succeeds, without gating the release.
 # Once this pipeline completes, publish-quoter-bot-npm.yml (a workflow_run chain, kept standalone
 # for npm trusted publishing) publishes the CLI to npm when the commit carries a quoter-bot
 # release tag. Runs on every push; when no release-* label is present, the deploy jobs are simply
@@ -114,8 +115,9 @@ jobs:
       ref: ${{ github.sha }}
 
   Quoter-bot-image:
-    # Wait for both the successful deploy and its GitHub release tag before publishing image tags.
-    # Release-quoter-bot still depends only on Quoter-bot, so Docker Hub cannot block the release.
+    # Publishes both the quoter-bot and quoter-signer images. Wait for both the successful deploy
+    # and its GitHub release tag before publishing image tags. Release-quoter-bot still depends
+    # only on Quoter-bot, so Docker Hub cannot block the release.
     needs: [Select, Quoter-bot, Release-quoter-bot]
     if: ${{ needs.Select.outputs.quoter_bot == 'true' }}
     # A called workflow can never hold more permissions than its caller job grants, so the OIDC
