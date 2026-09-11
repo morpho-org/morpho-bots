@@ -1,4 +1,3 @@
-import type { MidnightOfferRootSignature } from '@morpho-org/morpho-sdk'
 import type { Address, Hex } from 'viem'
 
 import { isAddressEqual } from 'viem'
@@ -25,25 +24,22 @@ type SetterRootRequirement = {
 }
 
 type BootstrapRequirementPolicy =
-  | { kind: 'ecrecover'; target: Address; root: Hex; account: Address; offers: number }
-  | { kind: 'setter'; target: Address; root: Hex; account: Address }
+  | { kind: 'ecrecover'; target: Address; root: Hex; signer: Address; offers: number }
+  | { kind: 'setter'; target: Address; root: Hex; maker: Address }
 
 /**
  * Collects only supported Midnight offer-root signature and Setter approval requirements.
  * @param requirements - Untrusted runtime requirements returned by the SDK flow.
- * @param sign - Bound signer for one validated Ecrecover offer-root requirement and maker.
- * @param policy - Exact ratifier kind, target, maker, output root, and Ecrecover offer count.
+ * @param sign - Bound signer for one validated Ecrecover offer-root requirement.
+ * @param policy - Exact ratifier kind, target, signer or maker, output root, and offer count.
  * @returns Signed Ecrecover roots and validated-shape Setter transactions for policy checking.
  * @throws `BootstrapAdapterError` for every unknown, malformed, mixed, repeated, or missing requirement set.
  * @remarks The complete set and exact action metadata are validated before `sign` is called, so
  * rejected sets have no signing or transaction side effects.
  */
-export const prepareBootstrapRequirements = async (
+export const prepareBootstrapRequirements = async <Signature>(
   requirements: readonly unknown[],
-  sign: (
-    requirement: RootSignatureRequirement,
-    account: Address
-  ) => Promise<MidnightOfferRootSignature>,
+  sign: (requirement: RootSignatureRequirement, account: Address) => Promise<Signature>,
   policy: BootstrapRequirementPolicy
 ) => {
   const signatureRequirements: RootSignatureRequirement[] = []
@@ -90,7 +86,7 @@ export const prepareBootstrapRequirements = async (
     const args = transaction.action.args
     try {
       if (
-        !isAddressEqual(args.maker, policy.account) ||
+        !isAddressEqual(args.maker, policy.maker) ||
         args.root !== policy.root ||
         !args.isRootRatified
       ) {
@@ -100,7 +96,7 @@ export const prepareBootstrapRequirements = async (
         kind: 'ratification',
         target: policy.target,
         root: policy.root,
-        account: policy.account
+        account: policy.maker
       })
     } catch {
       throw new BootstrapAdapterError('unexpected-requirement')
@@ -123,6 +119,6 @@ export const prepareBootstrapRequirements = async (
   } catch {
     throw new BootstrapAdapterError('unexpected-requirement')
   }
-  const signature = await sign(requirement, policy.account)
+  const signature = await sign(requirement, policy.signer)
   return { signatures: [signature], transactions: [] }
 }

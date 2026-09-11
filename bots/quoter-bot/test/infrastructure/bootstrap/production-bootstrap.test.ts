@@ -47,6 +47,7 @@ import {
 import { ReadOnlyBootstrapMakeService } from '../../../src/infrastructure/make/read-only-bootstrap-make.service'
 
 const maker: Address = '0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A'
+const signer: Address = '0x1563915e194D8CfBA1943570603F7606A3115508'
 const marketId: Hex = `0x${'ab'.repeat(32)}`
 const secondMarketId: Hex = `0x${'12'.repeat(32)}`
 const groupId: Hex = `0x${'cd'.repeat(32)}`
@@ -1243,9 +1244,7 @@ describe('createBootstrapGroupOwnership', () => {
 
 describe('prepareBootstrapRequirements', () => {
   test('preserves Ecrecover root-signature requirements', async () => {
-    const signature = {
-      kind: 'signed'
-    } as unknown as import('@morpho-org/morpho-sdk').MidnightOfferRootSignature
+    const signature = `0x${'11'.repeat(65)}`
     const requirement = {
       action: {
         type: 'midnightOfferRootSignature',
@@ -1258,10 +1257,10 @@ describe('prepareBootstrapRequirements', () => {
       await prepareBootstrapRequirements(
         [requirement],
         async (_requirement, account) => {
-          expect(account).toBe(maker)
+          expect(account).toBe(signer)
           return signature
         },
-        { kind: 'ecrecover', target: ratifier, root: groupId, account: maker, offers: 1 }
+        { kind: 'ecrecover', target: ratifier, root: groupId, signer, offers: 1 }
       )
     ).toEqual({
       signatures: [signature],
@@ -1286,7 +1285,7 @@ describe('prepareBootstrapRequirements', () => {
           signed = true
           return {} as never
         },
-        { kind: 'ecrecover', target: ratifier, root: groupId, account: maker, offers: 1 }
+        { kind: 'ecrecover', target: ratifier, root: groupId, signer: maker, offers: 1 }
       )
     ).rejects.toMatchObject({ operation: 'unexpected-requirement' })
     expect(signed).toBe(false)
@@ -1323,7 +1322,7 @@ describe('prepareBootstrapRequirements', () => {
           signed = true
           return {} as never
         },
-        { kind: 'ecrecover', target: ratifier, root: groupId, account: maker, offers: 1 }
+        { kind: 'ecrecover', target: ratifier, root: groupId, signer: maker, offers: 1 }
       )
     ).rejects.toMatchObject({ operation: 'unexpected-requirement' })
     expect(signed).toBe(false)
@@ -1350,7 +1349,7 @@ describe('prepareBootstrapRequirements', () => {
         async () => {
           throw new Error('Setter requirement must not be signed')
         },
-        { kind: 'setter', target: ratifier, root: groupId, account: maker }
+        { kind: 'setter', target: ratifier, root: groupId, maker }
       )
     ).toEqual({ signatures: [], transactions: [requirement] })
 
@@ -1360,7 +1359,7 @@ describe('prepareBootstrapRequirements', () => {
         async () => {
           throw new Error('Setter requirement must not be signed')
         },
-        { kind: 'setter', target: ratifier, root: groupId, account: maker }
+        { kind: 'setter', target: ratifier, root: groupId, maker }
       )
     ).rejects.toMatchObject({ operation: 'unexpected-requirement' })
   })
@@ -1388,7 +1387,7 @@ describe('prepareBootstrapRequirements', () => {
           signed = true
           return {} as never
         },
-        { kind: 'ecrecover', target: ratifier, root: groupId, account: maker, offers: 1 }
+        { kind: 'ecrecover', target: ratifier, root: groupId, signer: maker, offers: 1 }
       )
     ).rejects.toMatchObject({ operation: 'unexpected-requirement' })
     expect(signed).toBe(false)
@@ -1411,7 +1410,7 @@ describe('prepareBootstrapRequirements', () => {
         async () => {
           throw new Error('Setter requirement must not be signed')
         },
-        { kind: 'setter', target: ratifier, root: groupId, account: maker }
+        { kind: 'setter', target: ratifier, root: groupId, maker }
       )
     ).rejects.toMatchObject({ operation: 'unexpected-requirement' })
   })
@@ -1426,7 +1425,7 @@ describe('prepareBootstrapRequirements', () => {
           signed = true
           return {} as never
         },
-        { kind: 'setter', target: ratifier, root: groupId, account: maker }
+        { kind: 'setter', target: ratifier, root: groupId, maker }
       )
     ).rejects.toMatchObject({ operation: 'unexpected-requirement' })
     expect(signed).toBe(false)
@@ -1450,7 +1449,7 @@ describe('prepareBootstrapRequirements', () => {
         signed = true
         return {} as never
       },
-      { kind: 'ecrecover', target: ratifier, root: groupId, account: maker, offers: 1 }
+      { kind: 'ecrecover', target: ratifier, root: groupId, signer: maker, offers: 1 }
     ).catch(value => value)
 
     expect(error).toBeInstanceOf(BootstrapAdapterError)

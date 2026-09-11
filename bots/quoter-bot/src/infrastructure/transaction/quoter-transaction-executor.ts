@@ -1,5 +1,6 @@
 import type { Address, Hex, LocalAccount } from 'viem'
 
+import { midnightAbi, setterRatifierAbi } from '@morpho-org/midnight-sdk'
 import { getChainAddress } from '@morpho-org/morpho-ts'
 import {
   createAccountSigner,
@@ -11,7 +12,7 @@ import {
   type PolicyRule
 } from '@repo/bot-kit'
 import { setTimeout as wait } from 'node:timers/promises'
-import { createPublicClient, http, isAddressEqual, toFunctionSelector } from 'viem'
+import { createPublicClient, getAbiItem, http, isAddressEqual, toFunctionSelector } from 'viem'
 
 import type { ConfigService } from '../../config/config.service'
 
@@ -63,13 +64,13 @@ const policyRulesFor = (config: ConfigService) => {
     },
     cancel: {
       target: config.setup.midnight,
-      selector: toFunctionSelector('setConsumed(bytes32,uint256,address)'),
+      selector: toFunctionSelector(getAbiItem({ abi: midnightAbi, name: 'setConsumed' })),
       maxGasLimit: writePolicy.maxCancellationGas,
       maxDataBytes: 100
     },
     'cancel-batch': {
       target: config.setup.midnight,
-      selector: toFunctionSelector('multicall(bytes[])'),
+      selector: toFunctionSelector(getAbiItem({ abi: midnightAbi, name: 'multicall' })),
       maxGasLimit: writePolicy.maxBatchCancellationGas,
       maxDataBytes: writePolicy.maxBatchCancellationDataBytes
     }
@@ -77,7 +78,9 @@ const policyRulesFor = (config: ConfigService) => {
   if (writePolicy.maxRatificationGas !== undefined) {
     rules.ratify = {
       target: config.setup.ratifier,
-      selector: toFunctionSelector('setIsRootRatified(address,bytes32,bool)'),
+      selector: toFunctionSelector(
+        getAbiItem({ abi: setterRatifierAbi, name: 'setIsRootRatified' })
+      ),
       maxGasLimit: writePolicy.maxRatificationGas,
       maxDataBytes: 100
     }

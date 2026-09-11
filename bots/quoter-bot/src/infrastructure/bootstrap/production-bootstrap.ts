@@ -1,4 +1,11 @@
-import { midnightAbi, Offer, TickLib, Tree } from '@morpho-org/midnight-sdk'
+import {
+  EcrecoverRatifierUtils,
+  midnightAbi,
+  Offer,
+  Payload,
+  TickLib,
+  Tree
+} from '@morpho-org/midnight-sdk'
 import { morphoViemExtension } from '@morpho-org/morpho-sdk'
 import { getChainAddress } from '@morpho-org/morpho-ts'
 import { createPublicClient, erc20Abi, http, isAddressEqual, type Address, type Hex } from 'viem'
@@ -61,7 +68,6 @@ import {
   BlueBootstrapReferenceRateService,
   StrategyBootstrapReferenceRateService
 } from './bootstrap-reference-rate.service'
-import { createBootstrapRequirementClient } from './bootstrap-requirement-client.utils'
 import { prepareBootstrapRequirements } from './bootstrap-requirements.utils'
 import { bootstrapMarketGroupIds } from './bootstrap-spread.utils'
 import { assertBootstrapTransaction } from './bootstrap-transaction.utils'
@@ -775,27 +781,33 @@ export const createProductionBootstrapAdapters = (
       if (tree.root !== output.root) {
         throw new BootstrapAdapterError('unexpected-requirement')
       }
-      const requirementClient = createBootstrapRequirementClient({
-        account,
-        chain: supportedChain(config.chainId),
-        tree
-      })
       const { signatures, transactions: ratificationTransactions } =
         await prepareBootstrapRequirements(
           await output.getRequirements(),
-          (requirement, requirementAccount) =>
-            requirement.sign(requirementClient, requirementAccount) as Promise<
-              import('@morpho-org/morpho-sdk').MidnightOfferRootSignature
-            >,
+          async (_requirement, requirementAccount) => {
+            if (!isAddressEqual(requirementAccount, account.address)) {
+              throw new BootstrapAdapterError('requirement-signing-policy')
+            }
+            try {
+              return await account.signTypedData(
+                EcrecoverRatifierUtils.typedData({
+                  tree,
+                  chainId: config.chainId
+                }) as unknown as Parameters<typeof account.signTypedData>[0]
+              )
+            } catch {
+              throw new BootstrapAdapterError('requirement-signing-policy')
+            }
+          },
           output.ratifierType === 'ecrecover'
             ? {
                 kind: 'ecrecover',
                 target: config.setup.ratifier,
                 root: output.root,
-                account: account.address,
+                signer: account.address,
                 offers: tree.offers.length
               }
-            : { kind: 'setter', target: config.setup.ratifier, root: output.root, account: maker }
+            : { kind: 'setter', target: config.setup.ratifier, root: output.root, maker }
         )
       if (
         (output.ratifierType === 'setter' && signatures.length > 0) ||
@@ -804,7 +816,20 @@ export const createProductionBootstrapAdapters = (
       ) {
         throw new BootstrapAdapterError('unexpected-requirement')
       }
-      const transaction = output.buildTx(signatures)
+      const transaction =
+        output.ratifierType === 'ecrecover'
+          ? {
+              to: getChainAddress(config.chainId, 'midnightMempool'),
+              data: await Payload.encode(
+                await EcrecoverRatifierUtils.ratify({
+                  tree,
+                  account: account.address,
+                  signature: signatures[0]!
+                })
+              ),
+              value: 0n
+            }
+          : output.buildTx([])
       const publicationPolicy = {
         kind: 'publication' as const,
         target: getChainAddress(config.chainId, 'midnightMempool'),
