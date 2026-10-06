@@ -2,7 +2,7 @@ import type { Hex } from 'viem'
 
 import { describe, expect, test } from 'vitest'
 
-import type { LadderQuoteSet } from '../../../src/domain/ladder/ladder'
+import type { LadderQuoteSet } from '../../../src/domain/ladder'
 
 import { sameLadderQuoteSet } from '../../../src/application/ladder/ladder-quoter.utils'
 

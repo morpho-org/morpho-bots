@@ -1,6 +1,6 @@
 // Mints a real, liquidatable WETH/USDC position inside the anvil fork so the liquidation suite has
 // something to liquidate on the fresh 0xAdedD8ab… deployment (which carries no organic debt). Midnight
-// has no `borrow()`: debt is only created through the `take` order-book path, where the maker buys
+// has no `borrow()`: debt is only created through the `take` offer-book path, where the maker buys
 // units (pays USDC) and the taker sells them (supplies collateral, takes on the debt). So this drives
 // the full path — clone a curator-trusted market, fund both EOAs via cheatcodes, sign the offer with
 // the new 336b924a typehashes, then `supplyCollateral` + `take`. The position is healthy at creation
@@ -66,7 +66,6 @@ const RCF_THRESHOLD = 10n ** 30n
 const MAKER_WETH_IN = parseEther('0.5')
 
 /** Sends a wallet tx and asserts it mined successfully (surfaces the reverting seed step by name). */
-// oxlint-disable-next-line no-explicit-any -- viem's writeContract union is too wide to name here
 async function send(wallet: WalletClient, test: TestClient, call: any): Promise<void> {
   const hash = await wallet.writeContract({ chain: base, ...call })
   const receipt = await test.waitForTransactionReceipt({ hash })
@@ -134,7 +133,7 @@ export async function seedLiquidatablePosition(
 
   // The cloned market's (lltv, cursor) pair may not be enabled on the fresh deploy — enable whichever
   // half is missing by impersonating the configurator. The WETH shape's lltv is already enabled
-  // on-chain; loan-as-collateral's 0.98 may not be, so both are checked rather than just the cursor.
+  // onchain; loan-as-collateral's 0.98 may not be, so both are checked rather than just the cursor.
   const [lltvEnabled, cursorEnabled] = await Promise.all([
     test.readContract({
       address: MIDNIGHT,

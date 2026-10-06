@@ -1,15 +1,36 @@
 import type { IMarket } from '@morpho-org/midnight-sdk'
 import type { Address, Hex } from 'viem'
 
-import { TickLib } from '@morpho-org/midnight-sdk'
+import { DEFAULT_TICK_SPACING, TakeAmountsLib, TickLib } from '@morpho-org/midnight-sdk'
+import { MathLib } from '@morpho-org/morpho-ts'
 import { describe, expect, test } from 'vitest'
 
-import type { LadderQuoteSet } from '../../../src/domain/ladder/ladder'
+import type {
+  LadderConfig,
+  LadderMarketState,
+  LadderQuoteSet,
+  LadderRung,
+  ValidLadderConfig
+} from '../../../src/domain/ladder'
 import type { OpposingBookTicks } from '../../../src/infrastructure/ladder/ladder-cross-book.utils'
 
-import { offerMaxAssetsByRung } from '../../../src/domain/ladder/ladder'
+import {
+  generateLadder,
+  offerCapsByRung,
+  validateLadderConfig,
+  withBootstrapSellCeiling
+} from '../../../src/domain/ladder'
+import { LadderConfigurationError } from '../../../src/domain/ladder-configuration.error'
+import { alignedRateTick, rateTickWindow } from '../../../src/domain/tick-window'
+import { createBootstrapOffer } from '../../../src/infrastructure/bootstrap/bootstrap-offer.utils'
+import { calculateLadderCapacities } from '../../../src/infrastructure/ladder/ladder-capacity.utils'
 import { retainedOpposingBookTicks } from '../../../src/infrastructure/ladder/ladder-cross-book.utils'
-import { buildLadderTree } from '../../../src/infrastructure/ladder/ladder-offer.utils'
+import {
+  buildLadderTree,
+  minimumOfferUnits,
+  buildPublishableLadderTree,
+  snapshotRateWindow
+} from '../../../src/infrastructure/ladder/ladder-offer.utils'
 import { assertLadderProspectiveSpread } from '../../../src/infrastructure/ladder/ladder-spread.utils'
 
 const maker: Address = '0x1111111111111111111111111111111111111111'
@@ -20,6 +41,7 @@ const collateral: Address = '0x5555555555555555555555555555555555555555'
 const oracle: Address = '0x6666666666666666666666666666666666666666'
 const marketId: Hex = `0x${'77'.repeat(32)}`
 const groupId = (byte: string): Hex => `0x${byte.repeat(32)}`
+const WAD = MathLib.WAD
 const now = 1_000n
 const market = {
   params: {
@@ -57,13 +79,21 @@ const quote = (groupMode: LadderQuoteSet['groupMode']): LadderQuoteSet => ({
   ]
 })
 
+const inRangeQuote: LadderQuoteSet = {
+  ...quote('shared-rung'),
+  lower: [
+    { index: 0, rateBps: 480n, assets: 10n },
+    { index: 1, rateBps: 450n, assets: 20n }
+  ]
+}
+
 describe('buildLadderTree', () => {
-  test('derives exact production offer maxAssets for the [10,20,30,40] fixture in both modes', () => {
-    expect(offerMaxAssetsByRung(quote('shared-rung'))).toEqual({
+  test('derives exact production offer maxUnits for the [10,20,30,40] fixture in both modes', () => {
+    expect(offerCapsByRung(quote('shared-rung'))).toEqual({
       lower: [10n, 20n],
       higher: [30n, 40n]
     })
-    expect(offerMaxAssetsByRung(quote('per-book'))).toEqual({
+    expect(offerCapsByRung(quote('per-book'))).toEqual({
       lower: [30n, 30n],
       higher: [70n, 70n]
     })
@@ -81,7 +111,7 @@ describe('buildLadderTree', () => {
     })
 
     expect(result.tree.offers.map(offer => offer.buy)).toEqual([false, false, true, true])
-    expect(result.tree.offers.map(offer => offer.maxAssets)).toEqual([10n, 20n, 30n, 40n])
+    expect(result.tree.offers.map(offer => offer.maxUnits)).toEqual([10n, 20n, 30n, 40n])
     expect(result.tree.offers.slice(0, 2).every(offer => offer.reduceOnly)).toBe(true)
     expect(result.tree.offers.slice(0, 2).map(offer => offer.receiverIfMakerIsSeller)).toEqual([
       maker,
@@ -93,6 +123,9 @@ describe('buildLadderTree', () => {
     expect(result.tree.offers.every(offer => offer.start === now)).toBe(true)
     expect(new Set(result.tree.offers.map(offer => offer.group)).size).toBe(4)
     expect(result.groups.map(group => group.rungIndexes)).toEqual([[0], [1], [0], [1]])
+    expect(result.groups.map(group => group.ticks)).toEqual(
+      result.tree.offers.map(offer => [offer.tick])
+    )
   })
 
   test('derives fresh group IDs for a later publication of the same quote', () => {
@@ -130,30 +163,36 @@ describe('buildLadderTree', () => {
       maximumRateBps: 10_000n
     })
 
-    expect(result.tree.offers.map(offer => offer.maxAssets)).toEqual([30n, 30n, 70n, 70n])
+    expect(result.tree.offers.map(offer => offer.maxUnits)).toEqual([30n, 30n, 70n, 70n])
     expect(new Set(result.tree.offers.slice(0, 2).map(offer => offer.group)).size).toBe(1)
     expect(new Set(result.tree.offers.slice(2).map(offer => offer.group)).size).toBe(1)
     expect(result.groups.map(group => group.rungIndexes)).toEqual([
       [0, 1],
       [0, 1]
     ])
+    expect(result.groups.map(group => group.ticks)).toEqual([
+      result.tree.offers.slice(0, 2).map(offer => offer.tick),
+      result.tree.offers.slice(2).map(offer => offer.tick)
+    ])
   })
 
-  test('reconstructs persisted pending offers without applying current strategy bounds', () => {
+  test('refuses a rung outside the hard range instead of saturating it', () => {
     expect(() =>
       buildLadderTree({
         quote: quote('shared-rung'),
         market,
         maker,
         ratifier,
-        now
+        now,
+        minimumRateBps: 450n,
+        maximumRateBps: 600n
       })
-    ).not.toThrow()
+    ).toThrow(expect.objectContaining({ operation: 'rate-out-of-range' }))
   })
 
-  test('saturates out-of-range ticks at the hard range and merges rungs meeting there', () => {
+  test('encodes rungs on both bounds at ticks whose APR stays inside the range', () => {
     const result = buildLadderTree({
-      quote: quote('shared-rung'),
+      quote: inRangeQuote,
       market,
       maker,
       ratifier,
@@ -163,19 +202,84 @@ describe('buildLadderTree', () => {
     })
 
     expect(result.bookOffers.map(offer => ({ buy: offer.buy, tick: offer.tick }))).toEqual([
+      { buy: false, tick: alignedRateTick(480n, BigInt(market.params.maturity) - now, 1n) },
       { buy: false, tick: 3_993n },
       { buy: true, tick: 3_954n },
       { buy: true, tick: 3_937n }
     ])
-    expect(result.tree.offers.map(offer => offer.maxAssets)).toEqual([30n, 30n, 40n])
-    expect(result.groups.map(group => group.rungIndexes)).toEqual([[0, 1], [0], [1]])
+    expect(result.tree.offers.map(offer => offer.maxUnits)).toEqual([10n, 20n, 30n, 40n])
     const timeToMaturity = BigInt(market.params.maturity) - now
-    const basisPointWad = 10n ** 14n
     for (const offer of result.tree.offers) {
-      const encodedRateBps = TickLib.tickToApr(offer.tick, timeToMaturity) / basisPointWad
-      expect(encodedRateBps).toBeGreaterThanOrEqual(450n)
-      expect(encodedRateBps).toBeLessThanOrEqual(600n)
+      const apr = TickLib.tickToApr(offer.tick, timeToMaturity)
+      expect(apr).toBeGreaterThanOrEqual(450n * 10n ** 14n)
+      expect(apr).toBeLessThanOrEqual(600n * 10n ** 14n)
     }
+  })
+
+  test('keeps every published APR inside the range for generated ladders near maturity', () => {
+    const spacings = [1, 2, 4]
+    const maturities = [1n, 60n, 3_600n, 86_400n, 7n * 86_400n, 30n * 86_400n]
+    const generationConfig = validateLadderConfig({
+      marketId,
+      quotePremiumBps: 0n,
+      spreadBps: 20n,
+      stepBps: 15n,
+      rungCount: 6,
+      sizeSkewBps: 0n,
+      lowerRateBudgetAssets: 60n,
+      higherRateBudgetAssets: 60n,
+      targetMarketExposureAssets: 120n,
+      maximumTotalExposureAssets: 120n,
+      minimumOfferAssets: 1n,
+      groupMode: 'shared-rung',
+      loopIntervalSeconds: 60,
+      bookCrossedCooldownSeconds: 60,
+      movementToleranceBps: 0n,
+      minimumRateBps: 300n,
+      maximumRateBps: 600n
+    })
+    const publishedAprs = (
+      tickSpacing: number,
+      timeToMaturity: bigint,
+      referenceRateBps: bigint
+    ) => {
+      const generated = generateLadder({ config: generationConfig, referenceRateBps })
+      if (generated.lower.length + generated.higher.length === 0) return []
+      const spacedMarket = {
+        ...market,
+        params: { ...market.params, maturity: now + timeToMaturity },
+        tickSpacing
+      } as unknown as IMarket
+      try {
+        return buildLadderTree({
+          quote: generated,
+          market: spacedMarket,
+          maker,
+          ratifier,
+          now,
+          minimumRateBps: 300n,
+          maximumRateBps: 600n
+        }).tree.offers.map(offer => TickLib.tickToApr(offer.tick, timeToMaturity))
+      } catch (error) {
+        expect(error).toMatchObject({ operation: 'rate-window-empty' })
+        return 'empty-window' as const
+      }
+    }
+    const references = Array.from({ length: 72 }, (_, index) => 200n + 7n * BigInt(index))
+    const outcomes = spacings.flatMap(tickSpacing =>
+      maturities.flatMap(timeToMaturity =>
+        references.map(reference => publishedAprs(tickSpacing, timeToMaturity, reference))
+      )
+    )
+    const aprs = outcomes.flatMap(outcome => (outcome === 'empty-window' ? [] : outcome))
+    for (const apr of aprs) {
+      expect(apr).toBeGreaterThanOrEqual(300n * 10n ** 14n)
+      expect(apr).toBeLessThanOrEqual(600n * 10n ** 14n)
+    }
+    const published = aprs.length
+    const emptyWindows = outcomes.filter(outcome => outcome === 'empty-window').length
+    expect(published).toBeGreaterThan(1_000)
+    expect(emptyWindows).toBeGreaterThan(0)
   })
 
   test('merges same-side rungs whose rates round onto one protocol tick', () => {
@@ -197,7 +301,7 @@ describe('buildLadderTree', () => {
 
     const sells = result.bookOffers.filter(offer => !offer.buy)
     expect(sells).toEqual([{ marketId, buy: false, tick: 3_993n }])
-    expect(result.tree.offers[0]?.maxAssets).toBe(30n)
+    expect(result.tree.offers[0]?.maxUnits).toBe(30n)
     expect(result.groups.map(group => group.rungIndexes)).toEqual([[0, 1], [0], [1]])
   })
 
@@ -208,18 +312,20 @@ describe('buildLadderTree', () => {
       maker,
       ratifier,
       now,
+      minimumRateBps: 1n,
+      maximumRateBps: 10_000n,
       ownBootstrapBuyTickCeiling: 4_018n
     })
 
     const sells = result.bookOffers.filter(offer => !offer.buy)
     expect(sells).toEqual([{ marketId, buy: false, tick: 4_019n }])
-    expect(result.tree.offers[0]?.maxAssets).toBe(30n)
+    expect(result.tree.offers[0]?.maxUnits).toBe(30n)
     expect(result.groups.map(group => group.rungIndexes)).toEqual([[0, 1], [0], [1]])
   })
 
   test('caps the bootstrap sell clearance at the minimum-rate tick', () => {
     const result = buildLadderTree({
-      quote: quote('shared-rung'),
+      quote: inRangeQuote,
       market,
       maker,
       ratifier,
@@ -315,7 +421,7 @@ describe('buildLadderTree', () => {
 
   test('keeps the own bootstrap tie when the book clearance is looser', () => {
     const result = buildLadderTree({
-      quote: quote('shared-rung'),
+      quote: inRangeQuote,
       market,
       maker,
       ratifier,
@@ -334,7 +440,7 @@ describe('buildLadderTree', () => {
   test('saturates the book clearance at the hard range rather than quoting outside it', () => {
     const sells = (opposingBookTicks: OpposingBookTicks) =>
       buildLadderTree({
-        quote: quote('shared-rung'),
+        quote: inRangeQuote,
         market,
         maker,
         ratifier,
@@ -350,7 +456,7 @@ describe('buildLadderTree', () => {
 
   test('saturates a buy clearance below the hard range at the maximum-rate tick', () => {
     const result = buildLadderTree({
-      quote: quote('shared-rung'),
+      quote: inRangeQuote,
       market,
       maker,
       ratifier,
@@ -424,7 +530,7 @@ describe('buildLadderTree', () => {
 
   test('still publishes both sides when the book crosses the whole hard range', () => {
     const result = buildLadderTree({
-      quote: quote('shared-rung'),
+      quote: inRangeQuote,
       market,
       maker,
       ratifier,
@@ -457,5 +563,761 @@ describe('buildLadderTree', () => {
         maximumRateBps: 500n
       })
     ).toThrow('Ladder adapter failed')
+  })
+})
+
+describe('lend-only ladder publication', () => {
+  test.each(['shared-rung', 'per-book'] as const)(
+    'publishes only buy groups in %s mode while the maker holds credit',
+    groupMode => {
+      const lendOnly = validateLadderConfig({
+        marketId,
+        quotePremiumBps: 0n,
+        spreadBps: 200n,
+        stepBps: 100n,
+        rungCount: 3,
+        sizeSkewBps: 0n,
+        lowerRateBudgetAssets: 0n,
+        higherRateBudgetAssets: 90n,
+        targetMarketExposureAssets: 1_000n,
+        maximumTotalExposureAssets: 1_000n,
+        minimumOfferAssets: 1n,
+        groupMode,
+        loopIntervalSeconds: 60,
+        bookCrossedCooldownSeconds: 60,
+        movementToleranceBps: 0n,
+        minimumRateBps: 100n,
+        maximumRateBps: 1_000n
+      })
+      const generated = generateLadder({
+        config: lendOnly,
+        referenceRateBps: 500n,
+        capacities: { lowerRateCapacityAssets: 500n, creditAssets: 500n }
+      })
+      const { prepared, withdrawnSides } = buildPublishableLadderTree({
+        quote: generated,
+        market,
+        maker,
+        ratifier,
+        now,
+        minimumRateBps: 100n,
+        maximumRateBps: 1_000n
+      })
+
+      expect(withdrawnSides).toEqual([])
+      expect(prepared!.tree.offers.length).toBeGreaterThan(0)
+      expect(prepared!.tree.offers.every(offer => offer.buy)).toBe(true)
+      expect(prepared!.groups.every(group => group.side === 'higher')).toBe(true)
+      expect(prepared!.groups).toHaveLength(groupMode === 'per-book' ? 1 : 3)
+    }
+  )
+})
+
+describe('ladder offer caps', () => {
+  test.each(['shared-rung', 'per-book'] as const)(
+    'carry their %s cap as maxUnits with no asset cap',
+    groupMode => {
+      const { tree } = buildLadderTree({
+        quote: quote(groupMode),
+        market,
+        maker,
+        ratifier,
+        now,
+        minimumRateBps: 1n,
+        maximumRateBps: 10_000n
+      })
+      const caps = offerCapsByRung(quote(groupMode))
+
+      expect(tree.offers.map(offer => [offer.buy, offer.maxAssets, offer.maxUnits])).toEqual([
+        ...caps.lower.map(cap => [false, 0n, cap]),
+        ...caps.higher.map(cap => [true, 0n, cap])
+      ])
+    }
+  )
+})
+
+describe('face acquired by a fully taken ladder', () => {
+  const USDC = 1_000_000n
+  const faceLimit = 500_000n * USDC
+  const DAY = 86_400n
+  const ladderConfig = validateLadderConfig({
+    marketId,
+    quotePremiumBps: 0n,
+    spreadBps: 200n,
+    stepBps: 100n,
+    rungCount: 3,
+    sizeSkewBps: 0n,
+    lowerRateBudgetAssets: faceLimit,
+    higherRateBudgetAssets: faceLimit,
+    targetMarketExposureAssets: faceLimit,
+    maximumTotalExposureAssets: faceLimit,
+    minimumOfferAssets: 101n * USDC,
+    groupMode: 'shared-rung',
+    loopIntervalSeconds: 60,
+    bookCrossedCooldownSeconds: 180,
+    movementToleranceBps: 10n,
+    minimumRateBps: 100n,
+    maximumRateBps: 2_000n
+  })
+  const capacitiesWithCash = (balance: bigint) =>
+    calculateLadderCapacities({
+      marketId,
+      balance,
+      currentCredit: 0n,
+      otherMarketCredit: 0n,
+      creditSaleCapacityAssets: 0n,
+      targetMarketExposureAssets: faceLimit,
+      maximumTotalExposureAssets: faceLimit,
+      reservations: []
+    })
+  const capacities = calculateLadderCapacities({
+    marketId,
+    balance: 10n * faceLimit,
+    currentCredit: 0n,
+    otherMarketCredit: 0n,
+    creditSaleCapacityAssets: 0n,
+    targetMarketExposureAssets: faceLimit,
+    maximumTotalExposureAssets: faceLimit,
+    reservations: []
+  })
+  // Midnight `take`: a maker buy pays floor(units × price), and a units-capped group admits units
+  // until `consumed` reaches `maxUnits`.
+  const fullTake = (offer: { tick: bigint; maxUnits: bigint }) => ({
+    face: offer.maxUnits,
+    cash: (offer.maxUnits * TickLib.tickToPrice(offer.tick)) / WAD
+  })
+  const takeLadder = (
+    centerRateBps: bigint,
+    timeToMaturity: bigint,
+    marketCapacities = capacities
+  ) => {
+    const maturing = { ...market, params: { ...market.params, maturity: now + timeToMaturity } }
+    const generated = generateLadder({
+      config: ladderConfig,
+      referenceRateBps: centerRateBps,
+      capacities: {
+        ...marketCapacities,
+        minimumOfferUnits: minimumOfferUnits({
+          minimumOfferAssets: ladderConfig.minimumOfferAssets,
+          minimumRateBps: ladderConfig.minimumRateBps,
+          maximumRateBps: ladderConfig.maximumRateBps,
+          timeToMaturity,
+          tickSpacing: 1n
+        })
+      }
+    })
+    const { tree } = buildLadderTree({
+      quote: generated,
+      market: maturing as unknown as IMarket,
+      maker,
+      ratifier,
+      now,
+      minimumRateBps: ladderConfig.minimumRateBps,
+      maximumRateBps: ladderConfig.maximumRateBps
+    })
+    const buys = tree.offers.filter(offer => offer.buy).map(fullTake)
+    return {
+      face: buys.reduce((sum, take) => sum + take.face, 0n),
+      cash: buys.reduce((sum, take) => sum + take.cash, 0n),
+      smallestCash: buys.reduce(
+        (smallest, take) => (take.cash < smallest ? take.cash : smallest),
+        faceLimit
+      )
+    }
+  }
+  const cases = [300n, 500n, 1_200n].flatMap(rateBps =>
+    [DAY, 30n * DAY, 365n * DAY, 5n * 365n * DAY].map(timeToMaturity => ({
+      rateBps,
+      timeToMaturity
+    }))
+  )
+
+  test.each(cases)(
+    'stays within face and cash limits at $rateBps bps over $timeToMaturity s',
+    ({ rateBps, timeToMaturity }) => {
+      const taken = takeLadder(rateBps, timeToMaturity)
+
+      expect(taken.face).toBeLessThanOrEqual(faceLimit)
+      expect(taken.cash).toBeLessThanOrEqual(capacities.cashBalanceAssets)
+      expect(taken.smallestCash).toBeGreaterThanOrEqual(ladderConfig.minimumOfferAssets)
+    }
+  )
+
+  test.each(cases)(
+    'stays within cash when cash binds before face, at $rateBps bps over $timeToMaturity s',
+    ({ rateBps, timeToMaturity }) => {
+      const cash = 300_000n * USDC
+      const taken = takeLadder(rateBps, timeToMaturity, capacitiesWithCash(cash))
+
+      expect(taken.cash).toBeLessThanOrEqual(cash)
+      expect(taken.face).toBeLessThanOrEqual(cash)
+    }
+  )
+})
+
+describe('snapshotRateWindow', () => {
+  const range = { market, now, minimumRateBps: 300n, maximumRateBps: 600n, minimumOfferAssets: 1n }
+
+  test('sizes rungs in units while the full window holds a tick', () => {
+    expect(snapshotRateWindow(range)).toEqual({
+      minimumOfferUnits: minimumOfferUnits({
+        minimumOfferAssets: 1n,
+        minimumRateBps: 300n,
+        maximumRateBps: 600n,
+        timeToMaturity: BigInt(market.params.maturity) - now,
+        tickSpacing: BigInt(market.tickSpacing)
+      })
+    })
+  })
+
+  test('withdraws both sides instead of throwing when the full window holds no tick', () => {
+    expect(snapshotRateWindow({ ...range, minimumRateBps: 500n, maximumRateBps: 500n })).toEqual({
+      withdrawnSides: ['lower', 'higher']
+    })
+  })
+
+  test('leaves a matured market to the matured path', () => {
+    expect(
+      snapshotRateWindow({
+        ...range,
+        now: BigInt(market.params.maturity),
+        minimumRateBps: 500n,
+        maximumRateBps: 500n
+      })
+    ).toEqual({})
+  })
+})
+
+describe('minimumOfferUnits', () => {
+  test('is worth the cash floor at the lowest price the range can publish at', () => {
+    const units = minimumOfferUnits({
+      minimumOfferAssets: 101_000_000n,
+      minimumRateBps: 100n,
+      maximumRateBps: 2_000n,
+      timeToMaturity: 31_536_000n,
+      tickSpacing: 1n
+    })
+    const lowestTick = rateTickWindow({
+      minimumRateBps: 100n,
+      maximumRateBps: 2_000n,
+      timeToMaturity: 31_536_000n,
+      tickSpacing: 1n
+    }).lowestTick!
+
+    expect((units * TickLib.tickToPrice(lowestTick)) / WAD).toBeGreaterThanOrEqual(101_000_000n)
+    expect(units).toBeGreaterThan(101_000_000n)
+  })
+
+  test('fails closed on an empty rate range', () => {
+    expect(() =>
+      minimumOfferUnits({
+        minimumOfferAssets: 1n,
+        minimumRateBps: 500n,
+        maximumRateBps: 500n,
+        timeToMaturity: 31_536_000n,
+        tickSpacing: 1n
+      })
+    ).toThrow(expect.objectContaining({ operation: 'rate-window-empty' }))
+  })
+})
+
+const settlementFee = 0n
+const sellerReceives = (tick: bigint, units: bigint) =>
+  (units * TakeAmountsLib.prices({ offer: { buy: true, tick }, settlementFee }).sellerPrice) / WAD
+const buyerPays = (tick: bigint, units: bigint) => {
+  const price = TakeAmountsLib.prices({ offer: { buy: false, tick }, settlementFee }).buyerPrice
+  return (units * price + WAD - 1n) / WAD
+}
+
+describe('buildLadderTree sell ceiling', () => {
+  const BPS_WAD = WAD / 10_000n
+  const sellQuote = (rateBps: bigint): LadderQuoteSet => ({
+    ...inRangeQuote,
+    lower: [{ index: 0, rateBps, assets: 10n }]
+  })
+
+  test('refuses a sell above the ceiling while the range alone would admit it', () => {
+    const build = (maximumSellRateBps?: bigint) =>
+      buildLadderTree({
+        quote: sellQuote(451n),
+        market,
+        maker,
+        ratifier,
+        now,
+        minimumRateBps: 300n,
+        maximumRateBps: 600n,
+        ...(maximumSellRateBps === undefined ? {} : { maximumSellRateBps })
+      })
+
+    expect(build().tree.offers.filter(offer => !offer.buy)).toHaveLength(1)
+    expect(() => build(450n)).toThrow(expect.objectContaining({ operation: 'rate-out-of-range' }))
+  })
+
+  test('encodes every sell at or below the ceiling however coarse the ticks', () => {
+    let published = 0
+    const cases = [1, 2, 4].flatMap(tickSpacing =>
+      [600n, 86_400n, 31_536_000n].flatMap(timeToMaturity =>
+        Array.from({ length: 58 }, (_, index) => ({
+          tickSpacing,
+          timeToMaturity,
+          ceiling: 301n + 7n * BigInt(index)
+        }))
+      )
+    )
+    const encodedSells = ({ tickSpacing, timeToMaturity, ceiling }: (typeof cases)[number]) => {
+      try {
+        return buildLadderTree({
+          quote: sellQuote(ceiling),
+          market: {
+            ...market,
+            params: { ...market.params, maturity: now + timeToMaturity },
+            tickSpacing
+          } as unknown as IMarket,
+          maker,
+          ratifier,
+          now,
+          minimumRateBps: 300n,
+          maximumRateBps: 800n,
+          maximumSellRateBps: ceiling
+        }).tree.offers.filter(offer => !offer.buy)
+      } catch (error) {
+        expect(error).toMatchObject({ operation: 'rate-window-empty' })
+        return []
+      }
+    }
+    for (const sample of cases) {
+      for (const sell of encodedSells(sample)) {
+        expect(TickLib.tickToApr(sell.tick, sample.timeToMaturity)).toBeLessThanOrEqual(
+          sample.ceiling * BPS_WAD
+        )
+        published += 1
+      }
+    }
+    expect(published).toBeGreaterThan(0)
+  })
+
+  test('withdraws sells at the snapshot only under a ceiling that leaves no tick', () => {
+    const range = {
+      market,
+      now,
+      minimumRateBps: 300n,
+      maximumRateBps: 600n,
+      minimumOfferAssets: 1n
+    }
+
+    expect(snapshotRateWindow(range).withdrawnSides).toBeUndefined()
+    expect(snapshotRateWindow({ ...range, maximumSellRateBps: 300n })).toEqual({
+      withdrawnSides: ['lower'],
+      minimumOfferUnits: snapshotRateWindow(range).minimumOfferUnits
+    })
+    expect(
+      snapshotRateWindow({ ...range, maximumSellRateBps: 450n }).withdrawnSides
+    ).toBeUndefined()
+  })
+  test('withdraws sells when the sell window empties between the snapshot and publication blocks', () => {
+    const snapshotNow = 95_782n
+    const parameters = {
+      market,
+      maker,
+      ratifier,
+      quote: sellQuote(300n),
+      minimumRateBps: 300n,
+      maximumRateBps: 600n,
+      maximumSellRateBps: 301n
+    }
+
+    expect(
+      snapshotRateWindow({ ...parameters, now: snapshotNow, minimumOfferAssets: 1n }).withdrawnSides
+    ).toBeUndefined()
+    const atSnapshot = buildPublishableLadderTree({ ...parameters, now: snapshotNow })
+    expect(atSnapshot.withdrawnSides).toEqual([])
+    expect(atSnapshot.prepared?.groups.map(group => group.side)).toEqual([
+      'lower',
+      'higher',
+      'higher'
+    ])
+
+    const publicationNow = snapshotNow + 1n
+    expect(
+      snapshotRateWindow({ ...parameters, now: publicationNow, minimumOfferAssets: 1n })
+        .withdrawnSides
+    ).toEqual(['lower'])
+    expect(() => buildLadderTree({ ...parameters, now: publicationNow })).toThrow(
+      expect.objectContaining({ operation: 'rate-window-empty' })
+    )
+    const atPublication = buildPublishableLadderTree({ ...parameters, now: publicationNow })
+    expect(atPublication.withdrawnSides).toEqual(['lower'])
+    expect(atPublication.prepared?.groups.map(group => group.side)).toEqual(['higher', 'higher'])
+    expect(
+      buildPublishableLadderTree({
+        ...parameters,
+        quote: { ...parameters.quote, higher: [] },
+        now: publicationNow
+      })
+    ).toEqual({ withdrawnSides: ['lower'] })
+  })
+
+  describe('when the full window empties between the snapshot and publication blocks', () => {
+    const snapshotNow = 95_782n
+    const publicationNow = snapshotNow + 1n
+    const narrowRange = { market, maker, ratifier, minimumRateBps: 300n, maximumRateBps: 301n }
+    const sells = [{ index: 0, rateBps: 300n, assets: 10n }]
+    const buys = [{ index: 0, rateBps: 301n, assets: 10n }]
+    const narrowQuote = (lower: LadderRung[], higher: LadderRung[]): LadderQuoteSet => ({
+      ...inRangeQuote,
+      lower,
+      higher
+    })
+
+    test('withdraws a sells-only quote without a sell ceiling', () => {
+      const quote = narrowQuote(sells, [])
+      expect(
+        buildPublishableLadderTree({ ...narrowRange, quote, now: snapshotNow }).withdrawnSides
+      ).toEqual([])
+      expect(buildPublishableLadderTree({ ...narrowRange, quote, now: publicationNow })).toEqual({
+        withdrawnSides: ['lower']
+      })
+    })
+
+    test('withdraws both sides of a mixed quote', () => {
+      const quote = narrowQuote(sells, buys)
+      expect(
+        buildPublishableLadderTree({ ...narrowRange, quote, now: snapshotNow }).prepared?.groups
+      ).toHaveLength(2)
+      expect(buildPublishableLadderTree({ ...narrowRange, quote, now: publicationNow })).toEqual({
+        withdrawnSides: ['lower', 'higher']
+      })
+    })
+
+    test('withdraws a buys-only quote', () => {
+      const quote = narrowQuote([], buys)
+      expect(
+        buildPublishableLadderTree({ ...narrowRange, quote, now: snapshotNow }).prepared?.groups
+      ).toHaveLength(1)
+      expect(buildPublishableLadderTree({ ...narrowRange, quote, now: publicationNow })).toEqual({
+        withdrawnSides: ['higher']
+      })
+    })
+  })
+
+  test('fails closed when the sell range holds no tick, but still builds a buy-only ladder', () => {
+    const parameters = {
+      market,
+      maker,
+      ratifier,
+      now,
+      minimumRateBps: 300n,
+      maximumRateBps: 600n,
+      maximumSellRateBps: 300n
+    }
+    const pinned = TickLib.tickToApr(
+      alignedRateTick(300n, BigInt(market.params.maturity) - now, 1n),
+      BigInt(market.params.maturity) - now
+    )
+
+    expect(pinned).not.toBe(300n * BPS_WAD)
+    expect(() => buildLadderTree({ ...parameters, quote: sellQuote(300n) })).toThrow(
+      expect.objectContaining({ operation: 'rate-window-empty' })
+    )
+    expect(
+      buildLadderTree({ ...parameters, quote: { ...inRangeQuote, lower: [] } }).tree.offers
+    ).toHaveLength(2)
+  })
+})
+
+describe('inventory skew round trip', () => {
+  const skewConfig = (groupMode: LadderConfig['groupMode']) =>
+    validateLadderConfig({
+      marketId,
+      quotePremiumBps: 0n,
+      spreadBps: 200n,
+      stepBps: 100n,
+      rungCount: 3,
+      sizeSkewBps: 0n,
+      lowerRateBudgetAssets: 1_000_000n,
+      higherRateBudgetAssets: 1_000_000n,
+      targetMarketExposureAssets: 10_000_000n,
+      maximumTotalExposureAssets: 10_000_000n,
+      minimumOfferAssets: 1n,
+      groupMode,
+      loopIntervalSeconds: 60,
+      bookCrossedCooldownSeconds: 180,
+      movementToleranceBps: 10n,
+      minimumRateBps: 1n,
+      maximumRateBps: 5_000n,
+      inventorySkew: { unitsPerStep: 100_000n }
+    })
+  const offers = (
+    ladderConfig: ValidLadderConfig,
+    parameters: { centerRateBps?: bigint; capacities: LadderMarketState; bootstrapTick?: bigint }
+  ) =>
+    buildLadderTree({
+      quote: generateLadder({
+        config: ladderConfig,
+        referenceRateBps: 500n,
+        capacities: parameters.capacities,
+        ...(parameters.centerRateBps === undefined
+          ? {}
+          : { retainedCenterRateBps: parameters.centerRateBps })
+      }),
+      market,
+      maker,
+      ratifier,
+      now,
+      minimumRateBps: ladderConfig.minimumRateBps,
+      maximumRateBps: ladderConfig.maximumRateBps,
+      ...(parameters.bootstrapTick === undefined
+        ? {}
+        : { ownBootstrapBuyTickCeiling: parameters.bootstrapTick })
+    }).tree.offers
+  const assertNoProfitableBuyBack = (
+    filledTick: bigint,
+    units: bigint,
+    rebuiltSells: readonly { tick: bigint }[]
+  ) => {
+    expect(rebuiltSells.length).toBeGreaterThan(0)
+    for (const sell of rebuiltSells) {
+      expect(buyerPays(sell.tick, units)).toBeGreaterThanOrEqual(sellerReceives(filledTick, units))
+    }
+  }
+  const FILLS = [1n, 99_999n, 100_000n, 1_000_000n, 5_000_000n]
+
+  test.each(['shared-rung', 'per-book'] as const)(
+    'never lets a %s buy fill be bought back from the rebuilt sells at a profit',
+    groupMode => {
+      const ladderConfig = skewConfig(groupMode)
+      const centers = [500n, 500n + ladderConfig.movementToleranceBps]
+      for (const initialCredit of [0n, 250_000n]) {
+        const before = offers(ladderConfig, { capacities: { creditAssets: initialCredit } })
+        const fills = before
+          .filter(offer => offer.buy)
+          .flatMap(buy => FILLS.flatMap(units => centers.map(center => ({ buy, units, center }))))
+        for (const { buy, units, center } of fills) {
+          const after = offers(ladderConfig, {
+            centerRateBps: center,
+            capacities: { creditAssets: initialCredit + units }
+          })
+          assertNoProfitableBuyBack(
+            buy.tick,
+            units,
+            after.filter(offer => !offer.buy)
+          )
+        }
+      }
+    }
+  )
+
+  test('adds no round trip to credit a same-market bootstrap acquired', () => {
+    const ladderConfig = skewConfig('shared-rung')
+    const { inventorySkew: _inventorySkew, ...unskewedFields } = ladderConfig
+    const unskewed = validateLadderConfig(unskewedFields)
+    const timeToMaturity = BigInt(market.params.maturity) - now
+    const sells = (
+      config: ValidLadderConfig,
+      units: bigint,
+      bootstrap?: { rateBps: bigint; tick: bigint }
+    ) =>
+      offers(config, {
+        capacities: {
+          creditAssets: units,
+          ...(bootstrap ? { bootstrapBuyRateBps: bootstrap.rateBps } : {})
+        },
+        ...(bootstrap ? { bootstrapTick: bootstrap.tick } : {})
+      })
+        .filter(offer => !offer.buy)
+        .map(offer => ({ tick: offer.tick, maxAssets: offer.maxAssets }))
+    for (const rateBps of [300n, 480n, 500n, 650n]) {
+      const bootstrap = { rateBps, tick: alignedRateTick(rateBps, timeToMaturity, 1n) }
+      for (const units of FILLS) {
+        expect(sells(ladderConfig, units, bootstrap)).toEqual(sells(unskewed, units, bootstrap))
+        expect(sells(ladderConfig, units)).toEqual(sells(unskewed, units))
+        assertNoProfitableBuyBack(bootstrap.tick, units, sells(ladderConfig, units, bootstrap))
+      }
+    }
+  })
+})
+
+describe('same-market bootstrap round trip', () => {
+  const BOOTSTRAP_MAXIMUM_RATE_BPS = 1_000n
+  const FILLS = [1n, 99_999n, 1_000_000n]
+  const ladderConfig = (overrides: Partial<LadderConfig>) =>
+    validateLadderConfig({
+      marketId,
+      quotePremiumBps: 0n,
+      spreadBps: 200n,
+      stepBps: 100n,
+      rungCount: 3,
+      sizeSkewBps: 0n,
+      lowerRateBudgetAssets: 1_000_000n,
+      higherRateBudgetAssets: 1_000_000n,
+      targetMarketExposureAssets: 10_000_000n,
+      maximumTotalExposureAssets: 10_000_000n,
+      minimumOfferAssets: 1n,
+      groupMode: 'shared-rung',
+      loopIntervalSeconds: 60,
+      bookCrossedCooldownSeconds: 180,
+      movementToleranceBps: 10n,
+      minimumRateBps: 100n,
+      maximumRateBps: 1_000n,
+      ...overrides
+    })
+  const acceptedCeiling = (config: ValidLadderConfig, bootstrapMinimumRateBps: bigint) => {
+    try {
+      return withBootstrapSellCeiling(config, bootstrapMinimumRateBps)
+    } catch (error) {
+      expect(error).toBeInstanceOf(LadderConfigurationError)
+      return undefined
+    }
+  }
+  const spacedMarket = (tickSpacing: number, maturity: bigint) =>
+    ({ ...market, params: { ...market.params, maturity }, tickSpacing }) as unknown as IMarket
+  const bootstrapBuyTick = (
+    target: IMarket,
+    at: bigint,
+    bootstrap: { rateBps: bigint; minimumRateBps: bigint }
+  ) => {
+    try {
+      return createBootstrapOffer({
+        offer: {
+          marketId,
+          assets: 1_000_000n,
+          rateBps: bootstrap.rateBps,
+          referenceObservationId: 'r'
+        },
+        market: target,
+        maker,
+        ratifier,
+        now: at,
+        minimumRateBps: bootstrap.minimumRateBps,
+        maximumRateBps: BOOTSTRAP_MAXIMUM_RATE_BPS
+      }).tick
+    } catch (error) {
+      expect(error).toMatchObject({ operation: 'rate-window-empty' })
+      return undefined
+    }
+  }
+  const rebuiltSellTicks = (
+    config: ValidLadderConfig,
+    target: IMarket,
+    at: bigint,
+    centers: { referenceRateBps: bigint; retainedCenterRateBps?: bigint }
+  ) => {
+    const quote = generateLadder({
+      config,
+      ...centers,
+      ...(config.maturityPremium === undefined
+        ? {}
+        : { secondsToMaturity: BigInt(target.params.maturity) - at })
+    })
+    if (quote.lower.length + quote.higher.length === 0) return []
+    try {
+      return buildLadderTree({
+        quote,
+        market: target,
+        maker,
+        ratifier,
+        now: at,
+        minimumRateBps: config.minimumRateBps,
+        maximumRateBps: config.maximumRateBps,
+        maximumSellRateBps: config.maximumSellRateBps!
+      })
+        .tree.offers.filter(offer => !offer.buy)
+        .map(offer => offer.tick)
+    } catch (error) {
+      expect(error).toMatchObject({ operation: 'rate-window-empty' })
+      return []
+    }
+  }
+  const assertRoundTripUnprofitable = (buyTick: bigint, sellTicks: readonly bigint[]) => {
+    for (const sellTick of sellTicks) {
+      for (const units of FILLS) {
+        expect(buyerPays(sellTick, units)).toBeGreaterThanOrEqual(sellerReceives(buyTick, units))
+      }
+    }
+    return sellTicks.length
+  }
+
+  test('never profits a taker who sells to the bootstrap floor and buys back from the rebuilt ladder', () => {
+    const target = spacedMarket(Number(DEFAULT_TICK_SPACING), now + 31_536_000n)
+    let rejected = 0
+    let checkedSells = 0
+    const shapes = [20n, 200n].flatMap(spreadBps =>
+      [10n, 100n].flatMap(stepBps => [
+        ...[-50n, 0n, 60n].map(quotePremiumBps =>
+          ladderConfig({ spreadBps, stepBps, quotePremiumBps })
+        ),
+        ladderConfig({
+          spreadBps,
+          stepBps,
+          maturityPremium: { shape: 'linear', premiumPerYearBps: 120n, maximumPremiumBps: 300n }
+        })
+      ])
+    )
+    const rebuilds = Array.from({ length: 12 }, (_, index) => BigInt(index) * 100n).flatMap(
+      referenceRateBps =>
+        [false, true].flatMap(retained =>
+          [now, now + 86_400n].map(at => ({ referenceRateBps, retained, at }))
+        )
+    )
+    for (const shape of shapes) {
+      for (const bootstrapMinimumRateBps of [100n, 110n, 115n, 300n, 520n, 900n]) {
+        const config = acceptedCeiling(shape, bootstrapMinimumRateBps)
+        if (config === undefined) {
+          rejected += 1
+          continue
+        }
+        const buyTick = bootstrapBuyTick(target, now, {
+          rateBps: bootstrapMinimumRateBps,
+          minimumRateBps: bootstrapMinimumRateBps
+        })!
+        const retainedOffsetBps = config.quotePremiumBps + config.movementToleranceBps
+        checkedSells += rebuilds.reduce(
+          (checked, { referenceRateBps, retained, at }) =>
+            checked +
+            assertRoundTripUnprofitable(
+              buyTick,
+              rebuiltSellTicks(config, target, at, {
+                referenceRateBps,
+                ...(retained ? { retainedCenterRateBps: referenceRateBps + retainedOffsetBps } : {})
+              })
+            ),
+          0
+        )
+      }
+    }
+    expect(rejected).toBeGreaterThan(0)
+    expect(checkedSells).toBeGreaterThan(0)
+  })
+
+  test('never profits the taker at the coarsest tick spacing near maturity', () => {
+    const maturities = [60n, 600n, 3_600n, 86_400n, 7n * 86_400n, 31_536_000n]
+    let seed = 246n
+    const draw = (bound: bigint) => {
+      seed = (seed * 6_364_136_223_846_793_005n + 1n) % 2n ** 64n
+      return (seed >> 16n) % bound
+    }
+    const shape = ladderConfig({ spreadBps: 20n, stepBps: 10n })
+    let checkedSells = 0
+    for (let sample = 0; sample < 1_500; sample += 1) {
+      const timeToMaturity = maturities[Number(draw(BigInt(maturities.length)))]!
+      const bootstrapMinimumRateBps = 110n + draw(800n)
+      const config = withBootstrapSellCeiling(shape, bootstrapMinimumRateBps)
+      const target = spacedMarket(Number(DEFAULT_TICK_SPACING), now + timeToMaturity)
+      const buyTick = bootstrapBuyTick(target, now, {
+        rateBps:
+          bootstrapMinimumRateBps + draw(BOOTSTRAP_MAXIMUM_RATE_BPS - bootstrapMinimumRateBps + 1n),
+        minimumRateBps: bootstrapMinimumRateBps
+      })
+      if (buyTick === undefined) continue
+      const referenceRateBps = draw(1_200n)
+      checkedSells += assertRoundTripUnprofitable(
+        buyTick,
+        rebuiltSellTicks(config, target, now + draw(timeToMaturity), {
+          referenceRateBps,
+          ...(draw(2n) === 0n ? {} : { retainedCenterRateBps: referenceRateBps + 10n })
+        })
+      )
+    }
+    expect(checkedSells).toBeGreaterThan(0)
   })
 })

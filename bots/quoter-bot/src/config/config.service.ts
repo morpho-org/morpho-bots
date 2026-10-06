@@ -6,16 +6,18 @@ import { inspect } from 'node:util'
 import { isAddressEqual } from 'viem'
 
 import type { SetupCheckConfig } from '../application/setup/setup-check.service'
-import type { BootstrapConfig } from '../domain/bootstrap/position-bootstrap'
-import type { LadderConfig } from '../domain/ladder/ladder'
+import type { ValidLadderConfig } from '../domain/ladder'
+import type { ValidBootstrapConfig } from '../domain/position-bootstrap'
 import type { TargetRateConfigured } from '../domain/target-rate'
 import type { ConfigurationLoadOptions, ConfigurationSource } from './config-source.utils'
 import type { Environment } from './config.utils'
 import type { SignerIdentity } from './signer-identity.utils'
 
+import { calculateRequiredAllowance } from '../application/setup/required-allowance.utils'
 import { configurationFromEnvironment, loadConfigurationSources } from './config-source.utils'
 import { ConfigValidationError } from './config-validation.error'
 import {
+  acceptedLossFactorValue,
   addressValue,
   chainIdValue,
   optionalBytes32Value,
@@ -29,7 +31,12 @@ import {
   unsignedBigIntValue,
   urlValue
 } from './config.utils'
-import { bootstrapConfigsValue, hexListValue, ladderConfigsValue } from './market-collections'
+import {
+  bootstrapConfigsValue,
+  hexListValue,
+  ladderConfigsValue,
+  withBootstrapSellCeilings
+} from './market-collections'
 import { signerIdentity } from './signer-identity.utils'
 import { requiresMaxRatificationGas } from './write-policy.utils'
 
@@ -164,7 +171,10 @@ export class ConfigService {
       : writePolicyValue(environment, identity.method, ratifier, chainId)
     const marketIds = hexListValue(environment, 'MARKET_IDS', false)
     const bootstrap = bootstrapConfigsValue(source.bootstrap, marketIds)
-    const ladder = ladderConfigsValue(source.ladder, marketIds)
+    const ladder = withBootstrapSellCeilings(
+      bootstrap,
+      ladderConfigsValue(source.ladder, marketIds)
+    )
 
     return new ConfigService({
       identity,
@@ -183,7 +193,9 @@ export class ConfigService {
         loanAsset: addressValue(environment, 'LOAN_ASSET_ADDRESS'),
         ratifier,
         marketIds,
-        referenceMarketId: optionalBytes32Value(environment, 'REFERENCE_MARKET_ID')
+        referenceMarketId: optionalBytes32Value(environment, 'REFERENCE_MARKET_ID'),
+        requiredAllowance: calculateRequiredAllowance({ ladder, bootstrap }),
+        acceptedLossFactor: acceptedLossFactorValue(source.acceptedLossFactor, marketIds)
       },
       rpcUrl: urlValue(environment, 'RPC_URL'),
       referenceRpcUrl: optionalUrlValue(environment, 'REFERENCE_RPC_URL'),
@@ -210,8 +222,8 @@ export class ConfigService {
       requestTimeoutMs: number
       transactionReceiptTimeoutMs: number
       writePolicy?: QuoterWritePolicy
-      bootstrap: readonly TargetRateConfigured<BootstrapConfig>[]
-      ladder: readonly TargetRateConfigured<LadderConfig>[]
+      bootstrap: readonly TargetRateConfigured<ValidBootstrapConfig>[]
+      ladder: readonly TargetRateConfigured<ValidLadderConfig>[]
     }
   ) {}
 

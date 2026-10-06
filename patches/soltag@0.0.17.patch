@@ -1,0 +1,152 @@
+diff --git a/dist/chunk-C3BXAYSA.js b/dist/chunk-C3BXAYSA.js
+index a025fb1d7c065560f6aa23831f1fa5864d11ca78..adcfdac8d0da2865e288aaed9ddd55e49778610e 100644
+--- a/dist/chunk-C3BXAYSA.js
++++ b/dist/chunk-C3BXAYSA.js
+@@ -1226,6 +1226,7 @@ function buildSolcInput(source, options) {
+         enabled: options?.optimizer?.enabled ?? true,
+         runs: options?.optimizer?.runs ?? 1
+       },
++      ...options?.metadata ? { metadata: { ...options.metadata } } : {},
+       outputSelection: {
+         "*": {
+           "*": ["abi", "evm.bytecode.object", "evm.deployedBytecode.object"]
+diff --git a/dist/cli.js b/dist/cli.js
+index ea38c7d8477b1ecd121bf0991b00344b08725513..e0693543f1359b70ddec36d34a68d1f36cade1d8 100755
+--- a/dist/cli.js
++++ b/dist/cli.js
+@@ -246,6 +246,7 @@ function buildSolcInput(source, options) {
+         enabled: options?.optimizer?.enabled ?? true,
+         runs: options?.optimizer?.runs ?? 1
+       },
++      ...options?.metadata ? { metadata: { ...options.metadata } } : {},
+       outputSelection: {
+         "*": {
+           "*": ["abi", "evm.bytecode.object", "evm.deployedBytecode.object"]
+diff --git a/dist/esbuild.cjs b/dist/esbuild.cjs
+index fb3157ef13dbb3fa9685aa0159a26fdae3288571..bbfcce5e416d6c3c2a846700fee64666b1fe2e78 100644
+--- a/dist/esbuild.cjs
++++ b/dist/esbuild.cjs
+@@ -1262,6 +1262,7 @@ function buildSolcInput(source, options) {
+         enabled: options?.optimizer?.enabled ?? true,
+         runs: options?.optimizer?.runs ?? 1
+       },
++      ...options?.metadata ? { metadata: { ...options.metadata } } : {},
+       outputSelection: {
+         "*": {
+           "*": ["abi", "evm.bytecode.object", "evm.deployedBytecode.object"]
+diff --git a/dist/loader.cjs b/dist/loader.cjs
+index e72c2c66b22e11693a4a62ee991ebebe6f1978a3..d71773ab9f3d8a26f7bb015cb3fd4d0594fb8571 100644
+--- a/dist/loader.cjs
++++ b/dist/loader.cjs
+@@ -1262,6 +1262,7 @@ function buildSolcInput(source, options) {
+         enabled: options?.optimizer?.enabled ?? true,
+         runs: options?.optimizer?.runs ?? 1
+       },
++      ...options?.metadata ? { metadata: { ...options.metadata } } : {},
+       outputSelection: {
+         "*": {
+           "*": ["abi", "evm.bytecode.object", "evm.deployedBytecode.object"]
+diff --git a/dist/plugin.cjs b/dist/plugin.cjs
+index 59f62d53574d16f755e84e3a7417150ae7e9003b..30a5007362cf4339f1499061d0b0adcbe4f6d40b 100644
+--- a/dist/plugin.cjs
++++ b/dist/plugin.cjs
+@@ -177,6 +177,7 @@ function buildSolcInput(source, options) {
+         enabled: options?.optimizer?.enabled ?? true,
+         runs: options?.optimizer?.runs ?? 1
+       },
++      ...options?.metadata ? { metadata: { ...options.metadata } } : {},
+       outputSelection: {
+         "*": {
+           "*": ["abi", "evm.bytecode.object", "evm.deployedBytecode.object"]
+diff --git a/dist/rollup.cjs b/dist/rollup.cjs
+index 226e18166367cd0b48e896dfba275fbc8a0ebd05..35635838452d371474f74d3d686b89b917afacc2 100644
+--- a/dist/rollup.cjs
++++ b/dist/rollup.cjs
+@@ -1262,6 +1262,7 @@ function buildSolcInput(source, options) {
+         enabled: options?.optimizer?.enabled ?? true,
+         runs: options?.optimizer?.runs ?? 1
+       },
++      ...options?.metadata ? { metadata: { ...options.metadata } } : {},
+       outputSelection: {
+         "*": {
+           "*": ["abi", "evm.bytecode.object", "evm.deployedBytecode.object"]
+diff --git a/dist/unplugin.cjs b/dist/unplugin.cjs
+index 23acfef23749a4acd1abc0ad8a054b48562aa12f..6a2b6abc034f6d23abb695499c83c14cd3a0e54d 100644
+--- a/dist/unplugin.cjs
++++ b/dist/unplugin.cjs
+@@ -1264,6 +1264,7 @@ function buildSolcInput(source, options) {
+         enabled: options?.optimizer?.enabled ?? true,
+         runs: options?.optimizer?.runs ?? 1
+       },
++      ...options?.metadata ? { metadata: { ...options.metadata } } : {},
+       outputSelection: {
+         "*": {
+           "*": ["abi", "evm.bytecode.object", "evm.deployedBytecode.object"]
+diff --git a/dist/unplugin.d.cts b/dist/unplugin.d.cts
+index 4b53a7f2abd7c21ba1ea51f670fbf006d0fcfb25..8bcbb173d518b0cb8b09dd2ddfbd777226142588 100644
+--- a/dist/unplugin.d.cts
++++ b/dist/unplugin.d.cts
+@@ -13,6 +13,17 @@ interface SoltagPluginOptions {
+             enabled?: boolean;
+             runs?: number;
+         };
++        /**
++         * solc metadata settings. Both default to solc's own behaviour when unset
++         * (`'ipfs'` and `true`). Setting `bytecodeHash: 'none'` drops the source
++         * hash and `appendCBOR: false` drops the metadata trailer outright, so that
++         * comment, formatting and compiler-version changes cannot alter the compiled
++         * bytecode — which is what a CREATE2 address is derived from.
++         */
++        metadata?: {
++            bytecodeHash?: 'none' | 'ipfs' | 'bzzr1';
++            appendCBOR?: boolean;
++        };
+     };
+ }
+ /**
+diff --git a/dist/unplugin.d.ts b/dist/unplugin.d.ts
+index 4b53a7f2abd7c21ba1ea51f670fbf006d0fcfb25..8bcbb173d518b0cb8b09dd2ddfbd777226142588 100644
+--- a/dist/unplugin.d.ts
++++ b/dist/unplugin.d.ts
+@@ -13,6 +13,17 @@ interface SoltagPluginOptions {
+             enabled?: boolean;
+             runs?: number;
+         };
++        /**
++         * solc metadata settings. Both default to solc's own behaviour when unset
++         * (`'ipfs'` and `true`). Setting `bytecodeHash: 'none'` drops the source
++         * hash and `appendCBOR: false` drops the metadata trailer outright, so that
++         * comment, formatting and compiler-version changes cannot alter the compiled
++         * bytecode — which is what a CREATE2 address is derived from.
++         */
++        metadata?: {
++            bytecodeHash?: 'none' | 'ipfs' | 'bzzr1';
++            appendCBOR?: boolean;
++        };
+     };
+ }
+ /**
+diff --git a/dist/vite.cjs b/dist/vite.cjs
+index a5affc69bfb1fc55ff360cdefa6592cc0864ead8..2e4373265e494081df33cfce461f364ad1c275e7 100644
+--- a/dist/vite.cjs
++++ b/dist/vite.cjs
+@@ -1262,6 +1262,7 @@ function buildSolcInput(source, options) {
+         enabled: options?.optimizer?.enabled ?? true,
+         runs: options?.optimizer?.runs ?? 1
+       },
++      ...options?.metadata ? { metadata: { ...options.metadata } } : {},
+       outputSelection: {
+         "*": {
+           "*": ["abi", "evm.bytecode.object", "evm.deployedBytecode.object"]
+diff --git a/dist/webpack.cjs b/dist/webpack.cjs
+index f8de7b41ddee2f3b5172ea1f6e2612eed5a12604..1b99d5dfada33d555a806f8192d56f5a8a4ac029 100644
+--- a/dist/webpack.cjs
++++ b/dist/webpack.cjs
+@@ -1262,6 +1262,7 @@ function buildSolcInput(source, options) {
+         enabled: options?.optimizer?.enabled ?? true,
+         runs: options?.optimizer?.runs ?? 1
+       },
++      ...options?.metadata ? { metadata: { ...options.metadata } } : {},
+       outputSelection: {
+         "*": {
+           "*": ["abi", "evm.bytecode.object", "evm.deployedBytecode.object"]

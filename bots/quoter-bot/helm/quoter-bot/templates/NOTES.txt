@@ -12,6 +12,14 @@ WARNING: no `config` mapping and no `existingConfigSecret` were provided. The bo
 environment-only mode and fails loudly unless `env`/`envFrom` supply every required variable.
 {{- end }}
 
+{{- if .Values.externalSecret.enabled }}
+Runtime environment: ExternalSecret {{ include "quoter-bot.runtimeSecretName" . }} syncs
+{{ .Values.externalSecret.remoteKey }} from AWS Secrets Manager every
+{{ .Values.externalSecret.refreshInterval }}. With Stakater Reloader installed the pod restarts
+on rotation; otherwise run:
+  kubectl --namespace {{ .Release.Namespace }} rollout restart statefulset/{{ include "quoter-bot.fullname" . }}
+{{- end }}
+
 {{- if not .Values.persistence.enabled }}
 
 WARNING: persistence is disabled. Durable offer-group ownership state is lost on every

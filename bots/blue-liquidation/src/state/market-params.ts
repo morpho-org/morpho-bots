@@ -15,7 +15,7 @@ const MULTICALL3 = '0xcA11bde05977b3631167028862bE2a173976CA11' as const
 export type MarketParamsResolver = (ids: readonly Hex[]) => Promise<Map<Hex, MarketParams>>
 
 /**
- * On-chain fetcher: reads `idToMarketParams(id)` from the Morpho singleton for a batch of ids in one
+ * Onchain fetcher: reads `idToMarketParams(id)` from the Morpho singleton for a batch of ids in one
  * Multicall3 `aggregate3`. Blue stores every market's immutable params keyed by id, so this recovers
  * `(loanToken, collateralToken, oracle, irm, lltv)` authoritatively from the API's marketId alone.
  * `allowFailure` keeps one bad id from sinking the batch; a zero `loanToken` (unknown id) is treated
@@ -59,7 +59,7 @@ export function multicallIdToMarketParams(client: Client, morpho: Address): Mark
  * Wraps a {@link MarketParamsResolver} with an unbounded in-memory cache. `MarketParams` are immutable
  * per id (the id IS `keccak256(abi.encode(params))`), so a resolved entry is valid forever — after the
  * first sight of a market, its params never need re-fetching. Each call fetches only the ids not yet
- * cached (deduped), so steady-state discovery makes zero on-chain calls once every market is known and
+ * cached (deduped), so steady-state discovery makes zero onchain calls once every market is known and
  * only pays for genuinely new markets. Returns a map limited to the requested ids.
  */
 export function createMarketParamsResolver(fetch: MarketParamsResolver): MarketParamsResolver {

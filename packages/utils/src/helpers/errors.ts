@@ -1,3 +1,4 @@
+// oxlint-disable-next-line repo/error-class-file
 class ErrorWithShortMessage extends Error {
   shortMessage: string
 
@@ -10,6 +11,7 @@ class ErrorWithShortMessage extends Error {
 }
 
 // Ensures returned value is an Error type.
+// oxlint-disable-next-line repo/utils-apart-from-classes
 export function ensureError(value: unknown): Error & { shortMessage?: string } {
   if (value instanceof Error) return value
 
@@ -33,6 +35,7 @@ export function ensureError(value: unknown): Error & { shortMessage?: string } {
  * Exhaustiveness check for switch statements
  * Ensures all cases are handled at compile time
  */
+// oxlint-disable-next-line repo/utils-apart-from-classes
 export function assertNever(value: never): never {
   throw new Error(`Unhandled case: ${JSON.stringify(value)}`)
 }

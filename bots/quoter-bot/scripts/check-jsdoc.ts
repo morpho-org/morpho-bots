@@ -157,6 +157,7 @@ const returnsPromise = (node: ts.Node, sourceFile: ts.SourceFile) => {
   )
 }
 
+// oxlint-disable-next-line complexity
 const inspectCallable = (
   sourceFile: ts.SourceFile,
   node: ts.Node,
@@ -244,6 +245,7 @@ export const inspectJSDocSource = (file: string, source: string): JSDocInspectio
     inspectCallable(sourceFile, node, declaration, file, failures)
   }
 
+  // oxlint-disable-next-line complexity
   sourceFile.forEachChild(node => {
     if (ts.isVariableStatement(node) && isExported(node)) {
       for (const declaration of node.declarationList.declarations) {
@@ -272,6 +274,7 @@ export const inspectJSDocSource = (file: string, source: string): JSDocInspectio
       inspect(node, `type ${node.name.text}`)
       if (ts.isTypeLiteralNode(node.type)) {
         for (const member of node.type.members) {
+          // oxlint-disable-next-line max-depth
           if (ts.isMethodSignature(member)) inspect(member, `${node.name.text}.${nameOf(member)}`)
         }
       }

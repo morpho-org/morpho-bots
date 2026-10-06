@@ -6,7 +6,7 @@
     "format": "oxfmt",
     "format:check": "oxfmt --check",
     "knip": "knip",
-    "lint": "oxlint --no-error-on-unmatched-pattern && pnpm run lint:playground-smoke",
+    "lint": "oxlint --no-error-on-unmatched-pattern && pnpm run lint:playground-smoke && pnpm --filter @repo/oxlint-plugin run check:markdown",
     "lint:fix": "oxlint --fix --no-error-on-unmatched-pattern",
     "lint:playground-smoke": "oxlint --config bots/quoter-bot/scripts/playground-smoke.oxlintrc.json bots/quoter-bot/scripts/playground-smoke*.mjs",
     "quoter-bot:playground": "pnpm --filter @morpho-org/quoter-bot run playground:serve",
@@ -30,5 +30,5 @@
   "engines": {
     "node": "^24.14.1"
   },
-  "packageManager": "pnpm@11.1.1"
+  "packageManager": "pnpm@11.11.0"
 }

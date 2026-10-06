@@ -4,14 +4,13 @@ import type { Address, Hex } from 'viem'
 import { TickLib } from '@morpho-org/midnight-sdk'
 import { describe, expect, test } from 'vitest'
 
-import type { LadderQuoteSet } from '../../../src/domain/ladder/ladder'
+import type { LadderQuoteSet } from '../../../src/domain/ladder'
 import type { LadderOfferTransport } from '../../../src/infrastructure/ladder/ladder-make.service'
 
 import { ConfigService } from '../../../src/config/config.service'
 import { LadderAdapterError } from '../../../src/infrastructure/ladder/ladder-adapter.error'
 import { MidnightLadderMakeService } from '../../../src/infrastructure/ladder/ladder-make.service'
 import {
-  calculateProductionLadderCapacities,
   cleanupRemovedLadderGroups,
   createProductionLadderAdapters,
   createRepeatableSingleFlight,
@@ -73,57 +72,6 @@ const environment = {
   ROUTER_API_BASE_URL: 'https://router.example'
 }
 
-describe('calculateProductionLadderCapacities', () => {
-  test('uses existing credit as lower-rate sale capacity', () => {
-    expect(
-      calculateProductionLadderCapacities({
-        marketId,
-        balance: 100n,
-        currentCredit: 90n,
-        otherMarketCredit: 0n,
-        targetMarketExposureAssets: 100n,
-        maximumTotalExposureAssets: 1_000n,
-        reservations: []
-      })
-    ).toEqual({
-      lowerRateCapacityAssets: 90n,
-      higherRateCapacityAssets: 10n,
-      targetMarketCapacityAssets: 100n,
-      maximumTotalCapacityAssets: 1_000n,
-      cashBalanceAssets: 100n,
-      creditAssets: 90n,
-      otherMarketCreditAssets: 0n,
-      reservedAssets: 0n,
-      marketReservedAssets: 0n
-    })
-  })
-
-  test('reports the wallet balance when the allowance narrows spendable capacity', () => {
-    expect(
-      calculateProductionLadderCapacities({
-        marketId,
-        balance: 40n,
-        walletBalance: 100n,
-        currentCredit: 0n,
-        otherMarketCredit: 0n,
-        targetMarketExposureAssets: 100n,
-        maximumTotalExposureAssets: 1_000n,
-        reservations: []
-      })
-    ).toEqual({
-      lowerRateCapacityAssets: 0n,
-      higherRateCapacityAssets: 40n,
-      targetMarketCapacityAssets: 40n,
-      maximumTotalCapacityAssets: 1_000n,
-      cashBalanceAssets: 100n,
-      creditAssets: 0n,
-      otherMarketCreditAssets: 0n,
-      reservedAssets: 0n,
-      marketReservedAssets: 0n
-    })
-  })
-})
-
 describe('lowestBootstrapBuyRateBps', () => {
   test('derives the rate of a live configured bootstrap group without persisted intent', () => {
     const now = 1_000n
@@ -136,7 +84,7 @@ describe('lowestBootstrapBuyRateBps', () => {
           {
             id: groupId,
             consumed: 0n,
-            maxAssets: 100n,
+            cap: { kind: 'assets', maximum: 100n },
             marketId,
             tick,
             maturity,
@@ -160,7 +108,7 @@ describe('lowestBootstrapBuyRateBps', () => {
     const group = (id: Hex, tick: bigint) => ({
       id,
       consumed: 0n,
-      maxAssets: 100n,
+      cap: { kind: 'assets' as const, maximum: 100n },
       marketId,
       tick,
       maturity,
@@ -187,7 +135,13 @@ describe('lowestBootstrapBuyRateBps', () => {
         ownedGroupIds: [groupId],
         persistedOffers: [],
         pendingOffers: [
-          { groupId: secondGroupId, marketId, rateBps: 1n, assets: 1n, referenceObservationId: 'r' }
+          {
+            groupId: secondGroupId,
+            marketId,
+            rateBps: 1n,
+            assets: 1n,
+            referenceObservationId: 'r'
+          }
         ],
         marketId,
         now
@@ -245,9 +199,24 @@ describe('createRepeatableSingleFlight', () => {
 })
 
 describe('cleanupRemovedLadderGroups', () => {
+  test('cancels a removed cash-capped buy that is fully consumed but still takeable', async () => {
+    const invalidated: Hex[] = []
+    await cleanupRemovedLadderGroups({
+      removed: new Map([[groupId, { cap: { kind: 'assets' as const, maximum: 10n }, buy: true }]]),
+      indexedGroupIds: new Set([groupId]),
+      readGroupConsumed: async () => 10n,
+      invalidate: async id => {
+        invalidated.push(id)
+      },
+      forgetGroups: async () => {}
+    })
+
+    expect(invalidated).toEqual([groupId])
+  })
+
   test('returns indexed removed groups that readiness must treat as canceled tombstones', async () => {
     const tombstones = await cleanupRemovedLadderGroups({
-      removed: new Map([[groupId, 10n]]),
+      removed: new Map([[groupId, { cap: { kind: 'units' as const, maximum: 10n }, buy: true }]]),
       indexedGroupIds: new Set([groupId]),
       readGroupConsumed: async () => 0n,
       invalidate: async () => {},
@@ -260,7 +229,7 @@ describe('cleanupRemovedLadderGroups', () => {
   test('keeps a successfully canceled unindexed group as a temporary tombstone', async () => {
     const forgotten: Hex[] = []
     const tombstones = await cleanupRemovedLadderGroups({
-      removed: new Map([[groupId, 10n]]),
+      removed: new Map([[groupId, { cap: { kind: 'units' as const, maximum: 10n }, buy: true }]]),
       indexedGroupIds: new Set(),
       readGroupConsumed: async () => 0n,
       invalidate: async () => {},
@@ -273,12 +242,12 @@ describe('cleanupRemovedLadderGroups', () => {
     expect(forgotten).toEqual([])
   })
 
-  test('returns an indexed tombstone when a removed group fills while cancellation confirms', async () => {
+  test('returns an indexed tombstone when a removed sell fills while cancellation confirms', async () => {
     const events: string[] = []
     let consumedReads = 0
 
     const tombstones = await cleanupRemovedLadderGroups({
-      removed: new Map([[groupId, 10n]]),
+      removed: new Map([[groupId, { cap: { kind: 'units' as const, maximum: 10n }, buy: false }]]),
       indexedGroupIds: new Set([groupId]),
       readGroupConsumed: async () => {
         consumedReads++
@@ -408,13 +377,14 @@ describe('publishLadderPublication', () => {
         readActive: async () => undefined,
         readActiveState: async () => ({ consumption: [] }),
         listOwnedGroups: async () => [],
+        listOwnedBuyGroups: async () => [],
         readGroupConsumed: async () => 0n,
         listActiveGroupIds: async () => [],
         listBookOffers: async () => [],
         assessBook: uncrossedAssessment,
         preparePublication: async () => ({
           groupIds: [groupId],
-          groups: [{ groupId, side: 'lower', rungIndexes: [0] }],
+          groups: [{ groupId, side: 'lower', rungIndexes: [0], ticks: [100n] }],
           bookClearedRungs: { lower: 0, higher: 0 },
           prospective: [],
           publish: () =>
@@ -434,6 +404,7 @@ describe('publishLadderPublication', () => {
         releasePublication: async groupIds => {
           for (const id of groupIds) retained.delete(id)
         },
+        admitPublication: async () => ({ admitted: true as const, capacityAssets: 0n }),
         invalidate: async () => {},
         invalidateBatch: async () => {},
         forgetGroups: async () => {}
@@ -457,13 +428,14 @@ describe('publishLadderPublication', () => {
         readActive: async () => undefined,
         readActiveState: async () => ({ consumption: [] }),
         listOwnedGroups: async () => [],
+        listOwnedBuyGroups: async () => [],
         readGroupConsumed: async () => 0n,
         listActiveGroupIds: async () => [],
         listBookOffers: async () => [],
         assessBook: uncrossedAssessment,
         preparePublication: async () => ({
           groupIds: [groupId],
-          groups: [{ groupId, side: 'lower', rungIndexes: [0] }],
+          groups: [{ groupId, side: 'lower', rungIndexes: [0], ticks: [100n] }],
           bookClearedRungs: { lower: 0, higher: 0 },
           prospective: [],
           publish: () =>
@@ -483,6 +455,7 @@ describe('publishLadderPublication', () => {
         releasePublication: async groupIds => {
           for (const id of groupIds) retained.delete(id)
         },
+        admitPublication: async () => ({ admitted: true as const, capacityAssets: 0n }),
         invalidate: async () => {},
         invalidateBatch: async () => {},
         forgetGroups: async () => {}

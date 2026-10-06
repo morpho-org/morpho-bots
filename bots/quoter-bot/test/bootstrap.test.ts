@@ -1,20 +1,25 @@
 import type { Address, Hex } from 'viem'
 
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { maxUint256 } from 'viem'
-import { describe, expect, test, vi } from 'vitest'
+import { afterAll, beforeAll, describe, expect, test, vi } from 'vitest'
 
 import type {
   SetupCheckReport,
   SetupStateService
 } from '../src/application/setup/setup-check.service'
 
+import { StartupCleanupFailedError } from '../src/application/quoter-bot/startup-cleanup-failed.error'
 import { SetupFailedError } from '../src/application/setup/setup-failed.error'
 import { createApplication } from '../src/bootstrap'
 import { ConfigValidationError } from '../src/config/config-validation.error'
+import { runQuoterBotEntrypoint } from '../src/infrastructure/cli/quoter-bot-entrypoint'
+import { LadderAdapterError } from '../src/infrastructure/ladder/ladder-adapter.error'
+import { LadderHardHaltError } from '../src/infrastructure/ladder/ladder-hard-halt.error'
+import { StrategyStateVersionError } from '../src/infrastructure/strategy-state/strategy-state-version.error'
 
 const maker: Address = '0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A'
 const delegatedSigner: Address = '0x1563915e194D8CfBA1943570603F7606A3115508'
@@ -73,7 +78,7 @@ const bootstrapConfiguration = {
   premiumBps: '0',
   maximumMarketExposure: '100',
   maximumTotalExposure: '100',
-  minimumRateBps: '100',
+  minimumRateBps: '300',
   maximumRateBps: '1000',
   autoRefill: false
 }
@@ -102,6 +107,7 @@ const readyState = (): SetupStateService => {
       loanAsset,
       tickSpacing: 4
     }),
+    getLossFactor: async () => 0n,
     checkReference: async () => ({
       marketId: referenceMarketId,
       referenceReadable: true,
@@ -117,13 +123,55 @@ const readyState = (): SetupStateService => {
 }
 
 describe('createApplication', () => {
+  const originalStateHome = process.env.XDG_STATE_HOME
+  let stateHome: string | undefined
+
+  beforeAll(async () => {
+    stateHome = await mkdtemp(join(tmpdir(), 'quoter-bot-composition-state-'))
+    process.env.XDG_STATE_HOME = stateHome
+  })
+
+  afterAll(async () => {
+    if (originalStateHome === undefined) delete process.env.XDG_STATE_HOME
+    else process.env.XDG_STATE_HOME = originalStateHome
+    if (stateHome) await rm(stateHome, { recursive: true, force: true })
+  })
+
   test('wires configuration, setup service, and operator CLI through the composition root', async () => {
     const application = createApplication(environment, { createState: readyState })
 
     const output = await application.run(['setup-check'])
 
     expect(output).toMatchObject({ ready: true })
-    expect((output as { checks: unknown[] }).checks).toHaveLength(12)
+    expect((output as { checks: unknown[] }).checks).toHaveLength(13)
+  })
+
+  test('refuses to start on strategy state an earlier version wrote, naming the procedure', async () => {
+    const stateHome = await mkdtemp(join(tmpdir(), 'quoter-bot-state-home-'))
+    vi.stubEnv('XDG_STATE_HOME', stateHome)
+    try {
+      await mkdir(join(stateHome, 'morpho-quoter-bot'), { mode: 0o700 })
+      await writeFile(
+        join(stateHome, 'morpho-quoter-bot', `0x${'ab'.repeat(32)}.json`),
+        JSON.stringify({ version: 6, offers: [] }),
+        { mode: 0o600 }
+      )
+      const createState = vi.fn(readyState)
+      const stderr: string[] = []
+
+      const exitCode = await runQuoterBotEntrypoint(
+        createApplication(environment, { createState }),
+        ['setup-check'],
+        { writeOut: () => undefined, writeError: value => stderr.push(value) }
+      )
+
+      expect(exitCode).toBe(1)
+      expect(stderr.join('')).toContain(new StrategyStateVersionError().message)
+      expect(createState).not.toHaveBeenCalled()
+    } finally {
+      vi.unstubAllEnvs()
+      await rm(stateHome, { recursive: true, force: true })
+    }
   })
 
   test('applies CLI signer selection over environment configuration', async () => {
@@ -323,7 +371,10 @@ describe('createApplication', () => {
     const application = createApplication(environmentWithLadder, {
       createState: () => state,
       createLadderAdapters: () => ({
-        positions: { readMarket: async () => ({}) },
+        positions: {
+          readLendGuard: async () => ({ lossFactor: 0n, acceptedLossFactor: 0n, defaulted: true }),
+          readMarket: async () => ({})
+        },
         rates: { readRate: async () => 500n },
         make: {
           cleanupRemovedMarkets: async () => {
@@ -332,6 +383,7 @@ describe('createApplication', () => {
           },
           readActive: async () => undefined,
           reconcile: async () => {},
+          cancelBuys: async () => ({ submittedTransactions: [] }),
           hardHalt: async () => {},
           cleanup: async () => {}
         }
@@ -344,6 +396,7 @@ describe('createApplication', () => {
             readPosition: async () => ({
               credit: 0n,
               debt: 0n,
+              lossFactor: { lossFactor: 0n, acceptedLossFactor: 0n, defaulted: true },
               cashBalance: 0n,
               marketExposure: 0n,
               totalExposure: 0n
@@ -383,12 +436,20 @@ describe('createApplication', () => {
       {
         createState: readyState,
         createLadderAdapters: () => ({
-          positions: { readMarket: async () => ({}) },
+          positions: {
+            readLendGuard: async () => ({
+              lossFactor: 0n,
+              acceptedLossFactor: 0n,
+              defaulted: true
+            }),
+            readMarket: async () => ({})
+          },
           rates: { readRate: async () => 500n },
           make: {
             cleanupRemovedMarkets: async () => [],
             readActive: async () => undefined,
             reconcile: async () => {},
+            cancelBuys: async () => ({ submittedTransactions: [] }),
             hardHalt: async () => {},
             cleanup: async () => {}
           }
@@ -400,6 +461,7 @@ describe('createApplication', () => {
               readPosition: async () => ({
                 credit: 0n,
                 debt: 0n,
+                lossFactor: { lossFactor: 0n, acceptedLossFactor: 0n, defaulted: true },
                 cashBalance: 0n,
                 marketExposure: 0n,
                 totalExposure: 0n
@@ -435,12 +497,20 @@ describe('createApplication', () => {
       {
         createState: readyState,
         createLadderAdapters: () => ({
-          positions: { readMarket: async () => ({}) },
+          positions: {
+            readLendGuard: async () => ({
+              lossFactor: 0n,
+              acceptedLossFactor: 0n,
+              defaulted: true
+            }),
+            readMarket: async () => ({})
+          },
           rates: { readRate: async () => 500n },
           make: {
             cleanupRemovedMarkets,
             readActive: async () => undefined,
             reconcile: async () => {},
+            cancelBuys: async () => ({ submittedTransactions: [] }),
             hardHalt: async () => {},
             cleanup: async () => {}
           }
@@ -450,6 +520,7 @@ describe('createApplication', () => {
             readPosition: async () => ({
               credit: 0n,
               debt: 0n,
+              lossFactor: { lossFactor: 0n, acceptedLossFactor: 0n, defaulted: true },
               cashBalance: 0n,
               marketExposure: 0n,
               totalExposure: 0n
@@ -482,12 +553,20 @@ describe('createApplication', () => {
       {
         createState: readyState,
         createLadderAdapters: () => ({
-          positions: { readMarket: async () => ({}) },
+          positions: {
+            readLendGuard: async () => ({
+              lossFactor: 0n,
+              acceptedLossFactor: 0n,
+              defaulted: true
+            }),
+            readMarket: async () => ({})
+          },
           rates: { readRate: async () => 500n },
           make: {
             cleanupRemovedMarkets,
             readActive: async () => undefined,
             reconcile: async () => {},
+            cancelBuys: async () => ({ submittedTransactions: [] }),
             hardHalt: async () => {},
             cleanup: async () => {}
           }
@@ -497,6 +576,7 @@ describe('createApplication', () => {
             readPosition: async () => ({
               credit: 100n,
               debt: 0n,
+              lossFactor: { lossFactor: 0n, acceptedLossFactor: 0n, defaulted: true },
               cashBalance: 0n,
               marketExposure: 100n,
               totalExposure: 100n
@@ -549,6 +629,7 @@ describe('createApplication', () => {
             readPosition: async () => ({
               credit: 100n,
               debt: 0n,
+              lossFactor: { lossFactor: 0n, acceptedLossFactor: 0n, defaulted: true },
               cashBalance: 0n,
               marketExposure: 100n,
               totalExposure: 100n
@@ -601,12 +682,16 @@ describe('createApplication', () => {
     })
     const cleanupRemovedMarkets = vi.fn(async () => {})
     const createLadderAdapters = vi.fn(() => ({
-      positions: { readMarket: async () => ({}) },
+      positions: {
+        readLendGuard: async () => ({ lossFactor: 0n, acceptedLossFactor: 0n, defaulted: true }),
+        readMarket: async () => ({})
+      },
       rates: { readRate: async () => 500n },
       make: {
         cleanupRemovedMarkets,
         readActive: async () => undefined,
         reconcile: async () => {},
+        cancelBuys: async () => ({ submittedTransactions: [] }),
         hardHalt: async () => {},
         cleanup: async () => {}
       }
@@ -650,12 +735,20 @@ describe('createApplication', () => {
       {
         createState: () => state,
         createLadderAdapters: () => ({
-          positions: { readMarket: async () => ({}) },
+          positions: {
+            readLendGuard: async () => ({
+              lossFactor: 0n,
+              acceptedLossFactor: 0n,
+              defaulted: true
+            }),
+            readMarket: async () => ({})
+          },
           rates: { readRate: async () => 475n },
           make: {
             cleanupRemovedMarkets,
             readActive: async () => undefined,
             reconcile: async () => {},
+            cancelBuys: async () => ({ submittedTransactions: [] }),
             hardHalt: async () => {},
             cleanup: async () => {}
           }
@@ -697,11 +790,19 @@ describe('createApplication', () => {
       {
         createState: () => state,
         createLadderAdapters: () => ({
-          positions: { readMarket: async () => ({}) },
+          positions: {
+            readLendGuard: async () => ({
+              lossFactor: 0n,
+              acceptedLossFactor: 0n,
+              defaulted: true
+            }),
+            readMarket: async () => ({})
+          },
           rates: { readRate: async () => 475n },
           make: {
             readActive: async () => undefined,
             reconcile: async () => {},
+            cancelBuys: async () => ({ submittedTransactions: [] }),
             hardHalt: async () => {},
             cleanup: async () => {}
           }
@@ -789,6 +890,11 @@ describe('createApplication', () => {
         createState: () => state,
         createLadderAdapters: () => ({
           positions: {
+            readLendGuard: async () => ({
+              lossFactor: 0n,
+              acceptedLossFactor: 0n,
+              defaulted: true
+            }),
             readMarket: async () => {
               events.push('ladder')
               return {}
@@ -801,6 +907,7 @@ describe('createApplication', () => {
             },
             readActive: async () => undefined,
             reconcile: async () => {},
+            cancelBuys: async () => ({ submittedTransactions: [] }),
             hardHalt: async () => {},
             cleanup: async () => {}
           }
@@ -812,6 +919,257 @@ describe('createApplication', () => {
       { marketId, status: 'applied', action: 'publish', reason: 'publish' }
     ])
     expect(events).toEqual(['cleanup', 'readiness', 'cleanup', 'ladder'])
+  })
+
+  describe('writer startup failure', () => {
+    const ladderBuyGroup: Hex = `0x${'a1'.repeat(32)}`
+    const bootstrapBuyGroup: Hex = `0x${'b2'.repeat(32)}`
+    const ladderCancel: Hex = `0x${'c3'.repeat(32)}`
+    const bootstrapCancel: Hex = `0x${'d4'.repeat(32)}`
+    const writerEnvironment = {
+      ...environment,
+      BOOTSTRAP_MARKETS: JSON.stringify([bootstrapConfiguration]),
+      LADDER_MARKETS: JSON.stringify([ladderConfiguration])
+    }
+
+    const ownedBuys = () => {
+      const live = new Set([ladderBuyGroup, bootstrapBuyGroup])
+      const ladderCleanup = vi.fn(async () => {
+        live.delete(ladderBuyGroup)
+        return { submittedTransactions: [{ operation: 'cancel' as const, txHash: ladderCancel }] }
+      })
+      const bootstrapCleanup = vi.fn(async () => {
+        live.delete(bootstrapBuyGroup)
+        return {
+          submittedTransactions: [{ operation: 'cancel' as const, txHash: bootstrapCancel }]
+        }
+      })
+      const ladderMutations = {
+        reconcile: vi.fn(async () => {}),
+        cancelBuys: vi.fn(async () => ({ submittedTransactions: [] })),
+        hardHalt: vi.fn(async () => {})
+      }
+      const cleanupRemovedMarkets = vi.fn(async (): Promise<readonly Hex[]> => [])
+      const dependencies = (state: SetupStateService) => ({
+        createState: () => state,
+        createLadderAdapters: () => ({
+          positions: {
+            readLendGuard: async () => ({
+              lossFactor: 6n,
+              acceptedLossFactor: 5n,
+              defaulted: false
+            }),
+            readMarket: async () => ({})
+          },
+          rates: { readRate: async () => 500n },
+          make: {
+            cleanupRemovedMarkets,
+            readActive: async () => undefined,
+            ...ladderMutations,
+            cleanup: ladderCleanup
+          }
+        }),
+        createBootstrapAdapters: () => ({
+          positions: {
+            readPosition: async () => ({
+              credit: 0n,
+              debt: 0n,
+              lossFactor: { lossFactor: 0n, acceptedLossFactor: 0n, defaulted: true },
+              cashBalance: 0n,
+              marketExposure: 0n,
+              totalExposure: 0n
+            })
+          },
+          rates: {
+            readRate: async () => ({
+              mode: 'static' as const,
+              rateBps: 500n,
+              observationId: 'static:500'
+            })
+          },
+          make: { reconcile: async () => {}, hardHalt: async () => {}, cleanup: bootstrapCleanup }
+        })
+      })
+      return {
+        live,
+        ladderCleanup,
+        bootstrapCleanup,
+        ladderMutations,
+        cleanupRemovedMarkets,
+        dependencies
+      }
+    }
+
+    const cancelledEvent = (errorName: string, adapterOperation?: string) => ({
+      event: 'startup.owned-offers-cancelled',
+      errorName,
+      ...(adapterOperation === undefined ? {} : { adapterOperation }),
+      ladder: {
+        status: 'succeeded',
+        transactions: [{ operation: 'cancel', txHash: ladderCancel }]
+      },
+      bootstrap: {
+        status: 'succeeded',
+        transactions: [{ operation: 'cancel', txHash: bootstrapCancel }]
+      }
+    })
+
+    test.each(['bootstrap', 'ladder', 'start'])(
+      'cancels both strategies before %s exits on a failed readiness check',
+      async command => {
+        const owned = ownedBuys()
+        const state = readyState()
+        state.getChainId = async () => 1
+        const written: unknown[] = []
+        const application = createApplication(writerEnvironment, owned.dependencies(state))
+
+        await expect(
+          application.run([command], { writeEvent: value => void written.push(value) })
+        ).rejects.toBeInstanceOf(SetupFailedError)
+        expect(owned.live.size).toBe(0)
+        expect(owned.ladderCleanup).toHaveBeenCalledTimes(1)
+        expect(owned.bootstrapCleanup).toHaveBeenCalledTimes(1)
+        expect(written).toContainEqual(cancelledEvent('SetupFailedError'))
+      }
+    )
+
+    test.each(['bootstrap', 'ladder', 'start'])(
+      'cancels both strategies behind a latched nonce before %s exits',
+      async command => {
+        const owned = ownedBuys()
+        const state = readyState()
+        state.getTransactionCounts = async () => ({ latest: 2, pending: 3 })
+        const written: unknown[] = []
+        const application = createApplication(writerEnvironment, owned.dependencies(state))
+
+        await expect(
+          application.run([command], { writeEvent: value => void written.push(value) })
+        ).rejects.toMatchObject({
+          name: 'QuoterTransactionError',
+          operation: 'unknown-pending-nonce'
+        })
+        expect(owned.cleanupRemovedMarkets).not.toHaveBeenCalled()
+        expect(owned.live.size).toBe(0)
+        expect(written).toContainEqual(
+          cancelledEvent('QuoterTransactionError', 'unknown-pending-nonce')
+        )
+      }
+    )
+
+    test.each(['bootstrap', 'ladder', 'start'])(
+      'cancels both strategies when startup removed-market cleanup fails in %s',
+      async command => {
+        const owned = ownedBuys()
+        owned.cleanupRemovedMarkets.mockRejectedValue(
+          new LadderAdapterError('removed-market-cleanup')
+        )
+        const readiness = vi.fn(async () => 8453)
+        const state = readyState()
+        state.getChainId = readiness
+        const written: unknown[] = []
+        const application = createApplication(writerEnvironment, owned.dependencies(state))
+
+        await expect(
+          application.run([command], { writeEvent: value => void written.push(value) })
+        ).rejects.toMatchObject({ name: 'LadderAdapterError', operation: 'removed-market-cleanup' })
+        expect(readiness).not.toHaveBeenCalled()
+        expect(owned.ladderMutations.cancelBuys).not.toHaveBeenCalled()
+        expect(owned.live.size).toBe(0)
+        expect(written).toContainEqual(
+          cancelledEvent('LadderAdapterError', 'removed-market-cleanup')
+        )
+      }
+    )
+
+    test('exits loudly with the unresolved groups when a cleanup fails, still attempting the other', async () => {
+      const owned = ownedBuys()
+      owned.ladderCleanup.mockRejectedValue(
+        new LadderHardHaltError([{ groupId: ladderBuyGroup, errorName: 'LadderAdapterError' }])
+      )
+      const state = readyState()
+      state.getChainId = async () => 1
+      const written: unknown[] = []
+      const application = createApplication(writerEnvironment, owned.dependencies(state))
+
+      const error = await application
+        .run(['start'], { writeEvent: value => void written.push(value) })
+        .catch((value: unknown) => value)
+
+      expect(error).toBeInstanceOf(StartupCleanupFailedError)
+      expect((error as StartupCleanupFailedError).report).toEqual({
+        reason: 'startup-cleanup-failed',
+        errorName: 'SetupFailedError',
+        ladder: {
+          status: 'failed',
+          errorName: 'LadderHardHaltError',
+          unresolvedGroupIds: [ladderBuyGroup]
+        },
+        bootstrap: {
+          status: 'succeeded',
+          transactions: [{ operation: 'cancel', txHash: bootstrapCancel }]
+        }
+      })
+      expect(owned.bootstrapCleanup).toHaveBeenCalledTimes(1)
+      expect(written).not.toContainEqual(
+        expect.objectContaining({ event: 'startup.owned-offers-cancelled' })
+      )
+    })
+
+    test('never mutates in read-only mode when readiness fails', async () => {
+      const owned = ownedBuys()
+      const state = readyState()
+      state.getChainId = async () => 1
+      const application = createApplication(
+        { ...writerEnvironment, MAKER_PRIVATE_KEY: undefined },
+        owned.dependencies(state)
+      )
+
+      await expect(application.run(['--readonly', 'start'])).rejects.toBeInstanceOf(
+        SetupFailedError
+      )
+      expect(owned.ladderCleanup).not.toHaveBeenCalled()
+      expect(owned.bootstrapCleanup).not.toHaveBeenCalled()
+      expect(owned.cleanupRemovedMarkets).not.toHaveBeenCalled()
+      expect(Object.values(owned.ladderMutations).every(mock => mock.mock.calls.length === 0)).toBe(
+        true
+      )
+      expect(owned.live.size).toBe(2)
+    })
+
+    test('does not clean up after an operator abort during readiness', async () => {
+      const owned = ownedBuys()
+      const controller = new AbortController()
+      const state = readyState()
+      state.getChainId = async () => {
+        controller.abort()
+        throw Object.assign(new Error('aborted'), { name: 'AbortError' })
+      }
+      const application = createApplication(writerEnvironment, owned.dependencies(state))
+
+      await expect(application.run(['start'], { signal: controller.signal })).rejects.toMatchObject(
+        { name: 'AbortError' }
+      )
+      expect(owned.ladderCleanup).not.toHaveBeenCalled()
+      expect(owned.bootstrapCleanup).not.toHaveBeenCalled()
+    })
+
+    test('does not clean up on a configuration error before the signer is available', async () => {
+      const owned = ownedBuys()
+      const application = createApplication(
+        {
+          ...writerEnvironment,
+          REFERENCE_MARKET_ID: undefined,
+          LADDER_MARKETS: JSON.stringify([
+            { ...ladderConfiguration, targetRate: { strategy: 'variable_rate_avg' } }
+          ])
+        },
+        owned.dependencies(readyState())
+      )
+
+      await expect(application.run(['start'])).rejects.toBeInstanceOf(ConfigValidationError)
+      expect(owned.ladderCleanup).not.toHaveBeenCalled()
+      expect(owned.bootstrapCleanup).not.toHaveBeenCalled()
+    })
   })
 
   test('rejects an empty ladder config without cleaning persisted ladder publications', async () => {
@@ -826,7 +1184,10 @@ describe('createApplication', () => {
     const application = createApplication(environment, {
       createState: () => state,
       createLadderAdapters: () => ({
-        positions: { readMarket: async () => ({}) },
+        positions: {
+          readLendGuard: async () => ({ lossFactor: 0n, acceptedLossFactor: 0n, defaulted: true }),
+          readMarket: async () => ({})
+        },
         rates: { readRate: async () => 500n },
         make: {
           cleanupRemovedMarkets: async () => {
@@ -834,6 +1195,7 @@ describe('createApplication', () => {
           },
           readActive: async () => undefined,
           reconcile: async () => {},
+          cancelBuys: async () => ({ submittedTransactions: [] }),
           hardHalt: async () => {},
           cleanup: async () => {}
         }
@@ -855,12 +1217,16 @@ describe('createApplication', () => {
     const application = createApplication(environment, {
       createState: readyState,
       createLadderAdapters: () => ({
-        positions: { readMarket: async () => ({}) },
+        positions: {
+          readLendGuard: async () => ({ lossFactor: 0n, acceptedLossFactor: 0n, defaulted: true }),
+          readMarket: async () => ({})
+        },
         rates: { readRate: async () => 500n },
         make: {
           cleanupRemovedMarkets,
           readActive: async () => undefined,
           reconcile: async () => {},
+          cancelBuys: async () => ({ submittedTransactions: [] }),
           hardHalt: async () => {},
           cleanup: async () => {}
         }
@@ -878,12 +1244,16 @@ describe('createApplication', () => {
     const cleanupRemovedMarkets = vi.fn(async () => {})
     const application = createApplication(environment, {
       createLadderAdapters: () => ({
-        positions: { readMarket: async () => ({}) },
+        positions: {
+          readLendGuard: async () => ({ lossFactor: 0n, acceptedLossFactor: 0n, defaulted: true }),
+          readMarket: async () => ({})
+        },
         rates: { readRate: async () => 500n },
         make: {
           cleanupRemovedMarkets,
           readActive: async () => undefined,
           reconcile: async () => {},
+          cancelBuys: async () => ({ submittedTransactions: [] }),
           hardHalt: async () => {},
           cleanup: async () => {}
         }
@@ -905,6 +1275,7 @@ describe('createApplication', () => {
           readPosition: async () => ({
             credit: 1_000n,
             debt: 0n,
+            lossFactor: { lossFactor: 0n, acceptedLossFactor: 0n, defaulted: true },
             cashBalance: 1_000n,
             marketExposure: 0n,
             totalExposure: 0n
@@ -974,6 +1345,7 @@ describe('createApplication', () => {
           readPosition: async () => ({
             credit: 0n,
             debt: 0n,
+            lossFactor: { lossFactor: 0n, acceptedLossFactor: 0n, defaulted: true },
             cashBalance: 100n,
             marketExposure: 0n,
             totalExposure: 0n
@@ -1029,6 +1401,7 @@ describe('createApplication', () => {
             readPosition: async () => ({
               credit: 0n,
               debt: 0n,
+              lossFactor: { lossFactor: 0n, acceptedLossFactor: 0n, defaulted: true },
               cashBalance: 100n,
               marketExposure: 0n,
               totalExposure: 0n
@@ -1076,11 +1449,19 @@ describe('createApplication', () => {
       {
         createState: readyState,
         createLadderAdapters: () => ({
-          positions: { readMarket: async () => ({}) },
+          positions: {
+            readLendGuard: async () => ({
+              lossFactor: 0n,
+              acceptedLossFactor: 0n,
+              defaulted: true
+            }),
+            readMarket: async () => ({})
+          },
           rates: { readRate: async () => 500n },
           make: {
             readActive: async () => undefined,
             reconcile,
+            cancelBuys: async () => ({ submittedTransactions: [] }),
             hardHalt,
             cleanup: async () => {}
           },
@@ -1117,11 +1498,19 @@ describe('createApplication', () => {
       {
         createState: readyState,
         createLadderAdapters: () => ({
-          positions: { readMarket: async () => ({}) },
+          positions: {
+            readLendGuard: async () => ({
+              lossFactor: 0n,
+              acceptedLossFactor: 0n,
+              defaulted: true
+            }),
+            readMarket: async () => ({})
+          },
           rates: { readRate: async () => 500n },
           make: {
             readActive: async () => undefined,
             reconcile: async () => {},
+            cancelBuys: async () => ({ submittedTransactions: [] }),
             hardHalt: async () => {},
             cleanup: async () => {}
           }
@@ -1157,11 +1546,19 @@ describe('createApplication', () => {
       {
         createState: readyState,
         createLadderAdapters: () => ({
-          positions: { readMarket: async () => ({}) },
+          positions: {
+            readLendGuard: async () => ({
+              lossFactor: 0n,
+              acceptedLossFactor: 0n,
+              defaulted: true
+            }),
+            readMarket: async () => ({})
+          },
           rates: { readRate: async () => 500n },
           make: {
             readActive: async () => undefined,
             reconcile,
+            cancelBuys: async () => ({ submittedTransactions: [] }),
             hardHalt,
             cleanup
           }
@@ -1202,6 +1599,7 @@ describe('createApplication', () => {
             readPosition: async () => ({
               credit: 0n,
               debt: 0n,
+              lossFactor: { lossFactor: 0n, acceptedLossFactor: 0n, defaulted: true },
               cashBalance: 100n,
               marketExposure: 0n,
               totalExposure: 0n
@@ -1221,11 +1619,19 @@ describe('createApplication', () => {
           }
         }),
         createLadderAdapters: () => ({
-          positions: { readMarket: async () => ({}) },
+          positions: {
+            readLendGuard: async () => ({
+              lossFactor: 0n,
+              acceptedLossFactor: 0n,
+              defaulted: true
+            }),
+            readMarket: async () => ({})
+          },
           rates: { readRate: async () => 500n },
           make: {
             readActive: async () => undefined,
             reconcile: async () => {},
+            cancelBuys: async () => ({ submittedTransactions: [] }),
             hardHalt: async () => {},
             cleanup: ladderCleanup
           }
@@ -1259,6 +1665,7 @@ describe('createApplication', () => {
               readPosition: async () => ({
                 credit: 0n,
                 debt: 0n,
+                lossFactor: { lossFactor: 0n, acceptedLossFactor: 0n, defaulted: true },
                 cashBalance: 100n,
                 marketExposure: 0n,
                 totalExposure: 0n
@@ -1279,12 +1686,20 @@ describe('createApplication', () => {
           }
         },
         createLadderAdapters: () => ({
-          positions: { readMarket: async () => ({}) },
+          positions: {
+            readLendGuard: async () => ({
+              lossFactor: 0n,
+              acceptedLossFactor: 0n,
+              defaulted: true
+            }),
+            readMarket: async () => ({})
+          },
           rates: { readRate: async () => 500n },
           make: {
             cleanupRemovedMarkets: async () => [],
             readActive: async () => undefined,
             reconcile: async () => {},
+            cancelBuys: async () => ({ submittedTransactions: [] }),
             hardHalt: async () => {},
             cleanup: ladderCleanup
           }
@@ -1304,12 +1719,16 @@ describe('createApplication', () => {
     async command => {
       const cleanupRemovedMarkets = vi.fn(async () => [marketId])
       const createLadderAdapters = vi.fn(() => ({
-        positions: { readMarket: async () => ({}) },
+        positions: {
+          readLendGuard: async () => ({ lossFactor: 0n, acceptedLossFactor: 0n, defaulted: true }),
+          readMarket: async () => ({})
+        },
         rates: { readRate: async () => 500n },
         make: {
           cleanupRemovedMarkets,
           readActive: async () => undefined,
           reconcile: async () => {},
+          cancelBuys: async () => ({ submittedTransactions: [] }),
           hardHalt: async () => {},
           cleanup: async () => {}
         }
@@ -1342,12 +1761,20 @@ describe('createApplication', () => {
       const createLadderAdapters = vi.fn(() => {
         controller.abort()
         return {
-          positions: { readMarket: async () => ({}) },
+          positions: {
+            readLendGuard: async () => ({
+              lossFactor: 0n,
+              acceptedLossFactor: 0n,
+              defaulted: true
+            }),
+            readMarket: async () => ({})
+          },
           rates: { readRate: async () => 500n },
           make: {
             cleanupRemovedMarkets,
             readActive: async () => undefined,
             reconcile: async () => {},
+            cancelBuys: async () => ({ submittedTransactions: [] }),
             hardHalt: async () => {},
             cleanup: async () => {}
           }
@@ -1381,12 +1808,20 @@ describe('createApplication', () => {
       },
       {
         createLadderAdapters: () => ({
-          positions: { readMarket: async () => ({}) },
+          positions: {
+            readLendGuard: async () => ({
+              lossFactor: 0n,
+              acceptedLossFactor: 0n,
+              defaulted: true
+            }),
+            readMarket: async () => ({})
+          },
           rates: { readRate: async () => 500n },
           make: {
             cleanupRemovedMarkets,
             readActive: async () => undefined,
             reconcile: async () => {},
+            cancelBuys: async () => ({ submittedTransactions: [] }),
             hardHalt: async () => {},
             cleanup: async () => {}
           }
@@ -1436,6 +1871,7 @@ describe('createApplication', () => {
               readPosition: async () => ({
                 credit: 0n,
                 debt: 0n,
+                lossFactor: { lossFactor: 0n, acceptedLossFactor: 0n, defaulted: true },
                 cashBalance: 100n,
                 marketExposure: 0n,
                 totalExposure: 0n
@@ -1458,11 +1894,19 @@ describe('createApplication', () => {
         createLadderAdapters: () => {
           started.push('ladder')
           return {
-            positions: { readMarket: async () => ({}) },
+            positions: {
+              readLendGuard: async () => ({
+                lossFactor: 0n,
+                acceptedLossFactor: 0n,
+                defaulted: true
+              }),
+              readMarket: async () => ({})
+            },
             rates: { readRate: async () => 475n },
             make: {
               readActive: async () => undefined,
               reconcile: async () => {},
+              cancelBuys: async () => ({ submittedTransactions: [] }),
               hardHalt: async () => {},
               cleanup: async () => {}
             }

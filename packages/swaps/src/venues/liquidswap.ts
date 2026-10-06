@@ -37,7 +37,7 @@ function amountInDecimalString(params: QuoteParameters | PriceParameters): strin
  * `execution` calldata and a plain-ERC20-`approve` spender (`execution.to` — the swap and the approval
  * target the same address; no Permit2, no key). `slippage` is a percent (bps / 100) and the API bakes
  * the resulting `execution.details.minAmountOut` (base units) into the calldata. The sell amount is
- * committed off-chain, so the {@link Swap} carries `amountIn: { source: 'fixed' }`.
+ * committed offchain, so the {@link Swap} carries `amountIn: { source: 'fixed' }`.
  */
 export async function quoteLiquidSwap(
   client: RateLimitedClient,

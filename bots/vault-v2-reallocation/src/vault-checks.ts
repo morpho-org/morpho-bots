@@ -8,7 +8,7 @@ export type VaultCheckReads = {
   assertDeployed: (vault: Address) => Promise<void>
   /**
    * Block-pinned lens fetch; throws `InvalidVaultError` when the address is not a
-   * factory-made VaultV2 with exactly one Morpho Blue market adapter. Carries the EOA's strict
+   * factory-made VaultV2 with exactly one Morpho Blue Market adapter. Carries the EOA's strict
    * `isAllocator` bit (VaultV2.allocate admits no curator/owner fallback), and the adapter comes
    * from the vault's own `adapters` enumeration, so no recognition cross-check is needed.
    */
@@ -17,7 +17,7 @@ export type VaultCheckReads = {
 
 /**
  * Startup validation of the whitelist, run concurrently across vaults: each must hold code and
- * resolve as a factory-made VaultV2 with exactly one Morpho Blue market adapter — the signing
+ * resolve as a factory-made VaultV2 with exactly one Morpho Blue Market adapter — the signing
  * policy authorizes every whitelisted address as a tx target and pins its adapter, so any mismatch
  * throws `InvalidVaultError`. The allocator role is only probed and warned about
  * (`allocator.missing_role`): a pending grant must not crash-loop the bot, and the tick re-checks

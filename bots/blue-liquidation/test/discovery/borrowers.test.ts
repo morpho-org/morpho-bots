@@ -22,7 +22,7 @@ const BORROWER_2 = '0x2222222222222222222222222222222222222222'
 const URL = 'https://api.example/graphql'
 
 // Minimal raw response row — discovery only reads market.marketId + user.address (params come from
-// idToMarketParams and the lens re-reads all position state fresh on-chain).
+// idToMarketParams and the lens re-reads all position state fresh onchain).
 const row = (marketId: unknown, address: unknown) => ({
   market: { marketId },
   user: { address }
@@ -157,7 +157,7 @@ describe('discoverCandidates', () => {
       return out
     }
 
-  it('joins pairs to on-chain params and drops unresolved ids with a loud warn', async () => {
+  it('joins pairs to onchain params and drops unresolved ids with a loud warn', async () => {
     const { logger, events } = spyLogger()
     const loan = getAddress('0x5555555555555555555555555555555555555555')
     const fetchPage: FetchPositionPage = async () => ({

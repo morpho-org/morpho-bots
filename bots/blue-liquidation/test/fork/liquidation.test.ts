@@ -93,7 +93,7 @@ describe.skipIf(!FORK_URL || !FIXTURE)(
       const client = createDeploylessClient(cfg)
       await assertContractDeployed(client, executooor, 'EXECUTOOOR_ADDRESS')
 
-      // 1. Fresh lens read — the lens re-derives the id from params and reads accrued state.
+      // Fresh lens read — the lens re-derives the id from params and reads accrued state.
       const lensOut = await readBlueLiquidationLens(client, MORPHO, [
         { params: marketParams, borrower }
       ])
@@ -101,17 +101,17 @@ describe.skipIf(!FORK_URL || !FIXTURE)(
       expect(out).toBeDefined()
       if (!out) throw new Error('lens returned no entry')
 
-      // 2. Liquidatable (unhealthy, has debt, valid market).
+      // Liquidatable (unhealthy, has debt, valid market).
       expect(isLiquidatable(out)).toBe(true)
 
-      // 3. Seize-exact plan. The successful exec below is the on-chain proof that the contract-derived
+      // Seize-exact plan. The successful exec below is the onchain proof that the contract-derived
       //    repaidShares stayed ≤ borrowShares (no debt-underflow revert).
       const liquidationPlan = plan(planInputFromLens(out))
       expect(liquidationPlan).not.toBeNull()
       if (!liquidationPlan) throw new Error('plan returned null')
       expect(liquidationPlan.seizedAssets).toBeGreaterThan(0n)
 
-      // 4. Single-hop Uniswap-V3 swap (collateral → loan via the operator pool) + the real exec.
+      // Single-hop Uniswap-V3 swap (collateral → loan via the operator pool) + the real exec.
       const swap = quoteUniswapV3(
         { router: SWAP_ROUTER_02, fee: poolFee },
         {
@@ -153,11 +153,11 @@ describe.skipIf(!FORK_URL || !FIXTURE)(
         recipient: LIQUIDATOR
       })
 
-      // 5. Simulate the exact broadcast calldata — must be ok before we send.
+      // Simulate the exact broadcast calldata — must be ok before we send.
       const sim = await simulateLiquidationExec(client, { executooor, eoa: LIQUIDATOR, data })
       expect(sim.status).toBe('ok')
 
-      // 6. Broadcast through the real signer path.
+      // Broadcast through the real signer path.
       const loanBefore = await test.readContract({
         address: out.params.loanToken,
         abi: erc20Abi,
@@ -176,7 +176,7 @@ describe.skipIf(!FORK_URL || !FIXTURE)(
       const receipt = await test.waitForTransactionReceipt({ hash: txHash })
       expect(receipt.status).toBe('success')
 
-      // 7. The EOA gained the loan token, and the Executor ends with neither token.
+      // The EOA gained the loan token, and the Executor ends with neither token.
       const loanAfter = await test.readContract({
         address: out.params.loanToken,
         abi: erc20Abi,

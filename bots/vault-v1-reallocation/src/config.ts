@@ -6,7 +6,7 @@ import { base, mainnet } from 'viem/chains'
 
 import { InvalidConfigError } from './invalid-config.error'
 
-// Chains this bot supports. MetaMorpho vault addresses come from VAULT_WHITELIST and the Blue
+// Chains this bot supports. Vault V1 addresses come from VAULT_WHITELIST and the Blue
 // deployment addresses are resolved by chainId inside blue-sdk-viem's fetchers, so an entry here is
 // just the viem chain. loadConfig fails loud for any CHAIN_ID not present here.
 const CHAIN_MAP: Record<number, Chain> = {
@@ -128,9 +128,10 @@ const isStrategyName = (value: string): value is StrategyName =>
 /**
  * Reads the full env table into a typed, validated {@link Config}. Throws {@link InvalidConfigError}
  * on any missing required var, malformed value, or unknown `CHAIN_ID` — the bot must fail loud at
- * startup rather than run half-configured. On-chain checks (that each whitelisted vault holds code
- * and answers the MetaMorpho V1 surface) are performed in `index.ts` once a client exists.
+ * startup rather than run half-configured. Onchain checks (that each whitelisted vault holds code
+ * and answers the Vault V1 surface) are performed in `index.ts` once a client exists.
  */
+// oxlint-disable-next-line complexity
 export const loadConfig = (
   env: Env = process.env,
   deps: { chainMap?: Record<number, Chain> } = {}

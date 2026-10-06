@@ -19,7 +19,8 @@ import type {
   GetConsumedNonce,
   GetReceipt,
   SendTx,
-  SyncNonce
+  SyncNonce,
+  TxRequest
 } from './queue/pending-queue'
 
 import { evaluatePolicy, PolicyViolationError } from './policy'
@@ -27,10 +28,29 @@ import { createHttpTransport } from './transport'
 
 const TRANSACTION_ALREADY_KNOWN = /already known|transaction already imported/i
 
+/**
+ * Prepares, policy-checks, and signs at an explicit nonce without broadcasting, so a caller can make
+ * the signed bytes durable before they leave the process. A policy violation throws before signing.
+ * The nonce is not claimed: a caller that allocates its own must not share a signer with `send`.
+ */
+type SignTx = (
+  request: TxRequest & { maxFeePerGas: bigint; maxPriorityFeePerGas: bigint; nonce: number }
+) => Promise<{ nonce: number; txHash: Hex; raw: Hex; gas: bigint }>
+
+/**
+ * Sends signed bytes to the primary endpoint only; anything that may have reached the pool is
+ * `broadcastUnknown`, to reconcile by `keccak256(raw)`. A throw means the endpoint rejects the bytes
+ * now, not that an earlier send of the same bytes never landed.
+ */
+type BroadcastRaw = (raw: Hex) => Promise<{ broadcastUnknown?: true }>
+
 /** The signed-send primitives {@link createSigner} returns and `createPendingQueue` injects. */
 export type Signer = {
   account: Account
+  /** {@link Signer.sign} then {@link Signer.broadcastRaw}, claiming a nonce when none is given. */
   send: SendTx
+  sign: SignTx
+  broadcastRaw: BroadcastRaw
   getReceipt: GetReceipt
   getBaseFee: GetBaseFee
   syncNonce: SyncNonce
@@ -127,29 +147,15 @@ export function createAccountSigner(options: {
     return nonce
   }
 
-  // First send: claim from the local cursor and pass an explicit nonce into prepare/send. If the
-  // hashless broadcast fails, roll the cursor back so the next tick can retry the same nonce.
-  // Replacement: the queue passes an explicit `nonce`, which does not move the cursor.
-  const send: SendTx = async req => {
-    const nonce = req.nonce ?? (await claimNonce())
-    let request: Awaited<ReturnType<typeof prepareTransactionRequest>>
-    try {
-      request = await prepareTransactionRequest(client, {
-        account,
-        to: req.to,
-        data: req.data,
-        maxFeePerGas: req.maxFeePerGas,
-        maxPriorityFeePerGas: req.maxPriorityFeePerGas,
-        nonce
-      })
-    } catch (error) {
-      if (req.nonce === undefined) nextNonce = Math.min(nextNonce ?? nonce, nonce)
-      throw error
-    }
-    // Default-deny guard between prepare and broadcast: a violation means an upstream encoding bug,
-    // so fail loudly and never send. Roll the cursor back (nothing was broadcast) so the claimed
-    // nonce isn't stranded. In-process there is no remote signer to distrust, so the recovered-sender
-    // and prepared-vs-signed field checks the daemon-era client did are redundant and skipped.
+  const sign: SignTx = async req => {
+    const request = await prepareTransactionRequest(client, {
+      account,
+      to: req.to,
+      data: req.data,
+      maxFeePerGas: req.maxFeePerGas,
+      maxPriorityFeePerGas: req.maxPriorityFeePerGas,
+      nonce: req.nonce
+    })
     if (options.policy) {
       const decision = evaluatePolicy(options.policy, {
         chainId: options.chain.id,
@@ -160,40 +166,40 @@ export function createAccountSigner(options: {
         maxFeePerGas: req.maxFeePerGas
       })
       if (!decision.ok) {
-        if (req.nonce === undefined) nextNonce = Math.min(nextNonce ?? nonce, nonce)
         options.logger?.error('signer.policy_violation', {
           check: decision.check,
           reason: decision.message,
           to: req.to,
-          nonce
+          nonce: req.nonce
         })
         throw new PolicyViolationError(decision.message, decision.check)
       }
     }
-    let serializedTransaction: Hex
+    const raw = await account.signTransaction(request)
+    return { nonce: req.nonce, txHash: keccak256(raw), raw, gas: request.gas ?? 0n }
+  }
+
+  const broadcastRaw: BroadcastRaw = async raw => {
     try {
-      serializedTransaction = await account.signTransaction(request)
+      const responseHash = await sendRawTransaction(broadcastClient, { serializedTransaction: raw })
+      // The signed bytes are authoritative: a mismatched response is as ambiguous as a lost one.
+      return responseHash === keccak256(raw) ? {} : { broadcastUnknown: true }
+    } catch (error) {
+      if (error instanceof RpcError && !TRANSACTION_ALREADY_KNOWN.test(error.details)) throw error
+      return { broadcastUnknown: true }
+    }
+  }
+
+  // A first send claims from the cursor and gives the nonce back if nothing was broadcast; a
+  // replacement passes its own nonce, which never moves the cursor.
+  const send: SendTx = async req => {
+    const nonce = req.nonce ?? (await claimNonce())
+    try {
+      const { raw, ...signed } = await sign({ ...req, nonce })
+      return { ...signed, ...(await broadcastRaw(raw)) }
     } catch (error) {
       if (req.nonce === undefined) nextNonce = Math.min(nextNonce ?? nonce, nonce)
       throw error
-    }
-    const txHash = keccak256(serializedTransaction)
-    try {
-      const responseHash = await sendRawTransaction(broadcastClient, { serializedTransaction })
-      if (responseHash !== txHash) {
-        // The signed bytes are authoritative. A mismatched provider response is ambiguous in the
-        // same way as a lost response, so retain the nonce and reconcile the deterministic hash.
-        return { nonce, txHash, gas: request.gas ?? 0n, broadcastUnknown: true }
-      }
-      return { nonce, txHash, gas: request.gas ?? 0n }
-    } catch (error) {
-      if (error instanceof RpcError && !TRANSACTION_ALREADY_KNOWN.test(error.details)) {
-        if (req.nonce === undefined) nextNonce = Math.min(nextNonce ?? nonce, nonce)
-        throw error
-      }
-      // The RPC may have accepted the raw transaction before losing its response. The deterministic
-      // local hash lets the queue retain and reconcile it; reusing this nonce would be unsafe.
-      return { nonce, txHash, gas: request.gas ?? 0n, broadcastUnknown: true }
     }
   }
 
@@ -215,11 +221,21 @@ export function createAccountSigner(options: {
   }
 
   // Latest (mined) count — distinct from the local `pending` cursor. The queue's reconciler compares
-  // it against tracked nonces to evict txs whose nonce was consumed on-chain without a receipt for us.
+  // it against tracked nonces to evict txs whose nonce was consumed onchain without a receipt for us.
   const consumedNonce: GetConsumedNonce = () =>
     getTransactionCount(client, { address: account.address, blockTag: 'latest' })
 
   const balance = (): Promise<bigint> => getBalance(client, { address: account.address })
 
-  return { account, send, getReceipt, getBaseFee, syncNonce, consumedNonce, balance }
+  return {
+    account,
+    send,
+    sign,
+    broadcastRaw,
+    getReceipt,
+    getBaseFee,
+    syncNonce,
+    consumedNonce,
+    balance
+  }
 }

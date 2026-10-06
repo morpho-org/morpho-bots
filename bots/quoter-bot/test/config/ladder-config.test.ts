@@ -77,7 +77,10 @@ describe('ladder configuration loading', () => {
     const config = ConfigService.from({
       ...baseEnvironment,
       BOOTSTRAP_MARKETS: JSON.stringify([
-        bootstrapItem({ targetRate: { strategy: 'hardcoded', hardcodedRateBps: '400' } })
+        bootstrapItem({
+          targetRate: { strategy: 'hardcoded', hardcodedRateBps: '400' },
+          minimumRateBps: '300'
+        })
       ]),
       LADDER_MARKETS: JSON.stringify([item({ targetRate: { strategy: 'variable_rate_avg' } })])
     })
@@ -344,6 +347,93 @@ describe('ladder configuration loading', () => {
     }
   )
 
+  describe('inventorySkew', () => {
+    test('loads a nested YAML inventory skew with quoted and bare integers', async () => {
+      const directory = await mkdtemp(join(tmpdir(), 'ladder-config-'))
+      directories.push(directory)
+      const path = join(directory, 'quoter-bot.yaml')
+      const yamlItem = Object.entries(item())
+        .map(([key, value]) => `    ${key}: '${value}'`)
+        .join('\n')
+      await writeFile(
+        path,
+        `ladder:\n  -\n${yamlItem}\n    inventorySkew:\n      unitsPerStep: '5'\n      neutralCredit: 2\n      maxSkewBps: '300'\n`
+      )
+
+      const config = await ConfigService.load(baseEnvironment, { configPath: path })
+
+      expect(config.ladder[0]?.inventorySkew).toEqual({
+        unitsPerStep: 5n,
+        neutralCredit: 2n,
+        maxSkewBps: 300n
+      })
+    })
+
+    test('loads a LADDER_MARKETS inventory skew and omits the absent optional fields', () => {
+      const config = ConfigService.from({
+        ...baseEnvironment,
+        LADDER_MARKETS: JSON.stringify([item({ inventorySkew: { unitsPerStep: '5' } })])
+      })
+
+      expect(config.ladder[0]?.inventorySkew).toStrictEqual({ unitsPerStep: 5n })
+    })
+
+    test('leaves inventorySkew absent when the block is omitted', () => {
+      const config = ConfigService.from({
+        ...baseEnvironment,
+        LADDER_MARKETS: JSON.stringify([item()])
+      })
+
+      expect(config.ladder[0]).not.toHaveProperty('inventorySkew')
+    })
+
+    test.each([
+      [
+        'unsupported nested key',
+        { unitsPerStep: '5', skewBps: '1' },
+        'ladder[0].inventorySkew contains an unsupported key'
+      ],
+      [
+        'missing unitsPerStep',
+        { neutralCredit: '1' },
+        'ladder[0].inventorySkew.unitsPerStep is required'
+      ],
+      [
+        'zero unitsPerStep',
+        { unitsPerStep: '0' },
+        'ladder[0].inventorySkew.unitsPerStep must be positive'
+      ],
+      [
+        'number token unitsPerStep',
+        { unitsPerStep: 5 },
+        'ladder[0].inventorySkew.unitsPerStep must be an integer'
+      ],
+      [
+        'negative neutralCredit',
+        { unitsPerStep: '5', neutralCredit: '-1' },
+        'ladder[0].inventorySkew.neutralCredit must be an integer'
+      ],
+      [
+        'zero maxSkewBps',
+        { unitsPerStep: '5', maxSkewBps: '0' },
+        'ladder[0].inventorySkew.maxSkewBps must be positive'
+      ],
+      [
+        'maxSkewBps beyond the hard range',
+        { unitsPerStep: '5', maxSkewBps: '601' },
+        'ladder[0].inventorySkew.maxSkewBps must not exceed maximumRateBps minus minimumRateBps'
+      ],
+      ['non-object block', '5', 'ladder[0].inventorySkew must be an object']
+    ])('rejects an invalid LADDER_MARKETS inventory skew: %s', (_name, inventorySkew, message) => {
+      expect(() =>
+        ConfigService.from({
+          ...baseEnvironment,
+          LADDER_MARKETS: JSON.stringify([item({ inventorySkew })])
+        })
+      ).toThrow(message)
+    })
+  })
+
   test('defaults to an empty list and loads a root YAML ladder list', async () => {
     expect(ConfigService.from(baseEnvironment).ladder).toEqual([])
     const directory = await mkdtemp(join(tmpdir(), 'ladder-config-'))
@@ -407,7 +497,7 @@ describe('ladder configuration loading', () => {
           item({ lowerRateBudgetAssets: '100', minimumOfferAssets: '101' })
         ])
       })
-    ).toThrow('must be at least minimumOfferAssets')
+    ).toThrow('lowerRateBudgetAssets must be zero or at least minimumOfferAssets')
   })
 
   test('defaults an omitted book-crossed cooldown to three loop intervals', () => {
@@ -446,5 +536,67 @@ describe('ladder configuration loading', () => {
         })
       ).toThrow('ladder[0].bookCrossedCooldownSeconds')
     }
+  })
+
+  test('derives a sell ceiling only for a ladder sharing a bootstrap market', () => {
+    const config = ConfigService.from({
+      ...baseEnvironment,
+      MARKET_IDS: `${marketId},${secondMarketId}`,
+      BOOTSTRAP_MARKETS: JSON.stringify([bootstrapItem({ minimumRateBps: '450' })]),
+      LADDER_MARKETS: JSON.stringify([
+        item({ marketId: secondMarketId }),
+        item({ minimumRateBps: '100' })
+      ])
+    })
+
+    expect(config.ladder.map(entry => entry.maximumSellRateBps)).toEqual([undefined, 440n])
+  })
+
+  test('accepts a ceiling equal to the ladder minimum and rejects one below it, naming both entries', () => {
+    const load = (bootstrapMinimumRateBps: string) =>
+      ConfigService.from({
+        ...baseEnvironment,
+        BOOTSTRAP_MARKETS: JSON.stringify([
+          bootstrapItem({ minimumRateBps: bootstrapMinimumRateBps })
+        ]),
+        LADDER_MARKETS: JSON.stringify([item()])
+      })
+
+    expect(load('210').ladder[0]?.maximumSellRateBps).toBe(200n)
+    let rejected: unknown
+    try {
+      load('209')
+    } catch (error) {
+      rejected = error
+    }
+    expect(rejected).toBeInstanceOf(ConfigValidationError)
+    expect(rejected).toMatchObject({
+      field: 'ladder[0].minimumRateBps',
+      reason: 'bootstrap-overlap',
+      message: expect.stringContaining('bootstrap[0].minimumRateBps')
+    })
+  })
+
+  test('loads a lend-only ladder beside a same-market bootstrap with no sell ceiling', () => {
+    const load = (lowerRateBudgetAssets: string) =>
+      ConfigService.from({
+        ...baseEnvironment,
+        BOOTSTRAP_MARKETS: JSON.stringify([bootstrapItem({ minimumRateBps: '209' })]),
+        LADDER_MARKETS: JSON.stringify([item({ lowerRateBudgetAssets })])
+      })
+
+    const [ladder] = load('0').ladder
+    expect(ladder?.lowerRateBudgetAssets).toBe(0n)
+    expect(ladder?.maximumSellRateBps).toBeUndefined()
+    expect(() => load('10')).toThrow(ConfigValidationError)
+  })
+
+  test('refuses a sell ceiling supplied as ladder configuration', () => {
+    expect(() =>
+      ConfigService.from({
+        ...baseEnvironment,
+        LADDER_MARKETS: JSON.stringify([item({ maximumSellRateBps: '300' })])
+      })
+    ).toThrow(ConfigValidationError)
   })
 })

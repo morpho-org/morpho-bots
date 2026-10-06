@@ -83,7 +83,7 @@ const LEVEL_BY_REASON: Record<PlanSkipReason, LogLevel> = {
  * unit-testable without a chain, API, or signer.
  *
  * Discovery failure is tolerated: a transient error is logged (`discover.error`) and the tick proceeds
- * with zero new candidates. The lens reads every candidate fresh on-chain, so discovery is a coverage
+ * with zero new candidates. The lens reads every candidate fresh onchain, so discovery is a coverage
  * source, never a correctness dependency — API indexing lag is coverage latency only.
  *
  * `tick.end` is emitted even when a position aborts the tick — with `complete: false`, so partial
@@ -146,8 +146,8 @@ export async function runTick(deps: {
     logger
   } = deps
 
-  // 1. Discover the (marketParams, borrower) universe → lens inputs. The lens re-derives the id from
-  //    params on-chain, so no `caller`/gate is threaded (Blue is permissionless). A transient
+  // Discover the (marketParams, borrower) universe → lens inputs. The lens re-derives the id from
+  //    params onchain, so no `caller`/gate is threaded (Blue is permissionless). A transient
   //    discovery failure is non-fatal: log it and proceed with zero candidates so the pending queue
   //    (confirmations / fee bumps) maintained below is still driven this block.
   const { data: candidates, error: discoverError } = await tryCatch(discover())
@@ -157,7 +157,7 @@ export async function runTick(deps: {
     borrower: candidate.borrower
   }))
 
-  // 2. Read the lens fresh for the whole batch in one deployless eth_call.
+  // Read the lens fresh for the whole batch in one deployless eth_call.
   const lensOut = await readLens(pairs)
   logger.info('lens.read', { pairs: pairs.length, returned: lensOut.size })
 
@@ -177,7 +177,7 @@ export async function runTick(deps: {
     notSent: 0
   }
 
-  // 3. Compose liquidatability off-chain → plan → quote → simulate → submit. `inflight` is captured
+  // Compose liquidatability offchain → plan → quote → simulate → submit. `inflight` is captured
   //    once; discovery yields distinct (market, borrower) pairs, so no label repeats within a tick.
   const inflight = inflightLabels()
   let complete = false
@@ -270,6 +270,7 @@ export async function runTick(deps: {
           swapPlan,
           label
         })
+        // oxlint-disable-next-line max-depth
         if (outcome.sent) {
           backoff.clear(label)
           counters.submitted += 1
@@ -283,6 +284,7 @@ export async function runTick(deps: {
           // refusal says nothing about the position, so it records nothing.
           // Blue keeps backoff on every rejected send, including an execution revert, because its
           // liquidation incentive is static — unlike midnight, which exempts that case.
+          // oxlint-disable-next-line max-depth
           if (outcome.reason === 'send_failed') backoff.record(label, chainHead)
         }
       }

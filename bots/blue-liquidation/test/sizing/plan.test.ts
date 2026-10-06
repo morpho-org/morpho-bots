@@ -32,7 +32,7 @@ function baseInput(overrides: Partial<PlanInput> = {}): PlanInput {
   }
 }
 
-// Blue's on-chain `seizedAssets > 0` → repaidShares derivation (Morpho.sol.liquidate), replicated
+// Blue's onchain `seizedAssets > 0` → repaidShares derivation (Morpho.sol.liquidate), replicated
 // with the round-UP chain. This is the independent oracle the underflow-safety sweep checks against;
 // note it uses DIFFERENT primitives (mulDivUp / wDivUp / toSharesUp) than plan()'s double-floor.
 function contractRepaidShares(input: PlanInput, seizedAssets: bigint): bigint {
@@ -97,8 +97,8 @@ describe('plan — branch selection', () => {
   })
 })
 
-describe('plan — repaidShares ≤ borrowShares (no on-chain underflow)', () => {
-  // The load-bearing correctness claim (TIB Open Questions / Verification): the inbound double-floor
+describe('plan — repaidShares ≤ borrowShares (no onchain underflow)', () => {
+  // The load-bearing correctness claim: the inbound double-floor
   // in seizeForFullDebt must dominate the contract's ceil-derivation so `borrowShares -= repaidShares`
   // never underflows — on BOTH the debt-binds and collateral-binds branches.
   it('holds across a broad deterministic sweep', () => {
@@ -115,7 +115,9 @@ describe('plan — repaidShares ≤ borrowShares (no on-chain underflow)', () =>
     for (const lltv of lltvs)
       for (const price of prices)
         for (const debtAssets of debts)
+          // oxlint-disable-next-line max-depth
           for (const scale of shareScales)
+            // oxlint-disable-next-line max-depth
             for (const collateral of collaterals) {
               const tba = 5n * debtAssets + 1n
               const input: PlanInput = {
@@ -129,6 +131,7 @@ describe('plan — repaidShares ≤ borrowShares (no on-chain underflow)', () =>
                 lltv
               }
               const result = plan(input)
+              // oxlint-disable-next-line max-depth
               if (!result) continue
               checked++
               // (1) never seizes more than the borrower's collateral.

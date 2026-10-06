@@ -5,7 +5,7 @@ import { isAddressEqual } from 'viem'
 import type { SwapStep } from '../types'
 
 /**
- * A pre-swap converter (ERC4626 redeem, Pendle PT redeem/swap, …). `resolve` returns `null` when
+ * A pre-swap converter (ERC-4626 redeem, Pendle PT redeem/swap, …). `resolve` returns `null` when
  * it does not apply to `token` — each unwrapper memoizes its own negatives, so repeated probing of
  * plain tokens is cheap. Amounts ride beside the step (they are quoting-internal threading), not
  * in it: the encoder never needs them.

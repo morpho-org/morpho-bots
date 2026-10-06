@@ -5,9 +5,10 @@ import type {
   LadderPositionService,
   LadderReferenceRateService
 } from '../../../src/application/ladder/ladder-quoter.service'
-import type { LadderConfig } from '../../../src/domain/ladder/ladder'
+import type { LadderConfig } from '../../../src/domain/ladder'
 
 import { LadderQuoterService } from '../../../src/application/ladder/ladder-quoter.service'
+import { validateLadderConfig } from '../../../src/domain/ladder'
 
 const marketId = `0x${'11'.repeat(32)}` as const
 const groupId = `0x${'22'.repeat(32)}` as const
@@ -38,9 +39,9 @@ const consumption = [
     marketId,
     side: 'higher' as const,
     groupRateBps: 550n,
-    maxAssets: 1_000n,
+    cap: { kind: 'assets', maximum: 1_000n },
     consumed: 40n,
-    remainingAssets: 960n
+    remaining: 960n
   }
 ]
 
@@ -49,7 +50,10 @@ describe('ladder consumption sampling', () => {
     const readActiveState = vi.fn(async () => ({ consumption }))
     const readActive = vi.fn(async () => undefined)
     const reconcile = vi.fn(async () => undefined)
-    const positions: LadderPositionService = { readMarket: async () => ({}) }
+    const positions: LadderPositionService = {
+      readLendGuard: async () => ({ lossFactor: 0n, acceptedLossFactor: 0n, defaulted: true }),
+      readMarket: async () => ({})
+    }
     const rates: LadderReferenceRateService = { readRate: async () => 500n }
     const make = {
       readActive,
@@ -59,7 +63,9 @@ describe('ladder consumption sampling', () => {
       cleanup: async () => undefined
     } as unknown as LadderMakeService
 
-    const results = await new LadderQuoterService(positions, rates, make, [config()]).runOnce({
+    const results = await new LadderQuoterService(positions, rates, make, [
+      validateLadderConfig(config())
+    ]).runOnce({
       verbose: true
     })
 
@@ -72,7 +78,10 @@ describe('ladder consumption sampling', () => {
 
   test('samples consumption before reconciliation forgets a replaced group', async () => {
     const order: string[] = []
-    const positions: LadderPositionService = { readMarket: async () => ({}) }
+    const positions: LadderPositionService = {
+      readLendGuard: async () => ({ lossFactor: 0n, acceptedLossFactor: 0n, defaulted: true }),
+      readMarket: async () => ({})
+    }
     const rates: LadderReferenceRateService = { readRate: async () => 500n }
     const make = {
       readActive: async () => undefined,
@@ -84,11 +93,14 @@ describe('ladder consumption sampling', () => {
         order.push('reconcile')
         return undefined
       },
+      cancelBuys: async () => ({ submittedTransactions: [] }),
       hardHalt: async () => undefined,
       cleanup: async () => undefined
     } as unknown as LadderMakeService
 
-    await new LadderQuoterService(positions, rates, make, [config()]).runOnce({ verbose: true })
+    await new LadderQuoterService(positions, rates, make, [validateLadderConfig(config())]).runOnce(
+      { verbose: true }
+    )
 
     expect(order).toEqual(['sample', 'reconcile'])
   })

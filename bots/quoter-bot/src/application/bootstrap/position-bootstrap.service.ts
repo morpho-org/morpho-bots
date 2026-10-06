@@ -5,15 +5,18 @@ import { cycleHasFailure, cycleRequiresHalt, waitForMonitorInterval } from '@rep
 import { withActiveSpan } from '@repo/telemetry'
 import { zeroFloorSub } from '@repo/utils'
 
+import type { LendHalt, LossFactorObservation } from '../../domain/loss-factor'
 import type {
   BootstrapConfig,
   BootstrapDecisionDiagnostics,
   BootstrapOffer,
   BootstrapPosition,
   BootstrapRate,
-  PositionBootstrapDecision
-} from '../../domain/bootstrap/position-bootstrap'
-import type { OperatorAdapterOperation } from '../operator-error-name.utils'
+  PositionBootstrapDecision,
+  ValidBootstrapConfig
+} from '../../domain/position-bootstrap'
+import type { BootstrapMempoolValidationError } from '../../infrastructure/bootstrap/bootstrap-mempool-validation.error'
+import type { OperatorAdapterOperation } from '../monitoring/operator-error-name.utils'
 import type {
   BootstrapMakeResult,
   BootstrapSubmittedTransaction,
@@ -24,25 +27,51 @@ import type {
   BootstrapVerboseState
 } from './position-bootstrap-verbose'
 
-import { BootstrapConfigurationError } from '../../domain/bootstrap/bootstrap-configuration.error'
-import {
-  decidePositionBootstrapTransition,
-  decidePositionBootstrapWithDiagnostics,
-  effectiveBootstrapPremiumBps,
-  validateBootstrapConfig
-} from '../../domain/bootstrap/position-bootstrap'
-import { BootstrapAdapterError } from '../../infrastructure/bootstrap/bootstrap-adapter.error'
+import { BootstrapConfigurationError } from '../../domain/bootstrap-configuration.error'
 import {
   MARKET_FAILURE_BUDGET_CYCLES,
   createMarketFailureBudget
-} from '../market-failure-budget.utils'
-import { marketObservationMatured } from '../market-maturity.utils'
+} from '../../domain/market-failure-budget'
+import { marketObservationMatured } from '../../domain/market-maturity'
+import {
+  decidePositionBootstrapTransition,
+  decidePositionBootstrapWithDiagnostics,
+  effectiveBootstrapPremiumBps
+} from '../../domain/position-bootstrap'
+import { BootstrapAdapterError } from '../../infrastructure/bootstrap/bootstrap-adapter.error'
+import { isBelowMinimumOfferRejection } from '../../infrastructure/bootstrap/bootstrap-mempool-validation.utils'
+import { isRateWindowEmpty } from '../../infrastructure/bootstrap/bootstrap-offer.utils'
+import { snapshotErrorOperationField } from '../../infrastructure/exposure/exposure-admission.utils'
 import {
   adapterOperationField,
   operatorErrorDetails,
   operatorErrorName
-} from '../operator-error-name.utils'
+} from '../monitoring/operator-error-name.utils'
 import { BootstrapOwnershipCleanupError } from './bootstrap-ownership-cleanup.error'
+
+const confirmedCancellation = (transactions: readonly BootstrapSubmittedTransaction[]) =>
+  transactions.some(transaction => transaction.operation === 'cancel')
+
+/** Observed outcomes the domain returns only when a fresh read shows no resting or pending offer. */
+const OFFERLESS_IDLE_ACTIONS = new Set<string>([
+  'no-capacity',
+  'rate-out-of-range',
+  'auto-refill-disabled',
+  'target-reached'
+])
+
+const isLendHaltPlan = (plan: BootstrapRunPlan) =>
+  !('result' in plan) &&
+  plan.decision.kind === 'invalidate' &&
+  plan.decision.reason === 'loss-factor-mismatch'
+
+const guardReadFailure = (error: unknown) =>
+  error instanceof BootstrapAdapterError && error.operation === 'loss-factor-read'
+
+const withheldAfterCancellation = (error: unknown) =>
+  error instanceof BootstrapAdapterError &&
+  error.operation === 'publication-reservation-cleanup' &&
+  confirmedCancellation(error.confirmedTransactions)
 
 /** Fixed cadence of the bootstrap monitor loop, in milliseconds. */
 export const BOOTSTRAP_MONITOR_INTERVAL_MS = 60_000
@@ -53,22 +82,25 @@ type DecisionInvalidationReason = Extract<
 >['reason']
 
 type FailedInvalidationContext =
-  | { stage: 'position-read'; error: unknown }
-  | { stage: 'make'; reason: DecisionInvalidationReason }
+  | { stage: 'position-read' | 'guard-read'; error: unknown }
+  | { stage: 'make'; reason: DecisionInvalidationReason; halt?: LendHalt }
 
 /** Port for reading the fresh chain position and active bootstrap offer for one market. */
 export interface BootstrapPositionService {
   /**
    * Reads the complete position state required for one bootstrap decision.
    * @param marketId - Canonical market identifier to inspect.
-   * @returns Fresh credit, debt, capacity inputs, any representative active bootstrap offer, and a
-   *   reconciliation marker when duplicate groups exist.
-   * @throws Error when the position provider cannot return a fresh, valid snapshot.
+   * @returns Fresh credit, debt, capacity inputs, the market loss factor beside its accepted value,
+   *   any representative active bootstrap offer, and a reconciliation marker when duplicate groups
+   *   exist.
+   * @throws Error when the position provider cannot return a fresh, valid snapshot; an adapter
+   *   error with operation `loss-factor-read` when the loss factor itself is malformed.
    * @remarks This read-only port must not publish, replace, or invalidate offers.
    */
   readPosition(marketId: Hex): Promise<
     BootstrapPosition & {
       debt: bigint
+      lossFactor: LossFactorObservation
       activeOffer?: BootstrapOffer
       requiresReconciliation?: boolean
     }
@@ -122,7 +154,9 @@ export interface BootstrapMakeService {
       | 'replace'
       | 'target-reached'
       | 'no-capacity'
+      | 'rate-out-of-range'
       | 'auto-refill-disabled'
+      | 'loss-factor-mismatch'
       | 'market-read-failed'
     onTransactionSubmitted?: BootstrapTransactionSubmittedObserver
   }): Promise<BootstrapMakeResult>
@@ -135,11 +169,7 @@ export interface BootstrapMakeService {
    * adapters return `logged` without claiming cleanup occurred.
    */
   hardHalt(parameters: {
-    reason:
-      | 'reference-read-failed'
-      | 'bootstrap-decision-failed'
-      | 'bootstrap-configuration-failed'
-      | 'market-invalidation-failed'
+    reason: 'reference-read-failed' | 'bootstrap-decision-failed' | 'market-invalidation-failed'
     onTransactionSubmitted?: BootstrapTransactionSubmittedObserver
   }): Promise<BootstrapMakeResult>
   /**
@@ -159,30 +189,62 @@ type BootstrapRunOutcome =
   | {
       marketId: Hex
       status: 'observed'
-      action: 'target-reached' | 'auto-refill-disabled' | 'no-capacity' | 'rest' | 'matured'
+      action:
+        | 'target-reached'
+        | 'auto-refill-disabled'
+        | 'no-capacity'
+        | 'rate-out-of-range'
+        | 'rest'
+        | 'matured'
     }
   | {
       marketId: Hex
       status: 'applied' | 'logged'
       action: 'invalidate' | 'publish' | 'replace'
     }
+  | ({
+      marketId: Hex
+      status: 'observed' | 'applied' | 'logged'
+      action: 'lend-halted'
+      reason: 'loss-factor-mismatch'
+    } & LendHalt)
   | {
       marketId: Hex
+      status: 'applied'
+      action: 'publication-withheld'
+      reason: 'capacity-changed' | 'price-changed'
+    }
+  | {
+      marketId: Hex
+      status: 'observed' | 'applied' | 'logged'
+      action: 'publication-withheld'
+      reason: 'below-minimum-offer' | 'rate-out-of-range'
+      minimumAssets?: string
+    }
+  | ({
+      marketId: Hex
+      status: 'applied'
+      action: 'publication-withheld'
+      reason: 'loss-factor-mismatch'
+    } & LendHalt)
+  | ({
+      marketId: Hex
       status: 'failed'
-      stage: 'position-read' | 'make'
+      stage: 'position-read' | 'guard-read' | 'make'
       invalidated: boolean
       invalidationLogged?: boolean
       errorName: string
       adapterOperation?: OperatorAdapterOperation
+      snapshotErrorOperation?: OperatorAdapterOperation
       minimumAssets?: string
       invalidationErrorName?: string
       ownershipCleanupErrorName?: string
       reservationCleanupErrorName?: string
-    }
+    } & Partial<LendHalt>)
   | {
       marketId: Hex
       status: 'halted'
-      stage: 'configuration' | 'reference-read' | 'decision'
+      stage: 'reference-read' | 'decision'
       strategyInvalidated: boolean
       strategyInvalidationLogged?: boolean
       errorName: string
@@ -192,14 +254,14 @@ type BootstrapRunOutcome =
   | {
       marketId: Hex
       status: 'halted'
-      stage: 'position-read'
+      stage: 'position-read' | 'guard-read'
       strategyInvalidated: boolean
       strategyInvalidationLogged?: boolean
       errorName: string
       invalidationErrorName: string
       hardHaltErrorName?: string
     }
-  | {
+  | ({
       marketId: Hex
       status: 'halted'
       stage: 'make'
@@ -209,7 +271,7 @@ type BootstrapRunOutcome =
       strategyInvalidationLogged?: boolean
       invalidationErrorName: string
       hardHaltErrorName?: string
-    }
+    } & Partial<LendHalt>)
 
 /** Sanitized outcome for one configured market in a bootstrap cycle. */
 export type BootstrapRunResult = BootstrapRunOutcome & {
@@ -224,10 +286,15 @@ type BootstrapRunPlan =
       config: BootstrapConfig
       decision: PositionBootstrapDecision
       plannedOfferAssets?: bigint
+      cashBound?: true
+      belowMinimum?: BootstrapMempoolValidationError
+      rateWindowEmpty?: true
       verbose?: BootstrapVerbosePlan
       plannedMs: number
     }
   | { result: BootstrapRunResult }
+
+type UnpublishableOffer = BootstrapMempoolValidationError | 'rate-window-empty'
 
 type BootstrapMutationOutcome = {
   result: BootstrapRunOutcome
@@ -270,7 +337,7 @@ export class PositionBootstrapService {
     private readonly positions: BootstrapPositionService,
     private readonly rates: BootstrapReferenceRateService,
     private readonly make: BootstrapMakeService,
-    private readonly configs: readonly BootstrapConfig[]
+    private readonly configs: readonly ValidBootstrapConfig[]
   ) {}
 
   /**
@@ -282,6 +349,7 @@ export class PositionBootstrapService {
    * completed result is emitted once, and cleanup is serialized through the make port. Verbose
    * cycles perform a second read per market after each check and expose only safe operational data.
    */
+  // oxlint-disable-next-line complexity
   async runContinuously(parameters: {
     signal: AbortSignal
     onCycle?: (results: readonly Record<string, unknown>[]) => void | Promise<void>
@@ -337,9 +405,17 @@ export class PositionBootstrapService {
         cycles += 1
 
         for (const result of results) {
+          // oxlint-disable-next-line max-depth
           if (result.status === 'failed' && result.stage === 'make') {
             unresolvedPublicationMarkets.add(result.marketId)
-          } else if (result.status === 'applied' || result.status === 'logged') {
+          } else if (
+            result.status === 'applied' ||
+            result.status === 'logged' ||
+            ('action' in result &&
+              (result.action === 'lend-halted' ||
+                result.action === 'publication-withheld' ||
+                (result.status === 'observed' && OFFERLESS_IDLE_ACTIONS.has(result.action))))
+          ) {
             unresolvedPublicationMarkets.delete(result.marketId)
           }
         }
@@ -409,18 +485,20 @@ export class PositionBootstrapService {
   }
 
   /**
-   * Validates all configured markets, then applies one fresh bootstrap cycle per market.
+   * Applies one fresh bootstrap cycle per configured market.
    * @param parameters - Optional verbose flag for safe before/after state and transaction details.
    * @returns Ordered market outcomes; dry-run make requests are `logged`, never `applied`.
-   * @throws Never for handled provider, configuration, or make failures; their classifications and
+   * @throws Never for handled provider, decision, or make failures; their classifications and
    *   cleanup evidence are returned in the structured result.
-   * @remarks Invalid configuration hard-halts before any position/reference read or publication.
-   * Verbose mode adds a fresh post-check read without exposing signer identity or provider details.
-   * A market whose fresh read shows maturity already reached reports the non-failing `matured`
-   * action before any reference read or offer arithmetic, so a normal lifecycle end neither
-   * computes a negative time to maturity nor stops the remaining configured markets; its owned
-   * groups can no longer be filled and are cancelled by the monitor's shutdown cleanup.
+   * @remarks Verbose mode adds a fresh post-check read without exposing signer identity or
+   * provider details. A market whose fresh read shows maturity already reached reports the
+   * non-failing `matured` action before any reference read or offer arithmetic, so a normal
+   * lifecycle end neither computes a negative time to maturity nor stops the remaining configured
+   * markets; its owned groups can no longer be filled and are cancelled by the monitor's shutdown
+   * cleanup. Loss-factor invalidations run before every other planned mutation, so a failed
+   * publication elsewhere cannot leave a mismatched buy live.
    */
+  // oxlint-disable-next-line complexity
   async runOnce(
     parameters: {
       verbose?: boolean
@@ -428,42 +506,6 @@ export class PositionBootstrapService {
     } = {}
   ) {
     const verbose = parameters.verbose === true
-    const results: BootstrapRunResult[] = []
-    for (const config of this.configs) {
-      try {
-        validateBootstrapConfig(config)
-      } catch (error) {
-        const halt = await this.haltStrategy(
-          config.marketId,
-          'configuration',
-          error,
-          'bootstrap-configuration-failed',
-          this.transactionObserver(parameters, verbose)
-        )
-        const submittedTransactions = this.submittedTransactions(halt.makeResult)
-        results.push(
-          verbose
-            ? {
-                ...halt.result,
-                verbose: {
-                  config,
-                  currentState: {
-                    status: 'not-read',
-                    reason: 'configuration-invalid'
-                  },
-                  ...(submittedTransactions.length > 0 ? { submittedTransactions } : {}),
-                  stateAfterCheck: {
-                    status: 'not-read',
-                    reason: 'configuration-invalid'
-                  }
-                }
-              }
-            : halt.result
-        )
-        return results
-      }
-    }
-
     const plans: BootstrapRunPlan[] = []
     const preflightResults = () => plans.flatMap(plan => ('result' in plan ? [plan.result] : []))
     let reservedAssetsDelta = 0n
@@ -477,7 +519,7 @@ export class PositionBootstrapService {
       } catch (error) {
         const failure = await this.failedMarketRead(
           config.marketId,
-          'position-read',
+          guardReadFailure(error) ? 'guard-read' : 'position-read',
           error,
           'market-read-failed',
           this.transactionObserver(parameters, verbose, config.marketId),
@@ -493,7 +535,6 @@ export class PositionBootstrapService {
               errorName: operatorErrorName(error)
             }
           },
-          true,
           failure.makeResult,
           Date.now() - plannedAt
         )
@@ -514,7 +555,6 @@ export class PositionBootstrapService {
             },
             verbose,
             { config, currentState: { status: 'observed', position: currentState } },
-            false,
             undefined,
             Date.now() - plannedAt
           )
@@ -544,6 +584,7 @@ export class PositionBootstrapService {
         transition = decidePositionBootstrapTransition({
           config,
           position,
+          lossFactor: position.lossFactor,
           activeOffer: position.activeOffer,
           initialTargetCompleted: this.completedMarkets.has(config.marketId)
         })
@@ -565,7 +606,6 @@ export class PositionBootstrapService {
               currentState: { status: 'observed', position: currentState },
               effectiveState
             },
-            true,
             halt.makeResult
           )
         ]
@@ -597,7 +637,6 @@ export class PositionBootstrapService {
                 currentState: { status: 'observed', position: currentState },
                 effectiveState
               },
-              true,
               halt.makeResult
             )
           ]
@@ -607,6 +646,7 @@ export class PositionBootstrapService {
           const derived = decidePositionBootstrapWithDiagnostics({
             config,
             position,
+            lossFactor: position.lossFactor,
             rate,
             activeOffer: position.activeOffer,
             requiresReconciliation: position.requiresReconciliation,
@@ -634,7 +674,6 @@ export class PositionBootstrapService {
                 referenceRate: rate,
                 ...this.premiumDiagnostics(config, rate)
               },
-              true,
               halt.makeResult
             )
           ]
@@ -642,6 +681,11 @@ export class PositionBootstrapService {
       }
 
       let plannedOfferAssets: bigint | undefined
+      let belowMinimum: BootstrapMempoolValidationError | undefined
+      let rateWindowEmpty = false
+      const cashCapped =
+        diagnostics?.cap === 'cash-balance' &&
+        diagnostics.cappedAssets < diagnostics.requestedAssets
       if (decision.kind === 'publish' || decision.kind === 'replace') {
         try {
           plannedOfferAssets = this.make.preview
@@ -655,17 +699,25 @@ export class PositionBootstrapService {
               )?.assets ?? 0n)
             : decision.offer.assets
         } catch (error) {
-          const halt = await this.haltStrategy(
-            config.marketId,
-            'decision',
-            error,
-            'bootstrap-decision-failed',
-            this.transactionObserver(parameters, verbose)
-          )
-          return [
-            ...preflightResults(),
-            await this.withVerboseDetails(halt.result, verbose, undefined, true, halt.makeResult)
-          ]
+          // oxlint-disable-next-line max-depth
+          if (isRateWindowEmpty(error)) {
+            rateWindowEmpty = true
+          } else if (cashCapped && isBelowMinimumOfferRejection(error)) {
+            belowMinimum = error
+          } else {
+            const halt = await this.haltStrategy(
+              config.marketId,
+              'decision',
+              error,
+              'bootstrap-decision-failed',
+              this.transactionObserver(parameters, verbose)
+            )
+            return [
+              ...preflightResults(),
+              await this.withVerboseDetails(halt.result, verbose, undefined, halt.makeResult)
+            ]
+          }
+          plannedOfferAssets = 0n
         }
       }
 
@@ -674,6 +726,13 @@ export class PositionBootstrapService {
         decision,
         plannedMs: Date.now() - plannedAt,
         ...(plannedOfferAssets === undefined ? {} : { plannedOfferAssets }),
+        ...(cashCapped &&
+        'offer' in decision &&
+        (plannedOfferAssets === undefined || plannedOfferAssets >= decision.offer.assets)
+          ? { cashBound: true as const }
+          : {}),
+        ...(belowMinimum ? { belowMinimum } : {}),
+        ...(rateWindowEmpty ? { rateWindowEmpty: true as const } : {}),
         ...(verbose
           ? {
               verbose: {
@@ -706,9 +765,21 @@ export class PositionBootstrapService {
       }
     }
 
-    for (const plan of plans) {
+    const settled: { index: number; result: BootstrapRunResult }[] = []
+    let planIndex = 0
+    const settle = (result: BootstrapRunResult) => settled.push({ index: planIndex, result })
+    const inPlanOrder = () =>
+      settled.toSorted((left, right) => left.index - right.index).map(entry => entry.result)
+    const lendHaltFirst = plans
+      .map((plan, index) => ({ plan, index }))
+      .toSorted(
+        (left, right) => Number(isLendHaltPlan(right.plan)) - Number(isLendHaltPlan(left.plan))
+      )
+
+    for (const { plan, index } of lendHaltFirst) {
+      planIndex = index
       if ('result' in plan) {
-        results.push(plan.result)
+        settle(plan.result)
         continue
       }
       const { config, decision, plannedMs } = plan
@@ -720,7 +791,7 @@ export class PositionBootstrapService {
       }
 
       if (decision.kind === 'target-reached') {
-        results.push(
+        settle(
           await this.withVerboseDetails(
             {
               marketId: config.marketId,
@@ -729,7 +800,6 @@ export class PositionBootstrapService {
             },
             verbose,
             plan.verbose,
-            false,
             undefined,
             attributedMs()
           )
@@ -737,16 +807,17 @@ export class PositionBootstrapService {
         continue
       }
       if (decision.kind === 'observe') {
-        results.push(
+        settle(
           await this.withVerboseDetails(
-            {
-              marketId: config.marketId,
-              status: 'observed' as const,
-              action: decision.reason
-            },
+            decision.reason === 'loss-factor-mismatch'
+              ? this.lendHalted(config.marketId, 'observed', decision.halt)
+              : {
+                  marketId: config.marketId,
+                  status: 'observed' as const,
+                  action: decision.reason
+                },
             verbose,
             plan.verbose,
-            false,
             undefined,
             attributedMs()
           )
@@ -754,7 +825,7 @@ export class PositionBootstrapService {
         continue
       }
       if (decision.kind === 'rest') {
-        results.push(
+        settle(
           await this.withVerboseDetails(
             {
               marketId: config.marketId,
@@ -763,7 +834,6 @@ export class PositionBootstrapService {
             },
             verbose,
             plan.verbose,
-            false,
             undefined,
             attributedMs()
           )
@@ -780,8 +850,9 @@ export class PositionBootstrapService {
             onTransactionSubmitted: this.transactionObserver(parameters, verbose, config.marketId)
           })
         } catch (error) {
+          // oxlint-disable-next-line max-depth
           if (error instanceof BootstrapOwnershipCleanupError) {
-            results.push(
+            settle(
               await this.withVerboseDetails(
                 {
                   marketId: config.marketId,
@@ -789,45 +860,46 @@ export class PositionBootstrapService {
                   stage: 'make' as const,
                   invalidated: true,
                   errorName: operatorErrorName(error),
-                  ownershipCleanupErrorName: error.cleanupErrorName
+                  ownershipCleanupErrorName: error.cleanupErrorName,
+                  ...(decision.reason === 'loss-factor-mismatch' ? decision.halt : {})
                 },
                 verbose,
                 plan.verbose,
-                true,
                 { submittedTransactions: error.submittedTransactions },
                 attributedMs()
               )
             )
-            return results
+            // oxlint-disable-next-line max-depth
+            if (decision.reason === 'loss-factor-mismatch') continue
+            return inPlanOrder()
           }
           const halt = await this.haltAfterInvalidationFailure(
             config.marketId,
-            { stage: 'make', reason: decision.reason },
+            decision.reason === 'loss-factor-mismatch'
+              ? { stage: 'make', reason: decision.reason, halt: decision.halt }
+              : { stage: 'make', reason: decision.reason },
             error,
             this.transactionObserver(parameters, verbose)
           )
-          results.push(
+          settle(
             await this.withVerboseDetails(
               halt.result,
               verbose,
               plan.verbose,
-              true,
               halt.makeResult,
               attributedMs()
             )
           )
-          return results
+          return inPlanOrder()
         }
-        results.push(
+        const status = reconciliation === 'logged' ? ('logged' as const) : ('applied' as const)
+        settle(
           await this.withVerboseDetails(
-            {
-              marketId: config.marketId,
-              status: reconciliation === 'logged' ? ('logged' as const) : ('applied' as const),
-              action: 'invalidate' as const
-            },
+            decision.reason === 'loss-factor-mismatch'
+              ? this.lendHalted(config.marketId, status, decision.halt)
+              : { marketId: config.marketId, status, action: 'invalidate' as const },
             verbose,
             plan.verbose,
-            false,
             reconciliation,
             attributedMs()
           )
@@ -837,30 +909,33 @@ export class PositionBootstrapService {
 
       let reconciliation: BootstrapMakeResult
       try {
-        const desiredOffer = plan.plannedOfferAssets === 0n ? undefined : decision.offer
-        reconciliation = await this.make.reconcile({
-          marketId: config.marketId,
-          desiredOffer,
-          ...(desiredOffer !== undefined &&
-          plan.plannedOfferAssets !== undefined &&
-          plan.plannedOfferAssets !== desiredOffer.assets
-            ? { maximumAssets: plan.plannedOfferAssets }
-            : {}),
-          reason: decision.kind,
-          onTransactionSubmitted: this.transactionObserver(parameters, verbose, config.marketId)
-        })
+        const reconciled = await this.reconcilePlanned(plan, parameters, verbose)
+        if ('withheld' in reconciled) {
+          const withheld = await this.withholdUnpublishable(
+            plan,
+            reconciled.withheld,
+            parameters,
+            verbose,
+            attributedMs()
+          )
+          settle(withheld)
+          // oxlint-disable-next-line max-depth
+          if (withheld.status === 'halted') return inPlanOrder()
+          continue
+        }
+        reconciliation = reconciled.reconciliation
       } catch (error) {
         const ownershipCleanup = error instanceof BootstrapOwnershipCleanupError ? error : undefined
         const confirmedTransactions =
           ownershipCleanup?.submittedTransactions ??
           (error instanceof BootstrapAdapterError ? error.confirmedTransactions : [])
-        results.push(
+        settle(
           await this.withVerboseDetails(
             {
               marketId: config.marketId,
               status: 'failed' as const,
               stage: 'make' as const,
-              invalidated: ownershipCleanup !== undefined,
+              invalidated: ownershipCleanup !== undefined || withheldAfterCancellation(error),
               ...operatorErrorDetails(error),
               ...(ownershipCleanup
                 ? { ownershipCleanupErrorName: ownershipCleanup.cleanupErrorName }
@@ -868,44 +943,179 @@ export class PositionBootstrapService {
             },
             verbose,
             plan.verbose,
-            true,
             confirmedTransactions.length > 0
               ? { submittedTransactions: confirmedTransactions }
               : undefined,
             attributedMs()
           )
         )
-        return results
+        return inPlanOrder()
       }
-      const outcome =
+      const withheld =
+        reconciliation && reconciliation !== 'logged' && reconciliation !== 'unchanged'
+          ? reconciliation.publicationWithheld
+          : undefined
+      if (withheld?.reason === 'snapshot-unavailable') {
+        settle(
+          await this.withVerboseDetails(
+            {
+              marketId: config.marketId,
+              status: 'failed' as const,
+              stage: 'make' as const,
+              invalidated: confirmedCancellation(this.submittedTransactions(reconciliation)),
+              errorName: withheld.errorName,
+              adapterOperation: withheld.reason,
+              ...snapshotErrorOperationField(withheld)
+            },
+            verbose,
+            plan.verbose,
+            reconciliation,
+            attributedMs()
+          )
+        )
+        return inPlanOrder()
+      }
+      const outcome: BootstrapRunOutcome =
         reconciliation === 'unchanged'
-          ? ({
-              marketId: config.marketId,
-              status: 'observed' as const,
-              action: 'rest' as const
-            } satisfies BootstrapRunOutcome)
-          : ({
-              marketId: config.marketId,
-              status: reconciliation === 'logged' ? ('logged' as const) : ('applied' as const),
-              action: decision.kind
-            } satisfies BootstrapRunOutcome)
-      results.push(
+          ? { marketId: config.marketId, status: 'observed', action: 'rest' }
+          : withheld
+            ? {
+                marketId: config.marketId,
+                status: 'applied',
+                action: 'publication-withheld',
+                ...withheld
+              }
+            : {
+                marketId: config.marketId,
+                status: reconciliation === 'logged' ? 'logged' : 'applied',
+                action: decision.kind
+              }
+      settle(
         await this.withVerboseDetails(
           outcome,
           verbose,
           plan.verbose,
-          false,
           reconciliation,
           attributedMs()
         )
       )
     }
-    return results
+    return inPlanOrder()
+  }
+
+  private async reconcilePlanned(
+    plan: Extract<BootstrapRunPlan, { config: BootstrapConfig }>,
+    parameters: Parameters<PositionBootstrapService['transactionObserver']>[0],
+    verbose: boolean
+  ): Promise<{ reconciliation: BootstrapMakeResult } | { withheld: UnpublishableOffer }> {
+    if (plan.belowMinimum) return { withheld: plan.belowMinimum }
+    if (plan.rateWindowEmpty) return { withheld: 'rate-window-empty' }
+    const { config, decision } = plan
+    const desiredOffer =
+      plan.plannedOfferAssets === 0n || !('offer' in decision) ? undefined : decision.offer
+    try {
+      return {
+        reconciliation: await this.make.reconcile({
+          marketId: config.marketId,
+          desiredOffer,
+          ...(desiredOffer !== undefined &&
+          plan.plannedOfferAssets !== undefined &&
+          plan.plannedOfferAssets !== desiredOffer.assets
+            ? { maximumAssets: plan.plannedOfferAssets }
+            : {}),
+          reason: decision.kind === 'replace' ? 'replace' : 'publish',
+          onTransactionSubmitted: this.transactionObserver(parameters, verbose, config.marketId)
+        })
+      }
+    } catch (rejection) {
+      if (isRateWindowEmpty(rejection)) return { withheld: 'rate-window-empty' }
+      if (plan.cashBound && isBelowMinimumOfferRejection(rejection)) {
+        return { withheld: rejection }
+      }
+      throw rejection
+    }
+  }
+
+  /**
+   * Withholds a desired offer its preparation proved unpublishable, after cancelling any resting one.
+   * @returns `publication-withheld` with `below-minimum-offer` for a Router minimum-size rejection of
+   * a cash- or allowance-capped buy, or `rate-out-of-range` when the hard range held no aligned tick
+   * at the preparation block.
+   * @throws A below-minimum cancellation failure, which the caller reports like any other make
+   * failure. An empty-window cancellation failure halts instead, since the resting buy is out of range.
+   * @remarks Not charged to the failure budget: a draining allowance or wallet, or a range narrowing
+   * toward maturity, must shrink the book, not halt it. Both rejections happen at preparation,
+   * before any reservation or transaction.
+   */
+  private async withholdUnpublishable(
+    plan: Extract<BootstrapRunPlan, { config: BootstrapConfig }>,
+    withheld: UnpublishableOffer,
+    parameters: Parameters<PositionBootstrapService['transactionObserver']>[0],
+    verbose: boolean,
+    durationMs: number
+  ): Promise<BootstrapRunResult> {
+    const { marketId } = plan.config
+    const rateWindowEmpty = withheld === 'rate-window-empty'
+    const minimumAssets =
+      rateWindowEmpty || withheld.minimumAssets === undefined
+        ? {}
+        : { minimumAssets: String(withheld.minimumAssets) }
+    let reconciliation: BootstrapMakeResult
+    try {
+      reconciliation = await this.make.reconcile({
+        marketId,
+        desiredOffer: undefined,
+        reason: rateWindowEmpty ? 'rate-out-of-range' : 'no-capacity',
+        onTransactionSubmitted: this.transactionObserver(parameters, verbose, marketId)
+      })
+    } catch (error) {
+      if (!rateWindowEmpty || error instanceof BootstrapOwnershipCleanupError) throw error
+      const halt = await this.haltAfterInvalidationFailure(
+        marketId,
+        { stage: 'make', reason: 'rate-out-of-range' },
+        error,
+        this.transactionObserver(parameters, verbose)
+      )
+      return this.withVerboseDetails(
+        halt.result,
+        verbose,
+        plan.verbose,
+        halt.makeResult,
+        durationMs
+      )
+    }
+    const status =
+      reconciliation === 'logged'
+        ? ('logged' as const)
+        : this.submittedTransactions(reconciliation).length > 0
+          ? ('applied' as const)
+          : ('observed' as const)
+    return this.withVerboseDetails(
+      {
+        marketId,
+        status,
+        action: 'publication-withheld' as const,
+        reason: rateWindowEmpty ? ('rate-out-of-range' as const) : ('below-minimum-offer' as const),
+        ...minimumAssets
+      },
+      verbose,
+      plan.verbose,
+      reconciliation,
+      durationMs
+    )
+  }
+
+  private lendHalted(
+    marketId: Hex,
+    status: 'observed' | 'applied' | 'logged',
+    halt: LendHalt
+  ): BootstrapRunOutcome {
+    return { marketId, status, action: 'lend-halted', reason: 'loss-factor-mismatch', ...halt }
   }
 
   private async failedMarketRead(
     marketId: Hex,
-    stage: 'position-read',
+    stage: 'position-read' | 'guard-read',
     readError: unknown,
     reason: 'market-read-failed',
     onTransactionSubmitted?: BootstrapTransactionSubmittedObserver,
@@ -925,7 +1135,8 @@ export class PositionBootstrapService {
           stage,
           invalidated: reconciliation !== 'logged',
           ...(reconciliation === 'logged' ? { invalidationLogged: true } : {}),
-          errorName: operatorErrorName(readError)
+          errorName: operatorErrorName(readError),
+          ...adapterOperationField(readError)
         },
         makeResult: reconciliation
       }
@@ -965,7 +1176,7 @@ export class PositionBootstrapService {
     } else if (hardHaltResult === 'logged') {
       cleanupFailure = { strategyInvalidationLogged: true }
     }
-    if (context.stage === 'position-read') {
+    if (context.stage !== 'make') {
       return {
         result: {
           marketId,
@@ -988,7 +1199,8 @@ export class PositionBootstrapService {
         reason: context.reason,
         strategyInvalidated,
         invalidationErrorName: operatorErrorName(invalidationError),
-        ...cleanupFailure
+        ...cleanupFailure,
+        ...context.halt
       },
       ...(hardHaltError === undefined ? { makeResult: hardHaltResult } : {})
     }
@@ -996,12 +1208,9 @@ export class PositionBootstrapService {
 
   private async haltStrategy(
     marketId: Hex,
-    stage: 'configuration' | 'reference-read' | 'decision',
+    stage: 'reference-read' | 'decision',
     failure: unknown,
-    reason:
-      | 'reference-read-failed'
-      | 'bootstrap-decision-failed'
-      | 'bootstrap-configuration-failed',
+    reason: 'reference-read-failed' | 'bootstrap-decision-failed',
     onTransactionSubmitted?: BootstrapTransactionSubmittedObserver
   ): Promise<BootstrapMutationOutcome> {
     try {
@@ -1065,6 +1274,7 @@ export class PositionBootstrapService {
     return {
       credit: position.credit,
       debt: position.debt,
+      lossFactor: position.lossFactor,
       cashBalance: position.cashBalance,
       marketExposure: position.marketExposure,
       totalExposure: position.totalExposure,
@@ -1094,7 +1304,6 @@ export class PositionBootstrapService {
     result: BootstrapRunOutcome,
     verbose: boolean,
     details?: BootstrapVerbosePlan,
-    forceStateRead = false,
     makeResult?: BootstrapMakeResult,
     attributedMs?: number
   ): Promise<BootstrapRunResult> {
@@ -1106,10 +1315,7 @@ export class PositionBootstrapService {
       verbose: {
         ...details,
         ...(submittedTransactions.length > 0 ? { submittedTransactions } : {}),
-        stateAfterCheck:
-          forceStateRead || details.currentState.status !== 'not-read'
-            ? await this.readVerboseState(result.marketId)
-            : details.currentState,
+        stateAfterCheck: await this.readVerboseState(result.marketId),
         ...(attributedMs === undefined
           ? {}
           : { durationMs: attributedMs + (Date.now() - stateReadStartedAt) })

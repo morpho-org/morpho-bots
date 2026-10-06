@@ -12,7 +12,7 @@ const ERC20_AMOUNT_OFFSET = 36n
 /**
  * A self-referential placeholder: at exec time the Executor staticcalls `asset.balanceOf(executor)`
  * and splices the result over the `amountOffset` word of the sub-call's calldata. This lets the
- * encoder commit to a token amount it cannot know off-chain — a redeem/swap output and the approval
+ * encoder commit to a token amount it cannot know offchain — a redeem/swap output and the approval
  * amounts are computed against the Executor's *live* balance.
  */
 function balanceOfPlaceholder(asset: Address, executor: Address, amountOffset: bigint) {
@@ -70,7 +70,7 @@ export function approvePair(token: Address, spender: Address, executor: Address)
  * needs none), then the step call itself. The step is venue-agnostic opaque calldata; the encoder
  * only decides how its input amount is bound. `'balance'` splices the Executor's live `tokenIn`
  * balance at the step-supplied offset; `'fixed'` calldata is route-bound to an amount committed
- * off-chain and must NOT be spliced — any drift between it and the Executor's actual balance fails
+ * offchain and must NOT be spliced — any drift between it and the Executor's actual balance fails
  * closed in `simulate()`.
  */
 export function stepCalls(step: SwapStep, executor: Address): Hex[] {

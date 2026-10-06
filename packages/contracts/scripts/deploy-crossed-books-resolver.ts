@@ -26,6 +26,15 @@ if (!(await publicClient.getCode({ address: factory })))
   throw new Error(`CREATE2 factory ${factory} is not deployed`)
 const hash = await wallet.sendTransaction({ to: factory, data: factoryData })
 const receipt = await publicClient.waitForTransactionReceipt({ hash })
-if (receipt.status !== 'success' || !(await publicClient.getCode({ address })))
-  throw new Error(`Deployment failed: ${hash}`)
+if (receipt.status !== 'success') throw new Error(`Deploy tx reverted (${hash})`)
+
+// Same read-after-write lag `deploy-executor.ts` guards against: a confirmed receipt does not
+// guarantee the next `getCode` sees the code, so poll before calling a healthy deploy a failure.
+let deployed = await publicClient.getCode({ address })
+for (let attempt = 0; (!deployed || deployed === '0x') && attempt < 5; attempt++) {
+  await new Promise(resolve => setTimeout(resolve, 1000))
+  deployed = await publicClient.getCode({ address })
+}
+if (!deployed || deployed === '0x')
+  throw new Error(`Deploy tx ${hash} succeeded but no code at ${address} after retries`)
 console.log(`CrossedBooksResolver deployed at ${address} (tx ${hash})`)

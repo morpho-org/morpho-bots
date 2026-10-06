@@ -1,4 +1,6 @@
-import { Address, checksumAddress, isAddress, isAddressEqual, zeroAddress } from 'viem'
+import type { Address } from 'viem'
+
+import { checksumAddress, isAddress, isAddressEqual, zeroAddress } from 'viem'
 
 export function isNonZeroAddress(address: Address): boolean {
   return !isAddressEqual(address, zeroAddress)

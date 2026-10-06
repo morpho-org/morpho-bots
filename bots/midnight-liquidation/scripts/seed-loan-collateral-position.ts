@@ -11,7 +11,7 @@
  *
  * The market is therefore NOT created here: it must already exist and already be listed, because the
  * bot's whitelist is keyed on exact market id and is fail-closed. Pick one from the markets API and
- * pass its id. There is no order book in these markets, so the position is opened against an offer
+ * pass its id. There is no offer book in these markets, so the position is opened against an offer
  * this script signs itself: wallet A (the lender) posts a bid, wallet B (the borrower) supplies loan
  * -token collateral and takes it, becoming the seller of units and thus the debtor.
  *
@@ -194,6 +194,7 @@ function projectedSeize(debt: bigint, price: bigint): bigint {
   return mulDivDown(mulDivDown(cap, WAD, WAD), ORACLE_PRICE_SCALE, price)
 }
 
+// oxlint-disable-next-line complexity
 async function main() {
   const args = parseCliArgs()
   const logger = createLogger('info')

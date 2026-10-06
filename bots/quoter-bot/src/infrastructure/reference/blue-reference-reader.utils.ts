@@ -1,17 +1,20 @@
+import type { Hex } from 'viem'
+
 import { fetchMarket } from '@morpho-org/morpho-sdk/fetch'
+import { MathLib } from '@morpho-org/morpho-ts'
 
 import type { SupportedChainId } from '../../config/supported-chains.utils'
 import type {
   BlueReferenceReader,
   BlueSupplyCheckpoint
 } from '../bootstrap/bootstrap-reference-rate.service'
-import type { BlockHeader } from '../historical-block.utils'
+import type { BlockHeader } from '../provider/historical-block.utils'
 
 import { supportedChain } from '../../config/supported-chains.utils'
-import { findBlockAtOrBefore } from '../historical-block.utils'
+import { findBlockAtOrBefore } from '../provider/historical-block.utils'
 import { ReferenceAdapterError } from './reference-adapter.error'
 
-const WAD = 10n ** 18n
+const WAD = MathLib.WAD
 
 /** Minimal historical block boundary needed by the Blue reference reader. */
 export type HistoricalBlockReader = {
@@ -29,8 +32,8 @@ export type HistoricalBlockReader = {
 
 /**
  * Creates the shared archive-backed Morpho Blue supply checkpoint reader.
- * @param referenceMarketId - Exact configured Blue market ID.
- * @param client - Historical block and Morpho market reader.
+ * @param referenceMarketId - Exact configured Blue Market ID.
+ * @param client - Historical block and Morpho Market reader.
  * @param chainId - Configured chain, whose nominal block time seeds the historical block search.
  * @returns Latest and at-or-before checkpoint operations.
  * @throws `ReferenceAdapterError` for a null latest block, for a target older than the chain, or
@@ -39,7 +42,7 @@ export type HistoricalBlockReader = {
  * blocks are located by timestamp with {@link findBlockAtOrBefore}, the same routine readiness uses.
  */
 export const createBlueReferenceReader = (
-  referenceMarketId: `0x${string}`,
+  referenceMarketId: Hex,
   client: HistoricalBlockReader,
   chainId: SupportedChainId
 ): BlueReferenceReader => {
@@ -71,9 +74,9 @@ export const createBlueReferenceReader = (
   }
   return {
     readLatest: async () => checkpoint(await latestHeader()),
-    readAtOrBefore: async target => {
+    readAtOrBefore: async (target, head) => {
       const block = await findBlockAtOrBefore({
-        latest: await latestHeader(),
+        latest: { number: head.blockNumber, timestamp: head.timestamp },
         target,
         getBlock: blockNumber => client.getBlock({ blockNumber }),
         blockTimeMs

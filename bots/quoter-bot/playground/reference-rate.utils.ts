@@ -18,6 +18,18 @@ export const DEFAULT_REFERENCE_RATE_BPS = ''
  * (`REFERENCE_MARKET_ID`) rather than part of an ordered market collection. An unresolved entry
  * always means the derived synthetic reference, never an assumed market rate.
  */
+/**
+ * Resolves the face credit typed into the preview panel for skewed ladders.
+ * @param value - Raw text held by the panel input.
+ * @returns The non-negative raw face credit, or `undefined` when the entry is empty or unusable.
+ * @remarks Preview only, like the reference rate: it prices an `inventorySkew` preview and its
+ * reference band, and never reaches the outputs, the share URL or the fragment.
+ */
+export const resolveCreditHeldAssets = (value: string): bigint | undefined => {
+  const trimmed = value.trim()
+  return /^\d+$/.test(trimmed) ? BigInt(trimmed) : undefined
+}
+
 export const resolveReferenceRateBps = (value: string): bigint | undefined => {
   const trimmed = value.trim()
   if (!/^\d+$/.test(trimmed)) return undefined

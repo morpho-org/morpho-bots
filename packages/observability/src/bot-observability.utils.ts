@@ -1,12 +1,11 @@
 import type { Logger } from '@repo/bot-kit'
 
-import { createHeartbeatMonitor, createLogger, railwayContext } from '@repo/bot-kit'
+import { createLogger, railwayContext } from '@repo/bot-kit'
 
 import type { Environment } from './shipping-config.utils'
 
 import { hasShippingConfig } from './shipping-config.utils'
 
-type HeartbeatMonitor = { start: () => Promise<void>; stop: () => void }
 type UnexpectedOrigin = 'entrypoint' | 'uncaughtException' | 'unhandledRejection'
 
 const hasFailure = (value: unknown, seen = new WeakSet<object>(), depth = 0): boolean => {
@@ -26,9 +25,8 @@ const hasFailure = (value: unknown, seen = new WeakSet<object>(), depth = 0): bo
  * Mirrors a bot's already-sanitized records into bot-kit observability without consuming output.
  * @param options - Bot identity, sanitized error-name projection, and testable overrides.
  * @returns Lifecycle, record, and unexpected-error observers for the process composition root.
- * @remarks Starting begins best-effort heartbeat delivery; stopping ends it. Record shipping is
- * best-effort and never consumes or changes the bot's stdout/stderr stream. The error-name
- * projection must already be sanitized: it is logged verbatim.
+ * @remarks Record shipping is best-effort and never consumes or changes the bot's stdout/stderr
+ * stream. The error-name projection must already be sanitized: it is logged verbatim.
  */
 export const createBotObservability = (options: {
   bot: string
@@ -36,7 +34,6 @@ export const createBotObservability = (options: {
   errorName: (error: unknown) => string
   env?: Environment
   logger?: Logger
-  heartbeat?: HeartbeatMonitor
 }) => {
   const env = options.env ?? process.env
   const shippingEnabled = options.logger !== undefined || hasShippingConfig(env)
@@ -46,19 +43,6 @@ export const createBotObservability = (options: {
       env,
       context: { bot: options.bot, chainId: options.chainId, ...railwayContext(env) }
     })
-  const heartbeatLogger: Logger = {
-    ...logger,
-    warn(event, fields) {
-      if (event === 'heartbeat.failed' && fields && 'detail' in fields) {
-        logger.warn(event, { errorName: 'HeartbeatRequestError' })
-        return
-      }
-      logger.warn(event, fields)
-    }
-  }
-  const heartbeat =
-    options.heartbeat ??
-    createHeartbeatMonitor({ url: env.BETTERSTACK_HEARTBEAT_URL, logger: heartbeatLogger })
   const emitRecord = (value: unknown) => {
     if (Array.isArray(value) && value.length > 0) {
       for (const item of value) emitRecord(item)
@@ -74,24 +58,15 @@ export const createBotObservability = (options: {
   }
 
   return {
-    /**
-     * Starts the lifecycle: logs `bot.started` when shipping is enabled and begins best-effort
-     * heartbeat delivery.
-     * @returns Completion once the start has been recorded; heartbeat delivery continues in the
-     * background and its failures are reduced to a sanitized `heartbeat.failed` warning.
-     */
-    async start() {
+    /** Logs `bot.started` when shipping is enabled. */
+    start() {
       if (shippingEnabled) logger.info('bot.started')
-      void heartbeat
-        .start()
-        .catch(error => logger.warn('heartbeat.failed', { errorName: options.errorName(error) }))
     },
     /**
-     * Stops heartbeat delivery and logs `bot.stopped` when shipping is enabled.
+     * Logs `bot.stopped` when shipping is enabled.
      * @param reason - Sanitized operator-facing lifecycle reason; it is logged verbatim.
      */
     stop(reason: string) {
-      heartbeat.stop()
       if (shippingEnabled) logger.info('bot.stopped', { reason })
     },
     /**

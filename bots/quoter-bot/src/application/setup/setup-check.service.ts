@@ -2,11 +2,10 @@ import type { Address, Hex } from 'viem'
 
 import { waitForMonitorInterval } from '@repo/monitoring'
 import { withActiveSpan } from '@repo/telemetry'
-import { maxUint256 } from 'viem'
 
 import type { SupportedChainId } from '../../config/supported-chains.utils'
 
-import { operatorErrorName } from '../operator-error-name.utils'
+import { operatorErrorName } from '../monitoring/operator-error-name.utils'
 import { SetupCheckAbortedError } from './setup-check-aborted.error'
 import {
   booksCheck,
@@ -14,6 +13,8 @@ import {
   captureSigner,
   chainCheck,
   hasOnlyTransientProviderFailures,
+  loanAllowanceCheck,
+  lossFactorCheck,
   providerFailure,
   readOnlySignerCheck,
   sameAddress,
@@ -22,14 +23,6 @@ import {
 } from './setup-check.utils'
 import { SetupFailedError } from './setup-failed.error'
 import { SetupMonitorConfigurationError } from './setup-monitor-configuration.error'
-
-/**
- * Allowance floor that readiness treats as unbounded. Exposure is bounded by maker funds, not by
- * the approval, and FiatToken decrements even a `maxUint256` approval on every `transferFrom`, so
- * readiness cannot compare against `maxUint256` itself.
- * @see https://github.com/circlefin/stablecoin-evm/blob/master/contracts/v1/FiatTokenV1.sol
- */
-const UNBOUNDED_ALLOWANCE_FLOOR = maxUint256 / 2n
 
 const SETUP_CHECK_MONITOR_INTERVAL_MS = 60_000
 const SETUP_CHECK_TRANSIENT_ATTEMPTS = 3
@@ -74,6 +67,7 @@ export type SetupCheck = {
     | 'reference'
     | 'offers'
     | 'position-health'
+    | 'loss-factor'
   /** Whether the requirement passed, failed, warned without blocking readiness, or is outside V0 scope. */
   status: SetupCheckStatus
   /** Sanitized provider-derived value; URLs, credentials, and raw provider messages are excluded. */
@@ -135,19 +129,26 @@ export type SetupCheckConfig = {
   midnight: Address
   /** Minimum native-token balance retained for transaction fees. */
   nativeReserve: bigint
+  /** Allowance funding one full deployment of the configured buy exposure; startup warns below it. */
+  requiredAllowance: bigint
   /** AWS signer's operating-gas floor. Omitted when signer and maker are the same account. */
   signerNativeReserve?: bigint
   /** ERC-20 asset lent by every configured market. */
   loanAsset: Address
   /** Canonical SDK Ecrecover or Setter ratifier expected to authorize the maker. */
   ratifier: Address
-  /** Non-empty set of Midnight market identifiers to validate concurrently. */
+  /** Non-empty set of Midnight Market identifiers to validate concurrently. */
   marketIds: readonly Hex[]
-  /** Morpho Blue market read through the archive-capable reference provider when required. */
+  /** Morpho Blue Market read through the archive-capable reference provider when required. */
   referenceMarketId?: Hex
+  /**
+   * Operator-accepted loss factor per market; an omitted market accepts `0`.
+   * @remarks Lending on a market halts whenever its loss factor differs from this value.
+   */
+  acceptedLossFactor?: ReadonlyMap<Hex, bigint>
 }
 
-/** API and on-chain facts used to validate one configured Midnight market. */
+/** API and onchain facts used to validate one configured Midnight Market. */
 export type BookSetup = {
   /** Market identifier returned by the provider. */
   id: Hex
@@ -157,7 +158,7 @@ export type BookSetup = {
   active: boolean
   /** Loan asset returned by Midnight. */
   loanAsset: Address
-  /** On-chain tick spacing; must be positive. */
+  /** Onchain tick spacing; must be positive. */
   tickSpacing: number
 }
 
@@ -221,8 +222,10 @@ export interface SetupStateService {
    * @returns Mined and pending transaction counts.
    */
   getTransactionCounts(address: Address): Promise<{ latest: number; pending: number }>
-  /** Cross-checks one Midnight market. @param id - Midnight market identifier. @returns Cross-checked API and on-chain market facts. */
+  /** Cross-checks one Midnight Market. @param id - Midnight Market identifier. @returns Cross-checked API and onchain market facts. */
   getBook(id: Hex): Promise<BookSetup>
+  /** Reads one market's current loss factor. @param id - Midnight Market identifier. @returns The uint128 loss factor. */
+  getLossFactor(id: Hex): Promise<bigint>
   /** Checks historical reference-market readability. @returns Archive-readability and exact reference-market identity facts. */
   checkReference(): Promise<{ marketId: Hex; referenceReadable: boolean; archiveReadable: boolean }>
   /**
@@ -336,12 +339,12 @@ export class SetupCheckService {
       : { status: 'stopped', reason: 'signal', cycles }
   }
 
-  private async checkWithTransientRetries(signal?: AbortSignal, checkSignerNonce = true) {
-    let report = await this.checkWithSignerNonce(checkSignerNonce)
+  private async checkWithTransientRetries(signal?: AbortSignal, startup = true) {
+    let report = await this.checkAt(startup)
 
     for (let attempt = 1; attempt < SETUP_CHECK_TRANSIENT_ATTEMPTS; attempt += 1) {
       if (signal?.aborted === true || !hasOnlyTransientProviderFailures(report)) break
-      report = await this.checkWithSignerNonce(checkSignerNonce)
+      report = await this.checkAt(startup)
     }
 
     return report
@@ -355,13 +358,18 @@ export class SetupCheckService {
    * bounded by the slowest check rather than their sum.
    */
   async check(): Promise<SetupCheckReport> {
-    return this.checkWithSignerNonce(true)
+    return this.checkAt(true)
   }
 
-  private async checkWithSignerNonce(checkSignerNonce: boolean): Promise<SetupCheckReport> {
+  // oxlint-disable-next-line complexity
+  private async checkAt(startup: boolean): Promise<SetupCheckReport> {
     const bookReads = this.config.marketIds.map(requestedId => ({
       requestedId,
       response: capture(() => this.state.getBook(requestedId))
+    }))
+    const lossFactorReads = this.config.marketIds.map(requestedId => ({
+      requestedId,
+      response: capture(() => this.state.getLossFactor(requestedId))
     }))
     const derivedSignerRead = this.readOnly
       ? Promise.resolve(undefined)
@@ -384,7 +392,8 @@ export class SetupCheckService {
       Promise.all(bookReads.map(async book => ({ ...book, response: await book.response }))),
       referenceRead,
       capture(() => this.state.inspectOffers(this.config.maker), 'morpho-api'),
-      capture(() => this.state.checkPositionHealth())
+      capture(() => this.state.checkPositionHealth()),
+      Promise.all(lossFactorReads.map(async read => ({ ...read, response: await read.response })))
     ])
     const [
       chainId,
@@ -397,7 +406,8 @@ export class SetupCheckService {
       books,
       reference,
       offers,
-      positionHealth
+      positionHealth,
+      lossFactors
     ] = reads
 
     const signerRequirement =
@@ -440,7 +450,7 @@ export class SetupCheckService {
             this.config.signerMode === 'aws'
               ? capture(() => this.state.getAuthorization(this.config.maker, signerAddress))
               : Promise.resolve(undefined),
-            checkSignerNonce
+            startup
               ? capture(() => this.state.getTransactionCounts(signerAddress))
               : Promise.resolve(undefined)
           ])
@@ -501,7 +511,7 @@ export class SetupCheckService {
           observed: { reason: 'read-only mode does not send transactions' },
           required: 'only for write mode'
         }
-      : !checkSignerNonce
+      : !startup
         ? {
             name: 'signer-nonce' as const,
             status: 'not-required' as const,
@@ -530,24 +540,9 @@ export class SetupCheckService {
           this.config.nativeReserve,
           `fund the configured maker with native token to at least ${this.config.nativeReserve}`
         )
-    const allowanceRequired = {
-      spender: this.config.midnight,
-      minimum: 'unbounded approval (type(uint256).max)'
-    }
     const allowanceCheck = !allowance.ok
-      ? providerFailure('loan-allowance', allowance.error, allowanceRequired)
-      : setupResult(
-          'loan-allowance',
-          sameAddress(allowance.value.spender, this.config.midnight) &&
-            allowance.value.amount >= UNBOUNDED_ALLOWANCE_FLOOR,
-          allowance.value,
-          allowanceRequired,
-          {
-            to: this.config.loanAsset,
-            functionName: 'approve',
-            args: [this.config.midnight, maxUint256]
-          }
-        )
+      ? providerFailure('loan-allowance', allowance.error, { spender: this.config.midnight })
+      : loanAllowanceCheck(allowance.value, this.config, startup)
     const ratifierRequired = {
       listed: true,
       deployed: true,
@@ -627,7 +622,8 @@ export class SetupCheckService {
       booksCheck(this.config, books),
       referenceCheck,
       offersCheck,
-      positionCheck
+      positionCheck,
+      lossFactorCheck(this.config, lossFactors)
     ]
     return { ready: checks.every(check => check.status !== 'failed'), checks }
   }

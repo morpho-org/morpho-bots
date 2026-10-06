@@ -6,6 +6,7 @@ import { defineConfig } from 'vitest/config'
 // defaults rooted at their own directory. The public mirror ships a subset of these members, so
 // absent ones are dropped rather than failing the run.
 const members = [
+  'packages/contracts',
   'packages/utils',
   'packages/bot-kit',
   'packages/ci-scripts',
@@ -14,12 +15,14 @@ const members = [
   'packages/monitoring',
   'packages/observability',
   'packages/offers',
+  'packages/oxlint-plugin',
   'packages/telemetry',
   'bots/blue-liquidation',
   'bots/vault-v1-reallocation',
   'bots/vault-v2-reallocation',
   'bots/midnight-liquidation',
   'bots/midnight-crossed-books',
+  'bots/monitor-bot',
   'bots/quoter-bot'
 ].filter(member => fs.existsSync(new URL(`${member}/package.json`, import.meta.url)))
 

@@ -1,7 +1,11 @@
 import type { BootstrapRunResult } from '../bootstrap/position-bootstrap.service'
 import type { MonitoringEvent } from './monitoring-event'
 
-import { adapterOperationOf } from './monitoring-event'
+import {
+  adapterOperationOf,
+  publicationWithheldEvents,
+  snapshotErrorOperationOf
+} from './monitoring-event'
 
 const cycleCompleted = (result: BootstrapRunResult): MonitoringEvent => ({
   event: 'cycle.completed',
@@ -13,6 +17,7 @@ const cycleCompleted = (result: BootstrapRunResult): MonitoringEvent => ({
   ...('reason' in result ? { reason: result.reason } : {}),
   ...('errorName' in result ? { errorName: result.errorName } : {}),
   ...adapterOperationOf(result),
+  ...snapshotErrorOperationOf(result),
   ...(result.verbose?.durationMs === undefined ? {} : { durationMs: result.verbose.durationMs })
 })
 
@@ -50,15 +55,27 @@ const verboseEvents = (result: BootstrapRunResult): readonly MonitoringEvent[] =
   }
 
   const diagnostics = verbose.diagnostics
-  if (diagnostics?.clampedBound !== undefined) {
+  if (diagnostics?.outOfRangeBound !== undefined) {
     events.push({
-      event: 'guardrail.rate-clamped',
+      event: 'guardrail.rate-omitted',
       workflow: 'bootstrap',
       marketId,
-      clampedRungs: 1,
-      bound: diagnostics.clampedBound,
+      omittedRungs: 1,
+      omittedAssets: diagnostics.cappedAssets,
+      bound: diagnostics.outOfRangeBound,
+      outermostRateBps: diagnostics.requestedRateBps,
+      ...(verbose.referenceRate ? { referenceRateBps: verbose.referenceRate.rateBps } : {}),
       minimumRateBps: verbose.config.minimumRateBps,
       maximumRateBps: verbose.config.maximumRateBps
+    })
+  }
+
+  if (diagnostics?.rateWindowEmpty === true) {
+    events.push({
+      event: 'guardrail.side-withdrawn',
+      workflow: 'bootstrap',
+      marketId,
+      side: 'higher'
     })
   }
 
@@ -90,7 +107,7 @@ const verboseEvents = (result: BootstrapRunResult): readonly MonitoringEvent[] =
  * Projects one bootstrap cycle's sanitized results into flat monitoring records.
  * @param results - Ordered per-market outcomes returned by one bootstrap cycle.
  * @returns Monitoring events in stable per-result order: cycle completion, guardrail signals, then
- * verbose reference, progress, clamp, cap, and settled-transaction records.
+ * verbose reference, progress, omission, withdrawal, cap, and settled-transaction records.
  * @remarks Pure projection: it never re-classifies errors, and passes each arm's already-sanitized
  * `errorName` through unchanged. `guardrail.spread-rejected` keys on the allowlisted
  * `adapterOperation` rather than the collapsed `errorName`, so it fires only on an actual cross-book
@@ -123,5 +140,6 @@ export const bootstrapMonitoringEvents = (
           }
         ] as const)
       : []),
+    ...publicationWithheldEvents('bootstrap', result),
     ...verboseEvents(result)
   ])

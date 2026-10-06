@@ -19,6 +19,10 @@ describe('container runtime', () => {
     expect(compose).toContain('REFERENCE_LOOKBACK_SECONDS: ${REFERENCE_LOOKBACK_SECONDS:-}')
   })
 
+  test('forwards the accepted loss factor without a default that would mask YAML', () => {
+    expect(compose).toContain('ACCEPTED_LOSS_FACTOR: ${ACCEPTED_LOSS_FACTOR:-}')
+  })
+
   test('exposes optional configuration for each supported signer backend', () => {
     expect(compose).toContain('KEY_STORAGE_METHOD: ${KEY_STORAGE_METHOD:-}')
     expect(compose).toContain('MAKER_PRIVATE_KEY: ${MAKER_PRIVATE_KEY:-}')

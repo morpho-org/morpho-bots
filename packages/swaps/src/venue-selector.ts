@@ -1,5 +1,6 @@
 import type { Address } from 'viem'
 
+import { MathLib } from '@morpho-org/morpho-ts'
 import { ensureError, safeParseUnits, tryCatch } from '@repo/utils'
 import { getAddress } from 'viem'
 
@@ -139,7 +140,7 @@ export type VenueSelector = {
 
 // Fixed-point scale for a venue rate (`expectedOut / amountIn`). Wide enough to keep the probed
 // ratio's significant digits even on a high-decimal-in / low-decimal-out pair.
-const RATE_SCALE = 10n ** 18n
+const RATE_SCALE = MathLib.WAD
 
 // Precision a CONFIGURED ladder size is validated at, so "is this a positive decimal?" is answered
 // independently of the collateral's decimals — otherwise a valid rung would be operator misconfig on
@@ -283,7 +284,8 @@ export function createVenueSelector(deps: {
       const parsed = safeParseUnits(size, usdPrice === null ? decimals : USD_LADDER_PRICE_DECIMALS)
       return usdPrice === null
         ? (parsed ?? 0n)
-        : ((parsed ?? 0n) * 10n ** BigInt(decimals)) / usdPrice
+        : // oxlint-disable-next-line repo/no-pow10-bigint
+          ((parsed ?? 0n) * 10n ** BigInt(decimals)) / usdPrice
     })
     return [...new Set(sizes.filter(size => size > 0n))].toSorted(ascending)
   }

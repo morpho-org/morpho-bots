@@ -55,7 +55,7 @@ describe('fork: pending-queue bump + replacement against a real node', () => {
       logger: createLogger('error')
     })
 
-    // 1. Submit a trivial self-send through the real signer path; it sits unmined (automining off).
+    // Submit a trivial self-send through the real signer path; it sits unmined (automining off).
     const fees = initialFees(await signer.getBaseFee(), MAX_FEE_WEI, parseGwei('0.1'))
     await queue.submit({
       request: { to: LIQUIDATOR, data: '0x' },
@@ -68,7 +68,7 @@ describe('fork: pending-queue bump + replacement against a real node', () => {
     if (!original) throw new Error('expected a pending entry')
     expect(original.attempt).toBe(0)
 
-    // 2. Advance without mining → real getReceipt returns null, so onBlock detects the stuck tx and
+    // Advance without mining → real getReceipt returns null, so onBlock detects the stuck tx and
     //    replaces it at the same nonce with ≥12.5% higher fees (a fresh hash). Block 1 only sights
     //    the entry, so the bump lands at sighting + STUCK_BLOCKS (4) + 1 = block 6.
     for (let block = 1n; block <= 6n; block++) await queue.onBlock(block)
@@ -79,7 +79,7 @@ describe('fork: pending-queue bump + replacement against a real node', () => {
     expect(bumped.attempt).toBe(1)
     expect(bumped.txHash).not.toBe(original.txHash)
 
-    // 3. Mine once: anvil keeps the higher-fee tx for that nonce, so the replacement lands. onBlock then
+    // Mine once: anvil keeps the higher-fee tx for that nonce, so the replacement lands. onBlock then
     //    sees the receipt and clears the queue.
     await test.mine({ blocks: 1 })
     await queue.onBlock(6n)

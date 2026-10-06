@@ -1,3 +1,5 @@
+import type { Address } from 'viem'
+
 import { wholePercentToWAD } from '@repo/utils'
 import { getAddress, maxUint256, parseUnits, zeroAddress } from 'viem'
 import { describe, expect, it } from 'vitest'
@@ -5,7 +7,7 @@ import { describe, expect, it } from 'vitest'
 import { createEqualizeUtilizationsStrategy } from '../../src/strategies/equalize-utilizations'
 import { makeIdleMarket, makeMarket, makeVaultData, VAULT } from './helpers'
 
-const makeStrategy = (minUtilizationDeltaBips: (vault: `0x${string}`) => number = () => 0) =>
+const makeStrategy = (minUtilizationDeltaBips: (vault: Address) => number = () => 0) =>
   createEqualizeUtilizationsStrategy({
     capBufferWad: wholePercentToWAD(99.99),
     minUtilizationDeltaBips
@@ -104,7 +106,7 @@ describe('createEqualizeUtilizationsStrategy', () => {
     const strategy = makeStrategy()
     // The first hot market's cap headroom exceeds the total withdrawable, so it takes the entire
     // budget and the second hot market must contribute no leg at all — a second `maxUint256` deposit
-    // would tell MetaMorpho to sweep the vault's idle assets into it too.
+    // would tell Vault V1 to sweep the vault's idle assets into it too.
     const hot1 = makeMarket({
       utilization: (95n * WAD) / 100n,
       vaultAssets: 0n,

@@ -10,16 +10,12 @@ import { base, mainnet } from 'viem/chains'
 
 import { InvalidConfigError } from './invalid-config.error'
 
-// Swap venues are no longer a per-collateral config file: markets come from the Midnight markets API
+// Swap venues are no longer a per-collateral config file: markets come from the Midnight Markets API
 // (the whitelist), and the enabled venues are inferred from which venue API keys are present in env.
 // The 0x/1inch quoting adapters + the venue selector live in `@repo/swaps`.
 const ZEROX_API_KEY_ENV = 'ZEROX_API_KEY'
 const ONEINCH_API_KEY_ENV = 'ONEINCH_API_KEY'
 const LIFI_API_KEY_ENV = 'LIFI_API_KEY'
-
-// ---------------------------------------------------------------------------
-// Per-chain Midnight deployment map
-// ---------------------------------------------------------------------------
 
 /**
  * Nominal block time per supported chain. Every block-denominated tunable is derived from a
@@ -102,7 +98,7 @@ type ChainDefaults = {
   priorityFeeGwei: string
   /** `MAX_GAS_LIMIT` — ceiling on a signed tx's gas limit. Bounds spend only with `MAX_SPEND_ETH`. */
   maxGasLimit: bigint
-  /** `SEIZE_CAP_MARGIN_BPS` — headroom shaved off the on-chain repay cap when sizing a seize. */
+  /** `SEIZE_CAP_MARGIN_BPS` — headroom shaved off the onchain repay cap when sizing a seize. */
   seizeCapMarginBps: number
   /** `BACKOFF_BASE_BLOCKS` — first step of the per-position failure backoff. */
   backoffBaseBlocks: bigint
@@ -140,8 +136,8 @@ const defaultsFor = (
 // The deployment address is genuinely per-chain — mainnet and Base are DIFFERENT addresses — though
 // the deployed bytecode is byte-identical, so the ABI, lens, and sizing math are shared. The
 // deployless lens needs no per-chain deployer (soltag bakes the CREATE2 factory + factoryData into
-// its compiled output), but that factory must exist on-chain; the canonical 0x4e59… is present on
-// both chains. On-chain validation of these addresses (getCode) runs at startup in `index.ts`.
+// its compiled output), but that factory must exist onchain; the canonical 0x4e59… is present on
+// both chains. Onchain validation of these addresses (getCode) runs at startup in `index.ts`.
 // loadConfig fails loud for any CHAIN_ID not present here.
 const CHAIN_MAP: Record<number, ChainConfig> = {
   [base.id]: {
@@ -178,9 +174,6 @@ const CHAIN_MAP: Record<number, ChainConfig> = {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Env table
-// ---------------------------------------------------------------------------
 const LOG_LEVELS = ['debug', 'info', 'warn', 'error'] as const
 // The fee ceiling is deliberately NOT per-chain. It is not a bound on spend — `MAX_SPEND_ETH` is,
 // and only the product `gas * fee` ever was — but the headroom the bump ladder escalates into:
@@ -239,7 +232,7 @@ const DEFAULT_PENDLE_SLIPPAGE_BPS = 50
 const DEFAULT_HEADROOM_FLOOR_BPS = 3
 // Pure break-even on both chains: at 0 the profitability gate compares two contract-derived
 // quantities and carries no tuned value, so it can only reject plans that would have reverted
-// on-chain. Deliberately NOT a per-chain value — it does not encode gas.
+// onchain. Deliberately NOT a per-chain value — it does not encode gas.
 const DEFAULT_MIN_SURPLUS_BPS = 0
 // Opt-in per-position cooldown (ms) after a liquidation attempt fails to produce a submittable tx
 // (no route / quote failure / sim revert). 0 disables it — the default, so existing deployments
@@ -272,7 +265,7 @@ const DEFAULT_PROBE_LADDER = ['0.01', '0.1', '1', '10', '100', '1000', '10000', 
 type Env = Record<string, string | undefined>
 
 /**
- * Off-chain quoting + failure-backoff tunables (the multi-venue swap layer), plus the seize-sizing
+ * Offchain quoting + failure-backoff tunables (the multi-venue swap layer), plus the seize-sizing
  * safety margin (`seizeCapMarginBps`). The margin is a *sizing* knob, not an HTTP/route one, but it
  * lives here because the tick already threads `config.quoting.*` into both quoting and planning.
  */
@@ -284,7 +277,7 @@ export type QuotingConfig = {
   maxRouteImpactBps: number
   /** Slippage (bps) for the Pendle PT → underlying unwrap hop (see the unwrapper). */
   pendleSlippageBps: number
-  /** Headroom (bps) shaved off the on-chain repay cap when sizing a cap-binding seize-exact plan. */
+  /** Headroom (bps) shaved off the onchain repay cap when sizing a cap-binding seize-exact plan. */
   seizeCapMarginBps: number
   /** Surplus over the plan's contract-derived repay a quoted route must clear to be simulated. */
   minSurplusBps: number
@@ -296,7 +289,7 @@ export type QuotingConfig = {
 
 /**
  * Borrower-candidate discovery: the markets liquidation-candidates endpoint and its health-factor
- * cutoff. Discovery is over-inclusive by design — the on-chain lens is the source of truth — so these
+ * cutoff. Discovery is over-inclusive by design — the onchain lens is the source of truth — so these
  * only tune coverage/volume, never correctness.
  */
 export type DiscoveryConfig = {
@@ -326,8 +319,8 @@ export type VenueConfig = {
 }
 
 /**
- * The Midnight markets API(s) used as the market WHITELIST: only listed markets are discovered, probed,
- * and liquidated. Over-inclusion is impossible (fail-closed); the on-chain lens remains the
+ * The Midnight Markets API(s) used as the market WHITELIST: only listed markets are discovered, probed,
+ * and liquidated. Over-inclusion is impossible (fail-closed); the onchain lens remains the
  * correctness boundary. `refreshMs` caps how often the (cheap, non-rate-limited) endpoints are polled.
  */
 export type MarketsConfig = {
@@ -367,7 +360,7 @@ export type Config = {
   executooorAddress: Address
   /** Borrower-candidate discovery (the markets liquidation-candidates endpoint). */
   discovery: DiscoveryConfig
-  /** Market whitelist (the Midnight markets API). */
+  /** Market whitelist (the Midnight Markets API). */
   markets: MarketsConfig
   /** Enabled venues + global routing knobs. */
   venues: VenueConfig
@@ -530,9 +523,10 @@ function addressListEnv(env: Env, name: string): Address[] {
 /**
  * Reads the full env table into a typed, validated {@link Config}. Throws on any missing
  * required var, malformed value, or unknown `CHAIN_ID` — the bot must fail loud at startup
- * rather than run half-configured. On-chain checks (e.g. that `EXECUTOOOR_ADDRESS` holds code)
+ * rather than run half-configured. Onchain checks (e.g. that `EXECUTOOOR_ADDRESS` holds code)
  * run separately at startup in `index.ts` once a public client exists.
  */
+// oxlint-disable-next-line complexity
 export function loadConfig(
   env: Env = process.env,
   deps: { chainMap?: Record<number, ChainConfig> } = {}

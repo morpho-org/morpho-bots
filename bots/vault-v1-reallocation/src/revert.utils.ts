@@ -4,9 +4,9 @@ import { abiRevertDecoder, revertReason as revertReasonWith } from '@repo/bot-ki
 const decodeMetaMorphoRevert = abiRevertDecoder(metaMorphoAbi)
 
 /**
- * MetaMorpho-aware revert formatter: decodes the vault's custom ABI errors on top of the standard
+ * Vault V1-aware revert formatter: decodes the vault's custom ABI errors on top of the standard
  * shapes. Injected into the runner and the pending queue so their `tick.error` / `tx.*` log lines
- * carry decoded MetaMorpho reasons instead of raw hex.
+ * carry decoded Vault V1 reasons instead of raw hex.
  */
 export const revertReason = (error: unknown): string =>
   revertReasonWith(error, decodeMetaMorphoRevert)

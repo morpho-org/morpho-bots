@@ -11,7 +11,7 @@ import type { MarketParamsResolver } from '../state/market-params'
 type BorrowerId = { marketId: Hex; borrower: Address }
 
 /** A candidate position to evaluate: a (market, borrower) pair, with the market's immutable params
- * resolved on-chain via `idToMarketParams(id)` (see ../state/market-params.ts). */
+ * resolved onchain via `idToMarketParams(id)` (see ../state/market-params.ts). */
 export type BorrowerCandidate = { marketParams: MarketParams; borrower: Address }
 
 /** One page of the skip-paginated `marketPositions` response: raw rows plus the server's total. */
@@ -36,7 +36,7 @@ export const PAGE_LIMIT = 1000
  * {@link PAGE_LIMIT} × this = 10,000 positions at or under the health-factor cutoff, far above any
  * realistic universe. Hitting it is logged loud (`discover.max_pages`) because silently truncating a
  * paginated candidate set is *under-inclusion* — a liquidatable position we would then never see
- * (over-inclusion is harmless; the on-chain lens filters non-liquidatable pairs).
+ * (over-inclusion is harmless; the onchain lens filters non-liquidatable pairs).
  */
 const MAX_DISCOVERY_PAGES = 10
 
@@ -47,7 +47,7 @@ const MAX_DISCOVERY_PAGES = 10
  * straight under a page-count cap. Reaching this many candidates under a health-factor cutoff means
  * the filter almost certainly isn't narrowing — logged loud as `discover.oversized` so it's alertable.
  * Truncating here is safe (unlike the paginated case {@link MAX_DISCOVERY_PAGES} guards): the query
- * orders by ascending health factor, so the retained candidates are the most-at-risk, and the on-chain
+ * orders by ascending health factor, so the retained candidates are the most-at-risk, and the onchain
  * lens still filters the rest. Kept equal to the page ceiling so both backstops bound the same volume.
  */
 const MAX_CANDIDATES = PAGE_LIMIT * MAX_DISCOVERY_PAGES
@@ -56,7 +56,7 @@ const MAX_CANDIDATES = PAGE_LIMIT * MAX_DISCOVERY_PAGES
  * The `marketPositions` query: only listed markets, only positions at or below the health-factor
  * cutoff, scoped to this bot's chain server-side. Ascending health-factor order puts the worst
  * positions on page 1, so even a pathological truncation degrades gracefully. Only
- * `market.marketId` + `user.address` are consumed — the market's params are recovered on-chain from
+ * `market.marketId` + `user.address` are consumed — the market's params are recovered onchain from
  * `idToMarketParams(id)` and the lens re-reads all position state fresh, so the API is a coverage
  * source, never a correctness dependency.
  */
@@ -75,7 +75,7 @@ const MARKET_POSITIONS_QUERY = `
   }
 `
 
-// Blue market ids are always bytes32, so require the full 64 hex chars (stricter than bare isHex).
+// Blue Market ids are always bytes32, so require the full 64 hex chars (stricter than bare isHex).
 const MARKET_ID_RE = /^0x[0-9a-fA-F]{64}$/
 
 // Validates and normalizes one raw response row into an id pair, or `null` if malformed. The id is
@@ -152,7 +152,7 @@ export async function discoverBorrowerIds(
 
 /**
  * Reads the full over-inclusive (market, borrower) candidate universe from the GraphQL API and joins
- * it to on-chain `MarketParams` via the injected resolver. Ids that don't resolve on THIS chain's
+ * it to onchain `MarketParams` via the injected resolver. Ids that don't resolve on THIS chain's
  * singleton are dropped — the backstop against an API/deployment mismatch (e.g. Robinhood's
  * non-canonical singleton). Malformed rows and unresolved ids never vanish silently: the resolver
  * uses `allowFailure`, so without the `discover.dropped` warn a schema change or a wrong singleton

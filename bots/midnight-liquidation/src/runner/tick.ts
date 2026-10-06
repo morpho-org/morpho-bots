@@ -10,6 +10,7 @@ import type { BorrowerCandidate } from '../discovery/borrowers'
 import type { Market } from '../execution/encode-call'
 import type { LiquidationPlan, PlanSkipReason } from '../sizing/plan'
 import type { LensInput, LensOut } from '../state/lens.sol'
+import type { PlanSkipLog } from './plan-skip-log'
 import type { RevertStreakStore } from './revert-streak'
 
 import { MAX_PRESELECTED_CANDIDATES_PER_POSITION } from '../constants'
@@ -137,7 +138,7 @@ type TickCounters = {
    */
   sendRefused: number
   /**
-   * The node declined THIS plan with an on-chain execution revert. An economic outcome post-maturity,
+   * The node declined THIS plan with an onchain execution revert. An economic outcome post-maturity,
    * counted separately from {@link TickCounters.sendRejected} because it deliberately does not extend
    * the position's suppression window: every one observed on 2026-08-28 was a min-out shortfall against
    * whichever pool the aggregator routed through, and the LIF ramp lifts break-even on a wall-clock
@@ -223,8 +224,8 @@ type SizedCandidate = {
  * (phase A.5), which runs once over the whole sized batch rather than per position.
  *
  * Side effect: increments `counters` in place (`liquidatable`, `inflightSkipped`, `planSkipped`,
- * `planned`, `unpriced`) and emits `plan.skipped` for each position sizing rejected. A sizing skip
- * records neither backoff nor cooldown — see {@link PlanOutcome}.
+ * `planned`, `unpriced`) and emits `plan.skipped` for each position sizing rejected, deduplicated by
+ * {@link PlanSkipLog}. A sizing skip records neither backoff nor cooldown — see {@link PlanOutcome}.
  */
 const sizeCandidates = (deps: {
   pairs: readonly LensInput[]
@@ -234,6 +235,7 @@ const sizeCandidates = (deps: {
   headroomFloorBps: number
   usdValueOf: (loanToken: Address, loanUnits: bigint) => bigint | null
   counters: TickCounters
+  planSkipLog: PlanSkipLog
   logger: Logger
 }): SizedCandidate[] => {
   const {
@@ -244,6 +246,7 @@ const sizeCandidates = (deps: {
     headroomFloorBps,
     usdValueOf,
     counters,
+    planSkipLog,
     logger
   } = deps
   const sized: SizedCandidate[] = []
@@ -269,7 +272,8 @@ const sizeCandidates = (deps: {
     // position emitting several reasons cannot be read. A threshold decision also carries the numbers
     // behind it, including the LIF and mode actually rejected: `maxLif` and chain time do NOT identify
     // them, because a matured-and-unhealthy slot is sized in BOTH modes and they are gated separately.
-    for (const { reason, collateralIndex, headroom } of skips) {
+    for (const { reason, collateralIndex, postMaturityMode, headroom } of skips) {
+      if (!planSkipLog.shouldLog({ label, collateralIndex, postMaturityMode, reason })) continue
       logger[LEVEL_BY_REASON[reason]]('plan.skipped', {
         id: label,
         marketId: pair.id,
@@ -302,6 +306,7 @@ const sizeCandidates = (deps: {
       sized.push({ pair, label, out, plan, surplus, surplusUsd })
     }
   }
+  planSkipLog.sweep()
   return sized
 }
 
@@ -560,7 +565,7 @@ const capPerPosition = <T extends { label: string; plan: LiquidationPlan }>(
  * so the tick is unit-testable without a chain, a discovery endpoint, or a signer.
  *
  * Discovery failure is tolerated: a transient error is logged (`discover.error`) and the tick proceeds
- * with zero new candidates. The lens reads every candidate fresh on-chain, so discovery is a coverage
+ * with zero new candidates. The lens reads every candidate fresh onchain, so discovery is a coverage
  * source, never a correctness dependency.
  *
  * Between sizing and that expensive work sits phase A.5 ({@link prepareRoutes}), which resolves the
@@ -573,6 +578,7 @@ const capPerPosition = <T extends { label: string; plan: LiquidationPlan }>(
  * counter identities; it also carries `firmCalls` / `firmCallsUnknown` and `durationMs`, which are the
  * two figures a maturity's retry period is actually set by.
  */
+// oxlint-disable-next-line complexity
 export async function runTick(deps: {
   discover: () => Promise<BorrowerCandidate[]>
   /** Chain head the runner just polled — the tick-constant height backoff windows are measured in. */
@@ -631,6 +637,7 @@ export async function runTick(deps: {
    * long. Pure telemetry — it suppresses nothing (see {@link RevertStreakStore}).
    */
   revertStreaks: RevertStreakStore
+  planSkipLog: PlanSkipLog
   /** Labels (`${id}:${borrower}`) already in flight — skipped to avoid re-submitting each block. */
   inflightLabels: () => ReadonlySet<string>
   /**
@@ -661,6 +668,7 @@ export async function runTick(deps: {
     backoff,
     cooldown,
     revertStreaks,
+    planSkipLog,
     inflightLabels,
     usdValueOf,
     routing,
@@ -668,7 +676,7 @@ export async function runTick(deps: {
   } = deps
   const startedAt = performance.now()
 
-  // 1. Discover the over-inclusive (id, borrower) universe → lens inputs (caller = the Executor
+  // Discover the over-inclusive (id, borrower) universe → lens inputs (caller = the Executor
   // singleton). A transient discovery failure is non-fatal: log it and proceed with zero candidates
   // so the pending queue (confirmations / fee bumps) below is still driven this block.
   const { data: candidates, error: discoverError } = await tryCatch(discover())
@@ -679,7 +687,7 @@ export async function runTick(deps: {
     caller
   }))
 
-  // 2. Read the lens fresh for the whole batch in one deployless eth_call.
+  // Read the lens fresh for the whole batch in one deployless eth_call.
   const lensOut = await readLens(pairs)
   logger.info('lens.read', { pairs: pairs.length, returned: lensOut.size })
 
@@ -707,7 +715,7 @@ export async function runTick(deps: {
     unpriced: 0
   }
 
-  // 3. Phase A — sizing only, and synchronous by construction (see `sizeCandidates`). `inflight` is
+  // Phase A — sizing only, and synchronous by construction (see `sizeCandidates`). `inflight` is
   // captured once; discovery yields distinct (id, borrower) pairs, so no label repeats in one tick.
   const sized = sizeCandidates({
     pairs,
@@ -717,6 +725,7 @@ export async function runTick(deps: {
     headroomFloorBps,
     usdValueOf,
     counters,
+    planSkipLog,
     logger
   })
 
@@ -753,7 +762,7 @@ export async function runTick(deps: {
   const isBackedOff = (label: string, plan: LiquidationPlan) =>
     !isBadDebtRealization(plan) && backoff.shouldSkip(label, chainHead)
 
-  // 4. Bound the probe fan-out BEFORE resolving anything, on the gross ordering — this is the one cap
+  // Bound the probe fan-out BEFORE resolving anything, on the gross ordering — this is the one cap
   // that must be applied blind, because it is what bounds learning the cost. It is looser than the
   // final cap so the net ordering below still has a superset to reorder within.
   const { kept: probeable, dropped: overProbeBound } = capPerPosition(
@@ -762,7 +771,7 @@ export async function runTick(deps: {
   )
   skipPreselected(overProbeBound, 'probe_cap')
 
-  // 5. Phase A.5 — the async step between sizing and the expensive work: resolve each candidate's
+  // Phase A.5 — the async step between sizing and the expensive work: resolve each candidate's
   // route and start warming the (deduplicated) probe curves for those pairs only. The warm is NOT
   // awaited; this tick reads whatever the cache already holds (see {@link prepareRoutes}).
   const states = await prepareRoutes({
@@ -773,7 +782,7 @@ export async function runTick(deps: {
     logger
   })
 
-  // 6. Rank net of route cost, THEN truncate. Both halves matter: charging the route makes a swap-free
+  // Rank net of route cost, THEN truncate. Both halves matter: charging the route makes a swap-free
   // slot beat a nominally larger swap slot the incentive cannot fund, and capping afterwards means the
   // net winner is no longer discarded before it was ever compared.
   const scored = rankByNetUsdSurplus(
@@ -792,7 +801,7 @@ export async function runTick(deps: {
   }
   const attempts = new Map<string, number>()
 
-  // 7. Phase B — the expensive serial stages (one quote and one simulation each), worked in descending
+  // Phase B — the expensive serial stages (one quote and one simulation each), worked in descending
   // expected-USD-profit order so the most valuable candidate gets the contested early seconds rather
   // than whichever borrower sorts first by address.
   //
@@ -909,8 +918,10 @@ export async function runTick(deps: {
       let swapPlan: SwapPlan | null = null
       if (needsSwap) {
         const quote = await quoteFor(liquidationPlan, out, label)
+        // oxlint-disable-next-line max-depth
         if (typeof quote.firmCalls === 'number') firmCalls = (firmCalls ?? 0) + quote.firmCalls
         else firmCallsUnknown += 1
+        // oxlint-disable-next-line max-depth
         if (quote.kind === 'no_config') {
           counters.noSwapPath += 1
           pendingCooldown.add(label)
@@ -923,12 +934,14 @@ export async function runTick(deps: {
           })
           continue
         }
+        // oxlint-disable-next-line max-depth
         if (quote.kind === 'failed') {
           // An economic refusal is not a failure signal: every venue's guaranteed output missed the
           // break-even repay, which is the normal state of the early LIF ramp and clears on its own as
           // the incentive grows. Backing off here would sample the ramp exponentially and skip the
           // contested block where the position first becomes fundable — see `quoteUnprofitable`. The
           // quoting layer already logged `quote.floor_unmet` per venue with the numbers.
+          // oxlint-disable-next-line max-depth
           if (quote.reason === 'floor_unmet') {
             counters.quoteUnprofitable += 1
             retryWorthy.add(label)
@@ -948,6 +961,7 @@ export async function runTick(deps: {
           swapPlan: quote.plan,
           minSurplusBps
         })
+        // oxlint-disable-next-line max-depth
         if (!economics.viable) {
           // No backoff, no cooldown — see `quoteUnprofitable` on TickCounters. Quote volume is bounded
           // by the pre-quote headroom gate in sizing, not by suppressing a position that may be one
@@ -1018,6 +1032,7 @@ export async function runTick(deps: {
           swapPlan,
           label
         })
+        // oxlint-disable-next-line max-depth
         if (outcome.sent) {
           submittedLabels.add(label)
           backoff.clear(label)
@@ -1032,6 +1047,7 @@ export async function runTick(deps: {
           // on a real broadcast, because clearing it here is what let a failing position reset to attempt
           // 1 and re-quote every other block.
           counters.notSent += 1
+          // oxlint-disable-next-line max-depth
           if (outcome.reason === 'refused') {
             // Queue-wide — it would have refused any position. So it arms nothing, and it does not break
             // the revert streak either: nothing was sent, so the chain said nothing about this plan.
@@ -1054,6 +1070,7 @@ export async function runTick(deps: {
             const streak = revertStreaks.record(label, outcome.selector)
             // Only the crossing, so one stuck position is one warn per streak rather than one per tick
             // (two, when both its siblings revert) for as long as it stays stuck.
+            // oxlint-disable-next-line max-depth
             if (streak.escalate === 'crossed') {
               // No candidate discriminator: the streak is keyed by POSITION and spans whichever
               // siblings reverted, so attributing it to one `(slot, mode)` would misreport it.

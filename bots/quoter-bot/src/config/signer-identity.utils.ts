@@ -73,6 +73,7 @@ const required = (values: Environment, name: string) => {
  * @remarks This function performs no filesystem, network, prompt, or signing side effects. The
  * AWS mode calls KMS directly and derives the signer from the configured key.
  */
+// oxlint-disable-next-line complexity
 export const signerIdentity = (environment: Environment, maker: Address): SignerIdentity => {
   const declared = environment.KEY_STORAGE_METHOD?.trim()
   if (declared && !(SIGNER_METHODS as readonly string[]).includes(declared)) {

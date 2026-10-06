@@ -99,6 +99,10 @@ config: {}
 #       - '0x5555555555555555555555555555555555555555555555555555555555555555'
 #     referenceMarketId: '0x7777777777777777777777777777777777777777777777777777777777777777'
 #     referenceLookbackSeconds: '259200'
+#     # Accepted loss factor per market; an omitted market accepts 0 and stays lend-halted while
+#     # its loss factor is non-zero. Quote the value: it can exceed 2^53.
+#     acceptedLossFactor:
+#       '0x5555555555555555555555555555555555555555555555555555555555555555': '0'
 #   setup:
 #     nativeReserveWei: '10000000000000000'
 #     signerNativeReserveWei: ''
@@ -140,10 +144,10 @@ existingConfigSecret: ''
 
 # Extra environment variables (list of EnvVar objects). Environment values override their YAML
 # counterparts, so this is the place for the signer secret and for the environment-only Better
-# Stack settings (BETTERSTACK_SOURCE_TOKEN, BETTERSTACK_INGESTING_HOST,
-# BETTERSTACK_HEARTBEAT_URL) and OpenTelemetry export settings (OTEL_EXPORTER_OTLP_ENDPOINT,
-# OTEL_EXPORTER_OTLP_HEADERS). XDG_STATE_HOME is chart-managed and reserved: entries with that
-# name are ignored so durable ownership state cannot be detached from the retained PVC.
+# Stack settings (BETTERSTACK_SOURCE_TOKEN, BETTERSTACK_INGESTING_HOST) and OpenTelemetry export
+# settings (OTEL_EXPORTER_OTLP_ENDPOINT, OTEL_EXPORTER_OTLP_HEADERS). XDG_STATE_HOME is
+# chart-managed and reserved: entries with that name are ignored so durable ownership state cannot
+# be detached from the retained PVC.
 # Rotating a referenced Secret in place does not reach the running process — environment
 # variables are captured at container start — so follow a signer rotation with
 # `kubectl rollout restart statefulset/<release-name>`, exactly like an edited
@@ -155,8 +159,6 @@ env: []
 #       secretKeyRef:
 #         name: quoter-bot-signer
 #         key: makerPrivateKey
-#   - name: BETTERSTACK_HEARTBEAT_URL
-#     value: 'https://uptime.betterstack.com/api/v1/heartbeat/example'
 
 # Extra envFrom sources (list of EnvFromSource objects), for injecting whole Secrets or
 # ConfigMaps of environment overrides.
@@ -164,6 +166,23 @@ envFrom: []
 # envFrom:
 #   - secretRef:
 #       name: quoter-bot-signer
+
+# Deliver the runtime environment Secret from AWS Secrets Manager through External Secrets
+# Operator (external-secrets.io/v1) instead of a hand-applied Secret. Requires
+# serviceAccount.create: true with an IRSA annotation (eks.amazonaws.com/role-arn): the
+# SecretStore authenticates as that ServiceAccount (auth.jwt.serviceAccountRef), so the bot's
+# own IAM role needs secretsmanager:GetSecretValue/DescribeSecret on `remoteKey` and kms:Decrypt
+# on its key.
+# The remote value is a flat JSON object of environment variables; every key becomes a Secret
+# key of <fullname>-runtime, which the chart appends to envFrom. The StatefulSet is annotated
+# `secret.reloader.stakater.com/reload: <fullname>-runtime`, so with Stakater Reloader installed a
+# rotated value restarts the pod (environment variables are captured at container start).
+externalSecret:
+  enabled: false
+  # Secrets Manager secret name or ARN, e.g. quoter-bot/prd/1/runtime.
+  remoteKey: ''
+  region: ''
+  refreshInterval: 5m
 
 # Durable ownership state (bot-issued offer-group IDs) lives under this mount; the chart
 # always sets XDG_STATE_HOME to `mountPath`. Losing it makes previously bot-issued groups

@@ -2,9 +2,9 @@ import type { Address, Hex } from 'viem'
 
 import { isAddressEqual } from 'viem'
 
-import type { OwnedOverlapBookOffer } from '../intentional-overlap.utils'
+import type { OwnedOverlapBookOffer } from '../../domain/intentional-overlap'
 
-import { hasInvalidOwnedBootstrapLadderSpread } from '../intentional-overlap.utils'
+import { hasInvalidOwnedBootstrapLadderSpread } from '../../domain/intentional-overlap'
 import { LadderAdapterError } from './ladder-adapter.error'
 
 /**

@@ -26,14 +26,14 @@ type ProfitabilityAssessment = {
  * Whether a quoted route covers the repay `liquidate` will pull, evaluated BEFORE simulating.
  *
  * Midnight ends `liquidate` with `safeTransferFrom(loanToken, payer, this, repaidUnits)`, re-deriving
- * `repaidUnits` on-chain, while the Executor's callback approves only its own live balance. A route
+ * `repaidUnits` onchain, while the Executor's callback approves only its own live balance. A route
  * returning less than that derived repay therefore reverts as
  * `ERC20: transfer amount exceeds allowance` — a balance shortfall wearing an allowance error's
  * clothes, which is why the failure reads as an approval bug and is not one. Gating here turns the
  * revert into a reported skip carrying the numbers the revert string omits.
  *
  * Break-even is read off {@link LiquidationPlan.impliedRepaidUnits} rather than recomputed. The
- * matured-and-unhealthy branch opens both on-chain gates and picks a mode by surplus, so the LIF a
+ * matured-and-unhealthy branch opens both onchain gates and picks a mode by surplus, so the LIF a
  * plan was sized at is not recoverable from `postMaturityMode` or from chain time — recomputing it
  * here would silently apply the post-maturity ramp to a normal-mode plan and overstate the repay by
  * the whole un-ramped incentive.

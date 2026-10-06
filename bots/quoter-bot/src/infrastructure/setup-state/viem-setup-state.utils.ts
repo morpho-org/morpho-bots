@@ -2,11 +2,11 @@ import type { Hex } from 'viem'
 
 import { bytesToHex, getAddress, hexToBytes, isAddress, isHex, size } from 'viem'
 
-import type { OwnedOverlapBookOffer } from '../intentional-overlap.utils'
+import type { OwnedOverlapBookOffer } from '../../domain/intentional-overlap'
 
 import { SafeProviderError } from '../../application/setup/safe-provider.error'
-import { hasInvalidOwnedBootstrapLadderSpread } from '../intentional-overlap.utils'
-import { ProviderResponseError } from './provider-response.error'
+import { hasInvalidOwnedBootstrapLadderSpread } from '../../domain/intentional-overlap'
+import { ProviderResponseError } from '../provider/provider-response.error'
 
 export const PAGE_SIZE = 100
 export const MAX_OFFER_PAGES = 100

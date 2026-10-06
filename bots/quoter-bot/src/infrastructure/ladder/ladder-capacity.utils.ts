@@ -10,7 +10,13 @@ type LadderCapacityParameters = {
   creditSaleCapacityAssets: bigint
   targetMarketExposureAssets: bigint
   maximumTotalExposureAssets: bigint
-  reservations: readonly { id: Hex; marketIds: readonly Hex[]; assets: bigint }[]
+  /** `assets` is a group's remaining face exposure, `cashAssets` the most cash it can still pay. */
+  reservations: readonly {
+    id: Hex
+    marketIds: readonly Hex[]
+    assets: bigint
+    cashAssets: bigint
+  }[]
 }
 
 /**
@@ -31,7 +37,8 @@ export const calculateLadderCapacities = (parameters: LadderCapacityParameters) 
   const marketReserved = parameters.reservations
     .filter(item => item.marketIds.includes(parameters.marketId))
     .reduce((sum, item) => sum + item.assets, 0n)
-  const unreservedCash = parameters.balance > reserved ? parameters.balance - reserved : 0n
+  const reservedCash = parameters.reservations.reduce((sum, item) => sum + item.cashAssets, 0n)
+  const unreservedCash = parameters.balance > reservedCash ? parameters.balance - reservedCash : 0n
   const currentExposure = parameters.currentCredit + parameters.otherMarketCredit + reserved
   const totalLendRoom =
     parameters.maximumTotalExposureAssets > currentExposure

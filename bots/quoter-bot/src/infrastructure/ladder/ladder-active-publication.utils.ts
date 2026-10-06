@@ -1,11 +1,13 @@
 import type { Hex } from 'viem'
 
 import type { LadderGroupConsumption } from '../../application/ladder/ladder-verbose'
-import type { LadderQuoteSet, LadderRung } from '../../domain/ladder/ladder'
-import type { BootstrapRawGroup } from '../bootstrap/bootstrap-groups.utils'
+import type { LadderQuoteSet, LadderRung } from '../../domain/ladder'
+import type { MakerOfferGroup } from '../provider/offer-groups.utils'
 import type { OwnedLadderPublication } from './ladder-group-ownership.utils'
 
-const distinctIndexedGroups = (groups: readonly BootstrapRawGroup[]) =>
+import { isGroupClosed, remainingCap } from '../../domain/offer-cap'
+
+const distinctIndexedGroups = (groups: readonly MakerOfferGroup[]) =>
   new Map(groups.map(group => [group.id, group]))
 
 const scaleRungs = (rungs: readonly LadderRung[], assets: bigint): LadderRung[] => {
@@ -27,7 +29,7 @@ const scaleRungs = (rungs: readonly LadderRung[], assets: bigint): LadderRung[] 
  */
 export const reconstructOwnedLadderPublication = (
   publication: OwnedLadderPublication,
-  groups: readonly BootstrapRawGroup[]
+  groups: readonly MakerOfferGroup[]
 ): LadderQuoteSet | undefined => {
   const indexedGroups = distinctIndexedGroups(groups)
   const side = (name: 'lower' | 'higher') => {
@@ -40,10 +42,10 @@ export const reconstructOwnedLadderPublication = (
         return rung ? [rung] : []
       })
       const indexed = indexedGroups.get(reference.groupId)
-      if (indexed && indexed.maxAssets <= indexed.consumed) continue
       const assets = indexed
-        ? indexed.maxAssets - indexed.consumed
+        ? remainingCap(indexed.cap, indexed.consumed)
         : rungs.reduce((sum, rung) => sum + rung.assets, 0n)
+      if (indexed && assets === 0n) continue
       reconstructed.push(...scaleRungs(rungs, assets))
     }
     return reconstructed.toSorted((left, right) => left.index - right.index)
@@ -70,7 +72,7 @@ export const reconstructOwnedLadderPublication = (
  */
 export const ownedLadderGroupConsumption = (
   publications: readonly OwnedLadderPublication[],
-  groups: readonly BootstrapRawGroup[],
+  groups: readonly MakerOfferGroup[],
   marketId?: Hex
 ): readonly LadderGroupConsumption[] => {
   const indexedGroups = distinctIndexedGroups(groups)
@@ -83,7 +85,7 @@ export const ownedLadderGroupConsumption = (
     }
     for (const reference of publication.groups) {
       const indexed = indexedGroups.get(reference.groupId)
-      if (!indexed || consumption.has(reference.groupId)) continue
+      if (!indexed || indexed.cap.kind !== 'units' || consumption.has(reference.groupId)) continue
       const nearestIndex = reference.rungIndexes.reduce<number | undefined>(
         (lowest, index) => (lowest === undefined || index < lowest ? index : lowest),
         undefined
@@ -96,10 +98,9 @@ export const ownedLadderGroupConsumption = (
         marketId: publication.marketId,
         side: reference.side,
         groupRateBps,
-        maxAssets: indexed.maxAssets,
+        maxUnits: indexed.cap.maximum,
         consumed: indexed.consumed,
-        remainingAssets:
-          indexed.maxAssets > indexed.consumed ? indexed.maxAssets - indexed.consumed : 0n
+        remainingUnits: remainingCap(indexed.cap, indexed.consumed)
       })
     }
   }
@@ -112,11 +113,11 @@ export const ownedLadderGroupConsumption = (
  * @param groups - Current maker groups returned by the Morpho API.
  * @param marketId - Optional strategy market restriction.
  * @returns Distinct group IDs requiring replacement or cancellation, including pending API indexing.
- * @remarks An API-indexed fully consumed group is excluded; an absent persisted group remains active to prevent unsafe republishing.
+ * @remarks An API-indexed closed group (see {@link isGroupClosed}) is excluded; an absent persisted group remains active to prevent unsafe republishing.
  */
 export const activeOwnedLadderGroupIds = (
   publications: readonly OwnedLadderPublication[],
-  groups: readonly BootstrapRawGroup[],
+  groups: readonly MakerOfferGroup[],
   marketId?: Hex
 ) => {
   const indexedGroups = distinctIndexedGroups(groups)
@@ -124,11 +125,15 @@ export const activeOwnedLadderGroupIds = (
     ...new Set(
       publications
         .filter(publication => marketId === undefined || publication.marketId === marketId)
-        .flatMap(publication => publication.groups.map(group => group.groupId))
-        .filter(groupId => {
-          const indexed = indexedGroups.get(groupId)
-          return indexed === undefined || indexed.maxAssets > indexed.consumed
+        .flatMap(publication => publication.groups)
+        .filter(group => {
+          const indexed = indexedGroups.get(group.groupId)
+          return (
+            indexed === undefined ||
+            !isGroupClosed({ cap: indexed.cap, buy: group.side === 'higher' }, indexed.consumed)
+          )
         })
+        .map(group => group.groupId)
     )
   ]
 }
@@ -155,29 +160,32 @@ export const activeOwnedLadderGroupIdsBySide = (
 }
 
 /**
- * Projects only ladder rungs whose persisted groups are still absent from the provider book.
+ * Replays every offer of an active owned ladder group at the exact tick it was signed with.
  * @param publications - Durable reserved and confirmed ladder publication intents.
  * @param groups - Current maker groups returned by the eventually consistent API.
- * @returns Quote fragments that can be rebuilt into pending book offers for spread validation.
+ * @param marketId - Market whose book is being validated.
+ * @returns One book offer per persisted tick of every group {@link activeOwnedLadderGroupIds}
+ * reports in `marketId`, so spread validation sees an offer the API has not indexed, or has
+ * indexed only partly.
  */
-export const pendingLadderQuoteSets = (
+export const ownedLadderBookOffers = (
   publications: readonly OwnedLadderPublication[],
-  groups: readonly BootstrapRawGroup[]
+  groups: readonly MakerOfferGroup[],
+  marketId: Hex
 ) => {
-  const indexedGroupIds = new Set(groups.map(group => group.id))
-  return publications.flatMap(publication => {
-    const pendingIndexes = (side: 'lower' | 'higher') =>
-      new Set(
-        publication.groups
-          .filter(group => group.side === side && !indexedGroupIds.has(group.groupId))
-          .flatMap(group => group.rungIndexes)
-      )
-    const lowerIndexes = pendingIndexes('lower')
-    const higherIndexes = pendingIndexes('higher')
-    const lower = publication.quote.lower.filter(rung => lowerIndexes.has(rung.index))
-    const higher = publication.quote.higher.filter(rung => higherIndexes.has(rung.index))
-    return lower.length === 0 && higher.length === 0
-      ? []
-      : [{ ...publication.quote, lower, higher }]
-  })
+  const activeGroupIds = new Set(activeOwnedLadderGroupIds(publications, groups, marketId))
+  return publications
+    .filter(publication => publication.marketId === marketId)
+    .flatMap(publication =>
+      publication.groups
+        .filter(group => activeGroupIds.has(group.groupId))
+        .flatMap(group =>
+          group.ticks.map(tick => ({
+            groupId: group.groupId,
+            marketId,
+            buy: group.side === 'higher',
+            tick
+          }))
+        )
+    )
 }

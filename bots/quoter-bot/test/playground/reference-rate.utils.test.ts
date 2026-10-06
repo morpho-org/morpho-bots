@@ -2,6 +2,7 @@ import { describe, expect, test } from 'vitest'
 
 import {
   DEFAULT_REFERENCE_RATE_BPS,
+  resolveCreditHeldAssets,
   resolveReferenceRateBps
 } from '../../playground/reference-rate.utils'
 
@@ -27,5 +28,18 @@ describe('resolveReferenceRateBps', () => {
   test('starts empty so the preview never presents a guessed market rate', () => {
     expect(DEFAULT_REFERENCE_RATE_BPS).toBe('')
     expect(resolveReferenceRateBps(DEFAULT_REFERENCE_RATE_BPS)).toBeUndefined()
+  })
+})
+
+describe('resolveCreditHeldAssets', () => {
+  test('resolves a non-negative integer entry, including zero', () => {
+    expect(resolveCreditHeldAssets('0')).toBe(0n)
+    expect(resolveCreditHeldAssets(' 1500 ')).toBe(1500n)
+  })
+
+  test('leaves an empty or unusable entry unresolved', () => {
+    for (const entry of ['', '  ', '-1', '1.5', '1e3', 'abc']) {
+      expect(resolveCreditHeldAssets(entry)).toBeUndefined()
+    }
   })
 })

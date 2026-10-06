@@ -401,8 +401,8 @@ await ensureContext()
 const betterstackHost = process.env.BETTERSTACK_INGESTING_HOST?.trim()
 const betterstackToken = process.env.BETTERSTACK_SOURCE_TOKEN?.trim()
 
-// --- bot-<chainId>: one liquidation runner per chain. Borrower discovery polls the markets
-// liquidation-candidates API and the whitelist comes from the Midnight markets API (both public by
+// bot-<chainId>: one liquidation runner per chain. Borrower discovery polls the markets
+// liquidation-candidates API and the whitelist comes from the Midnight Markets API (both public by
 // default), so there is nothing else to provision. The in-container var names stay RPC_URL /
 // LIQUIDATOR_PRIVATE_KEY (the chainId suffix is only an operator-side convention). The whole venue
 // posture is SYNCHRONIZED every full run — ENABLE_LIFI and ALLOW_BAD_DEBT_ONLY set explicitly (true or

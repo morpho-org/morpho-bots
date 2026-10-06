@@ -216,7 +216,7 @@ const waitForDeploy = async (
 }
 
 // CRASHED is a failure: the bot fails loud at startup on a bad config (empty whitelist, a
-// whitelisted address that isn't a MetaMorpho vault), so a crash-looping service must never read
+// whitelisted address that isn't a Vault V1), so a crash-looping service must never read
 // as a green deploy.
 const badStatus = (status: string) =>
   status === 'FAILED' || status === 'TIMEOUT' || status === 'CRASHED'
@@ -311,7 +311,7 @@ await ensureContext()
 const betterstackHost = process.env.BETTERSTACK_INGESTING_HOST?.trim()
 const betterstackToken = process.env.BETTERSTACK_SOURCE_TOKEN?.trim()
 
-// --- bot-<chainId>: one reallocation runner per chain. The in-container var names stay RPC_URL /
+// bot-<chainId>: one reallocation runner per chain. The in-container var names stay RPC_URL /
 // REALLOCATOR_PRIVATE_KEY / VAULT_WHITELIST (the chainId suffix is only an operator-side convention).
 for (const chain of chainSecrets) {
   await ensureService(chain.service)

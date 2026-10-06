@@ -2,8 +2,8 @@ import type { Address, Hex } from 'viem'
 
 import { isAddressEqual } from 'viem'
 
+import { assertBootstrapTransaction } from '../transaction/bootstrap-transaction.utils'
 import { BootstrapAdapterError } from './bootstrap-adapter.error'
-import { assertBootstrapTransaction } from './bootstrap-transaction.utils'
 
 type RootSignatureRequirement = {
   action: {
@@ -37,6 +37,7 @@ type BootstrapRequirementPolicy =
  * @remarks The complete set and exact action metadata are validated before `sign` is called, so
  * rejected sets have no signing or transaction side effects.
  */
+// oxlint-disable-next-line complexity
 export const prepareBootstrapRequirements = async <Signature>(
   requirements: readonly unknown[],
   sign: (requirement: RootSignatureRequirement, account: Address) => Promise<Signature>,

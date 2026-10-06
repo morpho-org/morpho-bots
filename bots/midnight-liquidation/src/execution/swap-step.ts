@@ -16,7 +16,7 @@ import { mulDivDown } from '../sizing/math'
  * The Midnight oracle price converts collateral → loan units directly (`loan = collateral * price /
  * ORACLE_PRICE_SCALE`), so no USD/decimals round-trip is needed — the result is already in the loan
  * token's native units. This is the venue-agnostic reference output: a Uniswap min-out is derived
- * from it, and an aggregator's quoted output is sanity-checked against it.
+ * from it, and an aggregator's quoted output is checked against it.
  */
 export function expectedLoanOut(
   plan: Pick<LiquidationPlan, 'seizedAssets' | 'oraclePrice'>

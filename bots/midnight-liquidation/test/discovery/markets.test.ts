@@ -145,7 +145,7 @@ describe('createListedMarketFilter', () => {
     let requested = ''
     const fetchImpl = async (request: Request) => {
       requested = request.url
-      // Include an off-chain market to prove the chain filter drops it.
+      // Include an offchain market to prove the chain filter drops it.
       return jsonResponse({ data: [market(LISTED), market(OTHER_CHAIN, 1)] })
     }
     const filter = createListedMarketFilter({

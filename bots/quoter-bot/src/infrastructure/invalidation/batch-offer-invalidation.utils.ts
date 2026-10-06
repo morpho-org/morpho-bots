@@ -3,22 +3,22 @@ import type { Address, Hex } from 'viem'
 import { MAX_OFFER_CAP, midnightAbi } from '@morpho-org/midnight-sdk'
 import { encodeFunctionData } from 'viem'
 
-import { assertBatchOfferInvalidationTransaction } from './offer-invalidation-transaction.utils'
+import { assertBatchOfferInvalidationTransaction } from '../transaction/offer-invalidation-transaction.utils'
 
 /**
  * Submits one native Midnight multicall for an ordered selection of offer groups.
  * @param parameters - Configured Midnight, maker, groups, and guarded transaction executor.
- * @returns The confirmed transaction hash shared by every invalidated group.
+ * @returns The executor's confirmation shared by every invalidated group.
  * @throws `OfferInvalidationAdapterError` when policy validation or receipt confirmation fails.
  * @remarks Every inner call fixes `onBehalf` to the configured maker and `amount` to `MAX_OFFER_CAP`.
  * Midnight executes its native multicall with `delegatecall`, preserving the maker wallet's
  * `msg.sender` for each `setConsumed`. Once submitted, a failure is surfaced without serial retry.
  */
-export const invalidateOffersBatch = async (parameters: {
+export const invalidateOffersBatch = async <Confirmed>(parameters: {
   midnight: Address
   maker: Address
   groupIds: readonly Hex[]
-  execute: (transaction: { to: Address; data: Hex; value: bigint }) => Promise<Hex>
+  execute: (transaction: { to: Address; data: Hex; value: bigint }) => Promise<Confirmed>
 }) => {
   const calls = parameters.groupIds.map(groupId =>
     encodeFunctionData({

@@ -28,6 +28,7 @@
     "soltag": "catalog:",
     "tsx": "catalog:",
     "typescript": "catalog:",
-    "viem": "catalog:"
+    "viem": "catalog:",
+    "vitest": "catalog:"
   }
 }

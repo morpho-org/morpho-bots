@@ -12,7 +12,7 @@ import { base } from 'viem/chains'
 // The 0xAdedD8ab… deployment is fresh, so it has no organic debt positions to pin. Instead the suite
 // MINTS its own liquidatable WETH/USDC position inside the fork via `seedLiquidatablePosition`
 // (test/fork/seed.ts): it clones a real curator-trusted WETH/USDC oracle + params, opens a healthy
-// position through the real `take` order-book path (exercising the new 336b924a offer typehashes
+// position through the real `take` offer-book path (exercising the new 336b924a offer typehashes
 // end-to-end), then the suite warps past `maturity` to make it post-maturity liquidatable. FORK_BLOCK
 // is a fixed block shortly after the deploy so the WETH oracle price and the WETH/USDC pool are
 // deterministic; RPC_URL_8453 must be an archive endpoint that serves it (CI secret; locally set it in
@@ -30,7 +30,7 @@ export const POOL_FEE = 500
 // real curator-trusted WETH/USDC market cloned from the Midnight API; the cursor is not yet enabled on
 // the fresh deploy, so the seeder enables it by impersonating the configurator on the fork.
 export const WETH_USDC_ORACLE = '0xFEa2D58cEfCb9fcb597723c6bAE66fFE4193aFE4' as Address
-export const LLTV = 860000000000000000n // 0.86 WAD (enabled on-chain)
+export const LLTV = 860000000000000000n // 0.86 WAD (enabled onchain)
 export const LIQUIDATION_CURSOR = 250000000000000000n // 0.25 WAD (enabled by the seeder via configurator)
 
 // Loan-as-collateral params, matching the live Base markets: the loan token (USDC) is its own
@@ -79,11 +79,7 @@ const FORK_URL = requireForkUrl()
 
 export type TestClient = ReturnType<typeof testClient>
 
-// We spawn `anvil` ourselves rather than via `@viem/anvil`, whose `stop()` is broken for forked
-// instances: when the process is slow to exit (its keep-alive sockets stall the SIGTERM it sends), an
-// internal `stopTimeout` promise escapes as an unhandled "Anvil failed to stop in time" rejection
-// that bun's test runner fails the suite on, and the child is left orphaned (port bound for the next
-// run). A bare child_process spawn gives us SIGKILL + an exit promise, which terminate deterministically.
+// Spawned directly: `@viem/anvil`'s `stop()` can orphan a forked node that is slow to exit.
 export type ForkHandle = {
   kill: (signal: NodeJS.Signals) => void
   /** Resolves with the exit code once the child has actually gone (Node has no `.exited`). */
@@ -163,14 +159,16 @@ export async function startFork(port = 8545): Promise<{ anvil: ForkHandle; rpcUr
   return { anvil, rpcUrl }
 }
 
-/**
- * Teardown: SIGKILL the forked node and await its exit so the port is freed before the next suite and
- * nothing dangles past `afterAll`. Awaited by callers.
- */
+/** anvil writes its fork cache (`~/.foundry/cache/rpc`) only when it shuts down gracefully. */
+const CACHE_FLUSH_GRACE_MS = 5_000
+
+/** Resolves once anvil has exited and freed its port, killing it after {@link CACHE_FLUSH_GRACE_MS}. */
 export async function stopFork(anvil: ForkHandle | undefined): Promise<void> {
   if (!anvil) return
-  anvil.kill('SIGKILL')
+  const fallback = setTimeout(() => anvil.kill('SIGKILL'), CACHE_FLUSH_GRACE_MS)
+  anvil.kill('SIGTERM')
   await anvil.exited
+  clearTimeout(fallback)
 }
 
 /** Anvil cheatcode client (setBalance / setNextBlockTimestamp / mine) + public reads. */

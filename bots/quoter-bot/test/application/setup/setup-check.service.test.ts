@@ -3,6 +3,7 @@ import type { Hex } from 'viem'
 import { maxUint256 } from 'viem'
 import { describe, expect, test } from 'vitest'
 
+import { setupMonitoringEvents } from '../../../src/application/monitoring/setup-monitoring.utils'
 import { SafeProviderError } from '../../../src/application/setup/safe-provider.error'
 import {
   SetupCheckService,
@@ -12,9 +13,9 @@ import {
 } from '../../../src/application/setup/setup-check.service'
 import { SetupFailedError } from '../../../src/application/setup/setup-failed.error'
 import { SetupMonitorConfigurationError } from '../../../src/application/setup/setup-monitor-configuration.error'
-import { SignerAccountError } from '../../../src/infrastructure/make/signer-account.error'
-import { ProviderReadError } from '../../../src/infrastructure/setup-state/provider-read.error'
-import { ProviderResponseError } from '../../../src/infrastructure/setup-state/provider-response.error'
+import { ProviderReadError } from '../../../src/infrastructure/provider/provider-read.error'
+import { ProviderResponseError } from '../../../src/infrastructure/provider/provider-response.error'
+import { SignerAccountError } from '../../../src/infrastructure/transaction/signer-account.error'
 
 const maker = '0x1111111111111111111111111111111111111111'
 const midnight = '0x2222222222222222222222222222222222222222'
@@ -34,7 +35,8 @@ const config: SetupCheckConfig = {
   loanAsset,
   ratifier,
   marketIds: [marketId],
-  referenceMarketId
+  referenceMarketId,
+  requiredAllowance: 5_000_000_000n
 }
 
 const readyState = (): SetupStateService => {
@@ -61,6 +63,7 @@ const readyState = (): SetupStateService => {
       loanAsset,
       tickSpacing: 1
     }),
+    getLossFactor: async () => 0n,
     checkReference: async () => ({
       marketId: referenceMarketId,
       referenceReadable: true,
@@ -626,7 +629,8 @@ describe('SetupCheckService', () => {
       ['books', 'passed'],
       ['reference', 'passed'],
       ['offers', 'passed'],
-      ['position-health', 'not-required']
+      ['position-health', 'not-required'],
+      ['loss-factor', 'passed']
     ])
   })
 
@@ -1034,6 +1038,7 @@ describe('SetupCheckService', () => {
     state.checkReference = unavailable
     state.inspectOffers = unavailable
     state.checkPositionHealth = unavailable
+    state.getLossFactor = unavailable
 
     const error = await new SetupCheckService(state, config).assertReady().catch(value => value)
 
@@ -1056,7 +1061,8 @@ describe('SetupCheckService', () => {
       ['books', 'failed'],
       ['reference', 'failed'],
       ['offers', 'failed'],
-      ['position-health', 'failed']
+      ['position-health', 'failed'],
+      ['loss-factor', 'warning']
     ])
   })
 
@@ -1116,31 +1122,7 @@ describe('SetupCheckService', () => {
     )
   })
 
-  test('keeps an unbounded approval ready after fills have decremented it', async () => {
-    const state = readyState()
-    state.getLoanAllowance = async () => ({
-      spender: midnight,
-      amount: maxUint256 - 26_780_747_345n
-    })
-
-    const report = await new SetupCheckService(state, config).check()
-
-    expect(report.checks.find(check => check.name === 'loan-allowance')?.status).toBe('passed')
-  })
-
-  test('fails any finite approval and remediates with an unbounded one', async () => {
-    const state = readyState()
-    state.getLoanAllowance = async () => ({ spender: midnight, amount: 16_000_000_000n })
-
-    const report = await new SetupCheckService(state, config).check()
-
-    expect(report.checks.find(check => check.name === 'loan-allowance')).toMatchObject({
-      status: 'failed',
-      remediation: { functionName: 'approve', args: [midnight, maxUint256] }
-    })
-  })
-
-  test('pins the unbounded floor at half of maxUint256', async () => {
+  test('keeps an unlimited approval ready after fills have decremented it', async () => {
     const statusFor = async (amount: bigint) => {
       const state = readyState()
       state.getLoanAllowance = async () => ({ spender: midnight, amount })
@@ -1148,8 +1130,130 @@ describe('SetupCheckService', () => {
       return report.checks.find(check => check.name === 'loan-allowance')?.status
     }
 
-    expect(await statusFor(maxUint256 / 2n)).toBe('passed')
-    expect(await statusFor(maxUint256 / 2n - 1n)).toBe('failed')
+    expect(await statusFor(maxUint256)).toBe('passed')
+    expect(await statusFor(maxUint256 - 26_780_747_345n)).toBe('passed')
+  })
+
+  test('passes at the full-deployment allowance, warns one unit below, and fails at zero', async () => {
+    const statusFor = async (amount: bigint) => {
+      const state = readyState()
+      state.getLoanAllowance = async () => ({ spender: midnight, amount })
+      const report = await new SetupCheckService(state, config).check()
+      return report.checks.find(check => check.name === 'loan-allowance')?.status
+    }
+
+    expect(await statusFor(config.requiredAllowance)).toBe('passed')
+    expect(await statusFor(config.requiredAllowance + 1n)).toBe('passed')
+    expect(await statusFor(config.requiredAllowance - 1n)).toBe('warning')
+    expect(await statusFor(1n)).toBe('warning')
+    expect(await statusFor(0n)).toBe('failed')
+  })
+
+  test('keeps a below-deployment startup allowance ready so writers can start', async () => {
+    const state = readyState()
+    state.getLoanAllowance = async () => ({ spender: midnight, amount: 1n })
+
+    await expect(new SetupCheckService(state, config).assertReady()).resolves.toMatchObject({
+      ready: true
+    })
+  })
+
+  test('keeps monitoring while fills drain the allowance below the full deployment', async () => {
+    const controller = new AbortController()
+    const state = readyState()
+    const drained = [config.requiredAllowance, config.requiredAllowance - 1n, 0n]
+    let cycle = 0
+    state.getLoanAllowance = async () => ({ spender: midnight, amount: drained[cycle] ?? 0n })
+    const reports: SetupCheckReport[] = []
+
+    const terminal = await new SetupCheckService(state, config).runContinuously({
+      signal: controller.signal,
+      intervalMs: 1,
+      onCycle: (report, { halting }) => {
+        expect(halting).toBe(false)
+        reports.push(report)
+        cycle += 1
+        if (cycle === drained.length) controller.abort()
+      }
+    })
+
+    expect(reports.map(report => report.ready)).toEqual([true, true, true])
+    expect(
+      reports.map(report => report.checks.find(check => check.name === 'loan-allowance')?.status)
+    ).toEqual(['passed', 'warning', 'warning'])
+    expect(setupMonitoringEvents(reports[2] as SetupCheckReport)).toContainEqual({
+      event: 'setup.check-warning',
+      check: 'loan-allowance',
+      status: 'warning'
+    })
+    expect(terminal).toEqual({ status: 'stopped', reason: 'signal', cycles: 3 })
+  })
+
+  test('remediates a short approval without presenting the full deployment as a floor', async () => {
+    const state = readyState()
+    state.getLoanAllowance = async () => ({ spender: midnight, amount: 16_000_000_000n })
+
+    const report = await new SetupCheckService(state, {
+      ...config,
+      requiredAllowance: 17_000_000_000n
+    }).check()
+
+    const allowance = report.checks.find(check => check.name === 'loan-allowance')
+    expect(allowance?.status).toBe('warning')
+    expect(allowance?.remediation).toEqual(expect.stringContaining('buys shrink'))
+    expect(allowance?.remediation).toEqual(expect.stringContaining('17000000000'))
+    expect(allowance?.remediation).not.toMatch(/at least|minimum|floor|exactly/i)
+  })
+
+  test('reports the observed allowance and required spender and minimum on failure', async () => {
+    const state = readyState()
+    state.getLoanAllowance = async () => ({ spender: midnight, amount: 0n })
+
+    const report = await new SetupCheckService(state, config).check()
+
+    expect(report.checks.find(check => check.name === 'loan-allowance')).toMatchObject({
+      status: 'failed',
+      observed: { spender: midnight, amount: 0n },
+      required: { spender: midnight, minimum: 1n, fullDeployment: 5_000_000_000n }
+    })
+  })
+
+  test('passes a zero allowance at startup when no buy is configured', async () => {
+    const state = readyState()
+    state.getLoanAllowance = async () => ({ spender: midnight, amount: 0n })
+
+    const report = await new SetupCheckService(state, { ...config, requiredAllowance: 0n }).check()
+
+    expect(report.checks.find(check => check.name === 'loan-allowance')).toMatchObject({
+      status: 'passed',
+      required: { spender: midnight, fullDeployment: 0n }
+    })
+    expect(
+      report.checks.find(check => check.name === 'loan-allowance')?.required
+    ).not.toHaveProperty('minimum')
+  })
+
+  test('fails an approval granted to a different spender', async () => {
+    const state = readyState()
+    state.getLoanAllowance = async () => ({ spender: ratifier, amount: maxUint256 })
+
+    const report = await new SetupCheckService(state, config).check()
+
+    expect(report.checks.find(check => check.name === 'loan-allowance')?.status).toBe('failed')
+  })
+
+  test('keeps a production-sized approval above the float boundary ready', async () => {
+    // Regression: the operator-approved finite allowance exceeds Number.MAX_SAFE_INTEGER, so any
+    // check routed through Number silently loses precision and must stay in bigint arithmetic.
+    const state = readyState()
+    state.getLoanAllowance = async () => ({
+      spender: midnight,
+      amount: 9_007_199_254_740_991_000_000n
+    })
+
+    const report = await new SetupCheckService(state, config).check()
+
+    expect(report.checks.find(check => check.name === 'loan-allowance')?.status).toBe('passed')
   })
 
   test('warns without blocking readiness when a live group cannot be attributed', async () => {
@@ -1222,11 +1326,9 @@ describe('SetupCheckService', () => {
 
     const report = await new SetupCheckService(state, config).check()
 
-    expect(report.checks.find(check => check.name === 'loan-allowance')?.remediation).toEqual({
-      to: loanAsset,
-      functionName: 'approve',
-      args: [midnight, maxUint256]
-    })
+    expect(report.checks.find(check => check.name === 'loan-allowance')?.remediation).toEqual(
+      expect.stringContaining('5000000000 funds one full deployment')
+    )
     expect(report.checks.find(check => check.name === 'ratifier')?.remediation).toBe(
       'authorize the configured maker with the selected ratifier'
     )
@@ -1310,5 +1412,55 @@ describe('SetupCheckService', () => {
       observed: { status: 'not-required', reason: 'V0 has no debt' },
       required: 'not-required for V0'
     })
+  })
+
+  test('warns without failing readiness whenever a loss factor differs from the accepted value', async () => {
+    const lossFactorReport = async (
+      lossFactor: () => Promise<bigint>,
+      acceptedLossFactor?: ReadonlyMap<Hex, bigint>
+    ) => {
+      const state = readyState()
+      state.getLossFactor = lossFactor
+      const report = await new SetupCheckService(state, {
+        ...config,
+        ...(acceptedLossFactor ? { acceptedLossFactor } : {})
+      }).assertReady()
+      return report.checks.find(check => check.name === 'loss-factor')!
+    }
+    const accepted = new Map([[marketId, 5n]])
+
+    expect(await lossFactorReport(async () => 5n, accepted)).toMatchObject({
+      status: 'passed',
+      observed: []
+    })
+    expect(await lossFactorReport(async () => 0n)).toMatchObject({ status: 'passed' })
+    expect(await lossFactorReport(async () => 6n, accepted)).toMatchObject({
+      status: 'warning',
+      observed: [
+        {
+          id: marketId,
+          lossFactor: 6n,
+          acceptedLossFactor: 5n,
+          defaulted: false,
+          direction: 'above'
+        }
+      ]
+    })
+    expect(await lossFactorReport(async () => 4n, accepted)).toMatchObject({
+      status: 'warning',
+      observed: [{ id: marketId, direction: 'below' }]
+    })
+    expect(await lossFactorReport(async () => 1n)).toMatchObject({
+      status: 'warning',
+      observed: [{ id: marketId, lossFactor: 1n, acceptedLossFactor: 0n, defaulted: true }]
+    })
+    const unavailable = await lossFactorReport(async () => {
+      throw new ProviderResponseError('rpc', 'market-loss-factor', 'malformed')
+    })
+    expect(unavailable).toMatchObject({
+      status: 'warning',
+      observed: [{ id: marketId, acceptedLossFactor: 0n, defaulted: true }]
+    })
+    expect((unavailable.observed as { providerError?: unknown }[])[0]!.providerError).toBeDefined()
   })
 })

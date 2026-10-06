@@ -2,9 +2,9 @@
 // simulate-then-send step. Both seeders talk to live Base with real keys, so every state-changing
 // call is simulated immediately before it is sent and the run aborts on the first revert.
 
+import type { createLogger } from '@repo/bot-kit'
 import type { Address, PublicClient, WalletClient } from 'viem'
 
-import { createLogger } from '@repo/bot-kit'
 import { delay as sleep, tryCatch } from '@repo/utils'
 import { createInterface } from 'node:readline/promises'
 
@@ -31,7 +31,7 @@ export const confirmPrompt = async (question: string): Promise<boolean> => {
 
 /**
  * Simulates `call`, sends it, and waits for a successful receipt — throwing on a simulation error
- * that outlives {@link SIMULATE_RETRIES} or on an on-chain revert. Returns the simulated result, so
+ * that outlives {@link SIMULATE_RETRIES} or on an onchain revert. Returns the simulated result, so
  * a caller can compare what the chain predicted against what it wants before continuing.
  */
 export async function txStep({
@@ -71,7 +71,7 @@ export async function txStep({
   const { request, result } = sim.data as unknown as { request: never; result: unknown }
   const hash = await wallet.writeContract(request)
   const receipt = await ctx.publicClient.waitForTransactionReceipt({ hash })
-  if (receipt.status !== 'success') throw new Error(`${label} reverted on-chain (tx ${hash})`)
+  if (receipt.status !== 'success') throw new Error(`${label} reverted onchain (tx ${hash})`)
   ctx.logger.info('seed.tx', { step: label, txHash: hash })
   return result
 }

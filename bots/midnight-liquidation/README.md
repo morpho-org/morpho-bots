@@ -1,6 +1,6 @@
-# Midnight Liquidation Bot
+# Midnight liquidation bot
 
-Off-chain liquidator for Morpho Midnight markets, running on Base and Ethereum mainnet.
+Offchain liquidator for Morpho Midnight Markets, running on Base and Ethereum mainnet.
 
 The bot watches candidate borrowers, reads their live Midnight state, builds a liquidation plan,
 simulates the exact transaction it would send, and only broadcasts when the full Executor path
@@ -16,11 +16,11 @@ This package is operational code, but it is still intentionally narrow:
   values are derived from a shared wall-clock intent through the chain's block time, and the fee /
   economics values are set per chain. The fee/economics half is env-overridable (see **Per-chain
   defaults**); the block-timing half is code-only, changed by editing the chain's row.
-- The markets the bot may touch come from the Midnight markets API (`listed=true`) as a **whitelist**:
+- The markets the bot may touch come from the Midnight Markets API (`listed=true`) as a **whitelist**:
   only listed markets are discovered, probed, and liquidated (fail-closed). There is no hand-maintained
   collateral list.
 - Discovery is backed by the markets liquidation-candidates HTTP API — an over-inclusive candidate
-  feed the bot filters to the whitelist and re-reads on-chain before acting.
+  feed the bot filters to the whitelist and re-reads onchain before acting.
 - Execution tries **all enabled venues and uses the best** (LiFi / 0x / 1inch swap aggregators).
   Venues are enabled by the presence of their API key (LiFi also via `ENABLE_LIFI`, since it works
   keyless) — there is no per-collateral routing file. The best venue
@@ -48,13 +48,13 @@ This package is operational code, but it is still intentionally narrow:
 
 ## Prerequisites
 
-- Node.js `24.14.1` (`nvm use` from the repo root).
-- pnpm `11.1.1` (via corepack), Node `24.14.1`.
+- Node.js `24.18.1` (`nvm use` from the repo root).
+- pnpm `11.11.0` (via corepack), Node `24.18.1`.
 - A Base RPC URL.
 - A funded liquidator EOA private key.
 - A deployed permissionless Executor contract. If `EXECUTOOOR_ADDRESS` is unset, the bot uses the
   deterministic address derived by `@repo/contracts`; startup still requires code to exist there.
-- Network access to the markets liquidation-candidates API and the Midnight markets API (both public
+- Network access to the markets liquidation-candidates API and the Midnight Markets API (both public
   by default; override with `LIQUIDATION_CANDIDATES_API_URL` / `MARKETS_API_URL`, the latter accepting
   a comma-separated list of endpoints whose whitelists are unioned).
 - At least one enabled venue to swap-liquidate a collateral that is not the loan token:
@@ -76,9 +76,9 @@ Environment variables:
 | `RPC_URL_FALLBACK`                                        | no       | —                                     | Optional fallback RPC for the signer's transport.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | `LIQUIDATOR_PRIVATE_KEY`                                  | yes      | —                                     | `0x`-prefixed 32-byte private key for the sender EOA.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | `EXECUTOOOR_ADDRESS`                                      | no       | derived                               | Override for the shared Executor address.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| `LIQUIDATION_CANDIDATES_API_URL`                          | no       | public                                | Liquidation-candidates endpoint polled for borrower discovery. Defaults to the public Morpho markets API; validated as a URL at startup (fail-loud).                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
-| `HEALTH_FACTOR_LTE`                                       | no       | `1.02`                                | Health-factor cutoff sent to discovery (`health_factor_lte`); matured positions are always included regardless. Floored at `1.0`. Over-inclusive by design — the on-chain lens is the source of truth.                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| `MARKETS_API_URL`                                         | no       | public                                | Midnight markets endpoint(s) used as the market whitelist (`listed=true`). Accepts a comma-separated list, whose whitelists are unioned per-source (see below). Defaults to the public Morpho markets API; every entry is validated as a URL at startup (fail-loud). ⚠️ Set a list only after an image that supports it is live, and clear it back to one URL before rolling back — older images reject a list.                                                                                                                                                                                                                |
+| `LIQUIDATION_CANDIDATES_API_URL`                          | no       | public                                | Liquidation-candidates endpoint polled for borrower discovery. Defaults to the public Morpho Markets API; validated as a URL at startup (fail-loud).                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `HEALTH_FACTOR_LTE`                                       | no       | `1.02`                                | Health-factor cutoff sent to discovery (`health_factor_lte`); matured positions are always included regardless. Floored at `1.0`. Over-inclusive by design — the onchain lens is the source of truth.                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `MARKETS_API_URL`                                         | no       | public                                | Midnight Markets endpoint(s) used as the market whitelist (`listed=true`). Accepts a comma-separated list, whose whitelists are unioned per-source (see below). Defaults to the public Morpho Markets API; every entry is validated as a URL at startup (fail-loud). ⚠️ Set a list only after an image that supports it is live, and clear it back to one URL before rolling back — older images reject a list.                                                                                                                                                                                                                |
 | `MARKETS_REFRESH_MS`                                      | no       | `60000`                               | How often the whitelist is refreshed. The endpoint is Morpho's own (not rate-limited); last-known-good is served on a transient failure.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | `ZEROX_API_KEY`                                           | cond.    | —                                     | Enables the `0x` venue when set. Read at point of use; never stored on config or logged.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | `ONEINCH_API_KEY`                                         | cond.    | —                                     | Enables the `1inch` venue when set. Read at point of use; never stored on config or logged.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
@@ -100,7 +100,7 @@ Environment variables:
 | `PROBE_LADDER`                                            | no       | `0.01,0.1,1,10,100,1000,10000,100000` | Comma-separated log-scaled probe sizes in **USD**, converted per-collateral to base units against the token price (whole collateral tokens for a collateral the price source cannot price). Fixed and deliberately wide — decades from \$0.01 to \$100k bracket every real seize size on any collateral, so `select` interpolates rather than clamping.                                                                                                                                                                                                                                                                        |
 | `HTTP_MAX_RETRIES`                                        | no       | `2`                                   | Retries on 429/5xx/network (honoring `Retry-After`) before a quote fails.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | `MAX_ROUTE_IMPACT_BPS`                                    | no       | `500`                                 | Reject a venue's quoted output more than this far below the oracle reference (route-quality guard).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| `SEIZE_CAP_MARGIN_BPS`                                    | no       | chain-dependent                       | Headroom shaved off the on-chain repay cap when sizing a cap-binding seize, so a one-block oracle move can't trip the contract's RCF/debt check. `0` sizes right at the cap.                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `SEIZE_CAP_MARGIN_BPS`                                    | no       | chain-dependent                       | Headroom shaved off the onchain repay cap when sizing a cap-binding seize, so a one-block oracle move can't trip the contract's RCF/debt check. `0` sizes right at the cap.                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | `HEADROOM_FLOOR_BPS`                                      | no       | `3`                                   | **Lower bound** on swap execution cost — the cheapest route you would ever expect, NOT a typical cost. A seize-exact plan's whole margin is the incentive `(lif - 1)/lif`, so a plan below this floor cannot fund its own repay by any route and is skipped as `plan.skipped` / `insufficient_headroom` before it costs a quote, a simulation or a gas estimate. Post-maturity the incentive ramps from zero over an hour, so this acts as a pure time gate: `3` suppresses roughly the first 25s on a 4.4%-maxLif tier. Set it too high and it blinds the earliest, most contested part of a maturity. `0` disables the gate. |
 | `MIN_SURPLUS_BPS`                                         | no       | `0`                                   | Surplus over break-even a quoted route's **expected** output must clear before the bot spends a simulation on it, in bps of the plan's contract-derived repay. `0` is pure break-even: both sides then come from the contract's own formula with no tuned value, so the gate can only reject plans that would have reverted anyway. It gates the expected output only — the min-out actually encoded in the swap calldata stays at break-even — so raising it buys margin against a route that underperforms its quote, not against oracle drift between simulation and inclusion.                                             |
 | `PENDLE_SLIPPAGE_BPS`                                     | no       | `50`                                  | Slippage for the Pendle PT → underlying unwrap hop (before the downstream venue sells).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
@@ -174,16 +174,16 @@ sized to bound a runaway rather than to price a liquidation; calibrate it down o
 
 `MIN_SURPLUS_BPS` is deliberately **not** per-chain: it stays at pure break-even (`0`) on both, where
 the gate compares two contract-derived quantities and can only reject plans that would have reverted
-on-chain. Raising it trades captured liquidations for margin and wants a measured basis distribution
+onchain. Raising it trades captured liquidations for margin and wants a measured basis distribution
 rather than a guess.
 
 ### Markets, venues, and probing
 
 There is no swap config file. Instead:
 
-- **Which markets** the bot touches comes from the Midnight markets API (`MARKETS_API_URL`) with
+- **Which markets** the bot touches comes from the Midnight Markets API (`MARKETS_API_URL`) with
   `listed=true`: it is a hard **whitelist** — a market not in the listed set is never discovered,
-  probed, or liquidated (fail-closed). This shapes only what the bot acts on; the on-chain lens remains
+  probed, or liquidated (fail-closed). This shapes only what the bot acts on; the onchain lens remains
   the correctness boundary, and a delisted-but-underwater position simply falls out of scope.
 
   `MARKETS_API_URL` accepts **more than one endpoint**, comma-separated, and the whitelist is the union
@@ -242,7 +242,7 @@ missing the floor is reported as `quote.floor_unmet` — an economic verdict, so
 on the next block rather than backed off. API keys come from `ZEROX_API_KEY` / `ONEINCH_API_KEY` and
 are never logged.
 
-## Running Locally
+## Running locally
 
 Install dependencies from the repo root:
 
@@ -276,13 +276,13 @@ pnpm --filter @morpho-org/midnight-liquidation exec vitest run
 - **Fork suite** (`test/fork/`) — end-to-end against a real Base fork. Unlike a fixture-gated suite it
   **seeds its own liquidatable position** ([test/fork/seed.ts](./test/fork/seed.ts)): Midnight has no
   `borrow()`, so it clones a curator-trusted market, funds both EOAs via cheatcodes, signs an offer,
-  and drives the `supplyCollateral` + `take` order-book path, then warps past maturity to make the
+  and drives the `supplyCollateral` + `take` offer-book path, then warps past maturity to make the
   position liquidatable. `liquidation.test.ts` then drives lens → plan → swap → exec, asserts the tx
   lands, and asserts the Executor ends holding zero of both tokens; `queue.test.ts` bumps a stuck tx
   and asserts the replacement lands at the same nonce. Both **require `RPC_URL_8453`** (an archive
   endpoint that serves the fork block) and fail loud — not skip — when it is unset.
 
-## Seeding Liquidatable Positions
+## Seeding liquidatable positions
 
 The package includes an operator-only helper for creating real, edge-of-liquidation Midnight
 positions on Base. It is not part of the runner; it imports bot math/lens code to create positions
@@ -293,7 +293,7 @@ The script starts from two funded ETH-only EOAs:
 - Wallet A (`PRIVATE_KEY_LENDER`) becomes the maker/lender.
 - Wallet B (`PRIVATE_KEY_BORROWER`) becomes the taker/borrower.
 
-It discovers a real trusted Midnight market for the requested pair, clones its collateral/oracle
+It discovers a real trusted Midnight Market for the requested pair, clones its collateral/oracle
 shape, creates one market per position, signs EcrecoverRatifier offers, and sends `take` transactions
 that leave each position healthy at creation but near the liquidation edge. `--dry-run` performs
 discovery, cryptographic self-checks, and capital planning without sending transactions.
@@ -336,7 +336,7 @@ Useful options:
 | `--dry-run`          | `false`     | Print the plan and send no transactions.                                  |
 | `--yes`              | `false`     | Skip the live-run confirmation prompt.                                    |
 
-## Running With Docker Compose
+## Running with Docker Compose
 
 [docker-compose.yml](./docker-compose.yml) defines one service per chain — `bot-8453` and `bot-1`
 (discovery is the remote API, so there is no database or indexer). Both build from the repo root so
@@ -442,7 +442,7 @@ Suffixing always wins over the unsuffixed name, so a chain that needs its own va
 venue enabled, that chain's service refuses to start without it, and runs — spending gas to realize
 bad debt — with it. It must name the chain it means.
 
-## How It Works
+## How it works
 
 ### Startup
 
@@ -467,11 +467,11 @@ running overlapping ticks.
 [src/discovery/borrowers.ts](./src/discovery/borrowers.ts) polls the markets liquidation-candidates
 endpoint for candidate `(marketId, borrower)` pairs, following the cursor across every page
 (`include_matured=true`, `health_factor_lte` from `HEALTH_FACTOR_LTE`). The feed is over-inclusive by
-design — it does not evaluate the liquidation lock or liquidator gate — so the on-chain lens re-reads
+design — it does not evaluate the liquidation lock or liquidator gate — so the onchain lens re-reads
 every pair and filters out non-liquidatable state before planning.
 
 Candidates are then filtered to the **market whitelist**
-([src/discovery/markets.ts](./src/discovery/markets.ts)): the Midnight markets API (`listed=true`),
+([src/discovery/markets.ts](./src/discovery/markets.ts)): the Midnight Markets API (`listed=true`),
 refreshed every `MARKETS_REFRESH_MS` and served last-known-good on a transient failure. A candidate
 whose market is not listed is dropped before the lens read (fail-closed) — the whitelist is the only
 gate on _which_ markets the bot acts on; the lens remains the correctness gate on _whether_ a position
@@ -506,7 +506,7 @@ high `unpriced` means the snapshot is not covering the loan tokens actually bein
 endpoint prices plain assets but not Midnight's synthetic collateral wrappers, so an exotic collateral
 is expected to read as unpriced.
 
-### State Lens
+### State lens
 
 [src/state/lens.sol.ts](./src/state/lens.sol.ts) defines a deployless Solidity lens. For each
 candidate, it:
@@ -518,13 +518,13 @@ candidate, it:
 - returns every activated collateral slot (amount, oracle price, `maxLif`, `lltv`), unranked;
 - returns the full market and flat sizing inputs to TypeScript.
 
-Slot _choice_ is deliberately off-chain: which slot is worth liquidating depends on whether it needs a
+Slot _choice_ is deliberately offchain: which slot is worth liquidating depends on whether it needs a
 swap, which the chain cannot know.
 
 Per-candidate lens failures are isolated: one reverting oracle or malformed market leaves that row
 invalid without failing the whole batch.
 
-### Eligibility And Math
+### Eligibility and math
 
 [src/runner/eligibility.ts](./src/runner/eligibility.ts) mirrors Midnight's liquidation gate:
 
@@ -536,10 +536,10 @@ valid && gateAllows && hasDebt && !locked && (block.timestamp > maturity || !hea
 
 - Pre-maturity unhealthy positions use normal mode with `maxLif` and the Recovery Close Factor cap.
   `maxLif` is derived from the collateral's `liquidationCursor` and `lltv` (`ConstantsLib.maxLif`);
-  the lens computes it on-chain per slot and returns it on each `collaterals[]` entry.
+  the lens computes it onchain per slot and returns it on each `collaterals[]` entry.
 - Post-maturity healthy positions use post-maturity mode, where LIF ramps from `1e18` to `maxLif` over
   60 minutes and the RCF cap is disabled.
-- Post-maturity **unhealthy** positions open both on-chain gates, so the bot builds both candidate
+- Post-maturity **unhealthy** positions open both onchain gates, so the bot builds both candidate
   plans and **retains both**, ranked best-first and attempted in order — a mode that fails falls
   through to the other in the same tick rather than forfeiting the position. Normal mode pays the full `maxLif`
   immediately while the post-maturity LIF is still ramping, so `plan.built { postMaturityMode: false }`
@@ -605,7 +605,7 @@ The sell amount is the plan's pinned `seizedAssets`: Midnight transfers exactly 
 before the callback, so the venue's fixed sell amount acts on exactly the seized balance — no
 sell-side drift. The oracle-priced reference output
 ([src/execution/swap-step.ts](./src/execution/swap-step.ts)) values that same `seizedAssets`. Residual
-drift is confined to the on-chain repay-cap check re-derived at the exec-block oracle price; it fails
+drift is confined to the onchain repay-cap check re-derived at the exec-block oracle price; it fails
 closed in `simulate()` — a missed liquidation, never a loss — and the `SEIZE_CAP_MARGIN_BPS` headroom
 keeps ordinary one-block moves from tripping it.
 
@@ -638,7 +638,7 @@ Executor:
 runs `eth_call` from the liquidator EOA against the real Executor calldata. Any revert means the bot
 does not broadcast.
 
-### Broadcast And Pending Queue
+### Broadcast and pending queue
 
 On simulation success, `@repo/bot-kit`'s shared pending queue
 ([packages/bot-kit/src/queue/pending-queue.ts](../../packages/bot-kit/src/queue/pending-queue.ts))
@@ -654,7 +654,7 @@ A queue answer that broadcast nothing is classified three ways, counted on `tick
 
 - **refused** — the queue declined before reaching the send (aborted-send latch, failed nonce sync,
   nonce hole). Queue-wide, so it is held against no position.
-- **execution-reverted** — the node rejected this position's own transaction with an on-chain
+- **execution-reverted** — the node rejected this position's own transaction with an onchain
   execution revert (`tx.submit_failed`, `executionRevert: true`, plus the 4-byte `selector` when the
   payload carried one). **This does not extend the position's suppression window**, and it also
   exempts the position from an entry a sibling candidate armed, whichever order the two ran in — an
@@ -690,7 +690,7 @@ signer nonce cursor starts from the pending chain nonce. If the initial raw broa
 nonce is claimed but before a hash is returned, the signer rolls the cursor back and the queue aborts
 that tick instead of counting a hashless transaction as submitted.
 
-### Log Correlation
+### Log correlation
 
 Every **position-scoped** event carries the position in one field, **`id`**, whose value is
 `lensKey(marketId, borrower)`: the two halves joined by `:` with both lowercased. So a maturity's
@@ -704,6 +704,9 @@ used to name the same string `label`; it does not any more. The full set:
 `select.cold_default`, `select.ok`, `simulate.ok`, `simulate.revert`, `send.revert_streak`,
 `tx.send_aborted`, `tx.submit_failed`, `tx.sent`, `tx.bumped`, `tx.confirmed`, `tx.reverted`,
 `tx.dropped`, `tx.replace_failed`, `tx.onblock_error`, `nonce.sync_failed`, `queue.nonce_hole`.
+
+`plan.skipped` is deduplicated: an unchanged skip repeats at most once every 10 minutes, so count
+skipped positions per block from `tick.end.planSkipped`, not from `plan.skipped` lines.
 
 `plan.built` also keeps `marketId` and `borrower` as human-readable extras. They are for an operator
 reading a single line — grouping keys on `id`.
@@ -726,7 +729,7 @@ don't group it by one:
 - **process / config** — `startup`, `shutdown`, `quoting.*`, `markets.*`, `prices.*`, `discovery.*`,
   `signer.*`, `heartbeat.*`, `runner.*`, `watcher.error`, `pendle.*`
 
-## Important Operational Notes
+## Important operational notes
 
 - The liquidator gate checks the Executor address, not the EOA, because `liquidate` is called by the
   Executor.

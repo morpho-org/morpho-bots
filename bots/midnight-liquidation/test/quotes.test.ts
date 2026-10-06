@@ -1,5 +1,6 @@
 import type { Logger } from '@repo/bot-kit'
 import type { RateLimitedClient, Unwrapper, Venue, VenuePair, VenueSelector } from '@repo/swaps'
+import type { Address } from 'viem'
 
 import { getAddress, isAddressEqual } from 'viem'
 import { describe, expect, it } from 'vitest'
@@ -143,7 +144,7 @@ function compose(
   selector: VenueSelector,
   overrides: {
     venues?: ('0x' | '1inch')[]
-    excludeCollaterals?: `0x${string}`[]
+    excludeCollaterals?: Address[]
     logger?: Logger
     httpClient?: RateLimitedClient
     unwrappers?: readonly Unwrapper[]
@@ -278,8 +279,8 @@ describe('composeQuoting (Midnight lens-projection adapter)', () => {
   })
 
   it('threads the candidate discriminator, so two candidates of one position stay separable', async () => {
-    // The swaps-side gap BOTS-90 leaves otherwise: both candidates carry one `id`, so without the
-    // discriminator their `select.ok` rows are indistinguishable.
+    // Both candidates carry one `id`, so without the discriminator their `select.ok` rows are
+    // indistinguishable.
     const events: { event: string; fields?: Record<string, unknown> }[] = []
     const capturing: Logger = {
       debug: () => {},

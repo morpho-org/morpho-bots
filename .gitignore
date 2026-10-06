@@ -54,7 +54,8 @@ dist
 .claude/scheduled_tasks.lock
 .claude/agent-memory/
 
-# TIB review session ids (local pointers into ~/.codex/sessions, not shared history)
+# Plan and ADR review session ids (local pointers into ~/.codex/sessions, not shared history)
+/.sessions/
 **/docs/decisions/*.sessions
 
 # Devin local overrides (not shared)

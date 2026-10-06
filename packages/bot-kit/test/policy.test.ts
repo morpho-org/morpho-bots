@@ -1,3 +1,5 @@
+import type { Address, Hex } from 'viem'
+
 import { encodeFunctionData, getAddress, parseAbi, toFunctionSelector } from 'viem'
 import { describe, expect, it } from 'vitest'
 
@@ -174,9 +176,9 @@ describe('evaluatePolicy multicall envelope', () => {
   const ADAPTER_A = getAddress(`0x${'a1'.repeat(20)}`)
   const ADAPTER_B = getAddress(`0x${'b1'.repeat(20)}`)
 
-  const leg = (functionName: 'allocate' | 'deallocate', adapter: `0x${string}`) =>
+  const leg = (functionName: 'allocate' | 'deallocate', adapter: Address) =>
     encodeFunctionData({ abi: VAULT_ABI, functionName, args: [adapter, '0x1234', 1_000n] })
-  const bundle = (calls: `0x${string}`[]) =>
+  const bundle = (calls: Hex[]) =>
     encodeFunctionData({ abi: VAULT_ABI, functionName: 'multicall', args: [calls] })
 
   const MULTICALL_POLICY: Policy = {

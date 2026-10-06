@@ -9,18 +9,20 @@ import { OfferInvalidationFailedError } from '../../application/invalidation/off
 import { LadderCycleHaltedError } from '../../application/ladder/ladder-cycle-halted.error'
 import { LadderMonitorHaltedError } from '../../application/ladder/ladder-monitor-halted.error'
 import { isShippableRecord } from '../../application/monitoring/monitoring-event'
+import { operatorErrorName } from '../../application/monitoring/operator-error-name.utils'
 import { terminalMonitoringEvents } from '../../application/monitoring/terminal-monitoring.utils'
-import { operatorErrorName } from '../../application/operator-error-name.utils'
 import { QuoterBotMonitorHaltedError } from '../../application/quoter-bot/quoter-bot-monitor-halted.error'
+import { StartupCleanupFailedError } from '../../application/quoter-bot/startup-cleanup-failed.error'
 import { SafeProviderError } from '../../application/setup/safe-provider.error'
 import { SetupFailedError } from '../../application/setup/setup-failed.error'
 import { SetupMonitorHaltedError } from '../../application/setup/setup-monitor-halted.error'
 import { ConfigFileError } from '../../config/config-file.error'
 import { ConfigValidationError } from '../../config/config-validation.error'
-import { BootstrapConfigurationError } from '../../domain/bootstrap/bootstrap-configuration.error'
-import { LadderConfigurationError } from '../../domain/ladder/ladder-configuration.error'
-import { SignerAccountError } from '../make/signer-account.error'
+import { BootstrapConfigurationError } from '../../domain/bootstrap-configuration.error'
+import { LadderConfigurationError } from '../../domain/ladder-configuration.error'
+import { StrategyStateVersionError } from '../strategy-state/strategy-state-version.error'
 import { QuoterTransactionError } from '../transaction/quoter-transaction.error'
+import { SignerAccountError } from '../transaction/signer-account.error'
 import { CliUsageError } from './cli-usage.error'
 
 type QuoterBotApplication = {
@@ -46,6 +48,7 @@ export const QUOTER_BOT_ROOT_VALUE_OPTIONS = [
 
 const REPORTED_ERRORS = [
   QuoterBotMonitorHaltedError,
+  StartupCleanupFailedError,
   SetupMonitorHaltedError,
   OfferInvalidationFailedError,
   PositionBootstrapMonitorHaltedError,
@@ -71,7 +74,8 @@ const failureMessage = (error: unknown) => {
     error instanceof QuoterTransactionError ||
     error instanceof SafeProviderError ||
     error instanceof BootstrapConfigurationError ||
-    error instanceof LadderConfigurationError
+    error instanceof LadderConfigurationError ||
+    error instanceof StrategyStateVersionError
   ) {
     return error.message
   }

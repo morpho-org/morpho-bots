@@ -253,6 +253,71 @@ describe('quoter-bot Helm chart', () => {
     )
   })
 
+  it('renders the runtime Secret from Secrets Manager only when externalSecret is enabled', async () => {
+    const [secretStore, externalSecret, statefulSet] = await Promise.all([
+      readChartFile('templates/secretstore.yaml'),
+      readChartFile('templates/externalsecret.yaml'),
+      readChartFile('templates/statefulset.yaml')
+    ])
+
+    expect(secretStore).toMatch(/^\{\{- if \.Values\.externalSecret\.enabled }}/)
+    expect(externalSecret).toMatch(/^\{\{- if \.Values\.externalSecret\.enabled }}/)
+    expect(externalSecret).toContain('include "quoter-bot.runtimeSecretName"')
+    expect(externalSecret).toContain('include "quoter-bot.secretStoreName"')
+    expect(externalSecret).toContain('deletionPolicy: Delete')
+    expect(secretStore).toContain('include "quoter-bot.secretStoreName"')
+    expect(statefulSet).toContain(
+      'secret.reloader.stakater.com/reload: {{ include "quoter-bot.runtimeSecretName" . | quote }}'
+    )
+    expect(statefulSet).toContain(
+      'include "quoter-bot.runtimeSecretName" .)))) (list) .Values.externalSecret.enabled'
+    )
+    expect(statefulSet).toContain('concat (.Values.envFrom | default (list)) $runtimeEnvFrom')
+  })
+
+  it('guards externalSecret against a missing service account, remote key, or region', async () => {
+    const secretStore = await readChartFile('templates/secretstore.yaml')
+
+    expect(secretStore).toContain('{{- fail "externalSecret.enabled requires serviceAccount.create')
+    expect(secretStore).toContain(
+      '{{- fail "externalSecret.enabled requires serviceAccount.annotations[\\"eks.amazonaws.com/role-arn\\"]'
+    )
+    expect(secretStore).toContain(
+      '{{- fail "externalSecret.enabled requires externalSecret.remoteKey'
+    )
+    expect(secretStore).toContain('{{- fail "externalSecret.enabled requires externalSecret.region')
+  })
+
+  it('fails the render when the IRSA role-arn annotation is absent', async () => {
+    const secretStore = await readChartFile('templates/secretstore.yaml')
+
+    expect(secretStore).toContain(
+      'index (.Values.serviceAccount.annotations | default (dict)) "eks.amazonaws.com/role-arn"'
+    )
+    expect(secretStore).toContain(
+      "the SecretStore authenticates with the ServiceAccount's IRSA role"
+    )
+  })
+
+  it('bounds the runtime Secret and SecretStore names to the DNS label limit', async () => {
+    const helpers = await readChartFile('templates/_helpers.tpl')
+
+    expect(helpers).toContain('{{- if gt (len $fullname) 55 }}')
+    expect(helpers).toContain('{{- if gt (len $fullname) 59 }}')
+    expect(helpers).toContain(
+      `{{- printf "%s-%s-runtime" ($fullname | trunc 46 | trimSuffix "-") (sha256sum $fullname | trunc 8) }}`
+    )
+    expect(helpers).toContain(
+      `{{- printf "%s-%s-aws" ($fullname | trunc 50 | trimSuffix "-") (sha256sum $fullname | trunc 8) }}`
+    )
+  })
+
+  it('tolerates a null envFrom override', async () => {
+    const statefulSet = await readChartFile('templates/statefulset.yaml')
+
+    expect(statefulSet).toContain('.Values.envFrom | default (list)')
+  })
+
   it('quotes externally supplied resource names', async () => {
     const statefulSet = await readChartFile('templates/statefulset.yaml')
 

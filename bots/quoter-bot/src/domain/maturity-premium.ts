@@ -42,7 +42,7 @@ export const maturityPremiumConfigIssue = (
 /**
  * Resolves the premium contributed by a market's remaining time to maturity.
  * @param config - Validated maturity-premium configuration selecting the function shape.
- * @param secondsToMaturity - Fresh seconds remaining until the market's on-chain maturity.
+ * @param secondsToMaturity - Fresh seconds remaining until the market's onchain maturity.
  * @returns The non-negative integer premium in basis points; further maturity yields a higher
  * premium until the optional configured cap.
  * @remarks Integer floor division keeps the resolved premium stable between whole-BPS boundaries,

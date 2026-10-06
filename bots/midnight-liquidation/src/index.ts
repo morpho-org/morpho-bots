@@ -45,6 +45,7 @@ import { createTokenPriceSource } from './discovery/token-prices'
 import { encodeLiquidationExec } from './execution/encode-call'
 import { composeQuoting } from './quotes'
 import { revertReason } from './revert.utils'
+import { createPlanSkipLog } from './runner/plan-skip-log'
 import { createRevertStreakStore } from './runner/revert-streak'
 import { runTick } from './runner/tick'
 import { readMidnightLiquidationLens } from './state/lens.sol'
@@ -183,8 +184,8 @@ async function main() {
     logger
   })
 
-  // Pre-swap converters for exotic collateral (ERC4626 shares, Pendle PTs → underlying).
-  // Auto-detecting with per-process memoization. erc4626 first: a memoized eth_call beats consulting
+  // Pre-swap converters for exotic collateral (ERC-4626 shares, Pendle PTs → underlying).
+  // Auto-detecting with per-process memoization. `erc4626` first: a memoized eth_call beats consulting
   // the markets list. Pendle is only constructed on chains it is deployed to — elsewhere a
   // cold-cache markets outage would fail plain-collateral quotes too. The Pendle markets list is
   // cached in-process for the bot's lifetime (a 6h TTL inside the unwrapper handles staleness), so
@@ -221,6 +222,7 @@ async function main() {
   // Telemetry only: an execution-reverted send is exempt from backoff, so this is what reports a
   // position whose sends keep being declined — see `createRevertStreakStore` for the threshold.
   const revertStreaks = createRevertStreakStore()
+  const planSkipLog = createPlanSkipLog()
 
   // The exec calldata for one liquidation — the same bytes the simulate gate checks and the queue
   // broadcasts, so a sim-ok plan and its broadcast can't drift.
@@ -244,7 +246,7 @@ async function main() {
     })
 
   // Borrower discovery: poll the markets liquidation-candidates endpoint (cursor-paginated,
-  // over-inclusive). The lens re-reads every returned pair fresh on-chain, so this is a coverage
+  // over-inclusive). The lens re-reads every returned pair fresh onchain, so this is a coverage
   // source, never the source of truth.
   const fetchPage = createApiCandidateSource({
     url: config.discovery.apiUrl,
@@ -313,7 +315,7 @@ async function main() {
 
   // Transaction-queue state is in-memory only — chain truth wins on restart. A redeploy re-derives
   // the nonce cursor from `getTransactionCount('pending')`, and any tx that was in flight settles
-  // on-chain regardless of the bot; settlement audit ships via the structured `tx.*` log events.
+  // onchain regardless of the bot; settlement audit ships via the structured `tx.*` log events.
   const queue = createPendingQueue({
     send: signer.send,
     getReceipt: signer.getReceipt,
@@ -394,6 +396,7 @@ async function main() {
       backoff,
       cooldown,
       revertStreaks,
+      planSkipLog,
       inflightLabels: () => queue.inflightLabels(),
       usdValueOf: tokenPrices.usdValueOf,
       // Phase A.5's probe seam. `refresh` is staleness-gated and `select` is a pure cache lookup, so

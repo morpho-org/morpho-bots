@@ -2,8 +2,8 @@ import type { PlanInput } from '../sizing/plan'
 import type { LensOut } from '../state/lens.sol'
 
 /**
- * Off-chain liquidatability, composed from a fresh lens reading. Blue liquidation is permissionless
- * and time-independent, so the gate is simply `debt > 0 && unhealthy`, plus the on-chain `valid`
+ * Offchain liquidatability, composed from a fresh lens reading. Blue liquidation is permissionless
+ * and time-independent, so the gate is simply `debt > 0 && unhealthy`, plus the onchain `valid`
  * check the lens already performed (the market exists at `keccak256(abi.encode(params))`).
  */
 export function isLiquidatable(out: LensOut): boolean {

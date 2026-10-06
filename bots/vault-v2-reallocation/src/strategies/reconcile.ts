@@ -88,6 +88,7 @@ const toLeg = ({ marketData }: SizedMove, assets: bigint): ReallocationAction =>
  * {@link MarketTarget} and {@link MAX_TARGET_UTILIZATION}.
  */
 export const createReconciler = (options: ReconcilerOptions): Strategy => {
+  // oxlint-disable-next-line complexity
   return vaultData => {
     const classify = options.classifierFor(vaultData)
     const classified = vaultData.marketsData.flatMap(marketData => {
@@ -190,7 +191,7 @@ export const createReconciler = (options: ReconcilerOptions): Strategy => {
       // clamped away by the cap pools — the sides no longer match, and the mismatch would park in
       // idle against the operator's setting. Shrink deallocations in reverse by credits no
       // allocation consumed: each reduction is bounded by the leg's own collateral leftover and
-      // the shared adapter leftover, so every emitted allocation keeps its on-chain funding.
+      // the shared adapter leftover, so every emitted allocation keeps its onchain funding.
       const allocated = emittedAllocations.reduce((acc, leg) => acc + leg.assets, 0n)
       let surplus = emittedDeallocations.reduce((acc, leg) => acc + leg.assets, 0n) - allocated
       for (let i = emittedDeallocations.length - 1; i >= 0 && surplus > 0n; i--) {

@@ -13,6 +13,7 @@
     "typecheck": "soltag && tsc --noEmit"
   },
   "dependencies": {
+    "@morpho-org/morpho-ts": "catalog:",
     "@repo/bot-kit": "workspace:*",
     "@repo/contracts": "workspace:*",
     "@repo/swaps": "workspace:*",

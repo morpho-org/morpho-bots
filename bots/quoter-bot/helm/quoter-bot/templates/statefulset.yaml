@@ -25,6 +25,13 @@ metadata:
   name: {{ include "quoter-bot.fullname" . | quote }}
   labels:
     {{- include "quoter-bot.labels" . | nindent 4 }}
+  {{- if .Values.externalSecret.enabled }}
+  annotations:
+    # Annotation lives on the workload, not the pod template: Stakater Reloader rolls the
+    # StatefulSet itself when the ExternalSecret-owned Secret changes (env is captured at
+    # container start, so a rotated value must restart the pod to take effect).
+    secret.reloader.stakater.com/reload: {{ include "quoter-bot.runtimeSecretName" . | quote }}
+  {{- end }}
 spec:
   # The bot is a singleton writer: its nonce cursor, serialized mutation queue, and durable
   # offer-group ownership state are per-instance, so two replicas against one maker on the same
@@ -195,7 +202,9 @@ spec:
             {{- with $extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
-          {{- with .Values.envFrom }}
+          {{- $runtimeEnvFrom := ternary (list (dict "secretRef" (dict "name" (include "quoter-bot.runtimeSecretName" .)))) (list) .Values.externalSecret.enabled }}
+          {{- $envFrom := concat (.Values.envFrom | default (list)) $runtimeEnvFrom }}
+          {{- with $envFrom }}
           envFrom:
             {{- toYaml . | nindent 12 }}
           {{- end }}

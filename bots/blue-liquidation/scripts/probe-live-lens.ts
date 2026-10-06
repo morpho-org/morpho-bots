@@ -2,7 +2,7 @@
  * Reads the deployless lens against REAL Base state, exactly as the running bot does — no anvil, no
  * deploy: the viem-dlc `deployless` transport runs the lens inside one `eth_call`. Two uses:
  *
- *   1. Operator sanity check — proves the whole read path works against production (the lens compiles,
+ *   1. Operator check — proves the whole read path works against production (the lens compiles,
  *      deploys deploylessly, the IRM accrual sim + oracle reads don't revert, and the structs decode)
  *      and prints a health breakdown across a sample of real borrowers.
  *   2. Fork-fixture finder — if any sampled position is currently liquidatable, it prints the
@@ -39,6 +39,7 @@ function required(name: string): string {
   return value.trim()
 }
 
+// oxlint-disable-next-line complexity
 async function main() {
   const rpcUrl = required('RPC_URL')
   const baseClient = createDeploylessClient({ chain: base, rpcUrl, rpcUrlFallback: undefined })

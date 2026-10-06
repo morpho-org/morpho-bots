@@ -10,19 +10,21 @@ import {
   ladderConsumptionEvents,
   ladderMonitoringEvents
 } from './ladder-monitoring.utils'
+import { createLendHaltedEvents } from './monitoring-event'
 import { setupMonitoringEvents } from './setup-monitoring.utils'
 
 /**
  * Creates the stateful projection from cycle outputs to flat monitoring records.
  * @returns Per-workflow projections plus a combined-lifecycle dispatcher.
  * @remarks Holds one in-process map of per-group ladder consumption so fills can be derived as a
- * cycle-over-cycle delta. Nothing is persisted: a restart re-establishes the baseline, so the first
+ * cycle-over-cycle delta, and one of current lend halts so `guardrail.lend-halted` is rate-limited. Nothing is persisted: a restart re-establishes the baseline, so the first
  * cycle after one reports no fills. The workflow is always known statically at the call site, so no
  * record shape is ever sniffed. Callers own ordering — each projection is pure apart from the
  * consumption baseline it advances.
  */
 export const createMonitoringProjection = () => {
   const consumption = createLadderConsumptionBaselines()
+  const lendHalted = createLendHaltedEvents()
 
   /**
    * The monitor ports type their cycle observers structurally, so the concrete result types are
@@ -30,10 +32,16 @@ export const createMonitoringProjection = () => {
    */
   const ladder = (results: readonly { status: string }[]) => {
     const cycle = results as readonly LadderRunResult[]
-    return [...ladderMonitoringEvents(cycle), ...ladderConsumptionEvents(cycle, consumption)]
+    return [
+      ...ladderMonitoringEvents(cycle),
+      ...lendHalted('ladder', cycle),
+      ...ladderConsumptionEvents(cycle, consumption)
+    ]
   }
-  const bootstrap = (results: readonly { status: string }[]) =>
-    bootstrapMonitoringEvents(results as readonly BootstrapRunResult[])
+  const bootstrap = (results: readonly { status: string }[]) => {
+    const cycle = results as readonly BootstrapRunResult[]
+    return [...bootstrapMonitoringEvents(cycle), ...lendHalted('bootstrap', cycle)]
+  }
 
   return {
     /**

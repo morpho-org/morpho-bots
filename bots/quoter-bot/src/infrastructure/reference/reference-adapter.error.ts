@@ -1,4 +1,4 @@
-import type { OperatorAdapterOperation } from '../../application/operator-error-name.utils'
+import type { OperatorAdapterOperation } from '../../application/monitoring/operator-error-name.utils'
 
 /** Stable shared reference-reader failure without provider details. */
 export class ReferenceAdapterError extends Error {

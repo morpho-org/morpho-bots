@@ -3,7 +3,7 @@ import { min, wDivDown, wMulDown } from './math'
 
 /**
  * Liquidation incentive factor from a market's LLTV — a pure function of LLTV (no maturity ramp, no
- * per-collateral override; Blue markets have one LLTV). Mirrors `liquidate`'s derivation verbatim:
+ * per-collateral override; Blue Markets have one LLTV). Mirrors `liquidate`'s derivation verbatim:
  *
  *   LIF = min(MAX_LIQUIDATION_INCENTIVE_FACTOR, WAD.wDivDown(WAD - LIQUIDATION_CURSOR.wMulDown(WAD - lltv)))
  *

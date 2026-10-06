@@ -65,7 +65,7 @@ function fakeUnwrapper(args: { from: Address; to: Address; out: bigint }): Unwra
   }
 }
 
-// An unwrapper whose detection read fails, standing in for a transient RPC failure inside erc4626 /
+// An unwrapper whose detection read fails, standing in for a transient RPC failure inside `erc4626` /
 // Pendle resolution. Records whether it was reached at all.
 const throwingUnwrapper = (): Unwrapper & { probed: Address[] } => {
   const probed: Address[] = []
@@ -307,7 +307,7 @@ describe('composeMultiVenueQuoting', () => {
   })
 
   it('route-quality-checks an unwrap-only plan (chain ends in the loan token)', async () => {
-    // Output 900 < floor 950 → the oracle sanity check applies to unwrap-only plans too.
+    // Output 900 < floor 950 → the oracle check applies to unwrap-only plans too.
     const bad = fakeUnwrapper({ from: COLLATERAL, to: LOAN, out: 900n })
     const { quoteFor } = composeMulti(['0x'], [], multiHttp({}), { unwrappers: [bad] })
     expect(await quoteFor(REQUEST)).toEqual({ kind: 'failed', reason: 'bad_route', firmCalls: 0 })

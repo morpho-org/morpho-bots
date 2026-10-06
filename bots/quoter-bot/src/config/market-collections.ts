@@ -1,23 +1,25 @@
 import type { Hex } from 'viem'
 
-import type { BootstrapConfig } from '../domain/bootstrap/position-bootstrap'
-import type { LadderConfig } from '../domain/ladder/ladder'
+import type { InventorySkewConfig, LadderConfig, ValidLadderConfig } from '../domain/ladder'
 import type { MaturityPremiumConfig } from '../domain/maturity-premium'
+import type { BootstrapConfig, ValidBootstrapConfig } from '../domain/position-bootstrap'
 import type { TargetRateConfigured, TargetRateStrategyConfig } from '../domain/target-rate'
 
-import { BootstrapConfigurationError } from '../domain/bootstrap/bootstrap-configuration.error'
-import { validateBootstrapConfig } from '../domain/bootstrap/position-bootstrap'
+import { BootstrapConfigurationError } from '../domain/bootstrap-configuration.error'
 import { isBytes32, normalizeBytes32 } from '../domain/bytes32'
+import { CROSS_BOOK_CLEARANCE_BPS } from '../domain/cross-book'
 import {
   assertLadderShapeAtReference,
   MAX_MONITOR_INTERVAL_SECONDS,
-  validateLadderConfig
-} from '../domain/ladder/ladder'
-import { LadderConfigurationError } from '../domain/ladder/ladder-configuration.error'
+  validateLadderConfig,
+  withBootstrapSellCeiling
+} from '../domain/ladder'
+import { LadderConfigurationError } from '../domain/ladder-configuration.error'
 import {
   hasAttainableMaturityPremiumBps,
   highestReachableMaturityPremiumBps
 } from '../domain/maturity-premium'
+import { validateBootstrapConfig } from '../domain/position-bootstrap'
 import { ConfigValidationError } from './config-validation.error'
 
 /** Minimal string environment shape used by pure market-id parsing. */
@@ -114,7 +116,8 @@ export const LADDER_MARKET_FIELDS = [
   'bookCrossedCooldownSeconds',
   'movementToleranceBps',
   'minimumRateBps',
-  'maximumRateBps'
+  'maximumRateBps',
+  'inventorySkew'
 ] as const
 
 const plainRecord = (value: unknown, field: string): Record<string, unknown> => {
@@ -262,6 +265,22 @@ const exactRecord = <Field extends string>(
   return record
 }
 
+const INVENTORY_SKEW_FIELDS = ['unitsPerStep', 'neutralCredit', 'maxSkewBps'] as const
+
+const inventorySkewValue = (value: unknown, field: string): InventorySkewConfig | undefined => {
+  if (value === undefined) return undefined
+  const record = exactRecord(value, field, INVENTORY_SKEW_FIELDS, ['neutralCredit', 'maxSkewBps'])
+  const optional = (name: 'neutralCredit' | 'maxSkewBps') =>
+    record[name] === undefined
+      ? {}
+      : { [name]: integerBigInt(record[name], `${field}.${name}`, false) }
+  return {
+    unitsPerStep: integerBigInt(record.unitsPerStep, `${field}.unitsPerStep`, false),
+    ...optional('neutralCredit'),
+    ...optional('maxSkewBps')
+  }
+}
+
 /**
  * Converts an exact bootstrap collection into production domain values using shared pure semantics.
  * @param value - Untrusted collection value at the JSON or YAML boundary.
@@ -271,7 +290,7 @@ const exactRecord = <Field extends string>(
 export const bootstrapConfigsValue = (
   value: unknown,
   allowlistedMarkets: readonly Hex[]
-): TargetRateConfigured<BootstrapConfig>[] => {
+): TargetRateConfigured<ValidBootstrapConfig>[] => {
   if (!Array.isArray(value)) {
     throw new ConfigValidationError('bootstrap', 'wrong-type', 'bootstrap must be a list')
   }
@@ -335,37 +354,37 @@ export const bootstrapConfigsValue = (
       )
     }
     try {
-      validateBootstrapConfig(config)
-      if (config.targetRate.strategy === 'hardcoded') {
+      const valid = validateBootstrapConfig(config)
+      if (valid.targetRate.strategy === 'hardcoded') {
         // A maturity premium moves the requested rate along a reachable envelope bounded by the
         // configured cap and the protocol's 100-year maturity horizon, so load-time rejection is
         // reserved for rates pinned outside the bounds at every protocol-permitted maturity; a
-        // transiently clamped rate is documented runtime behavior. Integer flooring makes the
+        // transiently out-of-range rate publishes no offer. Integer flooring makes the
         // premium a step function, so the final check also rejects a slope whose steps jump over
         // the whole rate band even though the dense envelope overlaps it.
-        const requestedRateBps = config.targetRate.hardcodedRateBps + config.premiumBps
+        const requestedRateBps = valid.targetRate.hardcodedRateBps + valid.premiumBps
         const highestRequestedRateBps =
-          config.maturityPremium === undefined
+          valid.maturityPremium === undefined
             ? requestedRateBps
-            : requestedRateBps + highestReachableMaturityPremiumBps(config.maturityPremium)
-        if (highestRequestedRateBps < config.minimumRateBps) {
+            : requestedRateBps + highestReachableMaturityPremiumBps(valid.maturityPremium)
+        if (highestRequestedRateBps < valid.minimumRateBps) {
           throw new BootstrapConfigurationError(
             'requestedRateBps',
             'must be at least minimumRateBps'
           )
         }
-        if (requestedRateBps > config.maximumRateBps) {
+        if (requestedRateBps > valid.maximumRateBps) {
           throw new BootstrapConfigurationError(
             'requestedRateBps',
             'must be at most maximumRateBps'
           )
         }
         if (
-          config.maturityPremium !== undefined &&
+          valid.maturityPremium !== undefined &&
           !hasAttainableMaturityPremiumBps(
-            config.maturityPremium,
-            config.minimumRateBps - requestedRateBps,
-            config.maximumRateBps - requestedRateBps
+            valid.maturityPremium,
+            valid.minimumRateBps - requestedRateBps,
+            valid.maximumRateBps - requestedRateBps
           )
         ) {
           throw new BootstrapConfigurationError(
@@ -374,6 +393,7 @@ export const bootstrapConfigsValue = (
           )
         }
       }
+      return valid
     } catch (error) {
       if (error instanceof BootstrapConfigurationError) {
         throw new ConfigValidationError(
@@ -384,7 +404,6 @@ export const bootstrapConfigsValue = (
       }
       throw error
     }
-    return config
   })
   if (new Set(configs.map(config => config.marketId)).size !== configs.length) {
     throw new ConfigValidationError('bootstrap', 'duplicate', 'bootstrap market IDs must be unique')
@@ -417,7 +436,8 @@ const safeInteger = (value: unknown, field: string) => {
  * @throws `ConfigValidationError` for a non-list value, an unknown or missing entry field, a
  * malformed integer or group mode, a malformed optional `maturityPremium` (unknown nested key,
  * unsupported shape, missing slope, non-positive slope or cap, or an unquoted integer), a
- * non-allowlisted or duplicate market, any domain shape invariant violation, and a hardcoded
+ * malformed optional `inventorySkew` (unknown nested key, missing `unitsPerStep`, or an unquoted
+ * integer), a non-allowlisted or duplicate market, any domain shape invariant violation, and a hardcoded
  * target whose full shape no attainable premium can place inside the hard bounds.
  * @remarks Pure parsing and validation with no environment, provider, logging, or persistence
  * access; browser-safe, so the playground reuses it verbatim for editing and previews.
@@ -425,7 +445,7 @@ const safeInteger = (value: unknown, field: string) => {
 export const ladderConfigsValue = (
   value: unknown,
   allowlistedMarkets: readonly Hex[]
-): TargetRateConfigured<LadderConfig>[] => {
+): TargetRateConfigured<ValidLadderConfig>[] => {
   if (!Array.isArray(value)) {
     throw new ConfigValidationError('ladder', 'wrong-type', 'ladder must be a list')
   }
@@ -434,7 +454,8 @@ export const ladderConfigsValue = (
     const record = exactRecord(item, prefix, LADDER_MARKET_FIELDS, [
       'targetRate',
       'maturityPremium',
-      'bookCrossedCooldownSeconds'
+      'bookCrossedCooldownSeconds',
+      'inventorySkew'
     ])
     const required = (name: (typeof LADDER_MARKET_FIELDS)[number]) => record[name]
     const marketValue = required('marketId')
@@ -450,6 +471,7 @@ export const ladderConfigsValue = (
       record.maturityPremium,
       `${prefix}.maturityPremium`
     )
+    const inventorySkew = inventorySkewValue(record.inventorySkew, `${prefix}.inventorySkew`)
     const loopIntervalSeconds = safeInteger(
       required('loopIntervalSeconds'),
       `${prefix}.loopIntervalSeconds`
@@ -507,7 +529,8 @@ export const ladderConfigsValue = (
         false
       ),
       minimumRateBps: integerBigInt(required('minimumRateBps'), `${prefix}.minimumRateBps`, false),
-      maximumRateBps: integerBigInt(required('maximumRateBps'), `${prefix}.maximumRateBps`, false)
+      maximumRateBps: integerBigInt(required('maximumRateBps'), `${prefix}.maximumRateBps`, false),
+      ...(inventorySkew === undefined ? {} : { inventorySkew })
     }
     if (!allowlistedMarkets.includes(config.marketId)) {
       throw new ConfigValidationError(
@@ -517,10 +540,11 @@ export const ladderConfigsValue = (
       )
     }
     try {
-      validateLadderConfig(config)
-      if (config.targetRate.strategy === 'hardcoded') {
-        assertLadderShapeAtReference(config, config.targetRate.hardcodedRateBps)
+      const valid = validateLadderConfig(config)
+      if (valid.targetRate.strategy === 'hardcoded') {
+        assertLadderShapeAtReference(valid, valid.targetRate.hardcodedRateBps)
       }
+      return valid
     } catch (error) {
       if (error instanceof LadderConfigurationError) {
         throw new ConfigValidationError(
@@ -531,10 +555,41 @@ export const ladderConfigsValue = (
       }
       throw error
     }
-    return config
   })
   if (new Set(configs.map(config => config.marketId)).size !== configs.length) {
     throw new ConfigValidationError('ladder', 'duplicate', 'ladder market IDs must be unique')
   }
   return configs
 }
+
+/**
+ * Derives each ladder's sell ceiling from the bootstrap quoting the same market.
+ * @param bootstrap - Validated bootstrap collection.
+ * @param ladder - Validated ladder collection.
+ * @returns `ladder` in order, each entry sharing a bootstrap's market carrying the
+ * `maximumSellRateBps` {@link withBootstrapSellCeiling} derives.
+ * @throws `ConfigValidationError` naming both entries when a ceiling leaves the ladder no
+ * admissible sell.
+ * @remarks Pure and browser-safe, so the runtime and the playground apply the same rule.
+ */
+export const withBootstrapSellCeilings = <Config extends ValidLadderConfig>(
+  bootstrap: readonly Pick<ValidBootstrapConfig, 'marketId' | 'minimumRateBps'>[],
+  ladder: readonly Config[]
+): Config[] =>
+  ladder.map((config, index) => {
+    const bootstrapIndex = bootstrap.findIndex(item => item.marketId === config.marketId)
+    if (bootstrapIndex === -1) return config
+    try {
+      return withBootstrapSellCeiling(config, bootstrap[bootstrapIndex]!.minimumRateBps)
+    } catch (error) {
+      if (error instanceof LadderConfigurationError) {
+        const field = `ladder[${index}].${error.field}`
+        throw new ConfigValidationError(
+          field,
+          'bootstrap-overlap',
+          `${field} must be at most bootstrap[${bootstrapIndex}].minimumRateBps minus ${CROSS_BOOK_CLEARANCE_BPS} BPS, so its sells stay below that bootstrap's bids`
+        )
+      }
+      throw error
+    }
+  })

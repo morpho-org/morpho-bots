@@ -22,7 +22,7 @@ runs:
     # Upstream now scopes `action-setup` to pnpm v10 and older and points v11+ at its successor,
     # `pnpm/setup`. We stay on `action-setup` regardless: the org's GitHub Actions allowlist permits
     # `pnpm/action-setup@*` and not `pnpm/setup@*`, so the successor fails every job at the Setup
-    # step with "is not allowed in morpho-org/morpho-bots". `action-setup` installs pnpm 11.1.1 here
+    # step with "is not allowed in morpho-org/morpho-bots". `action-setup` installs pnpm 11.11.0 here
     # correctly. Moving to `pnpm/setup` — worth doing, since it verifies pnpm's release binary
     # against GitHub's published digest rather than bootstrapping through an `npm ci` of `@pnpm/exe`
     # — needs an org admin to allowlist it first.

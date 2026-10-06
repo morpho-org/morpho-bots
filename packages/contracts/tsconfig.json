@@ -4,6 +4,6 @@
     "types": ["node"],
     "plugins": [{ "name": "soltag/plugin" }]
   },
-  "include": ["src", "scripts", ".soltag/types.d.ts"],
+  "include": ["src", "scripts", "test", ".soltag/types.d.ts"],
   "exclude": ["node_modules", "dist"]
 }

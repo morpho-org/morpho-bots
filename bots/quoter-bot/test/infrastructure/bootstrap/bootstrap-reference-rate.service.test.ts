@@ -7,6 +7,7 @@ import {
   BlueBootstrapReferenceRateService,
   StrategyBootstrapReferenceRateService
 } from '../../../src/infrastructure/bootstrap/bootstrap-reference-rate.service'
+import { LadderAdapterError } from '../../../src/infrastructure/ladder/ladder-adapter.error'
 
 const marketId = `0x${'11'.repeat(32)}` as const
 const secondMarketId = `0x${'22'.repeat(32)}` as const
@@ -17,6 +18,7 @@ describe('StrategyBootstrapReferenceRateService', () => {
   test('uses a configured hardcoded target without reading the Blue variable-rate average', async () => {
     let variableReads = 0
     const service = new StrategyBootstrapReferenceRateService(
+      BootstrapAdapterError,
       new Map([[marketId, { strategy: 'hardcoded', hardcodedRateBps: 400n }]]),
       {
         readRate: async () => {
@@ -37,6 +39,7 @@ describe('StrategyBootstrapReferenceRateService', () => {
   test('selects variable-rate average and hardcoded targets independently by market', async () => {
     const variableReads: Hex[] = []
     const service = new StrategyBootstrapReferenceRateService(
+      BootstrapAdapterError,
       new Map([
         [marketId, { strategy: 'variable_rate_avg' }],
         [secondMarketId, { strategy: 'hardcoded', hardcodedRateBps: 400n }]
@@ -64,6 +67,7 @@ describe('StrategyBootstrapReferenceRateService', () => {
 
   test('extends both strategy observations with fresh seconds to maturity when configured', async () => {
     const service = new StrategyBootstrapReferenceRateService(
+      BootstrapAdapterError,
       new Map([
         [marketId, { strategy: 'variable_rate_avg' }],
         [secondMarketId, { strategy: 'hardcoded', hardcodedRateBps: 400n }]
@@ -90,6 +94,7 @@ describe('StrategyBootstrapReferenceRateService', () => {
 
   test('omits seconds to maturity for markets without a configured maturity read', async () => {
     const service = new StrategyBootstrapReferenceRateService(
+      BootstrapAdapterError,
       new Map([[marketId, { strategy: 'variable_rate_avg' }]]),
       { readRate: async () => ({ mode: 'variable', rateBps: 525n, observationId: 'hour:2' }) },
       new Map([[secondMarketId, async () => 1_000_000n]])
@@ -104,6 +109,7 @@ describe('StrategyBootstrapReferenceRateService', () => {
 
   test('propagates a failed maturity read instead of quoting without the premium input', async () => {
     const service = new StrategyBootstrapReferenceRateService(
+      BootstrapAdapterError,
       new Map([[marketId, { strategy: 'hardcoded', hardcodedRateBps: 400n }]]),
       { readRate: async () => ({ mode: 'variable', rateBps: 525n, observationId: 'hour:2' }) },
       new Map([
@@ -124,6 +130,7 @@ describe('StrategyBootstrapReferenceRateService', () => {
 
   test('changes a hardcoded observation when its hourly refresh bucket advances', async () => {
     const service = new StrategyBootstrapReferenceRateService(
+      BootstrapAdapterError,
       new Map([[marketId, { strategy: 'hardcoded', hardcodedRateBps: 400n }]]),
       { readRate: async () => ({ mode: 'variable', rateBps: 500n, observationId: 'hour:1' }) }
     )
@@ -141,6 +148,7 @@ describe('StrategyBootstrapReferenceRateService', () => {
 describe('BlueBootstrapReferenceRateService', () => {
   test('accepts a latest checkpoint at the freshness boundary', async () => {
     const service = new BlueBootstrapReferenceRateService(
+      BootstrapAdapterError,
       {
         readLatest: async () => ({
           blockNumber: 200n,
@@ -182,15 +190,55 @@ describe('BlueBootstrapReferenceRateService', () => {
     }
     const now = () => 1_000_000n
 
-    await new BlueBootstrapReferenceRateService(reader, 259_200n, now).readRate(marketId)
-    await new BlueBootstrapReferenceRateService(reader, 21_600n, now).readRate(marketId)
+    await new BlueBootstrapReferenceRateService(
+      BootstrapAdapterError,
+      reader,
+      259_200n,
+      now
+    ).readRate(marketId)
+    await new BlueBootstrapReferenceRateService(
+      BootstrapAdapterError,
+      reader,
+      21_600n,
+      now
+    ).readRate(marketId)
 
     expect(requested).toEqual([1_000_000n - 259_200n, 1_000_000n - 21_600n])
+  })
+
+  test('derives the historical checkpoint from the latest checkpoint head', async () => {
+    const latest = {
+      blockNumber: 200n,
+      timestamp: 1_000_000n,
+      supplyAssetsPerWadShares: 1_100_000_000_000_000_000n
+    }
+    const heads: unknown[] = []
+    const reader = {
+      readLatest: async () => latest,
+      readAtOrBefore: async (_target: bigint, head: unknown) => {
+        heads.push(head)
+        return {
+          blockNumber: 100n,
+          timestamp: 900_000n,
+          supplyAssetsPerWadShares: 1_000_000_000_000_000_000n
+        }
+      }
+    }
+
+    await new BlueBootstrapReferenceRateService(
+      BootstrapAdapterError,
+      reader,
+      21_600n,
+      () => 1_000_000n
+    ).readRate(marketId)
+
+    expect(heads).toEqual([expect.objectContaining({ blockNumber: 200n, timestamp: 1_000_000n })])
   })
 
   test('rejects a latest checkpoint older than the wall-clock freshness bound', async () => {
     let historicalRead = false
     const service = new BlueBootstrapReferenceRateService(
+      BootstrapAdapterError,
       {
         readLatest: async () => ({
           blockNumber: 200n,
@@ -215,5 +263,19 @@ describe('BlueBootstrapReferenceRateService', () => {
     expect(error).toBeInstanceOf(BootstrapAdapterError)
     expect(error).toMatchObject({ operation: 'reference-stale' })
     expect(historicalRead).toBe(false)
+  })
+  test('reports a rejected checkpoint as the calling workflow adapter error', async () => {
+    const checkpoint = { blockNumber: 200n, timestamp: 100n, supplyAssetsPerWadShares: 1n }
+    const service = new BlueBootstrapReferenceRateService(
+      LadderAdapterError,
+      { readLatest: async () => checkpoint, readAtOrBefore: async () => checkpoint },
+      21_600n,
+      () => 401n
+    )
+
+    const error = await service.readRate(marketId).catch(value => value)
+
+    expect(error).toBeInstanceOf(LadderAdapterError)
+    expect(error).toMatchObject({ name: 'LadderAdapterError', operation: 'reference-stale' })
   })
 })

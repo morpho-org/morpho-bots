@@ -150,8 +150,8 @@ async function main() {
     logger
   })
 
-  // Pre-swap converters for exotic collateral (ERC4626 shares, Pendle PTs → underlying).
-  // Auto-detecting with per-process memoization. erc4626 first: a memoized eth_call beats consulting
+  // Pre-swap converters for exotic collateral (ERC-4626 shares, Pendle PTs → underlying).
+  // Auto-detecting with per-process memoization. `erc4626` first: a memoized eth_call beats consulting
   // the markets list. Pendle is only constructed on chains it is deployed to — elsewhere a
   // cold-cache markets outage would fail plain-collateral quotes too. The Pendle markets list is
   // cached in-process for the bot's lifetime (a 6h TTL inside the unwrapper handles staleness), so
@@ -205,7 +205,7 @@ async function main() {
 
   // Borrower discovery: poll the Morpho GraphQL API's `marketPositions` (skip-paginated, listed
   // markets only, over-inclusive by health-factor cutoff). Only (marketId, borrower) is consumed —
-  // the market's immutable params are recovered on-chain via idToMarketParams(id) and cached (params
+  // the market's immutable params are recovered onchain via idToMarketParams(id) and cached (params
   // never change per id), and the lens re-reads every pair fresh, so the API is a coverage source,
   // never the source of truth.
   const fetchPage = createGraphqlCandidateSource({
@@ -235,7 +235,7 @@ async function main() {
 
   // Transaction-queue state is in-memory only — chain truth wins on restart. A redeploy re-derives
   // the nonce cursor from `getTransactionCount('pending')`, and any tx that was in flight settles
-  // on-chain regardless of the bot; settlement audit ships via the structured `tx.*` log events.
+  // onchain regardless of the bot; settlement audit ships via the structured `tx.*` log events.
   const queue = createPendingQueue({
     send: signer.send,
     getReceipt: signer.getReceipt,

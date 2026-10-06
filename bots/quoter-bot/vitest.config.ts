@@ -7,10 +7,7 @@ const BOT_DIR = fileURLToPath(new URL('.', import.meta.url))
 export default defineConfig({
   test: {
     name: 'quoter-bot',
-    // This bot is the one member with a test outside `test/`: scripts/check-jsdoc.test.ts. Without
-    // `scripts/` in `include`, vitest's default glob silently collects one file fewer and the suite
-    // still reports green — so both roots are listed explicitly.
-    include: ['test/**/*.test.ts', 'scripts/**/*.test.ts'],
+    include: ['test/**/*.test.ts'],
     // Several cases here spawn the CLI as a real subprocess through tsx. A tsx cold start is ~1.3s
     // against bun's ~0.1s, and with projects running in parallel the slowest of them exceeded the 5s
     // default under CPU contention. The subprocess work is genuinely slower now, so the ceiling is

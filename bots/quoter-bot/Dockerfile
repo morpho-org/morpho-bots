@@ -6,7 +6,7 @@
 # the bot; the runtime stage starts from a fresh base and receives nothing but the bot's
 # self-contained bundle. The image publishes publicly on release (morphoorg/quoter), so no other
 # bot's code, no workspace source, and no package manager may ship in the final stage.
-FROM node:24.14.1-slim AS build
+FROM node:24.18.1-slim AS build
 ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
 ENV HOME=/home/node
 
@@ -22,6 +22,8 @@ WORKDIR /repo
 # Manifests first keep the install layer cacheable. `corepack install` fetches the pnpm version pinned
 # in package.json#packageManager.
 COPY --chown=node:node package.json pnpm-workspace.yaml pnpm-lock.yaml ./
+# `pnpm-workspace.yaml` declares patchedDependencies, so the install fails without these.
+COPY --chown=node:node patches ./patches
 RUN corepack install
 
 # All workspace manifests and sources are needed to resolve links and build the bot bundle.
@@ -34,7 +36,7 @@ RUN pnpm -r --if-present run build
 # bundle: true), so no node_modules ships; the bot's package.json rides along only so node treats
 # the bundle's .js as ESM ("type": "module"). Files stay root-owned and read-only to the runtime
 # user.
-FROM node:24.14.1-slim
+FROM node:24.18.1-slim
 ENV HOME=/home/node
 ENV XDG_STATE_HOME=/state
 

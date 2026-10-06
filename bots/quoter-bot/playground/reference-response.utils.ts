@@ -1,7 +1,7 @@
-import type { LadderConfig } from '../src/domain/ladder/ladder'
+import type { LadderConfig, ValidLadderConfig } from '../src/domain/ladder'
 import type { TargetRateConfigured } from '../src/domain/target-rate'
 
-import { generateLadderWithDiagnostics } from '../src/domain/ladder/ladder'
+import { generateLadderWithDiagnostics } from '../src/domain/ladder'
 
 /** Upper bound on swept references, protecting an extreme configured rate range. */
 const MAXIMUM_REFERENCE_SAMPLES = 20_001
@@ -63,9 +63,10 @@ const bandOf = (
 }
 
 /**
- * Measures the reference range over which a ladder keeps every rung off a hard rate bound.
+ * Measures the reference range over which a ladder keeps every rung inside the hard rate range.
  * @param config - One validated ladder configuration.
- * @returns The widest reference band pinning no rung; absent only defensively, because the
+ * @param creditAssets - Face credit an `inventorySkew` is priced at; defaults to none held.
+ * @returns The widest reference band omitting no rung; absent only defensively, because the
  * collection parser already rejects a shape that fits at no reference.
  * @remarks Derived entirely from the configuration through the runtime's own
  * `generateLadderWithDiagnostics`, so it assumes no live market data. Answers the question a
@@ -74,19 +75,22 @@ const bandOf = (
  * them.
  */
 export const ladderReferenceBand = (
-  config: TargetRateConfigured<LadderConfig>
+  config: TargetRateConfigured<ValidLadderConfig>,
+  creditAssets = 0n
 ): ReferenceBand | undefined => {
-  const pinnedRungs = (referenceRateBps: bigint) => {
+  const omittedRungs = (referenceRateBps: bigint) => {
     const { diagnostics } = generateLadderWithDiagnostics({
       config,
       referenceRateBps,
-      ...(config.maturityPremium === undefined ? {} : { secondsToMaturity: 0n })
+      ...(config.maturityPremium === undefined ? {} : { secondsToMaturity: 0n }),
+      ...(config.inventorySkew === undefined ? {} : { capacities: { creditAssets } })
     })
     return (
-      diagnostics.lower.clampedToMinimumRungs +
-      diagnostics.lower.clampedToMaximumRungs +
-      diagnostics.higher.clampedToMinimumRungs +
-      diagnostics.higher.clampedToMaximumRungs
+      diagnostics.lower.omittedBelowMinimumRungs +
+      diagnostics.lower.omittedAboveMaximumRungs +
+      diagnostics.lower.omittedAboveSellCeilingRungs +
+      diagnostics.higher.omittedBelowMinimumRungs +
+      diagnostics.higher.omittedAboveMaximumRungs
     )
   }
   const margin = absolute(config.quotePremiumBps) + ladderReach(config) + 1n
@@ -94,18 +98,18 @@ export const ladderReferenceBand = (
     config.minimumRateBps - margin,
     config.maximumRateBps + margin
   )
-  const isClean = (reference: bigint) => reference > 0n && pinnedRungs(reference) === 0
+  const isClean = (reference: bigint) => reference > 0n && omittedRungs(reference) === 0
   return bandOf(references, references.map(isClean), isClean)
 }
 
 /**
- * Measures the reference range over which a bootstrap quote tracks the reference instead of
- * saturating at a hard bound.
+ * Measures the reference range over which a bootstrap quote stays inside the hard range, outside
+ * which no offer is published.
  * @param premiumBps - The entry's signed quote premium.
  * @param minimum - Inclusive configured rate floor.
  * @param maximum - Inclusive configured rate ceiling.
- * @returns The widest unsaturated reference band, or `undefined` when every swept reference
- * saturates.
+ * @returns The widest in-range reference band, or `undefined` when every swept reference falls
+ * outside it.
  * @remarks Uses the premium-free base quote, matching the anchor the deterministic preview draws.
  */
 export const bootstrapReferenceBand = (

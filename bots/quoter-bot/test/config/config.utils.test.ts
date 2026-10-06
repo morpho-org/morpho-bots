@@ -4,10 +4,12 @@ import { bytesToHex, getAddress, hexToBytes } from 'viem'
 import { describe, expect, test } from 'vitest'
 
 import {
+  acceptedLossFactorValue,
   parseAddress,
   parseBytes32,
   referenceLookbackSecondsValue
 } from '../../src/config/config.utils'
+import { MAX_LOSS_FACTOR } from '../../src/domain/loss-factor'
 
 describe('config viem parsing utilities', () => {
   test('normalizes lowercase and valid mixed-case addresses to checksum form', () => {
@@ -68,5 +70,60 @@ describe('referenceLookbackSecondsValue', () => {
         'REFERENCE_LOOKBACK_SECONDS must be a decimal integer'
       )
     }
+  })
+})
+
+describe('acceptedLossFactorValue', () => {
+  const marketId: Hex = `0x${'55'.repeat(32)}`
+  const otherMarketId: Hex = `0x${'ab'.repeat(32)}`
+  const otherMarketIdUpper = `0x${'AB'.repeat(32)}`
+  const reason = (input: unknown) => {
+    try {
+      acceptedLossFactorValue(input, [marketId, otherMarketId])
+    } catch (error) {
+      return (error as { reason?: string }).reason
+    }
+    return undefined
+  }
+
+  test('defaults to no accepted markets, so every market accepts zero', () => {
+    expect(acceptedLossFactorValue(undefined, [marketId])).toEqual(new Map())
+  })
+
+  test('canonicalizes market ids and parses exact decimal values up to the maximum minus one', () => {
+    expect(
+      acceptedLossFactorValue(
+        { [marketId]: '0', [otherMarketIdUpper]: String(MAX_LOSS_FACTOR - 1n) },
+        [marketId, otherMarketId]
+      )
+    ).toEqual(
+      new Map([
+        [marketId, 0n],
+        [otherMarketId, MAX_LOSS_FACTOR - 1n]
+      ])
+    )
+  })
+
+  test.each([
+    [
+      'the maximum, which would disable the guard',
+      { [marketId]: String(MAX_LOSS_FACTOR) },
+      'out-of-range'
+    ],
+    ['a value above the maximum', { [marketId]: String(MAX_LOSS_FACTOR + 1n) }, 'out-of-range'],
+    ['an unknown market', { [`0x${'77'.repeat(32)}`]: '1' }, 'unknown-market'],
+    [
+      'a market repeated in another case',
+      { [otherMarketId]: '1', [otherMarketIdUpper]: '2' },
+      'duplicate'
+    ],
+    ['a non-canonical decimal', { [marketId]: '01' }, 'invalid-unsigned-integer'],
+    ['a negative value', { [marketId]: '-1' }, 'invalid-unsigned-integer'],
+    ['a number rather than a string', { [marketId]: 1n }, 'invalid-unsigned-integer'],
+    ['a malformed market id', { '0x1234': '1' }, 'invalid-bytes32'],
+    ['a list', [marketId], 'wrong-type'],
+    ['a scalar', '1', 'wrong-type']
+  ])('rejects %s', (_name, input, expected) => {
+    expect(reason(input)).toBe(expected)
   })
 })

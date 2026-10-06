@@ -11,10 +11,11 @@ import {
   type IMarketParams,
   setterRatifierAbi
 } from '@morpho-org/midnight-sdk'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { MathLib } from '@morpho-org/morpho-ts'
+import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { encodeFunctionData } from 'viem'
+import { encodeFunctionData, keccak256, stringToHex } from 'viem'
 import { base, mainnet } from 'viem/chains'
 import { describe, expect, test } from 'vitest'
 
@@ -26,25 +27,28 @@ import {
   bootstrapBookOffers,
   bootstrapGroupRateBps,
   bootstrapReservedLoanAssets,
-  readBootstrapGroups,
   strategyBootstrapGroups
 } from '../../../src/infrastructure/bootstrap/bootstrap-groups.utils'
+import { ReadOnlyBootstrapMakeService } from '../../../src/infrastructure/bootstrap/bootstrap-make.read-only'
 import { MidnightBootstrapMakeService } from '../../../src/infrastructure/bootstrap/bootstrap-make.service'
 import {
   bootstrapContinuousFeeCap,
-  createBootstrapOffer,
-  legacyBootstrapOfferTickUpperBound,
-  recoverLegacyBootstrapOfferTick
+  createBootstrapOffer
 } from '../../../src/infrastructure/bootstrap/bootstrap-offer.utils'
 import { prepareBootstrapRequirements } from '../../../src/infrastructure/bootstrap/bootstrap-requirements.utils'
-import { assertBootstrapTransaction } from '../../../src/infrastructure/bootstrap/bootstrap-transaction.utils'
 import {
+  bootstrapLoanAssets,
   bootstrapMakeLendArguments,
   createProductionBootstrapAdapters,
   prepareCappedBootstrapOffer,
   publishBootstrapPublication
 } from '../../../src/infrastructure/bootstrap/production-bootstrap'
-import { ReadOnlyBootstrapMakeService } from '../../../src/infrastructure/make/read-only-bootstrap-make.service'
+import { readMakerOfferGroups } from '../../../src/infrastructure/provider/offer-groups.utils'
+import { STRATEGY_STATE_VERSION } from '../../../src/infrastructure/strategy-state/strategy-state-file.utils'
+import { StrategyStateVersionError } from '../../../src/infrastructure/strategy-state/strategy-state-version.error'
+import { assertBootstrapTransaction } from '../../../src/infrastructure/transaction/bootstrap-transaction.utils'
+
+const BPS_WAD = 10n ** 14n
 
 const maker: Address = '0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A'
 const signer: Address = '0x1563915e194D8CfBA1943570603F7606A3115508'
@@ -99,6 +103,7 @@ const group = (overrides: Record<string, unknown> = {}) => ({
   chain_id: 8453,
   consumed: '0',
   max_assets: '100',
+  max_units: '0',
   offers: [
     {
       market_id: marketId,
@@ -127,6 +132,8 @@ describe('createProductionBootstrapAdapters', () => {
       maximumAssets: 40n,
       created: publicationOffer(),
       exactTick: 123n,
+      minimumRateBps: 200n,
+      maximumRateBps: 800n,
       prepareOffer: async (offer, exactTick) => {
         prepared.push({ assets: offer.assets, exactTick })
         return {
@@ -164,7 +171,7 @@ describe('createProductionBootstrapAdapters', () => {
         maximumRateBps: 800n,
         prepareOffer: async () => ({
           created: publicationOffer(124n),
-          effectiveRateBps: 801n
+          effectiveRateWad: 800n * BPS_WAD + 1n
         })
       })
     ).rejects.toMatchObject({ operation: 'negative-spread' })
@@ -257,6 +264,7 @@ describe('Setter bootstrap publication sequencing', () => {
     const payload: Hex = '0x1234'
     const tracked = new Set<Hex>()
     const service = new MidnightBootstrapMakeService({
+      admitPublication: async () => ({ admitted: true as const, capacityAssets: 0n }),
       listActiveGroups: async () => [{ id: groupId, marketId, assets: 100n, rateBps: 400n }],
       listBookOffers: async () => [],
       toProspectiveBookOffer: async () => ({ marketId, buy: true, tick: 100n }),
@@ -293,14 +301,19 @@ describe('Setter bootstrap publication sequencing', () => {
       },
       invalidate: async () => {
         events.push('cancel-submit', 'cancel-confirmed')
-        return groupId
+        return { txHash: groupId, blockNumber: 1n }
       },
       invalidateBatch: async () => {}
     })
 
     await service.reconcile({
       marketId,
-      desiredOffer: { marketId, assets: 100n, rateBps: 500n, referenceObservationId: 'test' },
+      desiredOffer: {
+        marketId,
+        assets: 100n,
+        rateBps: 500n,
+        referenceObservationId: 'test'
+      },
       reason: 'replace'
     })
 
@@ -321,6 +334,7 @@ describe('Setter bootstrap publication sequencing', () => {
     const events: string[] = []
     const tracked = new Set<Hex>()
     const service = new MidnightBootstrapMakeService({
+      admitPublication: async () => ({ admitted: true as const, capacityAssets: 0n }),
       listActiveGroups: async () => [],
       listOwnedGroupIds: async () => [...tracked],
       listBookOffers: async () => [],
@@ -371,7 +385,12 @@ describe('Setter bootstrap publication sequencing', () => {
     await expect(
       service.reconcile({
         marketId,
-        desiredOffer: { marketId, assets: 100n, rateBps: 500n, referenceObservationId: 'test' },
+        desiredOffer: {
+          marketId,
+          assets: 100n,
+          rateBps: 500n,
+          referenceObservationId: 'test'
+        },
         reason: 'publish'
       })
     ).rejects.toMatchObject({
@@ -654,91 +673,7 @@ describe('createBootstrapOffer', () => {
   })
 })
 
-describe('recoverLegacyBootstrapOfferTick', () => {
-  test('recovers the exact tick of an offer persisted before ticks were stored', () => {
-    const market = {
-      params: publicationMarket,
-      tickSpacing: 2,
-      continuousFee: 17
-    }
-    const legacyOffer = Offer.create({
-      market: publicationMarket,
-      buy: true,
-      maker,
-      tick: 410n,
-      tickSpacing: 2n,
-      expiry: publicationMarket.maturity,
-      ratifier,
-      maxAssets: 1_000n,
-      continuousFeeCap: 17n
-    })
-
-    expect(
-      recoverLegacyBootstrapOfferTick({
-        groupId: legacyOffer.group,
-        maximumAssets: legacyOffer.maxAssets,
-        market,
-        maker,
-        ratifier
-      })
-    ).toBe(410n)
-  })
-
-  test('uses a persisted fee cap when the live market fee changed after publication', () => {
-    const legacyOffer = Offer.create({
-      market: publicationMarket,
-      buy: true,
-      maker,
-      tick: 410n,
-      tickSpacing: 2n,
-      expiry: publicationMarket.maturity,
-      ratifier,
-      maxAssets: 1_000n,
-      continuousFeeCap: 16n
-    })
-
-    expect(
-      recoverLegacyBootstrapOfferTick({
-        groupId: legacyOffer.group,
-        maximumAssets: legacyOffer.maxAssets,
-        market: { params: publicationMarket, tickSpacing: 2, continuousFee: 17 },
-        maker,
-        ratifier,
-        continuousFeeCap: legacyOffer.continuousFeeCap
-      })
-    ).toBe(410n)
-  })
-
-  test('bounds a pre-v5 tick from its original observation when the fee cap is unavailable', () => {
-    const market = { params: publicationMarket, tickSpacing: 2, continuousFee: 17 }
-    const offer = {
-      marketId,
-      assets: 1_000n,
-      rateBps: 500n,
-      referenceObservationId: 'hour:1'
-    }
-    const firstPossible = createBootstrapOffer({ offer, market, maker, ratifier, now: 3_600n })
-    const lastPossible = createBootstrapOffer({ offer, market, maker, ratifier, now: 7_500n })
-
-    expect(legacyBootstrapOfferTickUpperBound({ offer, market })).toBe(
-      firstPossible.tick > lastPossible.tick ? firstPossible.tick : lastPossible.tick
-    )
-  })
-
-  test('rejects a reconstruction that does not match the persisted group identity', () => {
-    expect(
-      recoverLegacyBootstrapOfferTick({
-        groupId,
-        maximumAssets: 1_000n,
-        market: { params: publicationMarket, tickSpacing: 4, continuousFee: 17 },
-        maker,
-        ratifier
-      })
-    ).toBeUndefined()
-  })
-})
-
-describe('readBootstrapGroups', () => {
+describe('readMakerOfferGroups', () => {
   test('counts each owned group unfilled reserve once across multi-market projections', async () => {
     const secondOffer = {
       ...group().offers[0],
@@ -746,13 +681,14 @@ describe('readBootstrapGroups', () => {
       tick: 200,
       market: { maturity: 3_000 }
     }
-    const groups = await readBootstrapGroups(
-      { chainId: base.id, maker, requestTimeoutMs: 1_000 },
+    const groups = await readMakerOfferGroups(
+      { adapterError: BootstrapAdapterError, chainId: base.id, maker, requestTimeoutMs: 1_000 },
       {
         request: async () => ({
           data: [
             group({
               max_assets: '125',
+              max_units: '0',
               consumed: '25',
               offers: [...group().offers, secondOffer]
             })
@@ -769,8 +705,8 @@ describe('readBootstrapGroups', () => {
   test('excludes durably owned sell-only groups from the loan-token cash reserve', async () => {
     const secondGroupId: Hex = `0x${'ef'.repeat(32)}`
     const sellOnly = { ...group().offers[0], buy: false }
-    const groups = await readBootstrapGroups(
-      { chainId: base.id, maker, requestTimeoutMs: 1_000 },
+    const groups = await readMakerOfferGroups(
+      { adapterError: BootstrapAdapterError, chainId: base.id, maker, requestTimeoutMs: 1_000 },
       {
         request: async () => ({
           data: [
@@ -788,8 +724,8 @@ describe('readBootstrapGroups', () => {
 
   test('passes the full distinct owned reserve in the actual makeLend argument shape', async () => {
     const secondGroupId: Hex = `0x${'ef'.repeat(32)}`
-    const groups = await readBootstrapGroups(
-      { chainId: base.id, maker, requestTimeoutMs: 1_000 },
+    const groups = await readMakerOfferGroups(
+      { adapterError: BootstrapAdapterError, chainId: base.id, maker, requestTimeoutMs: 1_000 },
       {
         request: async () => ({
           data: [group({ max_assets: '125' }), group({ id: secondGroupId, max_assets: '75' })],
@@ -819,6 +755,40 @@ describe('readBootstrapGroups', () => {
     ])
   })
 
+  test('reserves an offer by the cash its units can spend at its tick, never zero', () => {
+    const tick = 5_000n
+    const price = TickLib.tickToPrice(tick)
+
+    expect(bootstrapLoanAssets(1_000_000n, tick)).toBe(
+      MathLib.mulDiv(1_000_000n, price, MathLib.WAD, 'Up')
+    )
+    expect(bootstrapLoanAssets(1n, tick)).toBe(1n)
+    expect(bootstrapLoanAssets(1_000_000n, 0n)).toBe(1n)
+  })
+
+  test('reserves an existing units buy by the cash it can spend at its own tick', async () => {
+    const tick = 4_440
+    const groups = await readMakerOfferGroups(
+      { adapterError: BootstrapAdapterError, chainId: base.id, maker, requestTimeoutMs: 1_000 },
+      {
+        request: async () => ({
+          data: [
+            group({
+              max_assets: '0',
+              max_units: '1000001',
+              consumed: '10',
+              offers: [{ ...group().offers[0], tick }]
+            })
+          ],
+          cursor: null
+        })
+      }
+    )
+
+    expect(bootstrapReservedLoanAssets(groups)).toBe(995_154n)
+    expect(bootstrapReservedLoanAssets(groups)).toBe(bootstrapLoanAssets(999_991n, BigInt(tick)))
+  })
+
   test('flattens multi-market group projections without quadratic offer expansion', async () => {
     const offers = Array.from({ length: 1_000 }, (_, index) => ({
       ...group().offers[0],
@@ -826,8 +796,8 @@ describe('readBootstrapGroups', () => {
       tick: index,
       market: { maturity: 3_000 + index }
     }))
-    const groups = await readBootstrapGroups(
-      { chainId: base.id, maker, requestTimeoutMs: 1_000 },
+    const groups = await readMakerOfferGroups(
+      { adapterError: BootstrapAdapterError, chainId: base.id, maker, requestTimeoutMs: 1_000 },
       { request: async () => ({ data: [group({ offers })], cursor: null }) }
     )
 
@@ -837,8 +807,8 @@ describe('readBootstrapGroups', () => {
 
   test('excludes fully consumed groups from the spread-book projection', async () => {
     const activeGroupId: Hex = `0x${'ef'.repeat(32)}`
-    const groups = await readBootstrapGroups(
-      { chainId: base.id, maker, requestTimeoutMs: 1_000 },
+    const groups = await readMakerOfferGroups(
+      { adapterError: BootstrapAdapterError, chainId: base.id, maker, requestTimeoutMs: 1_000 },
       {
         request: async () => ({
           data: [group({ consumed: '100' }), group({ id: activeGroupId, consumed: '99' })],
@@ -852,8 +822,8 @@ describe('readBootstrapGroups', () => {
 
   test('filters cleanup tombstones from the spread-book projection', async () => {
     const ignoredGroupId: Hex = `0x${'ef'.repeat(32)}`
-    const groups = await readBootstrapGroups(
-      { chainId: base.id, maker, requestTimeoutMs: 1_000 },
+    const groups = await readMakerOfferGroups(
+      { adapterError: BootstrapAdapterError, chainId: base.id, maker, requestTimeoutMs: 1_000 },
       {
         request: async () => ({
           data: [group(), group({ id: ignoredGroupId })],
@@ -869,8 +839,8 @@ describe('readBootstrapGroups', () => {
 
   test('requests only Base offer groups', async () => {
     let requestedUrl = ''
-    await readBootstrapGroups(
-      { chainId: base.id, maker, requestTimeoutMs: 1_000 },
+    await readMakerOfferGroups(
+      { adapterError: BootstrapAdapterError, chainId: base.id, maker, requestTimeoutMs: 1_000 },
       {
         request: async url => {
           requestedUrl = url
@@ -883,8 +853,8 @@ describe('readBootstrapGroups', () => {
   })
 
   test('ignores non-Base groups returned by the provider', async () => {
-    const groups = await readBootstrapGroups(
-      { chainId: base.id, maker, requestTimeoutMs: 1_000 },
+    const groups = await readMakerOfferGroups(
+      { adapterError: BootstrapAdapterError, chainId: base.id, maker, requestTimeoutMs: 1_000 },
       { request: async () => ({ data: [group({ chain_id: 1 }), group()], cursor: null }) }
     )
 
@@ -893,8 +863,8 @@ describe('readBootstrapGroups', () => {
 
   test('derives ownership only from explicit durable group IDs', async () => {
     const unrelatedGroupId: Hex = `0x${'ef'.repeat(32)}`
-    const groups = await readBootstrapGroups(
-      { chainId: base.id, maker, requestTimeoutMs: 1_000 },
+    const groups = await readMakerOfferGroups(
+      { adapterError: BootstrapAdapterError, chainId: base.id, maker, requestTimeoutMs: 1_000 },
       {
         request: async () => ({
           data: [group(), group({ id: unrelatedGroupId })],
@@ -913,8 +883,8 @@ describe('readBootstrapGroups', () => {
       tick: 200,
       market: { maturity: 3_000 }
     }
-    const groups = await readBootstrapGroups(
-      { chainId: base.id, maker, requestTimeoutMs: 1_000 },
+    const groups = await readMakerOfferGroups(
+      { adapterError: BootstrapAdapterError, chainId: base.id, maker, requestTimeoutMs: 1_000 },
       {
         request: async () => ({
           data: [group({ offers: [...group().offers, secondOffer] })],
@@ -951,9 +921,9 @@ describe('readBootstrapGroups', () => {
     ['empty', ''],
     ['malformed', 'one']
   ])('rejects %s asset strings before bigint conversion', async (_label, assets) => {
-    for (const field of ['consumed', 'max_assets'] as const) {
-      const error = await readBootstrapGroups(
-        { chainId: base.id, maker, requestTimeoutMs: 1_000 },
+    for (const field of ['consumed', 'max_assets', 'max_units'] as const) {
+      const error = await readMakerOfferGroups(
+        { adapterError: BootstrapAdapterError, chainId: base.id, maker, requestTimeoutMs: 1_000 },
         { request: async () => ({ data: [group({ [field]: assets })], cursor: null }) }
       ).catch(value => value)
 
@@ -963,8 +933,8 @@ describe('readBootstrapGroups', () => {
   })
 
   test('rejects consumed assets above maximum assets', async () => {
-    const error = await readBootstrapGroups(
-      { chainId: base.id, maker, requestTimeoutMs: 1_000 },
+    const error = await readMakerOfferGroups(
+      { adapterError: BootstrapAdapterError, chainId: base.id, maker, requestTimeoutMs: 1_000 },
       { request: async () => ({ data: [group({ consumed: '101' })], cursor: null }) }
     ).catch(value => value)
 
@@ -973,8 +943,8 @@ describe('readBootstrapGroups', () => {
   })
 
   test.each(['', '   '])('fails closed on an empty pagination cursor %p', async cursor => {
-    const error = await readBootstrapGroups(
-      { chainId: base.id, maker, requestTimeoutMs: 1_000 },
+    const error = await readMakerOfferGroups(
+      { adapterError: BootstrapAdapterError, chainId: base.id, maker, requestTimeoutMs: 1_000 },
       { request: async () => ({ data: [], cursor }) }
     ).catch(value => value)
 
@@ -983,8 +953,8 @@ describe('readBootstrapGroups', () => {
   })
 
   test('fails closed when the pagination cursor is missing', async () => {
-    const error = await readBootstrapGroups(
-      { chainId: base.id, maker, requestTimeoutMs: 1_000 },
+    const error = await readMakerOfferGroups(
+      { adapterError: BootstrapAdapterError, chainId: base.id, maker, requestTimeoutMs: 1_000 },
       { request: async () => ({ data: [group()] }) }
     ).catch(value => value)
 
@@ -995,8 +965,8 @@ describe('readBootstrapGroups', () => {
   test('fails closed when a pagination cursor repeats', async () => {
     const request = async () => ({ data: [group()], cursor: 'repeat' })
 
-    const error = await readBootstrapGroups(
-      { chainId: base.id, maker, requestTimeoutMs: 1_000 },
+    const error = await readMakerOfferGroups(
+      { adapterError: BootstrapAdapterError, chainId: base.id, maker, requestTimeoutMs: 1_000 },
       { request }
     ).catch(value => value)
 
@@ -1007,8 +977,8 @@ describe('readBootstrapGroups', () => {
   test.each([null, true, 1, 'invalid'])(
     'classifies a malformed top-level response %p',
     async response => {
-      const error = await readBootstrapGroups(
-        { chainId: base.id, maker, requestTimeoutMs: 1_000 },
+      const error = await readMakerOfferGroups(
+        { adapterError: BootstrapAdapterError, chainId: base.id, maker, requestTimeoutMs: 1_000 },
         { request: async () => response }
       ).catch(value => value)
 
@@ -1024,8 +994,8 @@ describe('readBootstrapGroups', () => {
       return { data: [group()], cursor: 'next' }
     }
 
-    const error = await readBootstrapGroups(
-      { chainId: base.id, maker, requestTimeoutMs: 1 },
+    const error = await readMakerOfferGroups(
+      { adapterError: BootstrapAdapterError, chainId: base.id, maker, requestTimeoutMs: 1 },
       { request, now: () => time }
     ).catch(value => value)
 
@@ -1037,8 +1007,8 @@ describe('readBootstrapGroups', () => {
     let page = 0
     const request = async () => ({ data: [], cursor: `page-${++page}` })
 
-    const error = await readBootstrapGroups(
-      { chainId: base.id, maker, requestTimeoutMs: 1_000 },
+    const error = await readMakerOfferGroups(
+      { adapterError: BootstrapAdapterError, chainId: base.id, maker, requestTimeoutMs: 1_000 },
       { request }
     ).catch(value => value)
 
@@ -1050,8 +1020,8 @@ describe('readBootstrapGroups', () => {
     const offer = group().offers[0]
     const oversized = group({ offers: Array(100_001).fill(offer) })
 
-    const error = await readBootstrapGroups(
-      { chainId: base.id, maker, requestTimeoutMs: 1_000 },
+    const error = await readMakerOfferGroups(
+      { adapterError: BootstrapAdapterError, chainId: base.id, maker, requestTimeoutMs: 1_000 },
       { request: async () => ({ data: [oversized], cursor: null }) }
     ).catch(value => value)
 
@@ -1062,8 +1032,8 @@ describe('readBootstrapGroups', () => {
   test('normalizes mixed-case bytes32 IDs and rejects malformed IDs', async () => {
     const mixedGroup = `0x${'aB'.repeat(32)}`
     const mixedMarket = `0x${'cD'.repeat(32)}`
-    const valid = await readBootstrapGroups(
-      { chainId: base.id, maker, requestTimeoutMs: 1_000 },
+    const valid = await readMakerOfferGroups(
+      { adapterError: BootstrapAdapterError, chainId: base.id, maker, requestTimeoutMs: 1_000 },
       {
         request: async () => ({
           data: [
@@ -1079,8 +1049,8 @@ describe('readBootstrapGroups', () => {
       marketId: mixedMarket.toLowerCase()
     })
 
-    const error = await readBootstrapGroups(
-      { chainId: base.id, maker, requestTimeoutMs: 1_000 },
+    const error = await readMakerOfferGroups(
+      { adapterError: BootstrapAdapterError, chainId: base.id, maker, requestTimeoutMs: 1_000 },
       { request: async () => ({ data: [group({ id: '0x1234' })], cursor: null }) }
     ).catch(value => value)
     expect(error).toBeInstanceOf(BootstrapAdapterError)
@@ -1089,6 +1059,96 @@ describe('readBootstrapGroups', () => {
 })
 
 describe('createBootstrapGroupOwnership', () => {
+  const writeState = async (directory: string, state: Record<string, unknown>) => {
+    const strategy = keccak256(
+      stringToHex(JSON.stringify({ chainId: base.id, maker, marketIds: [marketId] }))
+    )
+    await writeFile(join(directory, `${strategy}.json`), JSON.stringify({ strategy, ...state }), {
+      mode: 0o600
+    })
+  }
+  const persistedOffer = {
+    groupId,
+    marketId,
+    units: '100',
+    rateBps: '450',
+    referenceObservationId: 'blocks:100-200'
+  }
+
+  test('fails loud on its own state written by an earlier version', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'quoter-bot-v6-'))
+    try {
+      await writeState(directory, {
+        version: 6,
+        confirmedGroupIds: [groupId],
+        reservedGroupIds: [],
+        offers: [{ ...persistedOffer, capKind: 'assets' }]
+      })
+      const ownership = createBootstrapGroupOwnership(
+        { chainId: base.id, maker, marketIds: [marketId], configuredGroupIds: [] },
+        { stateDirectory: directory }
+      )
+
+      await expect(ownership.readOffers()).rejects.toBeInstanceOf(StrategyStateVersionError)
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
+
+  test.each([
+    ['a zero-unit intent', [{ ...persistedOffer, units: '0' }]],
+    ['a duplicate intent', [persistedOffer, persistedOffer]],
+    [
+      'one group under two markets',
+      [persistedOffer, { ...persistedOffer, marketId: `0x${'99'.repeat(32)}`, units: '1' }]
+    ]
+  ])('rejects %s instead of understating a reservation', async (_label, offers) => {
+    const directory = await mkdtemp(join(tmpdir(), 'quoter-bot-v7-'))
+    try {
+      await writeState(directory, {
+        version: STRATEGY_STATE_VERSION,
+        confirmedGroupIds: [groupId],
+        reservedGroupIds: [],
+        offers
+      })
+      const ownership = createBootstrapGroupOwnership(
+        { chainId: base.id, maker, marketIds: [marketId], configuredGroupIds: [] },
+        { stateDirectory: directory }
+      )
+
+      await expect(ownership.readOffers()).rejects.toMatchObject({
+        operation: 'group-ownership-state'
+      })
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
+
+  test('persists offer sizes as units under the current state version', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'quoter-bot-v7-'))
+    try {
+      const config = { chainId: base.id, maker, marketIds: [marketId], configuredGroupIds: [] }
+      await createBootstrapGroupOwnership(config, { stateDirectory: directory }).reserve(groupId, {
+        marketId,
+        assets: 100n,
+        rateBps: 450n,
+        referenceObservationId: 'blocks:100-200',
+        tick: 123n
+      })
+
+      const [name] = await readdir(directory)
+      expect(JSON.parse(await readFile(join(directory, name!), 'utf8'))).toMatchObject({
+        version: STRATEGY_STATE_VERSION,
+        offers: [{ groupId, units: '100' }]
+      })
+      expect(
+        await createBootstrapGroupOwnership(config, { stateDirectory: directory }).readOffers()
+      ).toMatchObject([{ groupId, assets: 100n }])
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
+
   test('isolates persisted ownership per chain for the same maker and markets', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'quoter-bot-chain-scope-'))
     try {

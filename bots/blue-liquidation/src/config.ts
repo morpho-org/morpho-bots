@@ -14,9 +14,6 @@ const ZEROX_API_KEY_ENV = 'ZEROX_API_KEY'
 const ONEINCH_API_KEY_ENV = 'ONEINCH_API_KEY'
 const LIFI_API_KEY_ENV = 'LIFI_API_KEY'
 
-// ---------------------------------------------------------------------------
-// Per-chain Morpho Blue deployment map
-// ---------------------------------------------------------------------------
 // Robinhood (chainId 4663, an Arbitrum Orbit chain) is not in `viem/chains`, so define it here. The
 // bot always reads its RPC from `RPC_URL` (config.rpcUrl), so `rpcUrls.default` is a cosmetic
 // fallback only; it points at the canonical public mainnet RPC per Robinhood's docs. Its Morpho Blue
@@ -36,8 +33,8 @@ export type ChainConfig = { chain: Chain; morpho: Address }
 // singleton is NOT at the same address on every chain (Base uses the canonical 0xBBBB…; Robinhood
 // uses 0x9D53…), so `morpho` is genuinely per-chain. The deployless lens needs no per-chain deployer
 // — soltag bakes the CREATE2 factory + factoryData into its compiled output (see the lens fetcher),
-// but that factory must exist on-chain (canonical 0x4e59… is present on both Base and Robinhood).
-// On-chain validation of the Morpho + Executor addresses (getCode) lands at startup. loadConfig
+// but that factory must exist onchain (canonical 0x4e59… is present on both Base and Robinhood).
+// Onchain validation of the Morpho + Executor addresses (getCode) lands at startup. loadConfig
 // fails loud for any CHAIN_ID not present here.
 const CHAIN_MAP: Record<number, ChainConfig> = {
   [base.id]: {
@@ -50,9 +47,6 @@ const CHAIN_MAP: Record<number, ChainConfig> = {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Env table
-// ---------------------------------------------------------------------------
 const LOG_LEVELS = ['debug', 'info', 'warn', 'error'] as const
 const DEFAULT_MAX_FEE_GWEI = '300'
 const PRIVATE_KEY_HEX_LENGTH = 66 // '0x' + 32 bytes
@@ -60,7 +54,7 @@ const PRIVATE_KEY_HEX_LENGTH = 66 // '0x' + 32 bytes
 // Borrower-candidate discovery defaults (the Morpho GraphQL API's `marketPositions` query). The URL
 // is a public, unauthenticated endpoint, so it is safe to default in code (override via env
 // per-env). The health-factor cutoff is intentionally tight — the lens re-checks everything
-// on-chain, so it only tunes coverage/volume.
+// onchain, so it only tunes coverage/volume.
 const DEFAULT_MORPHO_API_URL = 'https://api.morpho.org/graphql'
 const DEFAULT_HEALTH_FACTOR_LTE = 1.02
 
@@ -102,7 +96,7 @@ const DEFAULT_PROBE_LADDER = ['0.01', '0.1', '1', '10', '100']
 
 type Env = Record<string, string | undefined>
 
-/** Off-chain quoting and per-position failure-backoff tunables. */
+/** Offchain quoting and per-position failure-backoff tunables. */
 export type QuotingConfig = {
   quoteTimeoutMs: number
   httpRps: number
@@ -117,7 +111,7 @@ export type QuotingConfig = {
 
 /**
  * Borrower-candidate discovery: the Morpho GraphQL endpoint and the health-factor cutoff for its
- * `marketPositions` query. Discovery is over-inclusive by design — the on-chain lens is the source
+ * `marketPositions` query. Discovery is over-inclusive by design — the onchain lens is the source
  * of truth — so these only tune coverage/volume, never correctness.
  */
 export type DiscoveryConfig = {
@@ -289,9 +283,10 @@ function addressListEnv(env: Env, name: string): Address[] {
 /**
  * Reads the full env table into a typed, validated {@link Config}. Throws on any missing
  * required var, malformed value, or unknown `CHAIN_ID` — the bot must fail loud at startup
- * rather than run half-configured. On-chain checks (that `EXECUTOOOR_ADDRESS` and the Morpho
+ * rather than run half-configured. Onchain checks (that `EXECUTOOOR_ADDRESS` and the Morpho
  * singleton hold code) are performed in `index.ts` once a public client exists.
  */
+// oxlint-disable-next-line complexity
 export function loadConfig(
   env: Env = process.env,
   deps: { chainMap?: Record<number, ChainConfig> } = {}

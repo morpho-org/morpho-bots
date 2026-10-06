@@ -9,7 +9,7 @@ import { encodeAbiParameters, encodeFunctionData, zeroAddress } from 'viem'
 import { CALLBACK_SUCCESS } from '../constants'
 import { isBadDebtRealization } from '../sizing/plan'
 
-// The Midnight `Market` struct passed to `liquidate`. The bot reads it on-chain from the lens
+// The Midnight `Market` struct passed to `liquidate`. The bot reads it onchain from the lens
 // (`toMarket(id)`) and re-passes it verbatim.
 export type CollateralParams = {
   token: Address
@@ -101,7 +101,7 @@ export function encodeLiquidationExec(params: {
   // The callback queue the Executor runs when Midnight calls back into `onLiquidate`. The seized
   // collateral is already on the Executor (receiver = the Executor); the steps convert it to the
   // loan token, then the repay allowance pair approves Midnight to pull the repay. Balance-based
-  // (over-approving by the profit margin) because `repaidUnits` is recomputed on-chain and not
+  // (over-approving by the profit margin) because `repaidUnits` is recomputed onchain and not
   // staticcall-readable; the residual allowance is inert while the full-drain invariant keeps the
   // Executor's balance at zero between txs.
   const callbackQueue: Hex[] = [

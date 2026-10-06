@@ -181,7 +181,7 @@ describe('ConfigService YAML and environment loading', () => {
     groupMode: shared-rung
     loopIntervalSeconds: "60"
     movementToleranceBps: "10"
-    minimumRateBps: "200"
+    minimumRateBps: "100"
     maximumRateBps: "800"
   - marketId: "${secondMarketId}"
     targetRate:
@@ -447,6 +447,33 @@ describe('ConfigService YAML and environment loading', () => {
     const config = await ConfigService.load(environment, { cwd: directory })
     expect(config.rpcUrl).toBe(environment.RPC_URL)
     expect(config.bootstrap).toEqual([])
+  })
+
+  test('rejects the retired OFFER_CAP_KIND from the environment and markets.offerCapKind from YAML', async () => {
+    const directory = await temporaryDirectory()
+    const retired = { ...environment, OFFER_CAP_KIND: 'assets' }
+    for (const load of [
+      () => ConfigService.load(retired, { cwd: directory }),
+      async () => configurationFromEnvironment(retired)
+    ]) {
+      const error = await load().catch((caught: unknown) => caught)
+      expect(error).toBeInstanceOf(ConfigValidationError)
+      expect(error).toMatchObject({ field: 'OFFER_CAP_KIND', reason: 'retired' })
+    }
+
+    const path = join(directory, 'operator.yaml')
+    await writeFile(
+      path,
+      yaml().replace(
+        `referenceMarketId: "${referenceMarketId}"`,
+        `referenceMarketId: "${referenceMarketId}"\n  offerCapKind: units`
+      )
+    )
+    const error = await ConfigService.load(environment, { configPath: path }).catch(
+      (caught: unknown) => caught
+    )
+    expect(error).toBeInstanceOf(ConfigValidationError)
+    expect(error).toMatchObject({ field: 'markets.offerCapKind', reason: 'retired' })
   })
 
   test('omits YAML and environment private keys from read-only configuration sources', async () => {
@@ -1320,5 +1347,51 @@ describe('ConfigService YAML and environment loading', () => {
     expect(yamlError.message).not.toContain(yamlSecret)
     expect(JSON.stringify(envError)).not.toContain(envSecret)
     expect(envError.message).not.toContain(envSecret)
+  })
+
+  test('loads markets.acceptedLossFactor from YAML and lets ACCEPTED_LOSS_FACTOR replace it', async () => {
+    const directory = await temporaryDirectory()
+    const path = join(directory, 'operator.yaml')
+    await writeFile(
+      path,
+      yaml().replace(
+        `referenceMarketId: "${referenceMarketId}"`,
+        `referenceMarketId: "${referenceMarketId}"\n  acceptedLossFactor:\n    "${marketId}": "42"`
+      )
+    )
+
+    expect(
+      (await ConfigService.load(environment, { configPath: path })).setup.acceptedLossFactor
+    ).toEqual(new Map([[marketId, 42n]]))
+    expect(
+      (
+        await ConfigService.load(
+          { ...environment, ACCEPTED_LOSS_FACTOR: JSON.stringify({ [marketId]: '7' }) },
+          { configPath: path }
+        )
+      ).setup.acceptedLossFactor
+    ).toEqual(new Map([[marketId, 7n]]))
+    expect(
+      ConfigService.from({ ...environment, ACCEPTED_LOSS_FACTOR: '{}' }).setup.acceptedLossFactor
+    ).toEqual(new Map())
+    expect(
+      (
+        await ConfigService.load(
+          { ...environment, ACCEPTED_LOSS_FACTOR: ' ' },
+          { configPath: path }
+        )
+      ).setup.acceptedLossFactor
+    ).toEqual(new Map([[marketId, 42n]]))
+    expect(
+      ConfigService.from({ ...environment, ACCEPTED_LOSS_FACTOR: '' }).setup.acceptedLossFactor
+    ).toEqual(new Map())
+  })
+
+  test('rejects duplicate or non-object ACCEPTED_LOSS_FACTOR JSON', () => {
+    for (const value of [`{"${marketId}":"1","${marketId}":"2"}`, '[]', 'not json']) {
+      expect(() => ConfigService.from({ ...environment, ACCEPTED_LOSS_FACTOR: value })).toThrow(
+        ConfigValidationError
+      )
+    }
   })
 })

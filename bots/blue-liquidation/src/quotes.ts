@@ -13,7 +13,7 @@ import { expectedLoanOut } from './execution/swap-step'
 /**
  * The Blue-shaped adapter over `@repo/swaps`' {@link composeMultiVenueQuoting}: keeps the
  * `(plan, out)` signature the tick consumes and projects the lens output into the package's plain
- * `QuoteRequest` — Blue markets have a single collateral, `out.params.collateralToken`. The package
+ * `QuoteRequest` — Blue Markets have a single collateral, `out.params.collateralToken`. The package
  * resolves the pre-swap unwrap chain, then starts — without awaiting — the venue probe for the
  * POST-unwrap `(collateral, loan)` pair, gated to this liquidatable pair and staleMs-cached so no
  * venue calls hit quiet markets. Venues are ranked against whatever the cache already holds, and

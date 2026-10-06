@@ -1,6 +1,8 @@
 import type { Hex } from 'viem'
 
-import type { BootstrapRawGroup } from '../bootstrap/bootstrap-groups.utils'
+import type { MakerOfferGroup } from '../provider/offer-groups.utils'
+
+import { isGroupClosed } from '../../domain/offer-cap'
 
 /**
  * Selects every indexed active or durably owned pending group for bulk invalidation.
@@ -10,12 +12,20 @@ import type { BootstrapRawGroup } from '../bootstrap/bootstrap-groups.utils'
  * @returns Distinct cancellation candidates, including groups not indexed by the API yet.
  */
 export const offerInvalidationGroupIds = (
-  groups: readonly BootstrapRawGroup[],
+  groups: readonly MakerOfferGroup[],
   bootstrapGroupIds: readonly Hex[],
   ladderGroupIds: readonly Hex[]
 ) => [
   ...new Set([
-    ...groups.filter(group => group.maxAssets > group.consumed).map(group => group.id),
+    ...groups
+      .filter(
+        group =>
+          !isGroupClosed(
+            { cap: group.cap, buy: group.offers.some(offer => offer.buy) },
+            group.consumed
+          )
+      )
+      .map(group => group.id),
     ...bootstrapGroupIds,
     ...ladderGroupIds
   ])

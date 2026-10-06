@@ -3,7 +3,7 @@ import type { Address, Hex } from 'viem'
 import { MAX_OFFER_CAP } from '@morpho-org/midnight-sdk'
 import { describe, expect, test } from 'vitest'
 
-import type { BootstrapRawGroup } from '../../../src/infrastructure/bootstrap/bootstrap-groups.utils'
+import type { MakerOfferGroup } from '../../../src/infrastructure/provider/offer-groups.utils'
 
 import { BootstrapAdapterError } from '../../../src/infrastructure/bootstrap/bootstrap-adapter.error'
 import {
@@ -25,10 +25,10 @@ const offer = {
   referenceObservationId: 'blocks:100-200'
 }
 
-const indexedGroup = (consumed: bigint): BootstrapRawGroup => ({
+const indexedGroup = (consumed: bigint): MakerOfferGroup => ({
   id: groupId,
   consumed,
-  maxAssets: 100n,
+  cap: { kind: 'assets', maximum: 100n },
   marketId,
   tick: 1n,
   maturity: 2_000n,
@@ -143,5 +143,16 @@ describe('readLivePendingBootstrapOffers', () => {
     })
 
     expect(result).toEqual([{ ...offer, maximumAssets: 100n, assets: 75n }])
+  })
+
+  test('drops a pending intent once its consumed units reach its size', async () => {
+    expect(
+      await readLivePendingBootstrapOffers({
+        groups: [],
+        ownedGroupIds: [groupId],
+        offers: [offer],
+        readGroupConsumed: async () => offer.assets
+      })
+    ).toEqual([])
   })
 })

@@ -133,6 +133,7 @@ export const startRouterApi = async (rpcUrl: string): Promise<RouterApiHandle> =
             offer: item.offer,
             ratifierData: item.ratifierData
           })
+          // oxlint-disable-next-line max-depth
           if (!isAddressEqual(verified.signer, offer.maker)) {
             throw new TypeError('Ratifier signer does not match maker')
           }

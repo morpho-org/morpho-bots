@@ -65,7 +65,7 @@ export const readPasswordInteractively = (options: PasswordPromptOptions = {}) =
       }
       passwordBytes.fill(0)
     }
-    const finish = (password?: string, failure?: unknown) => {
+    const finish = (password?: string, failure?: Error) => {
       if (settled) return
       settled = true
       cleanup()
@@ -89,6 +89,7 @@ export const readPasswordInteractively = (options: PasswordPromptOptions = {}) =
           }
           if (byte === 13 || byte === 10) {
             const passwordBuffer = Buffer.from(passwordBytes)
+            // oxlint-disable-next-line max-depth
             try {
               finish(passwordBuffer.toString('utf8'))
             } finally {
@@ -97,9 +98,11 @@ export const readPasswordInteractively = (options: PasswordPromptOptions = {}) =
             return
           }
           if (byte === 8 || byte === 127) {
+            // oxlint-disable-next-line max-depth
             if (passwordBytes.length > 0) {
               const current = Buffer.from(passwordBytes)
               let replacement: Buffer | undefined
+              // oxlint-disable-next-line max-depth
               try {
                 const characters = Array.from(current.toString('utf8'))
                 characters.pop()

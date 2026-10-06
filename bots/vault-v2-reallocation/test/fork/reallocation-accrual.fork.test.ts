@@ -50,7 +50,7 @@ function marketFeeSlot(id: Hex): Hex {
   return toHex(base + 2n, { size: 32 })
 }
 
-describeFork('vault-v2 read-only accrual equals on-chain accrual', () => {
+describeFork('vault-v2 read-only accrual equals onchain accrual', () => {
   it('matches the reference lens on every sizing field', async () => {
     const { projected, reference } = await readBoth()
 
@@ -66,7 +66,7 @@ describeFork('vault-v2 read-only accrual equals on-chain accrual', () => {
       expect(got?.totalSupplyShares, `market ${i} totalSupplyShares`).toBe(want.totalSupplyShares)
       expect(got?.totalBorrowAssets, `market ${i} totalBorrowAssets`).toBe(want.totalBorrowAssets)
       expect(got?.vaultAssets, `market ${i} vaultAssets`).toBe(want.vaultAssets)
-      // The one value that moved off-chain. The reference's `rateAtTarget` is what Blue's own
+      // The one value that moved offchain. The reference's `rateAtTarget` is what Blue's own
       // `borrowRate` advanced it to, so this checks `advanceRateAtTarget` against the chain rather
       // than against itself — without it the client-side advance is the only unverified step left.
       expect(got ? advanceRateAtTarget(got) : undefined, `market ${i} rateAtTarget`).toBe(

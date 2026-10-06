@@ -1,5 +1,5 @@
 import type { BootstrapSubmittedTransaction } from '../../application/bootstrap/position-bootstrap-verbose'
-import type { OperatorAdapterOperation } from '../../application/operator-error-name.utils'
+import type { OperatorAdapterOperation } from '../../application/monitoring/operator-error-name.utils'
 
 /** Stable production-adapter failure without provider URLs, payloads, or secret material. */
 export class BootstrapAdapterError extends Error {

@@ -12,7 +12,7 @@ import type {
   SetupCycleContext
 } from '../setup/setup-check.service'
 
-import { operatorErrorName } from '../operator-error-name.utils'
+import { operatorErrorName } from '../monitoring/operator-error-name.utils'
 
 /** Readiness monitor required by the combined quoter-bot lifecycle. */
 export interface QuoterBotSetupMonitor {

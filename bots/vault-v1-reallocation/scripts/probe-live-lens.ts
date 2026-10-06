@@ -3,12 +3,12 @@
  * no anvil, no deploy: the viem-dlc `deployless` transport runs the lens inside one `eth_call`. Two
  * uses:
  *
- *   1. Operator sanity check — proves the whole read path works against production (the lens compiles,
- *      deploys deploylessly, the on-chain `accrueInterest` simulation doesn't revert, and the nested
+ *   1. Operator check — proves the whole read path works against production (the lens compiles,
+ *      deploys deploylessly, the onchain `accrueInterest` simulation doesn't revert, and the nested
  *      structs decode) and prints the decoded snapshot.
  *   2. Equivalence check — re-reads the SAME pinned block through the `fetchAccrualVault` path the
  *      lens replaced and diffs it field by field. The two accrue differently by construction (the
- *      lens accrues on-chain at the block's timestamp; the SDK accrues client-side to a timestamp we
+ *      lens accrues onchain at the block's timestamp; the SDK accrues client-side to a timestamp we
  *      pass in), so both are pinned to the same block and the SDK side is accrued to that block's
  *      timestamp. Tiny rounding deltas in accrued totals are explainable; a structural mismatch —
  *      params, cap, owner/curator/isAllocator, market ordering, rateAtTarget — is a bug.

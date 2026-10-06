@@ -11,12 +11,15 @@ The implementation follows the repository's [coding conventions](../../../docs/C
 
 The package uses a pragmatic hexagonal architecture:
 
-- `src/domain/` contains deterministic bootstrap and ladder decisions plus their configuration
-  validation. It has no provider, signer, persistence, or CLI responsibilities.
+- `src/domain/` is a flat set of pure, deterministic modules: bootstrap and ladder decisions and
+  their configuration validation, maturity premiums, tick windows, and failure budgets. It may use
+  SDK math but has no provider, signer, persistence, or CLI responsibilities.
 - `src/application/` coordinates setup, bootstrap, ladder, invalidation, and the combined lifecycle.
   Application services own the ports they consume and return sanitized workflow reports.
 - `src/infrastructure/` implements those ports with viem, the Morpho API, the Midnight
-  SDK, local ownership state, transaction submission, and terminal output.
+  SDK, local ownership state, transaction submission, and terminal output. Every signer, executor,
+  and pre-broadcast calldata check lives in `infrastructure/transaction/`, and each read-only make
+  service (`*-make.read-only.ts`) sits beside the live service it replaces.
 - `src/config/` loads YAML and environment sources, applies precedence, and narrows external values
   into the types consumed by the application.
 - `src/bootstrap.ts` is the manual composition root. It selects live or read-only adapters and wires
@@ -51,8 +54,8 @@ timestamp required for maturity comparison.
 - `BootstrapMakeService` owns reconciliation, market invalidation, strategy hard halt, and graceful
   cleanup mutations.
 
-`runOnce()` validates every configured market before reading positions, rates, or publishing.
-Configuration, reference, and decision failures request a strategy-wide hard halt. A position-read
+Configuration is validated once when it loads, so invalid configuration stops the bot before either
+writer starts. Reference and decision failures request a strategy-wide hard halt. A position-read
 failure first requests market-local invalidation and allows other markets to complete unless that
 invalidation also fails.
 
@@ -85,8 +88,7 @@ validates the future tree, confirms cancellation of existing owned groups, publi
 replacement, waits for its receipt, and confirms ownership. Continuous cycles do not overlap and
 use the shortest configured market interval.
 
-As with bootstrap, configuration, reference, and decision failures request a strategy-wide hard
-halt. A market-state read failure requests market-local invalidation. A halted monitor still attempts
+As with bootstrap, reference and decision failures request a strategy-wide hard halt. A market-state read failure requests market-local invalidation. A halted monitor still attempts
 exhaustive owned-group cleanup.
 
 ### Combined lifecycle

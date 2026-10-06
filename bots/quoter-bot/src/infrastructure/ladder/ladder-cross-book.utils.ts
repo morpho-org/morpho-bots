@@ -4,11 +4,11 @@ import { TakeAmountsLib, TickLib } from '@morpho-org/midnight-sdk'
 import { batchProspectiveBook } from '@repo/offers'
 import { isAddressEqual } from 'viem'
 
-import type { LadderBookSideCrossing } from '../../domain/ladder/ladder'
-import type { OwnedOverlapBookOffer } from '../intentional-overlap.utils'
-import type { TickWindow } from '../tick-window.utils'
+import type { OwnedOverlapBookOffer } from '../../domain/intentional-overlap'
+import type { LadderBookSideCrossing } from '../../domain/ladder'
+import type { TickWindow } from '../../domain/tick-window'
 
-import { alignTickDown, alignTickUp, LOWEST_TICK } from '../tick-window.utils'
+import { alignTickDown, alignTickUp, LOWEST_TICK } from '../../domain/tick-window'
 
 /**
  * Best opposing retained ticks a prospective ladder must clear on each side.

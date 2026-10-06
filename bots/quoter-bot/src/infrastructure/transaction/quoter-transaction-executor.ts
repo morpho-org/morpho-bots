@@ -22,6 +22,9 @@ import { QuoterTransactionError } from './quoter-transaction.error'
 /** Write operations with distinct target, selector, gas, and calldata policy. */
 export type QuoterTransactionOperation = 'publish' | 'cancel' | 'cancel-batch' | 'ratify'
 
+/** A write whose receipt confirmed successfully, identified by the hash that mined and its block. */
+export type QuoterConfirmedTransaction = { txHash: Hex; blockNumber: bigint }
+
 /** Invocation-scoped owner of the signer nonce and pending transaction queue. */
 export type QuoterTransactionExecutor = {
   readonly signer: Address
@@ -30,14 +33,15 @@ export type QuoterTransactionExecutor = {
   /**
    * Simulates, policy-checks, signs, broadcasts, replaces, and reconciles one canonical write.
    * @param parameters - Exact transaction, policy operation, diagnostic label, and optional observer.
-   * @returns The tracked hash that confirmed successfully, including a superseded earlier hash.
+   * @returns The tracked hash that confirmed successfully, including a superseded earlier hash,
+   * with its receipt's block.
    */
   execute(parameters: {
     transaction: { to: Address; data: Hex; value: bigint }
     operation: QuoterTransactionOperation
     label: string
     onTransactionSubmitted?: (hash: Hex) => void | Promise<void>
-  }): Promise<Hex>
+  }): Promise<QuoterConfirmedTransaction>
 }
 
 const quietLogger: Logger = {
@@ -202,7 +206,9 @@ export const createQuoterTransactionExecutor = (
         if (settlement === undefined) throw new QuoterTransactionError('transaction-pending')
 
         reconciliationRequired = false
-        if (settlement.kind === 'confirmed-success') return settlement.txHash
+        if (settlement.kind === 'confirmed-success') {
+          return { txHash: settlement.txHash, blockNumber: settlement.blockNumber }
+        }
         if (settlement.kind === 'confirmed-revert') {
           throw new QuoterTransactionError('transaction-reverted')
         }

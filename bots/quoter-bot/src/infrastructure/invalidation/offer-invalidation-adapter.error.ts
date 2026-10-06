@@ -1,4 +1,4 @@
-import type { OperatorAdapterOperation } from '../../application/operator-error-name.utils'
+import type { OperatorAdapterOperation } from '../../application/monitoring/operator-error-name.utils'
 
 /** Stable cancellation-adapter failure without provider data, endpoints, or credentials. */
 export class OfferInvalidationAdapterError extends Error {

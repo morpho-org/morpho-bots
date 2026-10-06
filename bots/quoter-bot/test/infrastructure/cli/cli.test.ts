@@ -1,3 +1,5 @@
+import type { Hex } from 'viem'
+
 import { $ } from 'execa'
 import { dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -11,8 +13,8 @@ import { OfferInvalidationFailedError } from '../../../src/application/invalidat
 import { LadderCycleHaltedError } from '../../../src/application/ladder/ladder-cycle-halted.error'
 import { LadderMonitorHaltedError } from '../../../src/application/ladder/ladder-monitor-halted.error'
 import { QuoterBotMonitorHaltedError } from '../../../src/application/quoter-bot/quoter-bot-monitor-halted.error'
+import { VersionService } from '../../../src/application/quoter-bot/version.service'
 import { SetupMonitorHaltedError } from '../../../src/application/setup/setup-monitor-halted.error'
-import { VersionService } from '../../../src/application/version.service'
 import { Cli } from '../../../src/infrastructure/cli/cli'
 import { CliUsageError } from '../../../src/infrastructure/cli/cli-usage.error'
 import { runQuoterBotEntrypoint } from '../../../src/infrastructure/cli/quoter-bot-entrypoint'
@@ -558,7 +560,7 @@ describe('Cli', () => {
     }
     const run = vi.fn(
       async (parameters?: {
-        groupId?: `0x${string}`
+        groupId?: Hex
         onTransactionSubmitted?: (event: {
           event: 'offer-invalidation.transaction-submitted'
           groupId: typeof groupId
@@ -598,7 +600,7 @@ describe('Cli', () => {
   test('quoter-bot invalidate canonicalizes one explicit group and forwards read-only mode', async () => {
     const groupId = `0x${'ab'.repeat(32)}` as const
     let readOnly: boolean | undefined
-    const run = vi.fn(async (_parameters?: { groupId?: `0x${string}` }) => ({
+    const run = vi.fn(async (_parameters?: { groupId?: Hex }) => ({
       status: 'logged' as const,
       scope: 'group' as const,
       matchedGroups: 1,

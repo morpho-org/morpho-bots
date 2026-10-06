@@ -3,12 +3,12 @@
  * no anvil, no deploy: the viem-dlc `deployless` transport runs the lens inside one `eth_call`. Two
  * uses:
  *
- *   1. Operator sanity check — proves the whole read path works against production (the lens compiles,
- *      deploys deploylessly, the on-chain `accrueInterest` simulation doesn't revert, and the nested
+ *   1. Operator check — proves the whole read path works against production (the lens compiles,
+ *      deploys deploylessly, the onchain `accrueInterest` simulation doesn't revert, and the nested
  *      structs decode) and prints the decoded snapshot.
  *   2. Equivalence check — re-reads the SAME pinned block through the `fetchAccrualVaultV2` + cap
  *      multicall path the lens replaced and diffs it field by field, pairing markets by id. The two
- *      accrue differently by construction (the lens accrues on-chain at the block's timestamp; the
+ *      accrue differently by construction (the lens accrues onchain at the block's timestamp; the
  *      SDK accrues client-side to a timestamp we pass in), so both are pinned to the same block and
  *      the SDK side is accrued to that block's timestamp. Tiny rounding deltas in accrued totals are
  *      explainable; a structural mismatch — params, caps, cap ids, adapter, isAllocator, market set,
@@ -147,7 +147,7 @@ async function main() {
       candidate instanceof AccrualVaultV2MorphoMarketV1Adapter ||
       candidate instanceof AccrualVaultV2MorphoMarketV1AdapterV2
   )
-  if (!adapter) throw new InvalidProbeConfigError('SDK path found no Morpho Blue market adapter')
+  if (!adapter) throw new InvalidProbeConfigError('SDK path found no Morpho Blue Market adapter')
   const adapterAddress = getAddress(adapter.address)
   const markets = sdkMarkets(adapter, block.timestamp)
 

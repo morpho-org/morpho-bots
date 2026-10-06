@@ -19,7 +19,7 @@ export const CAP_BUFFER_WAD = wholePercentToWAD(99.99)
  * Ceiling on any classifier target: a WAD target (an APY bound past the curve's max on a market
  * whose `rateAtTarget` decayed toward the minimum, or an aggregate utilization at/above 100%)
  * would size a deallocation to the market's ENTIRE free liquidity — exact to the snapshot and
- * unrealizable one accrual later, so the plan sim-passes then reverts on-chain forever. The ~10
+ * unrealizable one accrual later, so the plan sim-passes then reverts onchain forever. The ~10
  * bips left behind scale with the market's borrow, which is what accrues; deliberately looser than
  * {@link CAP_BUFFER_WAD}, whose sliver absorbs supply-side drift instead.
  *

@@ -3,6 +3,7 @@ import type { Address, Hex } from 'viem'
 import { getAddress, isAddress, isHex, parseGwei, size } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
 
+import { MAX_LOSS_FACTOR } from '../domain/loss-factor'
 import { ConfigValidationError } from './config-validation.error'
 import {
   bootstrapConfigsValue,
@@ -320,4 +321,65 @@ export const optionalUrlValue = (environment: Environment, name: string) => {
     throw new ConfigValidationError(name, 'invalid-url', `${name} must be a valid URL`)
   }
   return value.endsWith('/') ? value.slice(0, -1) : value
+}
+
+const ACCEPTED_LOSS_FACTOR_FIELD = 'markets.acceptedLossFactor'
+
+/**
+ * Validates the operator-accepted loss factor of each allowlisted market.
+ * @param input - Raw `markets.acceptedLossFactor` mapping or `ACCEPTED_LOSS_FACTOR` object.
+ * @param marketIds - Validated market allowlist.
+ * @returns Canonical market id to accepted value; omitted markets are absent and accept `0`.
+ * @throws `ConfigValidationError` for a non-mapping, an unknown or duplicate market, a value that is
+ * not a canonical unsigned decimal string, or a value at or above `MAX_LOSS_FACTOR`, which would
+ * accept a maxed-out market and so disable the guard.
+ */
+export const acceptedLossFactorValue = (
+  input: unknown,
+  marketIds: readonly Hex[]
+): ReadonlyMap<Hex, bigint> => {
+  const accepted = new Map<Hex, bigint>()
+  if (input === undefined) return accepted
+  if (typeof input !== 'object' || input === null || Array.isArray(input)) {
+    throw new ConfigValidationError(
+      ACCEPTED_LOSS_FACTOR_FIELD,
+      'wrong-type',
+      `${ACCEPTED_LOSS_FACTOR_FIELD} must map market ids to decimal strings`
+    )
+  }
+  const allowlisted = new Set(marketIds)
+  for (const [key, value] of Object.entries(input)) {
+    const marketId = parseBytes32(key, ACCEPTED_LOSS_FACTOR_FIELD)
+    if (!allowlisted.has(marketId)) {
+      throw new ConfigValidationError(
+        ACCEPTED_LOSS_FACTOR_FIELD,
+        'unknown-market',
+        `${ACCEPTED_LOSS_FACTOR_FIELD} must only name markets in markets.allowlist`
+      )
+    }
+    if (accepted.has(marketId)) {
+      throw new ConfigValidationError(
+        ACCEPTED_LOSS_FACTOR_FIELD,
+        'duplicate',
+        `${ACCEPTED_LOSS_FACTOR_FIELD} must not repeat a market id`
+      )
+    }
+    if (typeof value !== 'string' || !/^(0|[1-9]\d*)$/.test(value)) {
+      throw new ConfigValidationError(
+        ACCEPTED_LOSS_FACTOR_FIELD,
+        'invalid-unsigned-integer',
+        `${ACCEPTED_LOSS_FACTOR_FIELD} values must be canonical unsigned decimal strings`
+      )
+    }
+    const lossFactor = BigInt(value)
+    if (lossFactor >= MAX_LOSS_FACTOR) {
+      throw new ConfigValidationError(
+        ACCEPTED_LOSS_FACTOR_FIELD,
+        'out-of-range',
+        `${ACCEPTED_LOSS_FACTOR_FIELD} values must be below type(uint128).max`
+      )
+    }
+    accepted.set(marketId, lossFactor)
+  }
+  return accepted
 }

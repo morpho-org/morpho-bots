@@ -1,6 +1,5 @@
 import type { Logger, LogLevel } from '@repo/bot-kit'
 
-import { setTimeout as sleep } from 'node:timers/promises'
 import { describe, expect, test, vi } from 'vitest'
 
 import { createBotObservability, installProcessObservers } from '../src/bot-observability.utils'
@@ -23,10 +22,9 @@ const errorName = (error: unknown) => (error instanceof RangeError ? 'RangeError
 const identity = { bot: 'test-bot', chainId: 8453, errorName }
 
 describe('createBotObservability', () => {
-  test('ships lifecycle, heartbeat, and record events without consuming CLI output', async () => {
+  test('ships lifecycle and record events without consuming CLI output', () => {
     const { logger, records } = captureLogger()
-    const heartbeat = { start: vi.fn(async () => undefined), stop: vi.fn(() => undefined) }
-    const observability = createBotObservability({ ...identity, logger, heartbeat })
+    const observability = createBotObservability({ ...identity, logger })
     const cycle = {
       event: 'quoter-bot.cycle',
       workflow: 'ladder',
@@ -37,12 +35,10 @@ describe('createBotObservability', () => {
       action: 'recenter'
     }
 
-    await observability.start()
+    observability.start()
     observability.record(cycle)
     observability.stop('completed')
 
-    expect(heartbeat.start).toHaveBeenCalledTimes(1)
-    expect(heartbeat.stop).toHaveBeenCalledTimes(1)
     expect(records).toEqual([
       { level: 'info', event: 'bot.started', fields: {} },
       {
@@ -88,14 +84,13 @@ describe('createBotObservability', () => {
     )
   })
 
-  test('records a fresh lifecycle start after a clean stop so process restarts remain queryable', async () => {
+  test('records a fresh lifecycle start after a clean stop so process restarts remain queryable', () => {
     const { logger, records } = captureLogger()
-    const heartbeat = { start: vi.fn(async () => undefined), stop: vi.fn(() => undefined) }
-    const observability = createBotObservability({ ...identity, logger, heartbeat })
+    const observability = createBotObservability({ ...identity, logger })
 
-    await observability.start()
+    observability.start()
     observability.stop('restart')
-    await observability.start()
+    observability.start()
     observability.stop('completed')
 
     expect(records.map(record => record.event)).toEqual([
@@ -104,8 +99,6 @@ describe('createBotObservability', () => {
       'bot.started',
       'bot.stopped'
     ])
-    expect(heartbeat.start).toHaveBeenCalledTimes(2)
-    expect(heartbeat.stop).toHaveBeenCalledTimes(2)
   })
 
   test('elevates nested failed, halted, and errorName outcomes to error level', () => {
@@ -147,34 +140,6 @@ describe('createBotObservability', () => {
     ])
     expect(JSON.stringify(records)).not.toContain('provider secret')
     expect(JSON.stringify(records)).not.toContain('hostile raw text')
-  })
-
-  test('sanitizes heartbeat transport failures before logging', async () => {
-    const { logger, records } = captureLogger()
-    const fetchSpy = vi
-      .spyOn(globalThis, 'fetch')
-      .mockRejectedValue(new Error('heartbeat secret URL and raw network response'))
-    try {
-      const observability = createBotObservability({
-        ...identity,
-        logger,
-        env: { BETTERSTACK_HEARTBEAT_URL: 'https://uptime.example/secret' }
-      })
-
-      await observability.start()
-      await sleep(0)
-      observability.stop('completed')
-
-      expect(records).toContainEqual({
-        level: 'warn',
-        event: 'heartbeat.failed',
-        fields: { errorName: 'HeartbeatRequestError' }
-      })
-      expect(JSON.stringify(records)).not.toContain('heartbeat secret')
-      expect(JSON.stringify(records)).not.toContain('raw network')
-    } finally {
-      fetchSpy.mockRestore()
-    }
   })
 })
 

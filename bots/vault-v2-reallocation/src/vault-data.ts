@@ -18,7 +18,7 @@ export type MarketState = {
 
 /**
  * One cap id's state: the vault's absolute cap, WAD-scaled relative cap (fraction of totalAssets),
- * and the on-chain `allocation(id)` the contract enforces both caps against.
+ * and the onchain `allocation(id)` the contract enforces both caps against.
  */
 export type CapState = {
   absolute: bigint
@@ -27,7 +27,7 @@ export type CapState = {
 }
 
 export type VaultV2MarketData = {
-  /** The Blue market id (what strategy-config overrides key on). */
+  /** The Blue Market id (what strategy-config overrides key on). */
   id: Hex
   /** The vault cap id (`keccak256(abi.encode("this/marketParams", adapter, params))`). */
   capId: Hex
@@ -44,7 +44,7 @@ export type VaultV2MarketData = {
    * {@link isAdaptiveCurveMarket}.
    */
   isAdaptiveCurve: boolean
-  /** A zero-collateral Blue market never borrows, so no rate strategy applies to it. */
+  /** A zero-collateral Blue Market never borrows, so no rate strategy applies to it. */
   isIdle: boolean
 }
 
@@ -57,7 +57,7 @@ export type VaultV2Data = {
    * curator/owner fallback.
    */
   isAllocator: boolean
-  /** The vault's total assets, accrued on-chain to the pinned block. */
+  /** The vault's total assets, accrued onchain to the pinned block. */
   totalAssets: bigint
   /** The vault's un-allocated asset balance (deallocate parks here; allocate draws from here). */
   idleAssets: bigint
@@ -95,7 +95,7 @@ const toCapState = (caps: {
 
 /**
  * Shapes one decoded lens row into {@link VaultV2Data}. Throws {@link InvalidVaultError} when the
- * row is not a factory-made VaultV2 with exactly one factory-verified Morpho Blue market adapter
+ * row is not a factory-made VaultV2 with exactly one factory-verified Morpho Blue Market adapter
  * (either adapter-contract generation) — the signing policy authorizes the vault as a tx target and
  * pins its adapter, so any other shape must fail loud.
  */
@@ -106,7 +106,7 @@ export const toVaultV2Data = (vault: Address, row: LensVaultOut, chainId: number
   const qualifying = row.adapters.filter(({ kind }) => kind !== KIND_UNKNOWN)
   if (row.adapters.length !== 1 || qualifying.length !== 1) {
     throw new InvalidVaultError(
-      `vault ${vault} must have exactly one Morpho Blue market adapter; found ` +
+      `vault ${vault} must have exactly one Morpho Blue Market adapter; found ` +
         `${row.adapters.length} adapter(s) of which ${qualifying.length} qualify`
     )
   }
@@ -158,7 +158,7 @@ export const toVaultV2Data = (vault: Address, row: LensVaultOut, chainId: number
  * Reads EVERY given VaultV2's full reallocation input — factory identity, the EOA's allocator bit, idle
  * balance, adapter set, and per-market Blue state, position, `rateAtTarget`, and all three cap
  * levels — in a single deployless `eth_call` pinned to `blockNumber`, so the snapshot is coherent
- * across markets and reproducible. The lens accrues each market on-chain inside that call, so there
+ * across markets and reproducible. The lens accrues each market onchain inside that call, so there
  * is no client-side accrual and no block-timestamp handling here.
  *
  * Throws {@link InvalidVaultError} on a non-VaultV2 address or an unsupported adapter shape (see

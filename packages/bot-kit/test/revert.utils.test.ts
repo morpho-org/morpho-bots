@@ -1,3 +1,5 @@
+import type { Hex } from 'viem'
+
 import { BaseError, encodeErrorResult, ExecutionRevertedError } from 'viem'
 import { describe, expect, it } from 'vitest'
 
@@ -23,7 +25,7 @@ const BORROWER = '0x1111111111111111111111111111111111111111'
 
 // A viem-style error chain whose cause carries an ABI-encoded revert payload, the shape
 // `revertReason` walks for.
-function revertError(data: `0x${string}`): BaseError {
+function revertError(data: Hex): BaseError {
   return new BaseError('execution reverted', {
     cause: Object.assign(new Error('execution reverted'), { data })
   })

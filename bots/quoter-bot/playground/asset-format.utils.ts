@@ -23,6 +23,7 @@ export const formatAssetAmount = (rawAmount: string, decimals: number): string =
   if (!/^-?\d+$/.test(rawAmount) || !Number.isInteger(decimals) || decimals < 0) return rawAmount
   const negative = rawAmount.startsWith('-')
   const value = BigInt(negative ? rawAmount.slice(1) : rawAmount)
+  // oxlint-disable-next-line repo/no-pow10-bigint
   const scale = 10n ** BigInt(decimals)
   const whole = (value + scale / 2n) / scale
   const sign = negative ? '-' : ''

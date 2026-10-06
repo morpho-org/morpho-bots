@@ -56,7 +56,7 @@ export type CollateralSlot = {
   /**
    * This slot's token IS the market's loan token, so seizing it needs no swap: no venue call and no
    * route risk, so no ROUTE cost for the incentive to cover. Gas is untouched by this and remains
-   * material — bounding it needs an absolute floor (BOTS-81), not {@link PlanOptions.headroomFloorBps}.
+   * material — bounding it needs an absolute floor, not {@link PlanOptions.headroomFloorBps}.
    */
   swapFree: boolean
 }
@@ -176,6 +176,8 @@ type SkippedHeadroom = { bps: bigint; lif: bigint; postMaturityMode: boolean }
 type PlanSkip = {
   reason: PlanSkipReason
   collateralIndex: number
+  /** The mode that was sized; absent for a skip that precedes mode selection. */
+  postMaturityMode?: boolean
   headroom?: SkippedHeadroom
 }
 
@@ -185,7 +187,7 @@ type PlanSkip = {
  */
 type PlanOptions = {
   /**
-   * Headroom (in bps) shaved off the on-chain repay cap when sizing a cap-binding seize-exact plan.
+   * Headroom (in bps) shaved off the onchain repay cap when sizing a cap-binding seize-exact plan.
    * A seize-exact plan pins `seizedAssets`, so the contract re-derives `repaidUnits` at exec-block
    * price/LIF; an oracle price increase between read and exec can lift that derived repaid above the
    * cap and revert (RCF check, normal mode; debt underflow, post-maturity). Sizing against
@@ -305,7 +307,7 @@ const wholeSlotPlan = (
   postMaturityMode: boolean
 ): LiquidationPlan => buildPlan({ slot, seizedAssets: slot.amt, lif, postMaturityMode })
 
-// Normal-mode sizing (gated on-chain by `debt > maxDebt`, before or after maturity alike): LIF is the
+// Normal-mode sizing (gated onchain by `debt > maxDebt`, before or after maturity alike): LIF is the
 // slot's full `maxLif` immediately. The contract subtracts `repaidUnits` from the post-writeoff debt
 // with no clamp, so an implied repay above it reverts (Panic 0x11). The repay is bounded by the RCF
 // cap (waived when the slot is rcf-exempt) AND never exceeds that debt. Seize the whole slot only when
@@ -348,7 +350,7 @@ const normalModePlan = (input: PlanInput, slot: CollateralSlot, marginBps: numbe
   return capBoundPlan({ slot, cap: repayCap, lif, marginBps, postMaturityMode: false })
 }
 
-// Post-maturity-mode sizing (gated on-chain by `blockTimestamp > maturity`): LIF ramps WAD → maxLif
+// Post-maturity-mode sizing (gated onchain by `blockTimestamp > maturity`): LIF ramps WAD → maxLif
 // over TIME_TO_MAX_LIF and the RCF cap does not apply, but the contract still subtracts `repaidUnits`
 // from the (post-writeoff) debt with no clamp, so over-repaying reverts (Panic 0x11 underflow).
 // Seizing the whole slot is correct only while its implied repaid units fit within the debt — the
@@ -401,7 +403,7 @@ export const planSurplus = (chosen: LiquidationPlan): bigint =>
  * cannot disagree.
  *
  * Being a rate, it is blind to position size — it cannot reject dust, whose surplus is real but
- * smaller than the gas to collect it. That needs an absolute floor (BOTS-81), not this.
+ * smaller than the gas to collect it. That needs an absolute floor, not this.
  */
 const headroomBps = (chosen: LiquidationPlan): bigint => ((chosen.lif - WAD) * BPS) / chosen.lif
 
@@ -481,7 +483,7 @@ export const capCandidates = <T>(
  * contract ceil-derives `repaidUnits` (:2369). Pinning the seize means the Executor holds exactly what
  * every venue (Uniswap or aggregator) sells, so there is no sell-side drift. Bad-debt realization is
  * the only `(0, 0)` plan. A cap-binding seize is sized against `cap·(1 - seizeCapMarginBps)` to keep
- * headroom for a one-block oracle move; any residual drift fails closed in `simulate()`, never on-chain.
+ * headroom for a one-block oracle move; any residual drift fails closed in `simulate()`, never onchain.
  *
  * Side-effect free. Callers must not treat a skip as a failure — see {@link PlanOutcome}.
  */
@@ -515,7 +517,7 @@ export const planWithReason = (input: PlanInput, options: PlanOptions = {}): Pla
  * before applying {@link MAX_PLAN_CANDIDATES_PER_POSITION} through {@link capCandidates}. The bound on
  * a position's candidate count is the protocol's `MAX_COLLATERALS_PER_BORROWER` times two modes.
  *
- * A matured-and-unhealthy slot contributes **two** entries, one per open on-chain gate — see
+ * A matured-and-unhealthy slot contributes **two** entries, one per open onchain gate — see
  * {@link openModePlans} for why the loser is kept rather than discarded.
  *
  * A single-element list is returned for a full write-off (`badDebt >= debt`), which seizes nothing and
@@ -541,7 +543,7 @@ export const planCandidates = (
 
   // Bad-debt realization: a pure write-off. No assets move and no swap funds it, so the headroom gate
   // must not see it — hence the early return rather than a `(0, 0)` plan falling through. It seizes
-  // from no slot, so `collateralIndex` is inert on-chain: `liquidate` skips its whole sizing block for
+  // from no slot, so `collateralIndex` is inert onchain: `liquidate` skips its whole sizing block for
   // a `(0, 0)` call (midnight-contracts.txt:1847) and only reads the index to pick a price it then
   // never uses. Slot 0 stands in when the position has no activated collateral left at all.
   if (input.badDebt >= input.debt) {
@@ -573,12 +575,17 @@ export const planCandidates = (
       skips.push({ reason: 'nothing_to_seize', collateralIndex: slot.index })
       continue
     }
-    for (const mode of openModePlans(input, slot, seizeCapMarginBps)) {
-      const outcome = gateOnHeadroom(mode, headroomFloorBps)
+    for (const { postMaturityMode, outcome: sizedMode } of openModePlans(
+      input,
+      slot,
+      seizeCapMarginBps
+    )) {
+      const outcome = gateOnHeadroom(sizedMode, headroomFloorBps)
       if (outcome.plan === null) {
         skips.push({
           reason: outcome.reason,
           collateralIndex: slot.index,
+          postMaturityMode,
           headroom: outcome.headroom
         })
       } else plans.push(outcome.plan)
@@ -592,7 +599,7 @@ export const planCandidates = (
 }
 
 /**
- * Every mode whose on-chain gate is open for this slot — the mode policy of `liquidate(...)`, see
+ * Every mode whose onchain gate is open for this slot — the mode policy of `liquidate(...)`, see
  * {@link planWithReason}'s JSDoc. One outcome pre-maturity or post-maturity-and-healthy; **two** when
  * the position is matured AND unhealthy, because the contract opens both gates and the caller picks.
  *
@@ -611,13 +618,17 @@ const openModePlans = (
   input: PlanInput,
   slot: CollateralSlot,
   seizeCapMarginBps: number
-): PlanOutcome[] => {
+): { postMaturityMode: boolean; outcome: PlanOutcome }[] => {
+  const normal = () => ({
+    postMaturityMode: false,
+    outcome: normalModePlan(input, slot, seizeCapMarginBps)
+  })
   const matured = input.blockTimestamp > input.maturity
-  if (!matured) return [normalModePlan(input, slot, seizeCapMarginBps)]
+  if (!matured) return [normal()]
 
-  const post = postMaturityPlan(input, slot, seizeCapMarginBps)
+  const post = { postMaturityMode: true, outcome: postMaturityPlan(input, slot, seizeCapMarginBps) }
   if (input.healthy) return [post]
-  return [normalModePlan(input, slot, seizeCapMarginBps), post]
+  return [normal(), post]
 }
 
 /**
@@ -635,7 +646,7 @@ const openModePlans = (
  *
  * This exempts the ROUTE-cost floor only. Break-even still binds — the quoting layer's
  * `minAcceptableAmountOut` and `assessProfitability` both hold a swap-free plan to covering the repay
- * `liquidate` will pull — and an absolute dust floor (BOTS-81) will apply to it like any other plan.
+ * `liquidate` will pull — and an absolute dust floor will apply to it like any other plan.
  */
 const gateOnHeadroom = (outcome: PlanOutcome, headroomFloorBps: number): PlanOutcome => {
   if (headroomFloorBps <= 0 || outcome.plan === null || outcome.plan.swapFree) return outcome

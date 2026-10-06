@@ -13,6 +13,8 @@ const BASE_FORK_BLOCK = 48_900_000n
 const DEFAULT_ANVIL_PORT = 8546
 const STARTUP_POLL_INTERVAL_MS = 100
 const STARTUP_TIMEOUT_MS = 10_000
+/** Anvil writes its fork cache (`~/.foundry/cache/rpc`) only when it shuts down gracefully. */
+const CACHE_FLUSH_GRACE_MS = 5_000
 
 const createAnvilClient = (rpcUrl: string) =>
   createTestClient({
@@ -68,13 +70,15 @@ const waitForAnvil = async (handle: AnvilHandle) => {
  *
  * @param handle - Running Anvil handle, or `undefined` when setup did not reach process creation.
  * @returns A promise that resolves after the process exits.
- * @remarks Sends `SIGKILL` so failed tests cannot leave an orphaned local node.
+ * @remarks Kills Anvil after {@link CACHE_FLUSH_GRACE_MS}, so failed tests cannot leave an orphan.
  */
 export const stopAnvil = async (handle: AnvilHandle | undefined) => {
   if (!handle) return
 
-  if (handle.process.exitCode === null) handle.process.kill('SIGKILL')
+  const fallback = setTimeout(() => handle.process.kill('SIGKILL'), CACHE_FLUSH_GRACE_MS)
+  if (handle.process.exitCode === null) handle.process.kill('SIGTERM')
   await handle.exited
+  clearTimeout(fallback)
 }
 
 /**

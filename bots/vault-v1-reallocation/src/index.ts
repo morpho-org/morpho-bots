@@ -96,7 +96,7 @@ async function main() {
             functionName: 'withdrawQueueLength'
           })
         ]),
-      // MetaMorpho's `onlyAllocatorRole` admits the allocator set plus the curator and the owner, so
+      // Vault V1's `onlyAllocatorRole` admits the allocator set plus the curator and the owner, so
       // a curator- or owner-keyed EOA must not be gated out.
       hasAllocatorRole: async vault => {
         const [allocator, owner, curator] = await Promise.all([

@@ -37,6 +37,7 @@ export class ConfigService {
    * @remarks This method performs no network access and does not retain `RESOLVER_PRIVATE_KEY` when
    * readonly mode is enabled.
    */
+  // oxlint-disable-next-line complexity
   static from(environment: Environment = process.env) {
     const chainId = Number(unsignedDecimal(environment, 'CHAIN_ID'))
     if (chainId !== base.id) {

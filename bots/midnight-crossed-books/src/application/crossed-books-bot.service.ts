@@ -60,7 +60,7 @@ export class CrossedBooksBotService {
    * @remarks Always simulates first, and submits at most one resolution per call. Logs
    * `match.not_profitable` / `match.computed` / `match.submitted`. Readonly mode performs no
    * submission; write mode hands the prepared resolution to the resolver, which submits it through
-   * the pending queue. `match.submitted` records acceptance by the resolver, not an on-chain
+   * the pending queue. `match.submitted` records acceptance by the resolver, not an onchain
    * broadcast guarantee — the pending queue may still decline the transaction.
    */
   async run() {

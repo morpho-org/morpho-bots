@@ -1,6 +1,6 @@
 # morpho-bots
 
-Off-chain Morpho bots — reallocators, liquidation monitors, market makers, and similar — and the
+Offchain Morpho bots — reallocators, liquidation monitors, market makers, and similar — and the
 shared packages they consume. Every bot is a long-running program that holds a key, signs
 transactions, and moves funds on mainnets with no human approving each action, so the code favors
 safe and explainable over clever or fast.
@@ -15,14 +15,14 @@ welcome.
 
 ## Bots
 
-| Bot                                                      | Description                                                | Docs                                              |
-| -------------------------------------------------------- | ---------------------------------------------------------- | ------------------------------------------------- |
-| [blue-liquidation](./bots/blue-liquidation/)             | Liquidates eligible Morpho Blue positions                  | [README](./bots/blue-liquidation/README.md)       |
-| [midnight-liquidation](./bots/midnight-liquidation/)     | Liquidates eligible Midnight positions                     | [README](./bots/midnight-liquidation/README.md)   |
-| [midnight-crossed-books](./bots/midnight-crossed-books/) | Resolves crossed Midnight order books                      | [README](./bots/midnight-crossed-books/README.md) |
-| [quoter-bot](./bots/quoter-bot/)                         | Midnight maker: setup checks, bootstrap, ladder quoting    | [README](./bots/quoter-bot/README.md)             |
-| [vault-v1-reallocation](./bots/vault-v1-reallocation/)   | Reallocates liquidity across MetaMorpho (Vault V1) markets | [README](./bots/vault-v1-reallocation/README.md)  |
-| [vault-v2-reallocation](./bots/vault-v2-reallocation/)   | Reallocates liquidity across Morpho Vault V2 markets       | [README](./bots/vault-v2-reallocation/README.md)  |
+| Bot                                                      | Description                                             | Docs                                              |
+| -------------------------------------------------------- | ------------------------------------------------------- | ------------------------------------------------- |
+| [blue-liquidation](./bots/blue-liquidation/)             | Liquidates eligible Morpho Blue positions               | [README](./bots/blue-liquidation/README.md)       |
+| [midnight-liquidation](./bots/midnight-liquidation/)     | Liquidates eligible Midnight positions                  | [README](./bots/midnight-liquidation/README.md)   |
+| [midnight-crossed-books](./bots/midnight-crossed-books/) | Resolves crossed Midnight offer books                   | [README](./bots/midnight-crossed-books/README.md) |
+| [quoter-bot](./bots/quoter-bot/)                         | Midnight maker: setup checks, bootstrap, ladder quoting | [README](./bots/quoter-bot/README.md)             |
+| [vault-v1-reallocation](./bots/vault-v1-reallocation/)   | Reallocates liquidity across Vault V1 Markets           | [README](./bots/vault-v1-reallocation/README.md)  |
+| [vault-v2-reallocation](./bots/vault-v2-reallocation/)   | Reallocates liquidity across Morpho Vault V2 Markets    | [README](./bots/vault-v2-reallocation/README.md)  |
 
 The quoter-bot CLI is also published to npm as
 [`@morpho-org/quoter`](https://www.npmjs.com/package/@morpho-org/quoter) and to Docker Hub as
@@ -46,8 +46,8 @@ repository's `quoter-bot-*` tags by the workflows under [`.github/workflows/`](.
 ## Getting started
 
 ```sh
-nvm use               # Node 24.14.1 (see .nvmrc)
-corepack enable pnpm  # pnpm 11.1.1, pinned by package.json#packageManager
+nvm use               # Node 24.18.1 (see .nvmrc)
+corepack enable pnpm  # pnpm 11.11.0, pinned by package.json#packageManager
 pnpm install
 pnpm build            # @repo/contracts ABIs, needed by the liquidation bots' tests
 ```

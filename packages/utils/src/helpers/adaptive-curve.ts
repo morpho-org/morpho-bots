@@ -11,7 +11,7 @@ export type StoredRateAtTarget = {
 }
 
 /**
- * Finishes the accrual a read-only lens cannot do on-chain: only Blue calling the IRM's
+ * Finishes the accrual a read-only lens cannot do onchain: only Blue calling the IRM's
  * state-changing `borrowRate` advances its stored `rateAtTarget`, so a lens that projects a market
  * read-only reports the stored value and this applies the adaptation Blue would have triggered.
  *

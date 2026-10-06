@@ -106,10 +106,25 @@ export type TrackedBroadcast = {
   kind: 'initial' | 'replacement'
 }
 
-/** Terminal chain outcome for a transaction tracked by {@link PendingQueue.submitTracked}. */
+/**
+ * Terminal chain outcome for a transaction tracked by {@link PendingQueue.submitTracked}.
+ * @remarks A confirmed `blockNumber` is the mined receipt's own block, not the head that observed it.
+ */
 export type TrackedSettlement =
-  | { kind: 'confirmed-success'; nonce: number; txHash: Hex; txHashes: readonly Hex[] }
-  | { kind: 'confirmed-revert'; nonce: number; txHash: Hex; txHashes: readonly Hex[] }
+  | {
+      kind: 'confirmed-success'
+      nonce: number
+      txHash: Hex
+      txHashes: readonly Hex[]
+      blockNumber: bigint
+    }
+  | {
+      kind: 'confirmed-revert'
+      nonce: number
+      txHash: Hex
+      txHashes: readonly Hex[]
+      blockNumber: bigint
+    }
   | { kind: 'dropped'; nonce: number; txHash: Hex; txHashes: readonly Hex[]; reason: string }
 
 /** The tracked equivalent of {@link SubmitOutcome}; attempted broadcasts expose identity and settlement. */
@@ -373,17 +388,22 @@ export function createPendingQueue({
   // mainnet does, so there a `tx.confirmed` may name a tx a short reorg orphans. The consequence
   // stays bounded: the position reappears in a later discovery pass and is re-liquidated — never a
   // queue entry stuck waiting on a vanished tx — but the re-plan can broadcast a second tx while the
-  // first is still pending, and whichever lands second reverts on-chain at the cost of its gas.
+  // first is still pending, and whichever lands second reverts onchain at the cost of its gas.
   const settleIfMined = async (entry: Pending, blockNumber: bigint): Promise<SettlementCheck> => {
     const scan = await scanReceipts(getReceipt, entry.txHashes)
     if (scan.kind === 'unknown') return { kind: 'unreadable', error: scan.error }
     if (scan.kind === 'none') return { kind: 'unmined' }
-    const txHashes = [...entry.txHashes]
+    const confirmed = {
+      nonce: entry.nonce,
+      txHash: scan.txHash,
+      txHashes: [...entry.txHashes],
+      blockNumber: scan.receipt.blockNumber
+    }
     settle(
       entry,
       scan.receipt.status === 'success'
-        ? { kind: 'confirmed-success', nonce: entry.nonce, txHash: scan.txHash, txHashes }
-        : { kind: 'confirmed-revert', nonce: entry.nonce, txHash: scan.txHash, txHashes },
+        ? { kind: 'confirmed-success', ...confirmed }
+        : { kind: 'confirmed-revert', ...confirmed },
       blockNumber
     )
     const fields = {
@@ -648,7 +668,7 @@ export function createPendingQueue({
     })
   }
 
-  // Drops tracked txs whose nonce is already consumed on-chain but that never produced a receipt for
+  // Drops tracked txs whose nonce is already consumed onchain but that never produced a receipt for
   // us — an external send, competing signer, or reorg claimed the nonce, so our tx can never mine.
   async function reconcile(blockNumber: bigint): Promise<void> {
     if (!getConsumedNonce || pending.size === 0) return

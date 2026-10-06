@@ -1,12 +1,13 @@
 import { enhanceVerboseArgv } from '@repo/observability'
 import { describe, expect, test, vi } from 'vitest'
 
+import { StartupCleanupFailedError } from '../../../src/application/quoter-bot/startup-cleanup-failed.error'
 import { ConfigFileError } from '../../../src/config/config-file.error'
 import {
   QUOTER_BOT_VERBOSE_COMMANDS,
   runQuoterBotEntrypoint
 } from '../../../src/infrastructure/cli/quoter-bot-entrypoint'
-import { SignerAccountError } from '../../../src/infrastructure/make/signer-account.error'
+import { SignerAccountError } from '../../../src/infrastructure/transaction/signer-account.error'
 
 describe('runQuoterBotEntrypoint observability', () => {
   test('ships only allowlisted monitoring records, not every named one', async () => {
@@ -81,6 +82,41 @@ describe('runQuoterBotEntrypoint observability', () => {
     expect(stderr).toEqual(['Error: Signer account keystore-decrypt failed'])
     expect(record.mock.calls).toEqual([
       [{ event: 'bot.failed', reason: 'signer-account', errorName: 'SignerAccountError' }]
+    ])
+    expect(unexpected).toHaveBeenCalledTimes(0)
+  })
+
+  test('ships a failed startup cleanup and prints its unresolved groups', async () => {
+    const stderr: string[] = []
+    const record = vi.fn((_value: unknown) => undefined)
+    const unexpected = vi.fn((_error: unknown, _origin: 'entrypoint') => undefined)
+    const groupId = `0x${'a1'.repeat(32)}` as const
+    const error = new StartupCleanupFailedError({
+      reason: 'startup-cleanup-failed',
+      errorName: 'SetupFailedError',
+      ladder: { status: 'failed', errorName: 'LadderHardHaltError', unresolvedGroupIds: [groupId] },
+      bootstrap: { status: 'succeeded', transactions: [] }
+    })
+
+    const exitCode = await runQuoterBotEntrypoint(
+      { run: async () => Promise.reject(error) },
+      ['start'],
+      { writeOut: () => undefined, writeError: value => stderr.push(value) },
+      {},
+      { record, unexpected }
+    )
+
+    expect(exitCode).toBe(1)
+    expect(stderr.join('')).toContain('Startup failed and owned offers may still be live')
+    expect(stderr.join('')).toContain(groupId)
+    expect(record.mock.calls).toEqual([
+      [
+        {
+          event: 'bot.failed',
+          reason: 'startup-cleanup-failed',
+          errorName: 'StartupCleanupFailedError'
+        }
+      ]
     ])
     expect(unexpected).toHaveBeenCalledTimes(0)
   })

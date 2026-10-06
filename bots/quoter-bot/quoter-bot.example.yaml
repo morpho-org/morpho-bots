@@ -41,6 +41,10 @@ markets:
   referenceLookbackSeconds: '259200'
   v0OfferGroupIds:
     - '0x8888888888888888888888888888888888888888888888888888888888888888'
+  # Accepted loss factor per market, as a decimal string. An omitted market accepts 0, so a market
+  # with any realized bad debt stays lend-halted until its current value is accepted here.
+  acceptedLossFactor:
+    '0x5555555555555555555555555555555555555555555555555555555555555555': '0'
 
 setup:
   nativeReserveWei: '10000000000000000'
@@ -74,7 +78,9 @@ bootstrap:
     premiumBps: -50
     maximumMarketExposure: '20000000000'
     maximumTotalExposure: '30000000000'
-    minimumRateBps: 200
+    # A ladder on the same market sells only at or below this minimum minus 10 BPS, so this must
+    # be at least that ladder's minimumRateBps plus 10.
+    minimumRateBps: 300
     maximumRateBps: 800
     autoRefill: false
   - marketId: '0x6666666666666666666666666666666666666666666666666666666666666666'
@@ -100,7 +106,7 @@ bootstrap:
 
 # C = reference + quotePremiumBps + resolved maturityPremium. Rung k (zero-based) is
 # C-spread/2-k*step on the lower side and C+spread/2+k*step on the higher side.
-# Runtime rungs saturate at the hard bounds instead of failing. Only closest rungs
+# Runtime omits rungs outside the hard bounds instead of failing. Only closest rungs
 # that each satisfy minimumOfferAssets are funded. Weight k is 10000+k*sizeSkewBps;
 # the outermost funded rung receives division remainder.
 ladder:
@@ -131,3 +137,12 @@ ladder:
     movementToleranceBps: '10'
     minimumRateBps: '200'
     maximumRateBps: '800'
+    # Optional lend-rate skew: every higher-side (buy) rung gains
+    # min(floor(stepBps * max(0, credit - neutralCredit) / unitsPerStep), maxSkewBps).
+    # Sells never move. Set unitsPerStep to one rung's face, about its assets times
+    # (1 + rate * years to maturity); omit the block to keep
+    # today's quotes exactly.
+    # inventorySkew:
+    #   unitsPerStep: '3333333333'
+    #   neutralCredit: '0'
+    #   maxSkewBps: '300'

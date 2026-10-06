@@ -1142,9 +1142,9 @@ try {
     const atomicNoEcho = JSON.stringify(beforeCanary) === JSON.stringify([...document.querySelectorAll('.exports textarea')].map(x => x.value)) && !document.querySelector('#import-status').textContent.includes(canary);
     const bootstrap = JSON.parse(document.querySelector('[aria-label="Bootstrap JSON output"]').value);
     const ladder = JSON.parse(document.querySelector('[aria-label="Ladder JSON output"]').value);
-    const secondId = '0x' + '6'.repeat(64);
-    bootstrap.push({ ...bootstrap[0], marketId: secondId });
-    ladder.push({ ...ladder[0], marketId: secondId, maturityPremium: { shape: 'linear', premiumPerYearBps: '120' } });
+    const secondBootstrapId = '0x' + '6'.repeat(64); const secondLadderId = '0x' + '8'.repeat(64);
+    bootstrap.push({ ...bootstrap[0], marketId: secondBootstrapId });
+    ladder.push({ ...ladder[0], marketId: secondLadderId, maturityPremium: { shape: 'linear', premiumPerYearBps: '120' } });
     set(JSON.stringify({ bootstrap, ladder })); apply.click(); await new Promise(r => setTimeout(r, 50));
     const valid = document.querySelector('#import-status').dataset.status === 'ok' && document.querySelectorAll('[data-preview=bootstrap]').length === 2 && document.querySelectorAll('[data-preview=ladder]').length === 2;
     document.querySelectorAll('[data-market-kind=ladder]')[1].querySelector('button').click();
@@ -1162,11 +1162,11 @@ try {
       premiums: JSON.parse(document.querySelector('[aria-label="Ladder JSON output"]').value).map(x => 'maturityPremium' in x ? x.maturityPremium.premiumPerYearBps : null)
     })`)
     assert.equal(state.focus, 'ladder-0-marketId')
-    assert.equal(state.reordered[0], `0x${'6'.repeat(64)}`)
+    assert.equal(state.reordered[0], `0x${'8'.repeat(64)}`)
     return state
   }, uiReadiness('import reorder completion'))
   assert.equal(importState.focus, 'ladder-0-marketId')
-  assert.equal(importState.reordered[0], `0x${'6'.repeat(64)}`)
+  assert.equal(importState.reordered[0], `0x${'8'.repeat(64)}`)
   // Reordering must carry a configured maturityPremium with its item and must not materialize the
   // optional object onto a premium-free item; a partial object makes the whole collection invalid.
   assert.deepEqual(importState.premiums, ['120', null])

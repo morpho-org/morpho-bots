@@ -298,7 +298,7 @@ await ensureContext()
 const betterstackHost = process.env.BETTERSTACK_INGESTING_HOST?.trim()
 const betterstackToken = process.env.BETTERSTACK_SOURCE_TOKEN?.trim()
 
-// --- bot-<chainId>: one reallocation runner per chain. The in-container var names stay RPC_URL /
+// bot-<chainId>: one reallocation runner per chain. The in-container var names stay RPC_URL /
 // REALLOCATOR_PRIVATE_KEY / VAULT_WHITELIST (the chainId suffix is only an operator-side convention).
 for (const chain of chainSecrets) {
   await ensureService(chain.service)

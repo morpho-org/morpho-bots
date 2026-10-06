@@ -66,8 +66,11 @@ export const createTelemetryRecordObserver = () => {
   const offersConsumed = meter.createCounter('quoter_bot.offers.consumed', {
     description: 'Observed taker fills of bot-owned offer groups.'
   })
-  const offersConsumedAssets = meter.createCounter('quoter_bot.offers.consumed_assets', {
-    description: 'Raw loan-asset amount filled from bot-owned offer groups.'
+  const offersConsumedUnits = meter.createCounter('quoter_bot.offers.consumed_units', {
+    description: 'Raw credit units filled from bot-owned offer groups.'
+  })
+  const lendHalted = meter.createGauge('quoter_bot.market.lend_halted', {
+    description: 'Whether a loss-factor mismatch halts lending on one market (0/1).'
   })
   const setupChecks = meter.createCounter('quoter_bot.setup.checks', {
     description: 'Failed and warning setup checks by check name.'
@@ -81,6 +84,10 @@ export const createTelemetryRecordObserver = () => {
   const targetRate = gauge(
     'quoter_bot.reference.target_rate_bps',
     'Derived target rate in basis points.'
+  )
+  const inventorySkew = gauge(
+    'quoter_bot.market.inventory_skew_bps',
+    'Inventory skew added to lend rates in basis points.'
   )
   const positionGauges = {
     cashBalanceAssets: gauge('quoter_bot.position.cash_balance_assets', 'Maker cash balance.'),
@@ -123,7 +130,7 @@ export const createTelemetryRecordObserver = () => {
   )
   const bookGauges = {
     rungs: gauge('quoter_bot.book.rungs', 'Published rungs on one book side.'),
-    totalAssets: gauge('quoter_bot.book.total_assets', 'Published assets on one book side.'),
+    totalUnits: gauge('quoter_bot.book.total_units', 'Published credit units on one book side.'),
     quoting: gauge('quoter_bot.book.quoting', 'Whether one book side is actively quoting (0/1).')
   }
   // Rates exist only while a side quotes, and a synchronous gauge keeps exporting its last value
@@ -171,6 +178,7 @@ export const createTelemetryRecordObserver = () => {
     return true
   }
 
+  // oxlint-disable-next-line complexity
   const observe = (record: MonitoringEvent | SubmittedTransactionRecord) => {
     if (record.event.endsWith('.transaction-submitted')) {
       const submitted = record as SubmittedTransactionRecord
@@ -198,6 +206,19 @@ export const createTelemetryRecordObserver = () => {
           reason: event.reason
         })
         cycles.add(1, attributes)
+        if (
+          event.marketId !== undefined &&
+          event.status !== 'failed' &&
+          event.status !== 'halted'
+        ) {
+          lendHalted.record(
+            event.action === 'lend-halted' || event.reason === 'loss-factor-mismatch' ? 1 : 0,
+            {
+              workflow: event.workflow,
+              marketId: event.marketId
+            }
+          )
+        }
         const durationMs = asNumber(event.durationMs)
         if (durationMs !== undefined) {
           cycleDuration.record(
@@ -214,14 +235,20 @@ export const createTelemetryRecordObserver = () => {
       case 'bot.failed':
         failures.add(1, definedAttributes({ workflow: event.workflow, reason: event.reason }))
         return
-      case 'guardrail.rate-clamped':
+      case 'guardrail.rate-omitted':
       case 'guardrail.cross-book-cleared':
       case 'guardrail.book-cleared':
       case 'guardrail.book-crossed':
       case 'guardrail.exposure-capped':
       case 'guardrail.rungs-truncated':
       case 'guardrail.spread-rejected':
+      case 'guardrail.publication-withheld':
+      case 'guardrail.side-withdrawn':
+      case 'guardrail.lend-halted':
       case 'guardrail.halted': {
+        if (event.event === 'guardrail.lend-halted') {
+          lendHalted.record(1, { workflow: event.workflow, marketId: event.marketId })
+        }
         const fields = event as Record<string, unknown> & { event: string }
         guardrails.add(
           1,
@@ -235,7 +262,8 @@ export const createTelemetryRecordObserver = () => {
             bound: fields.bound,
             cap: fields.cap,
             clearable: fields.clearable,
-            suppressed: fields.suppressed
+            suppressed: fields.suppressed,
+            direction: fields.direction
           })
         )
         return
@@ -246,6 +274,13 @@ export const createTelemetryRecordObserver = () => {
         if (rate !== undefined) referenceRate.record(rate, attributes)
         const target = asNumber(event.targetRateBps)
         if (target !== undefined) targetRate.record(target, attributes)
+        return
+      }
+      case 'inventory-skew.observed': {
+        const skew = asNumber(event.inventorySkewBps)
+        if (skew !== undefined) {
+          inventorySkew.record(skew, { workflow: event.workflow, marketId: event.marketId })
+        }
         return
       }
       case 'position.observed': {
@@ -268,8 +303,8 @@ export const createTelemetryRecordObserver = () => {
         const attributes = { marketId: event.marketId, side: event.side }
         bookGauges.rungs.record(event.rungs, attributes)
         bookGauges.quoting.record(event.state === 'quoting' ? 1 : 0, attributes)
-        const totalAssets = asNumber(event.totalAssets)
-        if (totalAssets !== undefined) bookGauges.totalAssets.record(totalAssets, attributes)
+        const totalUnits = asNumber(event.totalUnits)
+        if (totalUnits !== undefined) bookGauges.totalUnits.record(totalUnits, attributes)
         const key = `${event.marketId}|${event.side}`
         if (event.state === 'empty') {
           bookRates.delete(key)
@@ -288,8 +323,8 @@ export const createTelemetryRecordObserver = () => {
       case 'offer.consumed': {
         const attributes = { marketId: event.marketId, side: event.side }
         offersConsumed.add(1, attributes)
-        const consumed = asNumber(event.consumedDeltaAssets)
-        if (consumed !== undefined && consumed >= 0) offersConsumedAssets.add(consumed, attributes)
+        const consumed = asNumber(event.consumedDeltaUnits)
+        if (consumed !== undefined && consumed >= 0) offersConsumedUnits.add(consumed, attributes)
         return
       }
       case 'transaction.settled':

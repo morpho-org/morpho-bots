@@ -2,11 +2,14 @@ import type { Hex } from 'viem'
 
 import type {
   LadderBookSideCrossing,
-  LadderConfig,
   LadderDiagnostics,
   LadderMarketState,
-  LadderQuoteSet
-} from '../../domain/ladder/ladder'
+  LadderQuoteSet,
+  LadderWithdrawnSide,
+  ValidLadderConfig
+} from '../../domain/ladder'
+import type { LendHalt } from '../../domain/loss-factor'
+import type { PublicationWithheld } from '../../infrastructure/exposure/exposure-admission.utils'
 
 /** Ladder transaction identity shared by immediate submission and confirmed-result records. */
 export type LadderSubmittedTransaction = {
@@ -43,12 +46,12 @@ export type LadderGroupConsumption = {
   side: 'lower' | 'higher'
   /** Configured rate of the group's rung nearest the center, before tick alignment. */
   groupRateBps: bigint
-  /** Protocol consumption cap written onto the group. */
-  maxAssets: bigint
-  /** Monotonic consumed assets reported by the indexer. */
+  /** Protocol `maxUnits` written onto the group. */
+  maxUnits: bigint
+  /** Monotonic consumed credit units reported by the indexer. */
   consumed: bigint
-  /** Remaining capacity, floored at zero. */
-  remainingAssets: bigint
+  /** Remaining units, floored at zero. */
+  remainingUnits: bigint
 }
 
 /** One side's observed crossing, and whether the replacement cooldown held this cycle. */
@@ -71,6 +74,7 @@ export type LadderBookReconciliation = {
 export type LadderReadOnlyValidation = {
   reconciliation: LadderBookReconciliation
   bookClearedRungs?: { lower: number; higher: number }
+  withdrawnSides?: readonly LadderWithdrawnSide[]
 }
 
 /** Result returned by a live or read-only ladder make adapter. */
@@ -86,6 +90,10 @@ export type LadderMakeResult =
       logged?: true
       /** The in-queue crossing recheck, when a desired publication was assessed. */
       reconciliation?: LadderBookReconciliation
+      /** Why a prepared publication was released unpublished after the cancellations confirmed. */
+      publicationWithheld?: PublicationWithheld
+      /** Desired sides left unpublished; see {@link LadderWithdrawnSide}. */
+      withdrawnSides?: readonly LadderWithdrawnSide[]
     }
 
 /** Complete provider and active-quote projection shown for a verbose ladder check. */
@@ -105,16 +113,16 @@ export type LadderVerboseState =
       errorName: string
     }
   | {
-      /** Indicates that safety validation deliberately prevented a provider read. */
-      status: 'not-read'
-      /** Stable explanation for suppressing the read. */
-      reason: 'configuration-invalid'
+      /** Indicates that the market was not read further because its loss factor halted lending. */
+      status: 'lend-halted'
+      /** Observed and accepted loss factor, and the direction they differ in. */
+      lossFactor: LendHalt
     }
 
 /** Opt-in diagnostic context attached to one ladder market result. */
 export type LadderVerboseDetails = {
-  /** Complete validated or rejected market ladder configuration. */
-  config: LadderConfig
+  /** Complete validated market ladder configuration. */
+  config: ValidLadderConfig
   /** Fresh market capacities and active quote observed before the decision. */
   currentState: LadderVerboseState
   /** Fresh reference rate used to derive the effective ladder center, when available. */
@@ -128,7 +136,7 @@ export type LadderVerboseDetails = {
   /** Exact desired lower/higher quote set, when decision derivation succeeded. */
   ladderOffer?: LadderQuoteSet
   /** Stable reconciliation reason selected by the application workflow. */
-  decision?: 'publish' | 'recenter' | 'resize' | 'rest' | 'book-crossed' | 'matured'
+  decision?: 'publish' | 'recenter' | 'resize' | 'rest' | 'book-crossed' | 'matured' | 'lend-halted'
   /** Pre-decision per-side crossing, and whether its cooldown suppressed a replacement. */
   bookCrossing?: { lower: LadderBookSideCrossingReport; higher: LadderBookSideCrossingReport }
   /** The make adapter's in-queue crossing recheck, when it assessed one. */
@@ -137,10 +145,12 @@ export type LadderVerboseDetails = {
   submittedTransactions?: readonly LadderSubmittedTransaction[]
   /** Fresh provider and active-quote state read after the check or mutation completed. */
   stateAfterCheck: LadderVerboseState
-  /** Per-side clamp, clearance, and funding counts from generation, when a quote was derived. */
+  /** Per-side omission, clearance, and funding counts from generation, when a quote was derived. */
   diagnostics?: LadderDiagnostics
   /** Rungs per side the opposing book repriced, when this check prepared a publication. */
   bookClearedRungs?: { lower: number; higher: number }
+  /** Sides of `ladderOffer` left unpublished; see {@link LadderWithdrawnSide}. */
+  withdrawnSides?: readonly LadderWithdrawnSide[]
   /** Monotonic per-group consumption observed for this market, when the adapter reports it. */
   groupConsumption?: readonly LadderGroupConsumption[]
   /** Wall-clock duration of this market's check, including the post-check verbose re-read. */

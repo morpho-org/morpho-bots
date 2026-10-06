@@ -2,9 +2,9 @@ import type { Hex } from 'viem'
 
 import { bytesToHex, getAddress, hexToBytes, isAddress, isHex, size } from 'viem'
 
-import type { JsonRequest } from '../setup-state/http-json.utils'
+import type { JsonRequest } from '../provider/http-json.utils'
 
-import { requestJson } from '../setup-state/http-json.utils'
+import { requestJson } from '../provider/http-json.utils'
 import { LadderAdapterError } from './ladder-adapter.error'
 
 const MAX_ITEMS = 1_000

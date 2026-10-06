@@ -3,7 +3,7 @@
 // (morpho-org/midnight @ 336b924a — the version deployed on Base as 0xAdedD8ab…). The non-standard
 // EIP-712 domain (chainId + ratifier address only, no name/version) and the raw-root message mean we
 // hand-roll the digest rather than using viem `signTypedData`. The seeding script cross-checks this
-// against a real on-chain `take` (recompute the offer's digest, recover its maker) before sending
+// against a real onchain `take` (recompute the offer's digest, recover its maker) before sending
 // anything.
 
 import type { Address, Hex } from 'viem'
@@ -175,7 +175,7 @@ function hashNode(left: Hex, right: Hex) {
 
 /**
  * Mirrors `HashLib.isLeaf` (:787-797): walks the proof using `leafIndex` bits to order siblings
- * (NO sorting). Used to cross-check our `hashOffer` against a real on-chain offer before spending —
+ * (NO sorting). Used to cross-check our `hashOffer` against a real onchain offer before spending —
  * if our hash matches the contract's, `isLeaf(realRoot, hashOffer(realOffer), idx, proof)` is true.
  */
 export function isLeaf({

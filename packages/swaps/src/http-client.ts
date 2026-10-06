@@ -19,7 +19,7 @@ import { QuoteError } from './types'
  */
 export type HttpVenue = Venue | 'pendle'
 
-// Per-host auth: where each host's API key goes. Uniswap is on-chain (no key). Keys are injected
+// Per-host auth: where each host's API key goes. Uniswap is onchain (no key). Keys are injected
 // here, at the single point of use, and never logged (we log only the path, never the query/headers).
 const VENUE_AUTH: Record<HttpVenue, (key: string | undefined) => Record<string, string>> = {
   'uniswap-v3': () => ({}),

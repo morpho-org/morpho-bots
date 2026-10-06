@@ -1,4 +1,4 @@
-import type { LadderQuoteSet } from '../../domain/ladder/ladder'
+import type { LadderQuoteSet } from '../../domain/ladder'
 
 /**
  * Compares two desired ladder sets by every publication-relevant domain value.

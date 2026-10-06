@@ -45,7 +45,7 @@ export const PENDLE_MARKETS_STALE_MS = 6 * 60 * 60 * 1000
 
 /**
  * Default slippage for the PT → underlying hop, deliberately small: it both floors the hop's
- * on-chain min-out AND haircuts the amount the downstream venue sells, so it effectively tightens
+ * onchain min-out AND haircuts the amount the downstream venue sells, so it effectively tightens
  * the route-quality threshold by this much. Keep it well under `MAX_ROUTE_IMPACT_BPS` (default 500).
  */
 export const DEFAULT_PENDLE_SLIPPAGE_BPS = 50
@@ -71,7 +71,7 @@ export const ZEROX_ALLOWANCE_HOLDER: Address = getAddress(
 /**
  * 1inch AggregationRouterV6 per chain — the plain-ERC20-`approve` spender (and the swap `tx.to`;
  * `/approve/spender` returns this same address). Deployed at the canonical CREATE2 address on most
- * chains, but two diverge (both verified on-chain):
+ * chains, but two diverge (both verified onchain):
  *   - zkSync Era — a different address-derivation scheme; the canonical address has no bytecode.
  *   - Robinhood — the canonical address is a dead 1-tx deployment; the live router (82k+ `swap`
  *     calls) is a separate address. Robinhood is a `@repo/blue-liquidation` chain, so a `1inch`

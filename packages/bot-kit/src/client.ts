@@ -60,7 +60,7 @@ export function createDeploylessClient(options: {
 
 /**
  * Fatal startup liveness gate: throws unless `address` holds non-empty bytecode on this chain. This
- * proves the address is *something* on-chain (catching a typo or a not-yet-deployed address) — it
+ * proves the address is *something* onchain (catching a typo or a not-yet-deployed address) — it
  * is NOT an identity check: a 7702-delegated EOA or a proxy also returns non-empty code. Confirming
  * it is the expected contract is the operator's responsibility.
  */

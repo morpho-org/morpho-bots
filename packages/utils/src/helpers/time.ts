@@ -223,7 +223,7 @@ export function dateLabelForUnixTimestamp(timestamp: number): string {
 }
 
 /**
- * Formats a Unix timestamp as a local date and time, e.g. "Apr 30, 2026, 14:30".
+ * Formats a Unix timestamp as a local date and time, e.g. "APR 30, 2026, 14:30".
  * Use this when the exact moment matters; pair with `DateTimePopover` to show
  * the timezone breakdown on hover.
  */

@@ -1,23 +1,32 @@
 import type { BookOffer } from '@repo/offers'
 import type { Hex } from 'viem'
 
-import type { BootstrapOffer } from '../../domain/bootstrap/position-bootstrap'
+import { MathLib } from '@morpho-org/morpho-ts'
+
+import type { BootstrapOffer } from '../../domain/position-bootstrap'
 
 import { clampRateBps, CROSS_BOOK_CLEARANCE_BPS } from '../../domain/cross-book'
+import { isAprWadInRange } from '../../domain/tick-window'
 import { BootstrapAdapterError } from './bootstrap-adapter.error'
 
 /** Book projection of one live, pending, or prospective offer used for bootstrap crossing checks. */
 export type BootstrapCrossBookOffer = BookOffer & {
   /** Maximum market continuous fee accepted by a projected prospective offer. */
   continuousFeeCap?: bigint
-  /** Exact encoded annual rate, attached to exact-tick projections. */
-  effectiveRateBps?: bigint
+  /** Exact encoded WAD APR (`TickLib.tickToApr`), attached to exact-tick projections. */
+  effectiveRateWad?: bigint
   /** Market tick spacing, attached by projections that read fresh market state. */
   tickSpacing?: bigint
 }
 
 const negativeSpread = () => new BootstrapAdapterError('negative-spread')
 const evidenceMissing = () => new BootstrapAdapterError('cross-book-evidence-missing')
+const BPS_WAD = MathLib.WAD / 10_000n
+
+const encodedRateWad = (projection: BootstrapCrossBookOffer) => {
+  if (projection.effectiveRateWad === undefined) throw evidenceMissing()
+  return projection.effectiveRateWad
+}
 
 /**
  * Resolves a premium-adjusted bootstrap buy against the current maker book.
@@ -37,7 +46,7 @@ const evidenceMissing = () => new BootstrapAdapterError('cross-book-evidence-mis
  * final projection always describes the returned offer, so a transport caching its latest
  * projection for publication can never observe a reference projection at the crossing sell tick
  * last; because each projection may read a newer block timestamp, that final projection's encoded
- * rate is re-validated against the hard bounds before the offer is returned.
+ * APR is re-validated against the hard bounds at full precision before the offer is returned.
  */
 export const resolveBootstrapProspectiveOffer = async (parameters: {
   desiredOffer: BootstrapOffer
@@ -75,11 +84,10 @@ export const resolveBootstrapProspectiveOffer = async (parameters: {
     parameters.desiredOffer,
     highestRateSellTick
   )
-  if (reference.effectiveRateBps === undefined) throw evidenceMissing()
   let offer = {
     ...parameters.desiredOffer,
     rateBps: clampRateBps(
-      reference.effectiveRateBps + CROSS_BOOK_CLEARANCE_BPS,
+      encodedRateWad(reference) / BPS_WAD + CROSS_BOOK_CLEARANCE_BPS,
       parameters.minimumRateBps,
       parameters.maximumRateBps
     )
@@ -91,18 +99,11 @@ export const resolveBootstrapProspectiveOffer = async (parameters: {
     const clearedTick = highestRateSellTick - tickSpacing
     if (clearedTick < 0n) return undefined
     const cleared = await parameters.toProspectiveBookOffer(offer, clearedTick)
-    const exactRateBps = cleared.effectiveRateBps
-    if (exactRateBps === undefined) throw evidenceMissing()
-    if (exactRateBps < parameters.minimumRateBps || exactRateBps > parameters.maximumRateBps) {
-      return undefined
-    }
-    offer = { ...offer, rateBps: exactRateBps }
+    const clearedRateWad = encodedRateWad(cleared)
+    if (!isAprWadInRange(clearedRateWad, parameters)) return undefined
+    offer = { ...offer, rateBps: clearedRateWad / BPS_WAD }
     adjusted = await parameters.toProspectiveBookOffer(offer, clearedTick)
-    const finalRateBps = adjusted.effectiveRateBps
-    if (finalRateBps === undefined) throw evidenceMissing()
-    if (finalRateBps < parameters.minimumRateBps || finalRateBps > parameters.maximumRateBps) {
-      return undefined
-    }
+    if (!isAprWadInRange(encodedRateWad(adjusted), parameters)) return undefined
   }
   if (adjusted.tick >= highestRateSellTick) throw negativeSpread()
   return { offer, prospective: adjusted }

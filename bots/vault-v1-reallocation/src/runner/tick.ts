@@ -59,7 +59,7 @@ const processVault = async (
   vault: Address,
   vaultData: VaultData
 ): Promise<VaultCounters> => {
-  // The whole of MetaMorpho's `onlyAllocatorRole`, all three parts read in the snapshot's single call.
+  // The whole of Vault V1's `onlyAllocatorRole`, all three parts read in the snapshot's single call.
   const hasRole =
     vaultData.isAllocator ||
     isAddressEqual(vaultData.owner, deps.eoa) ||

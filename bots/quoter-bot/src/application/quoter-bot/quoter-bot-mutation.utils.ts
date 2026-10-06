@@ -11,7 +11,8 @@ type QuoterBotMakeServices = {
 /**
  * Wraps both strategy make ports in one failure-tolerant serial mutation queue.
  * @param services - Independently serialized bootstrap and ladder mutation ports.
- * @returns Equivalent ports whose reconcile, preview, hard-halt, and cleanup calls cannot overlap.
+ * @returns Equivalent ports whose reconcile, preview, buy-cancellation, hard-halt, and cleanup calls
+ * cannot overlap.
  * @remarks Ladder state reads remain concurrent. Serializing bootstrap projections with writes keeps
  * the prepared publication cache stable; serializing writes across strategies prevents separate
  * wallet nonce managers from submitting concurrently and ensures shutdown cleanups drain.
@@ -33,6 +34,7 @@ export const serializeQuoterBotWrites = (
     ladder: {
       readActive: marketId => services.ladder.readActive(marketId),
       reconcile: parameters => enqueue(() => services.ladder.reconcile(parameters)),
+      cancelBuys: parameters => enqueue(() => services.ladder.cancelBuys(parameters)),
       hardHalt: parameters => enqueue(() => services.ladder.hardHalt(parameters)),
       cleanup: parameters => enqueue(() => services.ladder.cleanup(parameters)),
       cleanupRemovedMarkets: services.ladder.cleanupRemovedMarkets

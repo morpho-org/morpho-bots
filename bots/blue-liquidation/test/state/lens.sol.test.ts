@@ -31,7 +31,7 @@ describe('BlueLiquidationLens', () => {
 
   it('round-trips a raw LensOut through the soltag-generated ABI in field order', () => {
     // Exercises the exact decode path the fetcher relies on: viem decoding the soltag ABI directly
-    // (field order, bool, uint64/128/256 → bigint). The `params` field is echoed off-chain by the
+    // (field order, bool, uint64/128/256 → bigint). The `params` field is echoed offchain by the
     // fetcher and is NOT part of the Solidity struct, so the raw round-trip omits it.
     const { abi } = BlueLiquidationLens.with(MORPHO)
     const sample = {

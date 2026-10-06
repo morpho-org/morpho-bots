@@ -187,6 +187,61 @@ describe('createQuoterTransactionExecutor', () => {
     expect(broadcasts).toBe(1)
   })
 
+  test('returns the mined hash with its receipt block rather than the observing head', async () => {
+    const { account } = accountWithSigningProbe()
+    const txHash = `0x${'ab'.repeat(32)}`
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (_url, init) => {
+      const body = rpcBody(init?.body)
+      const result =
+        body.method === 'eth_call'
+          ? '0x'
+          : body.method === 'eth_getBlockByNumber'
+            ? { baseFeePerGas: '0x1', number: '0x9' }
+            : body.method === 'eth_getTransactionCount'
+              ? '0x0'
+              : body.method === 'eth_estimateGas'
+                ? '0x5208'
+                : body.method === 'eth_chainId'
+                  ? '0x2105'
+                  : body.method === 'eth_sendRawTransaction'
+                    ? txHash
+                    : body.method === 'eth_blockNumber'
+                      ? '0x9'
+                      : body.method === 'eth_getTransactionReceipt'
+                        ? {
+                            transactionHash: txHash,
+                            blockNumber: '0x7',
+                            blockHash: `0x${'cd'.repeat(32)}`,
+                            status: '0x1',
+                            logs: [],
+                            type: '0x2',
+                            cumulativeGasUsed: '0x5208',
+                            gasUsed: '0x5208',
+                            effectiveGasPrice: '0x1',
+                            transactionIndex: '0x0',
+                            from: account.address,
+                            to: getChainAddress(8453, 'midnightMempool'),
+                            contractAddress: null,
+                            logsBloom: `0x${'00'.repeat(256)}`
+                          }
+                        : undefined
+      if (result === undefined) throw new Error(`unexpected RPC method ${body.method}`)
+      return Response.json({ jsonrpc: '2.0', id: body.id, result })
+    })
+
+    await expect(
+      createQuoterTransactionExecutor(config, account).execute({
+        transaction: {
+          to: getChainAddress(8453, 'midnightMempool'),
+          data: '0xdeadbeef',
+          value: 0n
+        },
+        operation: 'publish',
+        label: 'test:confirmed'
+      })
+    ).resolves.toEqual({ txHash: expect.stringMatching(/^0x[0-9a-f]{64}$/), blockNumber: 7n })
+  })
+
   test('retains a broadcast transaction when receipt reconciliation cannot read a block', async () => {
     const { account, signTransaction } = accountWithSigningProbe()
     let broadcasts = 0

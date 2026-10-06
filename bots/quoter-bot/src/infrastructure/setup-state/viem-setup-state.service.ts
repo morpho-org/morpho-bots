@@ -9,13 +9,15 @@ import { privateKeyToAccount } from 'viem/accounts'
 
 import type { BookSetup, SetupStateService } from '../../application/setup/setup-check.service'
 import type { SupportedChainId } from '../../config/supported-chains.utils'
-import type { JsonRequest } from './http-json.utils'
+import type { JsonRequest } from '../provider/http-json.utils'
+import type { offerFromApi } from './viem-setup-state.utils'
 
 import { ratifierRuntimeHash, supportedChain } from '../../config/supported-chains.utils'
-import { findBlockAtOrBefore } from '../historical-block.utils'
-import { ProviderPaginationError } from './provider-pagination.error'
-import { executeProviderRead } from './provider-read.utils'
-import { ProviderResponseError } from './provider-response.error'
+import { MAX_LOSS_FACTOR } from '../../domain/loss-factor'
+import { findBlockAtOrBefore } from '../provider/historical-block.utils'
+import { ProviderPaginationError } from '../provider/provider-pagination.error'
+import { executeProviderRead } from '../provider/provider-read.utils'
+import { ProviderResponseError } from '../provider/provider-response.error'
 import {
   addressValue,
   apiMarkets,
@@ -25,7 +27,6 @@ import {
   MAX_OFFER_ITEMS,
   MAX_OFFER_PAGES,
   objectValue,
-  offerFromApi,
   offersFromGroups,
   PAGE_SIZE,
   bigintValue,
@@ -359,7 +360,7 @@ export class ViemSetupStateService implements SetupStateService {
   }
 
   /**
-   * Cross-checks one Midnight market between the Morpho API and on-chain state.
+   * Cross-checks one Midnight Market between the Morpho API and onchain state.
    * @param id - Configured market ID.
    * @returns Validated listing, activity, loan asset, and tick spacing.
    * @throws `ProviderReadError` on a sanitized API/RPC rejection, or `ProviderResponseError` when
@@ -618,6 +619,7 @@ export class ViemSetupStateService implements SetupStateService {
    * read-only traversal. midnight-sdk 1.2.0 has no offer-group endpoint/entity, so only this bounded
    * transport and strict response projection remain local.
    */
+  // oxlint-disable-next-line complexity
   async inspectOffers(maker: Address) {
     const offers: ReturnType<typeof offerFromApi>[] = []
     const seenCursors = new Set<string>()
@@ -735,6 +737,32 @@ export class ViemSetupStateService implements SetupStateService {
         ladderSellGroupIds: new Set(ladderSellGroupIds)
       })
     }
+  }
+
+  /**
+   * Reads one market's current loss factor.
+   * @param id - Configured market ID.
+   * @returns The loss factor as a uint128.
+   * @throws `ProviderReadError` on a sanitized RPC rejection, or `ProviderResponseError` when the
+   * response is not a uint128.
+   */
+  async getLossFactor(id: Hex) {
+    const lossFactor = await executeProviderRead('rpc', 'market-loss-factor', () =>
+      this.chain.readContract({
+        address: this.options.midnight,
+        abi: midnightAbi,
+        functionName: 'lossFactor',
+        args: [id]
+      })
+    )
+    if (typeof lossFactor !== 'bigint' || lossFactor < 0n || lossFactor > MAX_LOSS_FACTOR) {
+      throw new ProviderResponseError(
+        'rpc',
+        'market-loss-factor',
+        'lossFactor response must be a uint128'
+      )
+    }
+    return lossFactor
   }
 
   /**

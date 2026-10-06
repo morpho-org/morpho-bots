@@ -1,3 +1,5 @@
+import type { Address } from 'viem'
+
 import {
   midnightAbi,
   Offer,
@@ -12,6 +14,7 @@ import { getChainAddress } from '@morpho-org/morpho-ts'
 import { mkdir, mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { setTimeout as sleep } from 'node:timers/promises'
 import { createWalletClient, http, publicActions } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
 import { base } from 'viem/chains'
@@ -22,6 +25,7 @@ import type { RouterApiHandle } from './router-api'
 
 import { PositionBootstrapService } from '../../src/application/bootstrap/position-bootstrap.service'
 import { LadderQuoterService } from '../../src/application/ladder/ladder-quoter.service'
+import { StartupCleanupFailedError } from '../../src/application/quoter-bot/startup-cleanup-failed.error'
 import { createApplication } from '../../src/bootstrap'
 import { ConfigService } from '../../src/config/config.service'
 import { createProductionBootstrapAdapters } from '../../src/infrastructure/bootstrap/production-bootstrap'
@@ -64,7 +68,7 @@ const bootstrapConfiguration = JSON.stringify([
     premiumBps: '0',
     maximumMarketExposure: '2000000000',
     maximumTotalExposure: '2000000000',
-    minimumRateBps: '1',
+    minimumRateBps: '11',
     maximumRateBps: '100000',
     autoRefill: true
   }
@@ -137,7 +141,7 @@ const delegatedEnvironment = (rpcUrl: string, apiBaseUrl: string) => ({
 
 const setMakerAuthorization = async (
   handle: AnvilHandle,
-  delegate: `0x${string}`,
+  delegate: Address,
   authorized: boolean
 ) => {
   const wallet = createWalletClient({
@@ -188,6 +192,9 @@ describe('quoter-bot workflow on a pinned Base fork', () => {
     anvil = await startAnvil(8549)
     await anvil.client.setNextBlockTimestamp({ timestamp: PINNED_FORK_TIMESTAMP })
     await anvil.client.mine({ blocks: 1 })
+    // Automine reuses a timestamp within one wall-clock second, so a republished offer could hash
+    // to a cancelled group; a real chain's timestamps strictly increase (Yellow Paper §4.3.4).
+    await anvil.client.setBlockTimestampInterval({ interval: 1 })
     api = await startRouterApi(anvil.rpcUrl)
     await setupMaker(anvil)
     await anvil.client.setBalance({ address: DELEGATED_SIGNER.address, value: 2n * NATIVE_RESERVE })
@@ -329,21 +336,25 @@ describe('quoter-bot workflow on a pinned Base fork', () => {
     const result = await createApplication(applicationEnvironment).run(['bootstrap'])
 
     expect(result).toMatchObject([{ status: 'applied', action: 'publish' }])
-    expect(await api.activeOffers()).toHaveLength(1)
+    const publishedOffers = await api.activeOffers()
+    expect(publishedOffers).toHaveLength(1)
+    const publishedOffer = OfferUtils.toStruct({ offer: publishedOffers[0]!.offer })
+    expect(publishedOffer.maxUnits).toBe(500_000_000n)
     const fill = await takeMakerLend(anvil, api, 250_000_000n)
     expect(fill.receipt.status).toBe('success')
-    expect(fill.makerPosition.credit).toBeGreaterThan(0n)
+    expect(fill.makerPosition.credit).toBeGreaterThan(250_000_000n)
 
     const partialResult = await createApplication(applicationEnvironment).run(['bootstrap'])
-    expect(partialResult).toMatchObject([{ status: 'applied', action: 'replace' }])
+    expect(partialResult).toEqual([{ marketId: MARKET_ID, status: 'observed', action: 'rest' }])
     const partialOffers = await api.activeOffers()
     expect(partialOffers).toHaveLength(1)
-    const remainingAssets = OfferUtils.toStruct({ offer: partialOffers[0]!.offer }).maxAssets
-    expect(remainingAssets).toBeGreaterThan(0n)
-    expect(remainingAssets).toBeLessThan(250_000_000n)
+    expect(OfferUtils.toStruct({ offer: partialOffers[0]!.offer }).group).toBe(publishedOffer.group)
+    const remainingUnits = publishedOffer.maxUnits - fill.makerPosition.credit
+    expect(remainingUnits).toBeGreaterThan(0n)
+    expect(remainingUnits).toBeLessThan(250_000_000n)
 
-    const completedFill = await takeMakerLend(anvil, api, remainingAssets)
-    expect(completedFill.makerPosition.credit).toBeGreaterThanOrEqual(500_000_000n)
+    const completedFill = await takeMakerLend(anvil, api, { units: remainingUnits })
+    expect(completedFill.makerPosition.credit).toBe(500_000_000n)
     const completeResult = await createApplication(applicationEnvironment).run(['bootstrap'])
     expect(completeResult).toEqual([
       { marketId: MARKET_ID, status: 'observed', action: 'target-reached' }
@@ -412,6 +423,109 @@ describe('quoter-bot workflow on a pinned Base fork', () => {
     await sellRuntime.shutdown(true)
     expect(await api.activeOffers()).toHaveLength(0)
   }, 180_000)
+
+  test('cancels owned buys behind a latched nonce before a writer exits', async () => {
+    expect(anvil).toBeDefined()
+    expect(api).toBeDefined()
+    if (!anvil || !api) return
+    const handle = anvil
+    const maker = ANVIL_DEFAULT_ACCOUNT.address
+    const wallet = createWalletClient({
+      account: ANVIL_DEFAULT_ACCOUNT,
+      chain: base,
+      transport: http(handle.rpcUrl)
+    })
+    const latchNonce = async () => {
+      await handle.client.setAutomine(false)
+      await wallet.sendTransaction({ to: maker, value: 0n })
+    }
+    const pendingCount = () =>
+      handle.client.getTransactionCount({ address: maker, blockTag: 'pending' })
+    const releaseMempool = async () => {
+      await handle.client.request({ method: 'anvil_dropAllTransactions' } as never)
+      await handle.client.setAutomine(true)
+    }
+    const ladderEnvironment = {
+      ...environment(handle.rpcUrl, api.baseUrl),
+      BOOTSTRAP_MARKETS: '[]'
+    }
+
+    const confirmed = await handle.client.snapshot()
+    try {
+      expect(await createApplication(ladderEnvironment).run(['ladder'])).toMatchObject([
+        { status: 'applied', action: 'publish' }
+      ])
+      expect(await api.activeOffers()).toHaveLength(3)
+      await latchNonce()
+      const queuedBehind = (await pendingCount()) + 1
+      const written: unknown[] = []
+      const run = createApplication(ladderEnvironment)
+        .run(['ladder'], { writeEvent: value => void written.push(value) })
+        .catch((error: unknown) => error)
+      const queueDeadline = performance.now() + 30_000
+      while ((await pendingCount()) < queuedBehind) {
+        if (performance.now() > queueDeadline)
+          throw new TypeError('Startup cleanup was never queued')
+        await sleep(100)
+      }
+      await handle.client.mine({ blocks: 1 })
+
+      expect(await run).toMatchObject({
+        name: 'QuoterTransactionError',
+        operation: 'unknown-pending-nonce'
+      })
+      expect(written).toContainEqual(
+        expect.objectContaining({
+          event: 'startup.owned-offers-cancelled',
+          ladder: {
+            status: 'succeeded',
+            transactions: [expect.objectContaining({ operation: 'cancel' })]
+          },
+          bootstrap: { status: 'succeeded', transactions: [] }
+        })
+      )
+      expect(await api.activeOffers()).toHaveLength(0)
+    } finally {
+      await releaseMempool()
+      await handle.client.revert({ id: confirmed })
+      await resetStateDirectory()
+    }
+
+    const stuck = await handle.client.snapshot()
+    try {
+      expect(await createApplication(ladderEnvironment).run(['ladder'])).toMatchObject([
+        { status: 'applied', action: 'publish' }
+      ])
+      await latchNonce()
+      // A receipt deadline needs a moving clock; the pinned wall clock never reaches it.
+      vi.useRealTimers()
+      const error = await createApplication({
+        ...ladderEnvironment,
+        TRANSACTION_RECEIPT_TIMEOUT_MS: '3000'
+      })
+        .run(['ladder'])
+        .catch((value: unknown) => value)
+
+      expect(error).toBeInstanceOf(StartupCleanupFailedError)
+      const report = (error as StartupCleanupFailedError).report
+      expect(report).toMatchObject({
+        errorName: 'QuoterTransactionError',
+        adapterOperation: 'unknown-pending-nonce',
+        ladder: { status: 'failed', errorName: 'LadderHardHaltError' },
+        bootstrap: { status: 'succeeded' }
+      })
+      expect(report.ladder).toHaveProperty('unresolvedGroupIds')
+      expect(
+        (report.ladder as { unresolvedGroupIds: readonly string[] }).unresolvedGroupIds.length
+      ).toBeGreaterThan(0)
+      expect(await api.activeOffers()).toHaveLength(3)
+    } finally {
+      vi.setSystemTime(new Date(Number(PINNED_WALL_TIMESTAMP) * 1_000))
+      await releaseMempool()
+      await handle.client.revert({ id: stuck })
+      await resetStateDirectory()
+    }
+  }, 240_000)
 
   test('uses a distinct delegated signer for offers, deauthorization, and cancellation', async () => {
     expect(anvil).toBeDefined()

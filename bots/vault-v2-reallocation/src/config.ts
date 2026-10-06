@@ -129,7 +129,7 @@ const isStrategyName = (value: string): value is StrategyName =>
 /**
  * Reads the full env table into a typed, validated {@link Config}. Throws {@link InvalidConfigError}
  * on any missing required var, malformed value, or unknown `CHAIN_ID` — the bot must fail loud at
- * startup rather than run half-configured. On-chain checks (that each whitelisted vault holds code
+ * startup rather than run half-configured. Onchain checks (that each whitelisted vault holds code
  * and is a factory-made VaultV2 with a supported adapter) are performed in `index.ts` once a
  * client exists.
  */

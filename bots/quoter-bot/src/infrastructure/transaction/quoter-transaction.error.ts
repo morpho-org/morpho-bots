@@ -1,4 +1,4 @@
-import type { OperatorAdapterOperation } from '../../application/operator-error-name.utils'
+import type { OperatorAdapterOperation } from '../../application/monitoring/operator-error-name.utils'
 
 /** Sanitized failure from the guarded quoter transaction lifecycle. */
 export class QuoterTransactionError extends Error {

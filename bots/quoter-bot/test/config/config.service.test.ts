@@ -78,7 +78,9 @@ describe('ConfigService', () => {
       loanAsset: environment.LOAN_ASSET_ADDRESS,
       ratifier: environment.RATIFIER_ADDRESS,
       marketIds: [marketId],
-      referenceMarketId
+      referenceMarketId,
+      requiredAllowance: 0n,
+      acceptedLossFactor: new Map()
     })
     expect(config.v0OfferGroupIds).toEqual([groupId])
     expect(config.requestTimeoutMs).toBe(10_000)

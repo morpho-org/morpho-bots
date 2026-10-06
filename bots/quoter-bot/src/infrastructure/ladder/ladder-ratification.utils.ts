@@ -46,10 +46,11 @@ export const configuredRatifierType = (
 /**
  * Prepares the Router-compatible ratifier payload and any prerequisite root-approval transaction.
  * @param parameters - Canonical tree, maker, selected ratifier kind, signer account, and wallet client.
- * @returns Payload items, mempool validation input, and a Setter approval transaction when required.
+ * @returns Payload items, plus a Setter approval transaction and its final mempool validation input.
  * @throws `LadderAdapterError` when Ecrecover signing fails; SDK tree validation errors pass through.
- * @remarks Setter preparation is pure: callers must submit and confirm `approval` before final
- * mempool validation and payload publication. Ecrecover keeps the existing local-signature flow.
+ * @remarks Performs no network I/O. Setter callers must confirm `approval` before final mempool
+ * validation and publication. An Ecrecover signature is a replayable authorization anyone can
+ * publish, so it carries no validation input: validate the unsigned tree before signing instead.
  */
 export const prepareLadderRatification = async (
   parameters: PrepareLadderRatificationParameters
@@ -78,11 +79,6 @@ export const prepareLadderRatification = async (
       account: parameters.account.address,
       signature
     }),
-    validation: {
-      type: 'ecrecover' as const,
-      account: parameters.account.address,
-      signature
-    },
     approval: undefined
   }
 }

@@ -3,7 +3,7 @@
 # packages (packages/*) resolve — docker-compose.yml sets `context: ../..` and the Railway deploy
 # runs `railway up` from the repo root. All data comes over RPC, so there is no indexer/database
 # sidecar to build. Node only: pnpm installs, esbuild bundles, node runs.
-FROM node:24.14.1-slim
+FROM node:24.18.1-slim
 ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
 
 # The container's environment holds a funded allocator EOA key, so nothing here may run as root.
@@ -17,6 +17,8 @@ USER node
 # Manifests first, so the install layer is cached. `corepack install` pre-fetches the pnpm version
 # pinned in package.json#packageManager.
 COPY --chown=node:node package.json pnpm-workspace.yaml pnpm-lock.yaml ./
+# `pnpm-workspace.yaml` declares patchedDependencies, so the install fails without these.
+COPY --chown=node:node patches ./patches
 RUN corepack install
 
 # All members' package.json are needed for pnpm to resolve the `workspace:*` links.

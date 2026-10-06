@@ -33,7 +33,7 @@ export const formatTokenBalance = (
   options?: FormatTokenBalanceOptions | number | null
 ) => {
   const opts: FormatTokenBalanceOptions =
-    typeof options === 'number' || options == null ? { digits: options ?? undefined } : options
+    typeof options === 'number' || !options ? { digits: options ?? undefined } : options
 
   const { digits = 2, min, format = 'short' } = opts
   const base = format === 'full' ? formatters.commas : formatters.short
@@ -44,7 +44,7 @@ export const formatTokenBalance = (
     .unit(symbol ?? '')
     .default('0')
 
-  if (min != null) {
+  if (min !== undefined) {
     f = f.min(min)
   } else if (format === 'short') {
     f = f.min(0.01)

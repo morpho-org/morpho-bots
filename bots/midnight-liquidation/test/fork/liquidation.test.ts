@@ -94,21 +94,21 @@ describe('fork: end-to-end liquidation against a real Base position', () => {
     const client = createDeploylessClient(cfg)
     await assertContractDeployed(client, executooor, 'EXECUTOOOR_ADDRESS')
 
-    // 1. Fresh lens read — the caller is the Executor (whose liquidator gate the lens checks).
+    // Fresh lens read — the caller is the Executor (whose liquidator gate the lens checks).
     const pairs = [{ id: position.id, borrower: position.borrower, caller: executooor }]
     const lensOut = await readMidnightLiquidationLens(client, MIDNIGHT, pairs)
     const out = lensOut.get(lensKey(position.id, position.borrower))
     expect(out).toBeDefined()
     if (!out) throw new Error('lens returned no entry')
 
-    // 2. Liquidatable in post-maturity mode (we warped past maturity).
+    // Liquidatable in post-maturity mode (we warped past maturity).
     expect(out.blockTimestamp > position.maturity).toBe(true)
     expect(isLiquidatable(out)).toBe(true)
 
-    // 3. Plan: this position is over-collateralized post-maturity (slot ~$6.5 vs ~$0.68 debt), so the
+    // Plan: this position is over-collateralized post-maturity (slot ~$6.5 vs ~$0.68 debt), so the
     //    cap binds. Seize-exact pins the largest seize whose contract-derived repaid stays within the
     //    debt (seizing the whole slot would over-repay and revert), and lets the contract ceil-derive
-    //    `repaidUnits`. The successful exec below is the on-chain proof that the derived repaid stayed
+    //    `repaidUnits`. The successful exec below is the onchain proof that the derived repaid stayed
     //    within the cap (no RCF / debt-underflow revert).
     const liquidationPlan = plan(planInputFromLens(out))
     expect(liquidationPlan).not.toBeNull()
@@ -117,7 +117,7 @@ describe('fork: end-to-end liquidation against a real Base position', () => {
     expect(liquidationPlan.seizedAssets).toBeGreaterThan(0n)
     expect(liquidationPlan.repaidUnits).toBe(0n)
 
-    // 4. Single-hop Uniswap-V3 swap (WETH → USDC via the operator pool) + the real exec calldata.
+    // Single-hop Uniswap-V3 swap (WETH → USDC via the operator pool) + the real exec calldata.
     const collateral = out.market.collateralParams[liquidationPlan.collateralIndex]
     if (!collateral) throw new Error('collateral param missing')
     const swap = quoteUniswapV3(
@@ -164,11 +164,11 @@ describe('fork: end-to-end liquidation against a real Base position', () => {
       recipient: LIQUIDATOR
     })
 
-    // 5. Simulate the exact broadcast calldata — must be ok before we send.
+    // Simulate the exact broadcast calldata — must be ok before we send.
     const sim = await simulateLiquidationExec(client, { executooor, eoa: LIQUIDATOR, data })
     expect(sim.status).toBe('ok')
 
-    // 6. Broadcast through the real signer path.
+    // Broadcast through the real signer path.
     const usdcBefore = await test.readContract({
       address: USDC,
       abi: erc20Abi,
@@ -187,7 +187,7 @@ describe('fork: end-to-end liquidation against a real Base position', () => {
     const receipt = await test.waitForTransactionReceipt({ hash: txHash })
     expect(receipt.status).toBe('success')
 
-    // 7. The EOA gained USDC (the liquidation profit) and the shared singleton ends fully drained —
+    // The EOA gained USDC (the liquidation profit) and the shared singleton ends fully drained —
     //    the full-drain / zero-residual invariant (the literal post-state check deferred here).
     const usdcAfter = await test.readContract({
       address: USDC,

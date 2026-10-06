@@ -43,6 +43,7 @@ import {
   exportLadderJson,
   exportLadderMarketsEnvValue,
   generateLadderGraphicModels,
+  nextMarketId,
   parseCollectionsImport,
   validateBootstrapCollection,
   validateLadderCollection,
@@ -50,7 +51,11 @@ import {
 } from './model'
 import { playgroundErrorMessage } from './playground-error.utils'
 import { PlaygroundInitializationError } from './playground-initialization.error'
-import { DEFAULT_REFERENCE_RATE_BPS, resolveReferenceRateBps } from './reference-rate.utils'
+import {
+  DEFAULT_REFERENCE_RATE_BPS,
+  resolveCreditHeldAssets,
+  resolveReferenceRateBps
+} from './reference-rate.utils'
 import { amountCell, rungColumnsFor } from './rung-rendering.utils'
 
 type CollectionKind = keyof PlaygroundState
@@ -76,13 +81,6 @@ const idsFor = (state: PlaygroundState) => ({
   bootstrap: state.bootstrap.map(() => newId('bootstrap')),
   ladder: state.ladder.map(() => newId('ladder'))
 })
-const nextMarketId = (items: readonly { marketId: string }[]) => {
-  const existing = new Set(items.map(item => item.marketId.toLowerCase()))
-  for (let value = 1n; ; value++) {
-    const candidate = `0x${value.toString(16).padStart(64, '0')}`
-    if (!existing.has(candidate)) return candidate
-  }
-}
 const initial = () => {
   try {
     return { state: decodePlaygroundFragment(window.location.hash), error: '' }
@@ -159,8 +157,9 @@ const BootstrapGraphic = ({
     target <= 0n
       ? 100
       : Math.max(1, Math.min(100, Number((BigInt(value) * 10_000n) / target) / 100))
-  const quoteText =
-    graphic.maximumQuotedRateBps === undefined
+  const quoteText = !graphic.offerPublished
+    ? `a ${graphic.quotedRateBps} BPS ask outside the range, so no offer`
+    : graphic.maximumQuotedRateBps === undefined
       ? `quote ${graphic.quotedRateBps} BPS`
       : `quote range ${graphic.quotedRateBps} to ${graphic.maximumQuotedRateBps} BPS across maturities`
   const description = `${title}, market ${graphic.marketId}. Configured range ${graphic.minimumRateBps} to ${graphic.maximumRateBps} BPS. Reference ${graphic.referenceRateBps} BPS produces ${quoteText}, offering ${format(graphic.offerSize)} against a ${format(graphic.creditTarget)} credit target completed at ${format(graphic.acceptedCredit)}. ${graphic.callouts.map(item => `${item.label}: ${item.value}.`).join(' ')} Explicitly no live offers or balances.`
@@ -180,9 +179,11 @@ const BootstrapGraphic = ({
             Reference {graphic.referenceRateBps} BPS
           </b>
           <i className="rung rung--quote" style={{ top: `${y(graphic.quotedRateBps)}%` }}>
-            <span className="rung-rate">● {graphic.quotedRateBps}</span>
+            <span className="rung-rate">
+              {graphic.offerPublished ? '●' : '○ no offer at'} {graphic.quotedRateBps}
+            </span>
             <span className="rung-depth">
-              <b style={{ width: `${depth(graphic.offerSize)}%` }} />
+              <b style={{ width: `${graphic.offerPublished ? depth(graphic.offerSize) : 0}%` }} />
             </span>
             <span className="rung-size">
               {amountCell(graphic.offerSize, format(graphic.offerSize))}
@@ -317,16 +318,24 @@ const DECIMALS_DETAIL =
 const REFERENCE_DETAIL =
   'Preview only. Drives every variable_rate_avg entry in both collections, as a process reads a single REFERENCE_MARKET_ID; a hardcoded entry ignores it and keeps quoting its own rate, exactly as the runtime does. Clearing it returns to the reference derived from each entry\u2019s bounds and premium. It never reaches the four outputs, the share URL or the fragment.'
 
+const CREDIT_HELD_DETAIL =
+  'Preview only. Raw face credit every ladder with an inventorySkew is priced at, so the plot shows how held inventory raises its buy rates. Empty means none held. It never reaches the four outputs, the share URL or the fragment.'
+
 const PreviewSettings = ({
   decimals,
   onDecimalsChange,
   referenceRate,
-  onReferenceRateChange
+  onReferenceRateChange,
+  creditHeld,
+  onCreditHeldChange
 }: {
   decimals: string
   onDecimalsChange: (value: string) => void
   referenceRate: string
   onReferenceRateChange: (value: string) => void
+  /** Rendered only while some ladder entry configures an inventory skew. */
+  creditHeld?: string
+  onCreditHeldChange: (value: string) => void
 }) => (
   <section className="settings-bar" aria-label="Preview settings">
     <label className="setting" htmlFor="loan-asset-decimals" title={DECIMALS_DETAIL}>
@@ -368,6 +377,27 @@ const PreviewSettings = ({
         Preview only · empty derives it<span className="sr-only"> — {REFERENCE_DETAIL}</span>
       </small>
     </label>
+    {creditHeld === undefined ? null : (
+      <label className="setting" htmlFor="credit-held-assets" title={CREDIT_HELD_DETAIL}>
+        <span>Credit held (raw face)</span>
+        <input
+          id="credit-held-assets"
+          inputMode="numeric"
+          type="number"
+          min={0}
+          step={1}
+          value={creditHeld}
+          placeholder="none"
+          aria-invalid={creditHeld !== '' && resolveCreditHeldAssets(creditHeld) === undefined}
+          aria-label="Face credit held for inventory-skewed ladders; empty means none"
+          aria-describedby="credit-held-note"
+          onChange={event => onCreditHeldChange(event.target.value)}
+        />
+        <small id="credit-held-note">
+          Preview only · skewed ladders<span className="sr-only"> — {CREDIT_HELD_DETAIL}</span>
+        </small>
+      </label>
+    )}
   </section>
 )
 
@@ -484,6 +514,8 @@ const Playground = () => {
   const format = useMemo(() => assetFormatter(decimals), [decimals])
   const [referenceRate, setReferenceRate] = useState(DEFAULT_REFERENCE_RATE_BPS)
   const referenceRateBps = useMemo(() => resolveReferenceRateBps(referenceRate), [referenceRate])
+  const [creditHeld, setCreditHeld] = useState('')
+  const creditHeldAssets = useMemo(() => resolveCreditHeldAssets(creditHeld), [creditHeld])
   const [unexpectedFailure, setUnexpectedFailure] = useState<{ error: unknown }>()
   const [activeExport, setActiveExport] = useState<ExportFormat>('bootstrap-json')
   const outputRefs = useRef<Record<ExportFormat, HTMLTextAreaElement | null>>({
@@ -552,7 +584,12 @@ const Playground = () => {
         }
         if (ladderValidation.valid) {
           try {
-            ladderGraphics = generateLadderGraphicModels(state.ladder, format, referenceRateBps)
+            ladderGraphics = generateLadderGraphicModels(
+              bootstrapValidation.valid ? state : state.ladder,
+              format,
+              referenceRateBps,
+              creditHeldAssets
+            )
           } catch (error) {
             ladderErrors = [playgroundErrorMessage(error)]
           }
@@ -560,8 +597,8 @@ const Playground = () => {
         const outputs: Record<ExportFormat, { value: string; invalid: boolean }> = {
           'bootstrap-json': exportResult(() => exportBootstrapJson(state.bootstrap)),
           'bootstrap-string': exportResult(() => exportBootstrapMarketsEnvValue(state.bootstrap)),
-          'ladder-json': exportResult(() => exportLadderJson(state.ladder)),
-          'ladder-string': exportResult(() => exportLadderMarketsEnvValue(state.ladder))
+          'ladder-json': exportResult(() => exportLadderJson(state)),
+          'ladder-string': exportResult(() => exportLadderMarketsEnvValue(state))
         }
         const shareUrl = exportResult(() => createPlaygroundShareUrl(state, window.location))
         const move = (kind: CollectionKind, from: number, to: number) => {
@@ -586,7 +623,7 @@ const Playground = () => {
           setTimeout(() => document.getElementById(`add-${kind}`)?.focus(), 0)
         }
         const add = (kind: CollectionKind) => {
-          const marketId = nextMarketId(state[kind])
+          const marketId = nextMarketId(state, kind)
           const item =
             kind === 'bootstrap' ? createDefaultBootstrap(marketId) : createDefaultLadder(marketId)
           form.pushFieldValue(kind, item as never)
@@ -806,6 +843,8 @@ const Playground = () => {
                 onDecimalsChange={setDecimals}
                 referenceRate={referenceRate}
                 onReferenceRateChange={setReferenceRate}
+                {...(state.ladder.some(item => item.inventorySkew) ? { creditHeld } : {})}
+                onCreditHeldChange={setCreditHeld}
               />
               <section className="monitor" aria-labelledby="monitor-title">
                 <div className="section-heading">

@@ -263,7 +263,7 @@ describe('createPendingQueue', () => {
     expect(events.find(e => e.event === 'tx.submit_failed')?.fields?.nonce).toBe(7)
   })
 
-  it('drops a stuck tx when its replacement reverts on-chain (no longer liquidatable)', async () => {
+  it('drops a stuck tx when its replacement reverts onchain (no longer liquidatable)', async () => {
     const { logger, events } = captureLogger()
     let calls = 0
     const send: SendTx = async request => {
@@ -548,7 +548,7 @@ describe('drop', () => {
 })
 
 describe('nonce-consumed reconciliation', () => {
-  it('drops a tracked tx whose nonce is consumed on-chain with no receipt for us', async () => {
+  it('drops a tracked tx whose nonce is consumed onchain with no receipt for us', async () => {
     const { logger, events } = captureLogger()
     // getConsumedNonce reports 8 (> our nonce 7) while getReceipt never returns one: an external
     // send / competing signer took the nonce, so our tx can never mine → drop as nonce_consumed.
@@ -1152,7 +1152,22 @@ describe('tracked submissions', () => {
       kind: 'confirmed-success',
       nonce: 7,
       txHash: hashOf(1),
-      txHashes: [hashOf(1)]
+      txHashes: [hashOf(1)],
+      blockNumber: 10n
+    })
+  })
+
+  it('settles with the receipt block rather than the head that observed it', async () => {
+    const { queue } = setup({
+      getReceipt: async () => ({ status: 'reverted', blockNumber: 10n })
+    })
+    const outcome = await queue.submitTracked(trackedArgs)
+    if (!outcome.sent) throw new Error('expected tracked send')
+
+    await queue.onBlock(14n)
+    await expect(outcome.settlement).resolves.toMatchObject({
+      kind: 'confirmed-revert',
+      blockNumber: 10n
     })
   })
 
@@ -1209,7 +1224,8 @@ describe('tracked submissions', () => {
       kind: 'confirmed-success',
       nonce: 7,
       txHash: hashOf(1),
-      txHashes: [hashOf(2), hashOf(1)]
+      txHashes: [hashOf(2), hashOf(1)],
+      blockNumber: 6n
     })
   })
 

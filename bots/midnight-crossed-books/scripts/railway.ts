@@ -1,3 +1,5 @@
+import type { Address } from 'viem'
+
 import { tryCatch } from '@repo/utils'
 import { getAddress, isAddress, isAddressEqual, isHex, zeroAddress } from 'viem'
 
@@ -17,7 +19,7 @@ type RailwayAccessToken = {
 }
 type RailwayVariableTargetIds = { environmentId: string; serviceId: string }
 type ProvisioningConfiguration =
-  | { readOnly: true; resolverPrivateKey: undefined; simulationCaller: `0x${string}` }
+  | { readOnly: true; resolverPrivateKey: undefined; simulationCaller: Address }
   | { readOnly: false; resolverPrivateKey: string; simulationCaller: undefined }
 type ModeVariableOperations = {
   deleteVariable: (name: string) => Promise<void>

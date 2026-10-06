@@ -43,7 +43,7 @@ describe('calculateLadderCapacities', () => {
         creditSaleCapacityAssets: 0n,
         targetMarketExposureAssets: 100n,
         maximumTotalExposureAssets: 200n,
-        reservations: [{ id: groupId, marketIds: [marketId], assets: 40n }]
+        reservations: [{ id: groupId, marketIds: [marketId], assets: 40n, cashAssets: 40n }]
       })
     ).toEqual({
       lowerRateCapacityAssets: 0n,
@@ -56,6 +56,23 @@ describe('calculateLadderCapacities', () => {
       reservedAssets: 40n,
       marketReservedAssets: 40n
     })
+  })
+
+  test('reserves cash by what a buy can pay and exposure by its face units', () => {
+    const capacities = calculateLadderCapacities({
+      marketId,
+      balance: 100n,
+      currentCredit: 0n,
+      otherMarketCredit: 0n,
+      creditSaleCapacityAssets: 0n,
+      targetMarketExposureAssets: 1_000n,
+      maximumTotalExposureAssets: 1_000n,
+      reservations: [{ id: groupId, marketIds: [marketId], assets: 100n, cashAssets: 90n }]
+    })
+
+    expect(capacities.higherRateCapacityAssets).toBe(10n)
+    expect(capacities.reservedAssets).toBe(100n)
+    expect(capacities.maximumTotalCapacityAssets).toBe(900n)
   })
 
   test('reports the wallet balance while spending only the lower allowance', () => {

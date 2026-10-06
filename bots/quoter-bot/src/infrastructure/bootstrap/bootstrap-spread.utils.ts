@@ -1,7 +1,4 @@
-import type { BookOffer } from '@repo/offers'
 import type { Hex } from 'viem'
-
-import { batchProspectiveBook, hasNegativeSpread } from '@repo/offers'
 
 import type { BootstrapActiveGroup } from './bootstrap-position.service'
 
@@ -22,20 +19,4 @@ export const bootstrapMarketGroupIds = (groups: readonly BootstrapActiveGroup[],
     throw new BootstrapAdapterError('shared-group-reconciliation')
   }
   return groupIds
-}
-
-/**
- * Rejects a prospective buy when it crosses any still-live sell in the complete maker book.
- * @param parameters - Market, replaced group IDs, current book, and exact prospective offer.
- * @returns Nothing after the resulting selected-market book is proven non-crossing.
- * @throws `BootstrapAdapterError` when the prospective book has a negative or zero spread.
- */
-export const assertBootstrapProspectiveSpread = (parameters: {
-  marketId: Hex
-  replacedGroupIds: ReadonlySet<Hex>
-  book: readonly BookOffer[]
-  prospective: BookOffer
-}) => {
-  const book = batchProspectiveBook({ ...parameters, prospective: [parameters.prospective] })
-  if (hasNegativeSpread(book)) throw new BootstrapAdapterError('negative-spread')
 }

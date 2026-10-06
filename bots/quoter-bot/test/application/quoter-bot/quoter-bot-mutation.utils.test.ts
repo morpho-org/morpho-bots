@@ -27,6 +27,10 @@ const createServices = (events: string[]) => {
     reconcile: vi.fn(async () => {
       events.push('ladder:reconcile')
     }),
+    cancelBuys: vi.fn(async () => {
+      events.push('ladder:cancel-buys')
+      return { submittedTransactions: [] }
+    }),
     hardHalt: vi.fn(async () => {
       events.push('ladder:halt')
     }),
@@ -110,7 +114,7 @@ describe('serializeQuoterBotWrites', () => {
     const serialized = serializeQuoterBotWrites(services)
 
     const failed = serialized.bootstrap.cleanup().catch(error => error)
-    const following = serialized.ladder.hardHalt({ reason: 'ladder-configuration-failed' })
+    const following = serialized.ladder.hardHalt({ reason: 'ladder-decision-failed' })
 
     expect(await failed).toBeInstanceOf(TypeError)
     await following
@@ -163,5 +167,31 @@ describe('serializeQuoterBotWrites', () => {
     releaseBootstrap?.()
     await Promise.all([mutation, cleanup])
     expect(events).toEqual(['bootstrap:start', 'ladder:cleanup-removed'])
+  })
+
+  test('serializes ladder buy cancellation with bootstrap mutations', async () => {
+    const events: string[] = []
+    let releaseReconcile: (() => void) | undefined
+    const services = createServices(events)
+    services.bootstrap.reconcile = vi.fn(
+      () =>
+        new Promise<void>(resolve => {
+          events.push('bootstrap:reconcile:start')
+          releaseReconcile = resolve
+        })
+    )
+    const serialized = serializeQuoterBotWrites(services)
+
+    const reconcile = serialized.bootstrap.reconcile({ marketId, reason: 'publish' })
+    const cancellation = serialized.ladder.cancelBuys({
+      marketId,
+      reason: 'loss-factor-mismatch'
+    })
+    await Promise.resolve()
+
+    expect(events).toEqual(['bootstrap:reconcile:start'])
+    releaseReconcile?.()
+    await Promise.all([reconcile, cancellation])
+    expect(events).toEqual(['bootstrap:reconcile:start', 'ladder:cancel-buys'])
   })
 })

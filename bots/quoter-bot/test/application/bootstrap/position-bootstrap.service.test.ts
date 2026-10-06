@@ -1,17 +1,21 @@
 import type { Hex } from 'viem'
 
-import { describe, expect, test, vi } from 'vitest'
+import { describe, expect, expectTypeOf, test, vi } from 'vitest'
 
 import type {
   BootstrapMakeService,
   BootstrapPositionService,
   BootstrapReferenceRateService
 } from '../../../src/application/bootstrap/position-bootstrap.service'
-import type { BootstrapConfig } from '../../../src/domain/bootstrap/position-bootstrap'
+import type { BootstrapConfig, ValidBootstrapConfig } from '../../../src/domain/position-bootstrap'
 
+import { BootstrapOwnershipCleanupError } from '../../../src/application/bootstrap/bootstrap-ownership-cleanup.error'
 import { PositionBootstrapService } from '../../../src/application/bootstrap/position-bootstrap.service'
-import { MARKET_FAILURE_BUDGET_CYCLES } from '../../../src/application/market-failure-budget.utils'
-import { BootstrapConfigurationError } from '../../../src/domain/bootstrap/bootstrap-configuration.error'
+import { bootstrapMonitoringEvents } from '../../../src/application/monitoring/bootstrap-monitoring.utils'
+import { createMonitoringProjection } from '../../../src/application/monitoring/monitoring-projection.utils'
+import { BootstrapConfigurationError } from '../../../src/domain/bootstrap-configuration.error'
+import { MARKET_FAILURE_BUDGET_CYCLES } from '../../../src/domain/market-failure-budget'
+import { validateBootstrapConfig } from '../../../src/domain/position-bootstrap'
 import { BootstrapAdapterError } from '../../../src/infrastructure/bootstrap/bootstrap-adapter.error'
 import { BootstrapMempoolValidationError } from '../../../src/infrastructure/bootstrap/bootstrap-mempool-validation.error'
 
@@ -44,6 +48,7 @@ const setup = ({
   const readPosition = vi.fn(async () => ({
     credit,
     debt: 0n,
+    lossFactor: { lossFactor: 0n, acceptedLossFactor: 0n, defaulted: true },
     cashBalance: 2_000n,
     marketExposure: 0n,
     totalExposure: 0n,
@@ -60,7 +65,12 @@ const setup = ({
   const positions: BootstrapPositionService = { readPosition }
   const rates: BootstrapReferenceRateService = { readRate }
   const make: BootstrapMakeService = { reconcile, hardHalt, cleanup }
-  const service = new PositionBootstrapService(positions, rates, make, configs)
+  const service = new PositionBootstrapService(
+    positions,
+    rates,
+    make,
+    configs.map(entry => validateBootstrapConfig(entry))
+  )
 
   return {
     service,
@@ -76,6 +86,12 @@ const setup = ({
 }
 
 describe('PositionBootstrapService', () => {
+  test('is constructed only from validated configs', () => {
+    expectTypeOf<ConstructorParameters<typeof PositionBootstrapService>[3]>().toEqualTypeOf<
+      readonly ValidBootstrapConfig[]
+    >()
+  })
+
   test('monitors sequential cycles and cleans owned groups after shutdown', async () => {
     const events: string[] = []
     const controller = new AbortController()
@@ -226,6 +242,56 @@ describe('PositionBootstrapService', () => {
     expect(cleanup).toHaveBeenCalledTimes(1)
   })
 
+  test.each([
+    { cleanupFails: false, reason: 'cycle-failed', cleanup: { status: 'applied' } },
+    {
+      cleanupFails: true,
+      reason: 'cleanup-failed',
+      cleanup: { status: 'failed', errorName: 'URIError' }
+    }
+  ])(
+    'retries a failed hard-halt cancellation once through cleanup (cleanup fails: $cleanupFails)',
+    async ({ cleanupFails, reason, cleanup }) => {
+      const calls: string[] = []
+      const { service, rates, make } = setup()
+      rates.readRate = vi.fn(async () => {
+        throw new TypeError('stale reference')
+      })
+      make.hardHalt = vi.fn(async () => {
+        calls.push('hardHalt')
+        throw new RangeError('cancellation reverted')
+      })
+      make.cleanup = vi.fn(async () => {
+        calls.push('cleanup')
+        if (cleanupFails) throw new URIError('cancellation reverted again')
+        return { submittedTransactions: [] }
+      })
+
+      const report = await service.runContinuously({
+        signal: new AbortController().signal,
+        intervalMs: 1
+      })
+
+      expect(calls).toEqual(['hardHalt', 'cleanup'])
+      expect(report).toEqual({
+        status: 'halted',
+        reason,
+        cycles: 1,
+        cleanup,
+        lastCycle: [
+          {
+            marketId,
+            status: 'halted',
+            stage: 'reference-read',
+            strategyInvalidated: false,
+            errorName: 'TypeError',
+            invalidationErrorName: 'RangeError'
+          }
+        ]
+      })
+    }
+  )
+
   test('reports a sanitized cleanup failure after a stop signal', async () => {
     const controller = new AbortController()
     const { service, make } = setup()
@@ -260,99 +326,6 @@ describe('PositionBootstrapService', () => {
 
     expect(error).toBeInstanceOf(BootstrapConfigurationError)
     expect(cleanup).not.toHaveBeenCalled()
-  })
-
-  test('preflights a positive premium before a target-reached position or reference read', async () => {
-    const { service, readPosition, readRate, reconcile, hardHalt } = setup({
-      configs: [{ ...config(), premiumBps: 1n }],
-      credit: 900n
-    })
-
-    expect(await service.runOnce()).toEqual([
-      {
-        marketId,
-        status: 'halted',
-        stage: 'configuration',
-        strategyInvalidated: true,
-        errorName: 'BootstrapConfigurationError'
-      }
-    ])
-    expect(hardHalt).toHaveBeenCalledWith({ reason: 'bootstrap-configuration-failed' })
-    expect(readPosition).not.toHaveBeenCalled()
-    expect(readRate).not.toHaveBeenCalled()
-    expect(reconcile).not.toHaveBeenCalled()
-  })
-
-  test('preflights a positive premium after auto-refill false completion', async () => {
-    const mutableConfig = config()
-    const { service, readPosition, readRate, reconcile, hardHalt } = setup({
-      configs: [mutableConfig],
-      credit: 900n
-    })
-    expect(await service.runOnce()).toEqual([
-      { marketId, status: 'observed', action: 'target-reached' }
-    ])
-    mutableConfig.premiumBps = 1n
-    readPosition.mockClear()
-
-    expect(await service.runOnce()).toEqual([
-      {
-        marketId,
-        status: 'halted',
-        stage: 'configuration',
-        strategyInvalidated: true,
-        errorName: 'BootstrapConfigurationError'
-      }
-    ])
-    expect(hardHalt).toHaveBeenCalledWith({ reason: 'bootstrap-configuration-failed' })
-    expect(readPosition).not.toHaveBeenCalled()
-    expect(readRate).not.toHaveBeenCalled()
-    expect(reconcile).not.toHaveBeenCalled()
-  })
-
-  test('preflights every market before an earlier valid market can publish', async () => {
-    const { service, readPosition, readRate, reconcile, hardHalt } = setup({
-      configs: [config(), { ...config(secondMarketId), offerSize: 0n }]
-    })
-
-    expect(await service.runOnce()).toEqual([
-      {
-        marketId: secondMarketId,
-        status: 'halted',
-        stage: 'configuration',
-        strategyInvalidated: true,
-        errorName: 'BootstrapConfigurationError'
-      }
-    ])
-    expect(hardHalt).toHaveBeenCalledWith({ reason: 'bootstrap-configuration-failed' })
-    expect(readPosition).not.toHaveBeenCalled()
-    expect(readRate).not.toHaveBeenCalled()
-    expect(reconcile).not.toHaveBeenCalled()
-  })
-
-  test('preserves configuration and cleanup failure evidence during preflight', async () => {
-    const { service, make, readPosition, readRate, reconcile } = setup({
-      configs: [{ ...config(), maximumTotalExposure: 0n }]
-    })
-    const hardHalt = vi.fn(async () => {
-      throw new RangeError('cleanup reverted')
-    })
-    make.hardHalt = hardHalt
-
-    expect(await service.runOnce()).toEqual([
-      {
-        marketId,
-        status: 'halted',
-        stage: 'configuration',
-        strategyInvalidated: false,
-        errorName: 'BootstrapConfigurationError',
-        invalidationErrorName: 'RangeError'
-      }
-    ])
-    expect(hardHalt).toHaveBeenCalledWith({ reason: 'bootstrap-configuration-failed' })
-    expect(readPosition).not.toHaveBeenCalled()
-    expect(readRate).not.toHaveBeenCalled()
-    expect(reconcile).not.toHaveBeenCalled()
   })
 
   test('publishes the maturity-premium-adjusted rate and reports it in verbose diagnostics', async () => {
@@ -439,6 +412,7 @@ describe('PositionBootstrapService', () => {
       return {
         credit: read === 1 ? 0n : 100n,
         debt: 25n,
+        lossFactor: { lossFactor: 0n, acceptedLossFactor: 0n, defaulted: true },
         cashBalance: read === 1 ? 2_000n : 1_500n,
         marketExposure: read === 1 ? 0n : 500n,
         totalExposure: read === 1 ? 0n : 500n,
@@ -486,6 +460,7 @@ describe('PositionBootstrapService', () => {
             position: {
               credit: 0n,
               debt: 25n,
+              lossFactor: { lossFactor: 0n, acceptedLossFactor: 0n, defaulted: true },
               cashBalance: 2_000n,
               marketExposure: 0n,
               totalExposure: 0n,
@@ -496,6 +471,7 @@ describe('PositionBootstrapService', () => {
           effectiveState: {
             credit: 0n,
             debt: 25n,
+            lossFactor: { lossFactor: 0n, acceptedLossFactor: 0n, defaulted: true },
             cashBalance: 2_000n,
             marketExposure: 0n,
             totalExposure: 0n,
@@ -525,7 +501,6 @@ describe('PositionBootstrapService', () => {
           },
           diagnostics: {
             requestedRateBps: 450n,
-            clampedRateBps: 450n,
             requestedAssets: 500n,
             cappedAssets: 500n,
             cap: 'offer-size'
@@ -537,6 +512,7 @@ describe('PositionBootstrapService', () => {
             position: {
               credit: 100n,
               debt: 25n,
+              lossFactor: { lossFactor: 0n, acceptedLossFactor: 0n, defaulted: true },
               cashBalance: 1_500n,
               marketExposure: 500n,
               totalExposure: 500n,
@@ -609,6 +585,7 @@ describe('PositionBootstrapService', () => {
       return {
         credit: 0n,
         debt: 0n,
+        lossFactor: { lossFactor: 0n, acceptedLossFactor: 0n, defaulted: true },
         cashBalance: 2_000n,
         marketExposure: 0n,
         totalExposure: 0n,
@@ -811,6 +788,7 @@ describe('PositionBootstrapService', () => {
     positions.readPosition = vi.fn(async id => ({
       credit: 0n,
       debt: 0n,
+      lossFactor: { lossFactor: 0n, acceptedLossFactor: 0n, defaulted: true },
       cashBalance: id === marketId ? 1_000n : 500n,
       marketExposure: 0n,
       totalExposure: id === marketId ? 0n : 500n,
@@ -853,6 +831,7 @@ describe('PositionBootstrapService', () => {
     positions.readPosition = vi.fn(async id => ({
       credit: id === marketId ? 900n : 0n,
       debt: 0n,
+      lossFactor: { lossFactor: 0n, acceptedLossFactor: 0n, defaulted: true },
       cashBalance: id === marketId ? 1_000n : 500n,
       marketExposure: 0n,
       totalExposure: id === marketId ? 0n : 500n,
@@ -891,6 +870,7 @@ describe('PositionBootstrapService', () => {
       return {
         credit: cycle === 1 ? 900n : 500n,
         debt: 0n,
+        lossFactor: { lossFactor: 0n, acceptedLossFactor: 0n, defaulted: true },
         cashBalance: 2_000n,
         marketExposure: 0n,
         totalExposure: 0n,
@@ -949,6 +929,7 @@ describe('PositionBootstrapService', () => {
           return {
             credit: 900n,
             debt: 0n,
+            lossFactor: { lossFactor: 0n, acceptedLossFactor: 0n, defaulted: true },
             cashBalance: 2_000n,
             marketExposure: 0n,
             totalExposure: 0n,
@@ -958,6 +939,7 @@ describe('PositionBootstrapService', () => {
         return {
           credit: id === marketId ? position.credit : 0n,
           debt: 0n,
+          lossFactor: { lossFactor: 0n, acceptedLossFactor: 0n, defaulted: true },
           cashBalance: id === marketId ? position.cashBalance : 2_000n,
           marketExposure: 0n,
           totalExposure: 0n,
@@ -1009,6 +991,7 @@ describe('PositionBootstrapService', () => {
     positions.readPosition = vi.fn(async id => ({
       credit: id === marketId ? 900n : 0n,
       debt: 0n,
+      lossFactor: { lossFactor: 0n, acceptedLossFactor: 0n, defaulted: true },
       cashBalance: 2_000n,
       marketExposure: 0n,
       totalExposure: 0n,
@@ -1064,6 +1047,7 @@ describe('PositionBootstrapService', () => {
     positions.readPosition = vi.fn(async id => ({
       credit: id === marketId ? 900n : 0n,
       debt: 0n,
+      lossFactor: { lossFactor: 0n, acceptedLossFactor: 0n, defaulted: true },
       cashBalance: 2_000n,
       marketExposure: 0n,
       totalExposure: 0n,
@@ -1095,6 +1079,7 @@ describe('PositionBootstrapService', () => {
       return {
         credit: 0n,
         debt: 0n,
+        lossFactor: { lossFactor: 0n, acceptedLossFactor: 0n, defaulted: true },
         cashBalance: 2_000n,
         marketExposure: 0n,
         totalExposure: 0n,
@@ -1162,6 +1147,7 @@ describe('PositionBootstrapService', () => {
       return {
         credit: 0n,
         debt: 0n,
+        lossFactor: { lossFactor: 0n, acceptedLossFactor: 0n, defaulted: true },
         cashBalance: 2_000n,
         marketExposure: 0n,
         totalExposure: 0n,
@@ -1233,12 +1219,13 @@ describe('PositionBootstrapService', () => {
   })
 
   test.each([100n, 900n])(
-    'keeps an out-of-bounds rate observational with zero capacity (%s BPS)',
+    'observes an out-of-bounds rate without publishing, even at zero capacity (%s BPS)',
     async rateBps => {
       const { service, positions, rates, reconcile, hardHalt } = setup()
       positions.readPosition = vi.fn(async () => ({
         credit: 0n,
         debt: 0n,
+        lossFactor: { lossFactor: 0n, acceptedLossFactor: 0n, defaulted: true },
         cashBalance: 0n,
         marketExposure: 0n,
         totalExposure: 0n,
@@ -1254,7 +1241,7 @@ describe('PositionBootstrapService', () => {
         {
           marketId,
           status: 'observed',
-          action: 'no-capacity'
+          action: 'rate-out-of-range'
         }
       ])
       expect(hardHalt).not.toHaveBeenCalled()
@@ -1330,11 +1317,12 @@ describe('PositionBootstrapService', () => {
     ])
   })
 
-  test('replaces an active offer at the clamped minimum when the reference collapses', async () => {
+  test('invalidates an active offer rather than clamping it when the reference collapses', async () => {
     const { service, positions, rates, reconcile, hardHalt } = setup()
     positions.readPosition = vi.fn(async () => ({
       credit: 0n,
       debt: 0n,
+      lossFactor: { lossFactor: 0n, acceptedLossFactor: 0n, defaulted: true },
       cashBalance: 2_000n,
       marketExposure: 0n,
       totalExposure: 0n,
@@ -1355,92 +1343,17 @@ describe('PositionBootstrapService', () => {
       {
         marketId,
         status: 'applied',
-        action: 'replace'
+        action: 'invalidate'
       }
     ])
     expect(hardHalt).not.toHaveBeenCalled()
     expect(reconcile).toHaveBeenCalledWith(
       expect.objectContaining({
         marketId,
-        desiredOffer: expect.objectContaining({ rateBps: 200n }),
-        reason: 'replace'
+        desiredOffer: undefined,
+        reason: 'rate-out-of-range'
       })
     )
-  })
-
-  test('preflights a negative acceptance threshold before reading a live offer', async () => {
-    const { service, positions, readRate, reconcile, hardHalt } = setup({
-      configs: [{ ...config(), acceptanceAssets: -1n }, config(secondMarketId)]
-    })
-    const readPosition = vi.fn(async (id: Hex) => ({
-      credit: 0n,
-      debt: 0n,
-      cashBalance: 2_000n,
-      marketExposure: 0n,
-      totalExposure: 0n,
-      activeOffer: {
-        marketId: id,
-        assets: 500n,
-        rateBps: 450n,
-        referenceObservationId: 'static:500'
-      }
-    }))
-    positions.readPosition = readPosition
-
-    expect(await service.runOnce()).toEqual([
-      {
-        marketId,
-        status: 'halted',
-        stage: 'configuration',
-        strategyInvalidated: true,
-        errorName: 'BootstrapConfigurationError'
-      }
-    ])
-    expect(hardHalt).toHaveBeenCalledTimes(1)
-    expect(hardHalt).toHaveBeenCalledWith({ reason: 'bootstrap-configuration-failed' })
-    expect(readPosition).not.toHaveBeenCalled()
-    expect(readRate).not.toHaveBeenCalled()
-    expect(reconcile).not.toHaveBeenCalled()
-  })
-
-  test('preserves cleanup evidence when an excessive acceptance threshold fails preflight', async () => {
-    const { service, positions, make, readRate, reconcile } = setup({
-      configs: [{ ...config(), acceptanceAssets: 1_001n }, config(secondMarketId)]
-    })
-    const readPosition = vi.fn(async (id: Hex) => ({
-      credit: 0n,
-      debt: 0n,
-      cashBalance: 2_000n,
-      marketExposure: 0n,
-      totalExposure: 0n,
-      activeOffer: {
-        marketId: id,
-        assets: 500n,
-        rateBps: 450n,
-        referenceObservationId: 'static:500'
-      }
-    }))
-    positions.readPosition = readPosition
-    const hardHalt = vi.fn(async () => {
-      throw new RangeError('cleanup reverted')
-    })
-    make.hardHalt = hardHalt
-
-    expect(await service.runOnce()).toEqual([
-      {
-        marketId,
-        status: 'halted',
-        stage: 'configuration',
-        strategyInvalidated: false,
-        errorName: 'BootstrapConfigurationError',
-        invalidationErrorName: 'RangeError'
-      }
-    ])
-    expect(hardHalt).toHaveBeenCalledTimes(1)
-    expect(hardHalt).toHaveBeenCalledWith({ reason: 'bootstrap-configuration-failed' })
-    expect(readPosition).not.toHaveBeenCalled()
-    expect(readRate).not.toHaveBeenCalled()
-    expect(reconcile).not.toHaveBeenCalled()
   })
 
   test('completes before a failed reference read and stays stopped with auto-refill disabled', async () => {
@@ -1451,6 +1364,7 @@ describe('PositionBootstrapService', () => {
       return {
         credit: cycle === 1 ? 900n : 500n,
         debt: 0n,
+        lossFactor: { lossFactor: 0n, acceptedLossFactor: 0n, defaulted: true },
         cashBalance: 2_000n,
         marketExposure: 0n,
         totalExposure: 0n,
@@ -1531,6 +1445,365 @@ describe('PositionBootstrapService', () => {
     ])
   })
 
+  describe('a buy capped below the Router minimum', () => {
+    const belowMinimum = () =>
+      new BootstrapMempoolValidationError([
+        { rule: 'min_offer_assets_usd', minimumAssets: 100_000_000n }
+      ])
+    const drained = (
+      service: ReturnType<typeof setup>,
+      activeOffer?: {
+        marketId: Hex
+        assets: bigint
+        rateBps: bigint
+        referenceObservationId: string
+      }
+    ) => {
+      service.positions.readPosition = vi.fn(async () => ({
+        credit: 0n,
+        debt: 0n,
+        lossFactor: { lossFactor: 0n, acceptedLossFactor: 0n, defaulted: true },
+        cashBalance: 3n,
+        marketExposure: activeOffer?.assets ?? 0n,
+        totalExposure: activeOffer?.assets ?? 0n,
+        activeOffer
+      }))
+    }
+
+    test('keeps monitoring with the target unfinished once the allowance drains to dust', async () => {
+      const controller = new AbortController()
+      const bootstrap = setup()
+      drained(bootstrap)
+      const reasons: string[] = []
+      bootstrap.make.reconcile = vi.fn<BootstrapMakeService['reconcile']>(async parameters => {
+        reasons.push(parameters.reason)
+        if (parameters.desiredOffer) throw belowMinimum()
+        return { submittedTransactions: [] }
+      })
+      const cycles: (readonly Record<string, unknown>[])[] = []
+      const cyclesToRun = MARKET_FAILURE_BUDGET_CYCLES + 2
+
+      const report = await bootstrap.service.runContinuously({
+        signal: controller.signal,
+        intervalMs: 1,
+        onCycle: results => {
+          cycles.push(results)
+          if (cycles.length === cyclesToRun) controller.abort()
+        }
+      })
+
+      expect(report).toMatchObject({ status: 'stopped', reason: 'signal', cycles: cyclesToRun })
+      expect(cycles.at(-1)).toEqual([
+        {
+          marketId,
+          status: 'observed',
+          action: 'publication-withheld',
+          reason: 'below-minimum-offer',
+          minimumAssets: '100000000'
+        }
+      ])
+      expect(reasons.slice(0, 2)).toEqual(['publish', 'no-capacity'])
+      expect(
+        bootstrapMonitoringEvents(cycles.at(-1) as never).filter(
+          event => event.event === 'guardrail.publication-withheld'
+        )
+      ).toEqual([
+        {
+          event: 'guardrail.publication-withheld',
+          workflow: 'bootstrap',
+          marketId,
+          reason: 'below-minimum-offer',
+          minimumAssets: '100000000'
+        }
+      ])
+    })
+
+    test('cancels a resting offer it can no longer replace', async () => {
+      const bootstrap = setup()
+      drained(bootstrap, {
+        marketId,
+        assets: 400n,
+        rateBps: 999n,
+        referenceObservationId: 'static:999'
+      })
+      bootstrap.make.reconcile = vi.fn<BootstrapMakeService['reconcile']>(async parameters => {
+        if (parameters.desiredOffer) throw belowMinimum()
+        return { submittedTransactions: [{ operation: 'cancel', txHash: cancellationHash }] }
+      })
+
+      expect(await bootstrap.service.runOnce()).toEqual([
+        {
+          marketId,
+          status: 'applied',
+          action: 'publication-withheld',
+          reason: 'below-minimum-offer',
+          minimumAssets: '100000000'
+        }
+      ])
+    })
+
+    test('withholds when the read-only preview is the step the Router rejects', async () => {
+      const bootstrap = setup()
+      drained(bootstrap)
+      bootstrap.make.preview = vi.fn(async () => {
+        throw belowMinimum()
+      })
+      const reconcile = vi.fn<BootstrapMakeService['reconcile']>(async () => 'logged' as const)
+      bootstrap.make.reconcile = reconcile
+
+      expect(await bootstrap.service.runOnce()).toEqual([
+        {
+          marketId,
+          status: 'logged',
+          action: 'publication-withheld',
+          reason: 'below-minimum-offer',
+          minimumAssets: '100000000'
+        }
+      ])
+      expect(reconcile).toHaveBeenCalledTimes(1)
+      expect(reconcile.mock.calls[0]?.[0]).toMatchObject({
+        desiredOffer: undefined,
+        reason: 'no-capacity'
+      })
+    })
+
+    test('clears an earlier publication failure instead of charging it every cycle', async () => {
+      const controller = new AbortController()
+      const bootstrap = setup()
+      drained(bootstrap)
+      let attempt = 0
+      bootstrap.make.reconcile = vi.fn<BootstrapMakeService['reconcile']>(async parameters => {
+        if (!parameters.desiredOffer) return { submittedTransactions: [] }
+        attempt += 1
+        throw attempt === 1 ? new Error('publication unavailable') : belowMinimum()
+      })
+      const cyclesToRun = MARKET_FAILURE_BUDGET_CYCLES + 2
+      let cycles = 0
+
+      const report = await bootstrap.service.runContinuously({
+        signal: controller.signal,
+        intervalMs: 1,
+        onCycle: () => {
+          cycles += 1
+          if (cycles === cyclesToRun) controller.abort()
+        }
+      })
+
+      expect(report).toMatchObject({ status: 'stopped', reason: 'signal', cycles: cyclesToRun })
+    })
+
+    test('still fails a minimum-size rule that reports no Router floor', async () => {
+      const bootstrap = setup()
+      drained(bootstrap)
+      bootstrap.make.reconcile = vi.fn(async () => {
+        throw new BootstrapMempoolValidationError([{ rule: 'min_offer_assets_usd' }])
+      })
+
+      expect(await bootstrap.service.runOnce()).toMatchObject([
+        { marketId, status: 'failed', stage: 'make', errorName: 'BootstrapMempoolValidationError' }
+      ])
+    })
+
+    test('keeps monitoring when capacity drops to zero after a failed make', async () => {
+      const controller = new AbortController()
+      const bootstrap = setup()
+      let cycle = 0
+      bootstrap.positions.readPosition = vi.fn(async () => ({
+        credit: 0n,
+        debt: 0n,
+        lossFactor: { lossFactor: 0n, acceptedLossFactor: 0n, defaulted: true },
+        cashBalance: cycle === 0 ? 2_000n : 0n,
+        marketExposure: 0n,
+        totalExposure: 0n,
+        activeOffer: undefined
+      }))
+      bootstrap.make.reconcile = vi.fn(async () => {
+        throw new Error('publication unavailable')
+      })
+      const cyclesToRun = MARKET_FAILURE_BUDGET_CYCLES + 2
+      const actions: unknown[] = []
+
+      const report = await bootstrap.service.runContinuously({
+        signal: controller.signal,
+        intervalMs: 1,
+        onCycle: results => {
+          actions.push(results[0]?.status === 'failed' ? 'failed' : results[0]?.action)
+          cycle += 1
+          if (cycle === cyclesToRun) controller.abort()
+        }
+      })
+
+      expect(report).toMatchObject({ status: 'stopped', reason: 'signal', cycles: cyclesToRun })
+      expect(actions.slice(0, 2)).toEqual(['failed', 'no-capacity'])
+    })
+
+    test('still charges the failure budget for any other rejection', async () => {
+      const bootstrap = setup()
+      drained(bootstrap)
+      bootstrap.make.reconcile = vi.fn(async () => {
+        throw new BootstrapMempoolValidationError([{ rule: 'unknown' }])
+      })
+
+      const report = await bootstrap.service.runContinuously({
+        signal: new AbortController().signal,
+        intervalMs: 1
+      })
+
+      expect(report).toMatchObject({
+        status: 'halted',
+        reason: 'cycle-failed',
+        cycles: MARKET_FAILURE_BUDGET_CYCLES
+      })
+    })
+  })
+
+  describe('when the hard range holds no aligned tick', () => {
+    const activeOffer = {
+      marketId,
+      assets: 500n,
+      rateBps: 450n,
+      referenceObservationId: 'static:500'
+    }
+    const emptyWindowAt = (bootstrap: ReturnType<typeof setup>, withActiveOffer: boolean) => {
+      bootstrap.positions.readPosition = vi.fn(async () => ({
+        credit: 0n,
+        debt: 0n,
+        lossFactor: { lossFactor: 0n, acceptedLossFactor: 0n, defaulted: true },
+        cashBalance: 2_000n,
+        marketExposure: 0n,
+        totalExposure: 0n,
+        rateWindowEmpty: true,
+        activeOffer: withActiveOffer ? activeOffer : undefined
+      }))
+    }
+    const runPastFailureBudget = async (bootstrap: ReturnType<typeof setup>) => {
+      const controller = new AbortController()
+      const cyclesToRun = MARKET_FAILURE_BUDGET_CYCLES + 2
+      let cycles = 0
+      return bootstrap.service.runContinuously({
+        signal: controller.signal,
+        intervalMs: 1,
+        onCycle: () => {
+          cycles += 1
+          if (cycles === cyclesToRun) controller.abort()
+        }
+      })
+    }
+
+    test('invalidates the live buy at the snapshot as rate-out-of-range', async () => {
+      const bootstrap = setup()
+      emptyWindowAt(bootstrap, true)
+
+      const [result] = await bootstrap.service.runOnce({ verbose: true })
+
+      expect(result).toMatchObject({ marketId, status: 'applied', action: 'invalidate' })
+      expect(bootstrap.reconcile).toHaveBeenCalledWith(
+        expect.objectContaining({ desiredOffer: undefined, reason: 'rate-out-of-range' })
+      )
+      expect(bootstrap.hardHalt).not.toHaveBeenCalled()
+      const events = bootstrapMonitoringEvents([result!])
+      expect(events).toContainEqual({
+        event: 'guardrail.side-withdrawn',
+        workflow: 'bootstrap',
+        marketId,
+        side: 'higher'
+      })
+      expect(events.map(event => event.event)).not.toContain('guardrail.rate-omitted')
+    })
+
+    test('observes without mutating when no buy is resting', async () => {
+      const bootstrap = setup()
+      emptyWindowAt(bootstrap, false)
+
+      expect(await bootstrap.service.runOnce()).toEqual([
+        { marketId, status: 'observed', action: 'rate-out-of-range' }
+      ])
+      expect(bootstrap.reconcile).not.toHaveBeenCalled()
+    })
+
+    test('keeps monitoring past the failure budget while the snapshot window stays empty', async () => {
+      const bootstrap = setup()
+      emptyWindowAt(bootstrap, false)
+
+      expect(await runPastFailureBudget(bootstrap)).toMatchObject({
+        status: 'stopped',
+        reason: 'signal',
+        cycles: MARKET_FAILURE_BUDGET_CYCLES + 2
+      })
+    })
+
+    const withheld = {
+      marketId,
+      status: 'applied',
+      action: 'publication-withheld',
+      reason: 'rate-out-of-range'
+    }
+
+    test('cancels instead of halting when the preview finds the window empty', async () => {
+      const bootstrap = setup()
+      bootstrap.make.preview = vi.fn(async () => {
+        throw new BootstrapAdapterError('rate-window-empty')
+      })
+      const reconcile = vi.fn<BootstrapMakeService['reconcile']>(async () => ({
+        submittedTransactions: [{ operation: 'cancel', txHash: cancellationHash }]
+      }))
+      bootstrap.make.reconcile = reconcile
+
+      const [result] = await bootstrap.service.runOnce()
+
+      expect(result).toEqual(withheld)
+      expect(reconcile).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ desiredOffer: undefined, reason: 'rate-out-of-range' })
+      )
+      expect(bootstrap.hardHalt).not.toHaveBeenCalled()
+      expect(bootstrapMonitoringEvents([result!])).toContainEqual({
+        event: 'guardrail.publication-withheld',
+        workflow: 'bootstrap',
+        marketId,
+        reason: 'rate-out-of-range'
+      })
+    })
+
+    test('halts the whole plan when the cancellation after an empty window fails', async () => {
+      const bootstrap = setup({ configs: [config(), config(secondMarketId)] })
+      const reconcile = vi.fn<BootstrapMakeService['reconcile']>(async parameters => {
+        if (parameters.marketId !== marketId) return undefined
+        if (parameters.desiredOffer) throw new BootstrapAdapterError('rate-window-empty')
+        throw new Error('cancel failed')
+      })
+      bootstrap.make.reconcile = reconcile
+
+      const results = await bootstrap.service.runOnce()
+
+      expect(results).toHaveLength(1)
+      expect(reconcile).not.toHaveBeenCalledWith(
+        expect.objectContaining({ marketId: secondMarketId })
+      )
+      expect(results[0]).toMatchObject({
+        marketId,
+        status: 'halted',
+        stage: 'make',
+        action: 'invalidate',
+        reason: 'rate-out-of-range'
+      })
+      expect(bootstrap.hardHalt).toHaveBeenCalledOnce()
+    })
+
+    test('withholds without charging the failure budget when the window empties at reconcile', async () => {
+      const bootstrap = setup()
+      bootstrap.make.reconcile = vi.fn<BootstrapMakeService['reconcile']>(async parameters => {
+        if (parameters.desiredOffer) throw new BootstrapAdapterError('rate-window-empty')
+        return { submittedTransactions: [{ operation: 'cancel', txHash: cancellationHash }] }
+      })
+
+      expect(await bootstrap.service.runOnce()).toEqual([withheld])
+      expect(await runPastFailureBudget(bootstrap)).toMatchObject({
+        status: 'stopped',
+        reason: 'signal'
+      })
+    })
+  })
+
   test('resumes after initial completion when auto-refill is enabled', async () => {
     const { service, positions, reconcile } = setup({ configs: [config(marketId, true)] })
     let cycle = 0
@@ -1539,6 +1812,7 @@ describe('PositionBootstrapService', () => {
       return {
         credit: cycle === 1 ? 900n : 500n,
         debt: 0n,
+        lossFactor: { lossFactor: 0n, acceptedLossFactor: 0n, defaulted: true },
         cashBalance: 2_000n,
         marketExposure: 0n,
         totalExposure: 0n,
@@ -1559,6 +1833,7 @@ describe('PositionBootstrapService', () => {
     positions.readPosition = vi.fn(async id => ({
       credit: 0n,
       debt: 0n,
+      lossFactor: { lossFactor: 0n, acceptedLossFactor: 0n, defaulted: true },
       cashBalance: 2_000n,
       marketExposure: 0n,
       totalExposure: 0n,
@@ -1584,6 +1859,7 @@ describe('PositionBootstrapService', () => {
     positions.readPosition = vi.fn(async () => ({
       credit: 0n,
       debt: 0n,
+      lossFactor: { lossFactor: 0n, acceptedLossFactor: 0n, defaulted: true },
       cashBalance: 2_000n,
       marketExposure: 0n,
       totalExposure: 0n,
@@ -1607,5 +1883,398 @@ describe('PositionBootstrapService', () => {
       [{ marketId, status: 'observed', action: 'matured' }],
       [{ marketId, status: 'observed', action: 'matured' }]
     ])
+  })
+})
+
+describe('PositionBootstrapService withheld publications', () => {
+  const cancellation = { operation: 'cancel' as const, txHash: cancellationHash }
+
+  test('reports a capacity-changed withholding as applied without completing the market', async () => {
+    const { service, make } = setup()
+    const reconcile = vi.fn<BootstrapMakeService['reconcile']>(async () => ({
+      submittedTransactions: [cancellation],
+      publicationWithheld: { reason: 'capacity-changed' }
+    }))
+    make.reconcile = reconcile
+
+    const [first] = await service.runOnce({ verbose: true })
+    const [second] = await service.runOnce({ verbose: true })
+
+    expect(first).toMatchObject({
+      marketId,
+      status: 'applied',
+      action: 'publication-withheld',
+      reason: 'capacity-changed'
+    })
+    expect(first?.verbose?.submittedTransactions).toEqual([cancellation])
+    expect(bootstrapMonitoringEvents([first!])).toContainEqual({
+      event: 'guardrail.publication-withheld',
+      workflow: 'bootstrap',
+      marketId,
+      reason: 'capacity-changed'
+    })
+    expect(second?.verbose?.currentState).toMatchObject({
+      position: { initialTargetCompleted: false }
+    })
+    expect(reconcile).toHaveBeenCalledTimes(2)
+  })
+
+  test('reports a loss-factor withholding as applied with its direction', async () => {
+    const { service, make } = setup()
+    make.reconcile = async () => ({
+      submittedTransactions: [cancellation],
+      publicationWithheld: {
+        reason: 'loss-factor-mismatch',
+        lossFactor: 6n,
+        acceptedLossFactor: 5n,
+        defaulted: false,
+        direction: 'above'
+      }
+    })
+
+    const [result] = await service.runOnce()
+
+    expect(result).toEqual({
+      marketId,
+      status: 'applied',
+      action: 'publication-withheld',
+      reason: 'loss-factor-mismatch',
+      lossFactor: 6n,
+      acceptedLossFactor: 5n,
+      defaulted: false,
+      direction: 'above'
+    })
+    const events = createMonitoringProjection().bootstrap([result!])
+    expect(events).toContainEqual({
+      event: 'guardrail.publication-withheld',
+      workflow: 'bootstrap',
+      marketId,
+      reason: 'loss-factor-mismatch'
+    })
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        event: 'guardrail.lend-halted',
+        workflow: 'bootstrap',
+        lossFactor: 6n,
+        acceptedLossFactor: 5n,
+        direction: 'above'
+      })
+    )
+  })
+
+  test('reports an unavailable snapshot after cancelling as a failed invalidated make', async () => {
+    const { service, make } = setup({
+      configs: [config(), config(secondMarketId)]
+    })
+    const reconcile = vi.fn<BootstrapMakeService['reconcile']>(async () => ({
+      submittedTransactions: [cancellation],
+      publicationWithheld: { reason: 'snapshot-unavailable', errorName: 'BootstrapAdapterError' }
+    }))
+    make.reconcile = reconcile
+
+    const results = await service.runOnce()
+
+    expect(results).toEqual([
+      {
+        marketId,
+        status: 'failed',
+        stage: 'make',
+        invalidated: true,
+        errorName: 'BootstrapAdapterError',
+        adapterOperation: 'snapshot-unavailable'
+      }
+    ])
+    expect(reconcile).toHaveBeenCalledTimes(1)
+  })
+
+  test('reports an unavailable snapshot without cancellations as not invalidated', async () => {
+    const { service, make } = setup()
+    const reconcile = vi.fn<BootstrapMakeService['reconcile']>(async () => ({
+      submittedTransactions: [],
+      publicationWithheld: { reason: 'snapshot-unavailable', errorName: 'RpcRequestError' }
+    }))
+    make.reconcile = reconcile
+
+    const [result] = await service.runOnce()
+
+    expect(result).toMatchObject({ status: 'failed', stage: 'make', invalidated: false })
+  })
+
+  test('reports a failed release of a withheld reservation with its cancellations', async () => {
+    const { service, make } = setup()
+    make.reconcile = vi.fn(async () => {
+      throw new BootstrapAdapterError('publication-reservation-cleanup')
+        .recordReservationCleanupFailure('TypeError')
+        .recordConfirmedTransactions([cancellation])
+    })
+
+    const [result] = await service.runOnce({ verbose: true })
+
+    expect(result).toMatchObject({
+      status: 'failed',
+      stage: 'make',
+      invalidated: true,
+      errorName: 'BootstrapAdapterError',
+      adapterOperation: 'publication-reservation-cleanup',
+      reservationCleanupErrorName: 'TypeError'
+    })
+    expect(result?.verbose?.submittedTransactions).toEqual([cancellation])
+  })
+})
+
+describe('PositionBootstrapService loss factor', () => {
+  const activeOffer = {
+    marketId,
+    assets: 100n,
+    rateBps: 450n,
+    referenceObservationId: 'static:500'
+  }
+  const halted = { lossFactor: 6n, acceptedLossFactor: 5n, defaulted: false }
+  const position = (
+    parameters: { lossFactor?: typeof halted; credit?: bigint; withOffer?: boolean } = {}
+  ) => ({
+    credit: parameters.credit ?? 0n,
+    debt: 0n,
+    lossFactor: parameters.lossFactor ?? halted,
+    cashBalance: 2_000n,
+    marketExposure: 0n,
+    totalExposure: 0n,
+    ...(parameters.withOffer === false ? {} : { activeOffer })
+  })
+
+  test('cancels the active buy before any rate read and reports it applied', async () => {
+    const { service, positions, readRate, make } = setup()
+    positions.readPosition = vi.fn(async () => position())
+    const reconcile = vi.fn<BootstrapMakeService['reconcile']>(async () => ({
+      submittedTransactions: [{ operation: 'cancel', txHash: cancellationHash }]
+    }))
+    make.reconcile = reconcile
+
+    const results = await service.runOnce()
+
+    expect(results).toEqual([
+      {
+        marketId,
+        status: 'applied',
+        action: 'lend-halted',
+        reason: 'loss-factor-mismatch',
+        ...halted,
+        direction: 'above'
+      }
+    ])
+    expect(reconcile.mock.calls[0]?.[0]).toMatchObject({
+      marketId,
+      desiredOffer: undefined,
+      reason: 'loss-factor-mismatch'
+    })
+    expect(readRate).not.toHaveBeenCalled()
+  })
+
+  test('observes a halted market without a live buy and mutates nothing', async () => {
+    const { service, positions, readRate, reconcile } = setup()
+    positions.readPosition = vi.fn(async () =>
+      position({ withOffer: false, lossFactor: { ...halted, lossFactor: 4n } })
+    )
+
+    expect(await service.runOnce()).toEqual([
+      {
+        marketId,
+        status: 'observed',
+        action: 'lend-halted',
+        reason: 'loss-factor-mismatch',
+        ...halted,
+        lossFactor: 4n,
+        direction: 'below'
+      }
+    ])
+    expect(reconcile).not.toHaveBeenCalled()
+    expect(readRate).not.toHaveBeenCalled()
+  })
+
+  test('logs rather than applies the cancellation in read-only mode', async () => {
+    const { service, positions, make } = setup()
+    positions.readPosition = vi.fn(async () => position())
+    make.reconcile = vi.fn(async () => 'logged' as const)
+
+    expect(await service.runOnce()).toMatchObject([{ status: 'logged', action: 'lend-halted' }])
+  })
+
+  test('never completes the initial target while halted', async () => {
+    const { service, positions, make } = setup()
+    const reads = [
+      position({ credit: 1_000n }),
+      position({ withOffer: false, lossFactor: { ...halted, lossFactor: 5n } })
+    ]
+    positions.readPosition = vi.fn(async () => reads.shift()!)
+    make.reconcile = vi.fn(async () => ({ submittedTransactions: [] }))
+
+    await service.runOnce()
+    const [second] = await service.runOnce()
+
+    expect(second).toMatchObject({ status: 'applied', action: 'publish' })
+  })
+
+  test('hard-halts when the targeted cancellation fails', async () => {
+    const { service, positions, make, hardHalt } = setup()
+    positions.readPosition = vi.fn(async () => position())
+    make.reconcile = vi.fn(async () => {
+      throw new BootstrapAdapterError('transaction-reverted')
+    })
+
+    const results = await service.runOnce()
+
+    expect(results).toMatchObject([
+      {
+        status: 'halted',
+        stage: 'make',
+        action: 'invalidate',
+        reason: 'loss-factor-mismatch',
+        strategyInvalidated: true,
+        ...halted,
+        direction: 'above'
+      }
+    ])
+    expect(hardHalt).toHaveBeenCalledWith(
+      expect.objectContaining({ reason: 'market-invalidation-failed' })
+    )
+    expect(createMonitoringProjection().bootstrap(results)).toContainEqual({
+      event: 'guardrail.lend-halted',
+      workflow: 'bootstrap',
+      marketId,
+      lossFactor: 6n,
+      acceptedLossFactor: 5n,
+      defaulted: false,
+      direction: 'above',
+      incrementalLossBps: 1n
+    })
+  })
+
+  test('keeps the halt evidence when a confirmed cancellation cannot be forgotten', async () => {
+    const { service, positions, make, hardHalt } = setup()
+    positions.readPosition = vi.fn(async () => position())
+    make.reconcile = vi.fn(async () => {
+      throw new BootstrapOwnershipCleanupError(
+        `0x${'dd'.repeat(32)}`,
+        [{ operation: 'cancel', txHash: cancellationHash }],
+        'TypeError'
+      )
+    })
+
+    const results = await service.runOnce()
+
+    expect(results).toMatchObject([
+      {
+        status: 'failed',
+        stage: 'make',
+        invalidated: true,
+        ownershipCleanupErrorName: 'TypeError',
+        ...halted,
+        direction: 'above'
+      }
+    ])
+    expect(hardHalt).not.toHaveBeenCalled()
+    expect(createMonitoringProjection().bootstrap(results)).toContainEqual({
+      event: 'guardrail.lend-halted',
+      workflow: 'bootstrap',
+      marketId,
+      lossFactor: 6n,
+      acceptedLossFactor: 5n,
+      defaulted: false,
+      direction: 'above',
+      incrementalLossBps: 1n
+    })
+  })
+
+  test('names the cause of a position-read failure so a blocked cutover is diagnosable', async () => {
+    const { service, positions, make } = setup()
+    positions.readPosition = vi.fn(async () => {
+      throw new BootstrapAdapterError('cash-capped-buy-group')
+    })
+    make.reconcile = vi.fn<BootstrapMakeService['reconcile']>(async () => undefined)
+
+    expect(await service.runOnce()).toMatchObject([
+      { status: 'failed', stage: 'position-read', adapterOperation: 'cash-capped-buy-group' }
+    ])
+  })
+
+  test.each([
+    ['writer', undefined, { invalidated: true }],
+    ['read-only', 'logged' as const, { invalidated: false, invalidationLogged: true }]
+  ])(
+    'cancels buys and fails retryably on a malformed loss factor in %s mode',
+    async (_mode, reconciliation, invalidation) => {
+      const { service, positions, make } = setup()
+      positions.readPosition = vi.fn(async () => {
+        throw new BootstrapAdapterError('loss-factor-read')
+      })
+      const reconcile = vi.fn<BootstrapMakeService['reconcile']>(async () => reconciliation)
+      make.reconcile = reconcile
+
+      expect(await service.runOnce()).toEqual([
+        {
+          marketId,
+          status: 'failed',
+          stage: 'guard-read',
+          ...invalidation,
+          errorName: 'BootstrapAdapterError',
+          adapterOperation: 'loss-factor-read'
+        }
+      ])
+      expect(reconcile.mock.calls[0]?.[0]).toMatchObject({ reason: 'market-read-failed' })
+    }
+  )
+
+  test.each([
+    ['before', [marketId, secondMarketId]],
+    ['after', [secondMarketId, marketId]]
+  ] as const)(
+    'invalidates a halted buy even when a market %s it fails to publish',
+    async (_order, order) => {
+      const { service, positions, make } = setup({ configs: order.map(id => config(id)) })
+      positions.readPosition = vi.fn(async (id: Hex) =>
+        id === secondMarketId
+          ? position()
+          : position({ lossFactor: { ...halted, lossFactor: 5n }, withOffer: false })
+      )
+      const reasons: string[] = []
+      make.reconcile = vi.fn<BootstrapMakeService['reconcile']>(async parameters => {
+        reasons.push(`${parameters.marketId}:${parameters.reason}`)
+        if (parameters.reason === 'publish') throw new BootstrapAdapterError('transaction-reverted')
+        return { submittedTransactions: [{ operation: 'cancel', txHash: cancellationHash }] }
+      })
+
+      const results = await service.runOnce()
+
+      expect(reasons).toEqual([`${secondMarketId}:loss-factor-mismatch`, `${marketId}:publish`])
+      expect(results.map(result => [result.marketId, result.status])).toEqual(
+        order.map(id => [id, id === secondMarketId ? 'applied' : 'failed'])
+      )
+    }
+  )
+
+  test('clears a pending publication failure once the market is safely lend-halted', async () => {
+    const controller = new AbortController()
+    const { service, positions, make } = setup()
+    let cycle = 0
+    positions.readPosition = vi.fn(async () =>
+      cycle < MARKET_FAILURE_BUDGET_CYCLES - 1
+        ? position({ lossFactor: { ...halted, lossFactor: 5n }, withOffer: false })
+        : position({ withOffer: false })
+    )
+    make.reconcile = vi.fn(async () => {
+      throw new Error('publication unavailable')
+    })
+    make.cleanup = vi.fn(async () => 'logged' as const)
+
+    const report = await service.runContinuously({
+      signal: controller.signal,
+      intervalMs: 1,
+      onCycle: () => {
+        cycle += 1
+        if (cycle === MARKET_FAILURE_BUDGET_CYCLES + 2) controller.abort()
+      }
+    })
+
+    expect(report).toMatchObject({ status: 'stopped', cycles: MARKET_FAILURE_BUDGET_CYCLES + 2 })
   })
 })

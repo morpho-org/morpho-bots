@@ -58,7 +58,7 @@ type TokenPriceSource = {
    * terms as {@link TokenPriceSource.usdValueOf}, whose per-unit form this is.
    *
    * Served straight off the snapshot, so — unlike deriving it as `usdValueOf(token, 10 ** decimals)` —
-   * it needs no on-chain `decimals` read and cannot fail on one. That matters because the probe
+   * it needs no onchain `decimals` read and cannot fail on one. That matters because the probe
    * ladder's denomination hangs off it: an RPC blip there would leave a pair cold instead of falling
    * back to the whole-token ladder.
    */
@@ -188,6 +188,7 @@ export const createTokenPriceSource = (deps: {
     usdValueOf: (token, loanUnits) => {
       const entry = priced.get(getAddress(token))
       if (!entry) return null
+      // oxlint-disable-next-line repo/no-pow10-bigint
       return mulDivDown(loanUnits, entry.priceE8, 10n ** BigInt(entry.decimals))
     },
     usdPriceOf: token => priced.get(getAddress(token))?.priceE8 ?? null,

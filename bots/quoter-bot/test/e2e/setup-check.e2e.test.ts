@@ -32,6 +32,27 @@ const isSetupCheckReport = (value: unknown): value is SetupCheckReport =>
   'checks' in value &&
   Array.isArray(value.checks)
 
+const ladderConfiguration = JSON.stringify([
+  {
+    marketId: MARKET_ID,
+    quotePremiumBps: '0',
+    spreadBps: '200',
+    stepBps: '100',
+    rungCount: '3',
+    sizeSkewBps: '0',
+    lowerRateBudgetAssets: '100000000',
+    higherRateBudgetAssets: '100000000',
+    targetMarketExposureAssets: '200000000',
+    maximumTotalExposureAssets: '200000000',
+    minimumOfferAssets: '1',
+    groupMode: 'shared-rung',
+    loopIntervalSeconds: '3600',
+    movementToleranceBps: '10',
+    minimumRateBps: '1',
+    maximumRateBps: '100000'
+  }
+])
+
 const environment = (rpcUrl: string, apiBaseUrl: string) => ({
   CHAIN_ID: '8453',
   RPC_URL: rpcUrl,
@@ -56,7 +77,8 @@ const environment = (rpcUrl: string, apiBaseUrl: string) => ({
   MAX_BATCH_CANCELLATION_GAS: '1000000',
   MAX_BATCH_CANCELLATION_DATA_BYTES: '65536',
   MORPHO_API_BASE_URL: apiBaseUrl,
-  REQUEST_TIMEOUT_MS: '30000'
+  REQUEST_TIMEOUT_MS: '30000',
+  LADDER_MARKETS: ladderConfiguration
 })
 
 type SetupFailure = {
@@ -106,9 +128,10 @@ describe('quoter-bot setup check on a pinned Base fork', () => {
       ['loan-allowance', 'passed'],
       ['ratifier', 'passed'],
       ['books', 'passed'],
-      ['reference', 'not-required'],
+      ['reference', 'passed'],
       ['offers', 'passed'],
-      ['position-health', 'not-required']
+      ['position-health', 'not-required'],
+      ['loss-factor', 'passed']
     ])
   }, 60_000)
 
@@ -195,9 +218,10 @@ describe('quoter-bot setup check on a pinned Base fork', () => {
           ['loan-allowance', failed.has('loan-allowance') ? 'failed' : 'passed'],
           ['ratifier', failed.has('ratifier') ? 'failed' : 'passed'],
           ['books', failed.has('books') ? 'failed' : 'passed'],
-          ['reference', 'not-required'],
+          ['reference', 'passed'],
           ['offers', failed.has('offers') ? 'failed' : 'passed'],
-          ['position-health', 'not-required']
+          ['position-health', 'not-required'],
+          ['loss-factor', failed.has('chain') ? 'warning' : 'passed']
         ])
       } finally {
         api.setMode('ready')

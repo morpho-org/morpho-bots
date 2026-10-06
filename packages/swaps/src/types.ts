@@ -48,7 +48,7 @@ export type QuoteParameters = TokenInDecimals & {
 /**
  * An executable swap, ready to drop into the Executor's callback queue. Venue-agnostic: the min-out
  * floor is already encoded inside `callData`, so the encoder never inspects the venue — it only needs
- * to know how the on-chain input amount is bound (`amountIn`).
+ * to know how the onchain input amount is bound (`amountIn`).
  */
 export type Swap = {
   /** ERC20 `approve` target for `tokenIn`. */
@@ -59,7 +59,7 @@ export type Swap = {
   value: bigint
   /** Pre-built swap calldata; the min-out floor is already encoded inside it. */
   callData: Hex
-  /** How the on-chain input amount is bound. */
+  /** How the onchain input amount is bound. */
   amountIn:
     | { source: 'balance'; offset: bigint } // splice the Executor's live `tokenIn` balance at `offset`
     | { source: 'fixed'; value: bigint } // `callData` commits to `value`; do NOT splice
@@ -83,7 +83,7 @@ export type Swap = {
  * Input to a venue's *indicative* price probe. A lighter cousin of {@link QuoteParameters}: no
  * `executor`/`slippageBps`/`referenceAmountOut`, because a probe only measures how much a venue would
  * pay out for a given sell size — it never mints executable calldata, needs no taker, and is compared
- * across venues to rank them (see the venue selector), not sanity-checked against the oracle.
+ * across venues to rank them (see the venue selector), not checked against the oracle.
  */
 export type PriceParameters = TokenInDecimals & {
   chainId: number
@@ -110,13 +110,13 @@ export type SwapStep = {
   value: bigint
   /** Pre-built calldata; any min-out floor is already encoded inside it. */
   callData: Hex
-  /** How the on-chain input amount is bound — same binding union as {@link Swap.amountIn}. */
+  /** How the onchain input amount is bound — same binding union as {@link Swap.amountIn}. */
   amountIn:
     | { source: 'balance'; offset: bigint } // splice the Executor's live `tokenIn` balance at `offset`
     | { source: 'fixed'; value: bigint } // `callData` commits to `value`; do NOT splice
   /**
    * Approve `tokenIn` to this spender (zero-then-balance pair) before the call. Omitted when the
-   * target burns the caller's own balance (ERC4626 redeem).
+   * target burns the caller's own balance (ERC-4626 redeem).
    */
   approvalSpender?: Address
 }
@@ -164,7 +164,7 @@ export type QuoteFailureReason =
  * - `no_config` — the operator has not configured this collateral (a coverage gap, not a failure; no
  *   API call was made) → skip with `config.no_swap_path`;
  * - `failed` — no executable quote: a transient quote/route failure (API down, no route, or the route
- *   fails the oracle sanity check) → skip and back the position off, or an economic `floor_unmet`
+ *   fails the oracle check) → skip and back the position off, or an economic `floor_unmet`
  *   verdict → skip WITHOUT backing off (see {@link QuoteFailureReason}).
  */
 export type QuoteOutcome = (
@@ -182,6 +182,7 @@ export type QuoteOutcome = (
 }
 
 /** Thrown by adapters/HTTP client to carry a classified {@link QuoteFailureReason}. */
+// oxlint-disable-next-line repo/error-class-file
 export class QuoteError extends Error {
   readonly reason: QuoteFailureReason
 

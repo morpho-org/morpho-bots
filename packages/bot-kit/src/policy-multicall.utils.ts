@@ -26,6 +26,7 @@ export const checkMulticall = (spec: MulticallPolicy, tx: PolicyTx): string | un
   if (calls === undefined) return 'calldata does not decode as multicall(bytes[])'
   if (calls.length === 0) return 'multicall bundle must not be empty'
   const allowedTargets = Object.entries(spec.innerTargetsByOuter).find(([outer]) =>
+    // oxlint-disable-next-line repo/no-as-address
     isAddressEqual(tx.to, outer as Address)
   )?.[1]
   if (allowedTargets === undefined || allowedTargets.length === 0) {

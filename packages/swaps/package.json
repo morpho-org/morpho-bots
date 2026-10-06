@@ -15,6 +15,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@morpho-org/morpho-ts": "catalog:",
     "@repo/utils": "workspace:*",
     "executooor-viem": "catalog:",
     "viem": "catalog:",

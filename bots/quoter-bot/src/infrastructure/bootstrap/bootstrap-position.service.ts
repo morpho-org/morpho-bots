@@ -1,12 +1,18 @@
 import type { Address, Hex } from 'viem'
 
 import type { BootstrapPositionService } from '../../application/bootstrap/position-bootstrap.service'
-import type { BootstrapOffer } from '../../domain/bootstrap/position-bootstrap'
+import type { BootstrapOffer } from '../../domain/position-bootstrap'
+import type { ExposurePosition } from '../exposure/exposure-snapshot.utils'
 
+import { acceptedLossFactorOf } from '../../domain/loss-factor'
 import { BootstrapAdapterError } from './bootstrap-adapter.error'
 
-/** Accrued position snapshot returned by the production Midnight reader. */
-export type MidnightPositionSnapshot = { marketId: Hex; credit: bigint; debt: bigint }
+/**
+ * Accrued position snapshot returned by the production Midnight reader.
+ * @deprecated Use {@link ExposurePosition}.
+ * @public
+ */
+export type MidnightPositionSnapshot = ExposurePosition
 
 /** Active lend group projection required by bootstrap reconciliation. */
 export type BootstrapActiveGroup = {
@@ -31,47 +37,58 @@ export type BootstrapGroupInventory = {
   cashReservations: readonly BootstrapActiveGroup[]
 }
 
+/** Accrued positions, spendable cash, and group inventory read together at one block. */
+export type BootstrapInventory = {
+  positions: readonly ExposurePosition[]
+  cashBalance: bigint
+  groupInventory: BootstrapGroupInventory
+}
+
 /** Read boundary used by the position adapter to combine chain and Mempool truth. */
 export interface BootstrapInventoryReader {
-  /** Reads all configured accrued Midnight positions. @returns Current accrued position snapshots. */
-  readPositions(): Promise<readonly MidnightPositionSnapshot[]>
-  /** Reads the maker's current loan-token wallet balance. @returns Current raw token balance. */
-  readCashBalance(): Promise<bigint>
+  /**
+   * Reads positions, spendable cash, and group inventory from one exposure snapshot.
+   * @returns A coherent inventory whose every value is pinned to the same block.
+   */
+  readInventory(): Promise<BootstrapInventory>
   /** Reads the current protocol fee that a new offer must accept. @param marketId - Market whose live fee policy is required. @returns Current continuous fee as an unsigned protocol value. */
   readMarketContinuousFeeCap(marketId: Hex): Promise<bigint>
-  /** Reads bootstrap offers and independently owned buy-side reservations in one snapshot. @returns Current grouped inventory without treating reservations as replaceable bootstrap offers. */
-  readGroupInventory(): Promise<BootstrapGroupInventory>
-  /** Reads one market's immutable maturity beside the timestamp it is compared against. @param marketId - Market whose lifecycle state is required. @returns Market maturity and the observation timestamp, so callers recognize a matured market without a clock. */
+  /** Reads one market's immutable maturity beside the timestamp it is compared against. @param marketId - Market whose lifecycle state is required. @returns Market maturity and the observation timestamp, so callers recognize a matured market without a clock, plus whether the hard rate range holds no aligned tick at that timestamp. */
   readMarketMaturity(
     marketId: Hex
-  ): Promise<{ maturityTimestamp: bigint; observedTimestamp: bigint }>
+  ): Promise<{ maturityTimestamp: bigint; observedTimestamp: bigint; rateWindowEmpty?: boolean }>
 }
 
 /** Concrete position adapter deriving exposure from accrued credit and active lend reserves. */
 export class MidnightBootstrapPositionService implements BootstrapPositionService {
-  /** Creates a position adapter. @param reader - Chain/API inventory reader. @param maker - Bound maker account. */
+  /**
+   * Creates a position adapter.
+   * @param reader - Chain/API inventory reader.
+   * @param maker - Bound maker account.
+   * @param acceptedLossFactor - Operator-accepted loss factor per market; omitted markets accept `0`.
+   */
   constructor(
     private readonly reader: BootstrapInventoryReader,
-    private readonly maker: Address
+    private readonly maker: Address,
+    private readonly acceptedLossFactor: ReadonlyMap<Hex, bigint>
   ) {}
 
   /**
    * Reads one market position and aggregate strategy exposure.
-   * @param marketId - Configured Midnight market identifier.
-   * @returns Fresh credit, debt, wallet capacity, exposure, market maturity beside the timestamp it
-   *   is observed against, representative active offer, and whether duplicate groups require
-   *   reconciliation.
+   * @param marketId - Configured Midnight Market identifier.
+   * @returns Fresh credit, debt, wallet capacity, exposure, the snapshot-block loss factor beside its
+   *   accepted value, market maturity beside the timestamp it is observed against, whether the hard
+   *   rate range holds no aligned tick at that timestamp, representative
+   *   active offer, and whether duplicate groups require reconciliation.
    * @throws When chain/API inventory reads fail or the market is absent.
    * @remarks The maker address is retained only to bind this adapter instance to one operator.
    */
   async readPosition(marketId: Hex) {
     void this.maker
-    const [positions, cashBalance, marketContinuousFeeCap, groupInventory, maturity] =
+    const [{ positions, cashBalance, groupInventory }, marketContinuousFeeCap, maturity] =
       await Promise.all([
-        this.reader.readPositions(),
-        this.reader.readCashBalance(),
+        this.reader.readInventory(),
         this.reader.readMarketContinuousFeeCap(marketId),
-        this.reader.readGroupInventory(),
         this.reader.readMarketMaturity(marketId)
       ])
     const position = positions.find(item => item.marketId === marketId)
@@ -124,6 +141,10 @@ export class MidnightBootstrapPositionService implements BootstrapPositionServic
       ...maturity,
       credit: position.credit,
       debt: position.debt,
+      lossFactor: {
+        lossFactor: position.lossFactor,
+        ...acceptedLossFactorOf(this.acceptedLossFactor, marketId)
+      },
       cashBalance: availableCash,
       marketExposure: position.credit + reservedByMarket,
       totalExposure,

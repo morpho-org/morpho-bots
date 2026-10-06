@@ -10,10 +10,12 @@ import { getAddress } from 'viem'
 import { describe, expect, it } from 'vitest'
 
 import type { BorrowerCandidate } from '../../src/discovery/borrowers'
+import type { PlanSkipLog } from '../../src/runner/plan-skip-log'
 import type { RevertStreak, RevertStreakStore } from '../../src/runner/revert-streak'
 import type { LiquidationPlan } from '../../src/sizing/plan'
 import type { LensCollateral, LensInput, LensOut } from '../../src/state/lens.sol'
 
+import { createPlanSkipLog } from '../../src/runner/plan-skip-log'
 import { runTick } from '../../src/runner/tick'
 
 function spyLogger() {
@@ -232,6 +234,8 @@ function runWith(opts: {
   spy?: ReturnType<typeof spyLogger>
   /** Replaces the stub `submit` — used to broadcast through a real pending queue. */
   submitWith?: (args: { label: string }) => Promise<SubmitOutcome>
+  /** Shared across calls to model consecutive ticks; a fresh store otherwise. */
+  planSkipLog?: PlanSkipLog
 }) {
   const { logger, events } = opts.spy ?? spyLogger()
   const order: Address[] = []
@@ -336,6 +340,7 @@ function runWith(opts: {
     backoff,
     cooldown,
     revertStreaks,
+    planSkipLog: opts.planSkipLog ?? createPlanSkipLog(),
     inflightLabels: () => opts.inflight ?? new Set(),
     usdValueOf: opts.usdValueOf ?? ((_loanToken, loanUnits) => loanUnits),
     routing,
@@ -780,6 +785,7 @@ describe('runTick', () => {
           backoff: createBackoff({ baseBlocks: 2n, maxBlocks: 64n }),
           cooldown: createCooldownStore({ cooldownMs: 0 }),
           revertStreaks: unreachableStreaks,
+          planSkipLog: createPlanSkipLog(),
           inflightLabels: () => new Set(),
           usdValueOf: (_loanToken, loanUnits) => loanUnits,
           // A fully cold curve, so this case exercises the fail-open ordering it always did.
@@ -987,6 +993,48 @@ describe('runTick', () => {
   })
 
   describe('plan skips', () => {
+    it('logs an unchanged skip once across consecutive ticks and re-logs once it clears', async () => {
+      const planSkipLog = createPlanSkipLog()
+      const dust = lensOut({ collaterals: [slot({ amt: 0n })] })
+      const skipLines = async (out: LensOut | null) => {
+        const { counters, events } = await runWith({ planSkipLog, out })
+        expectCounterIdentities(counters)
+        expect(counters.planSkipped).toBe(out ? 1 : 0)
+        return events.filter(e => e.event === 'plan.skipped').length
+      }
+      expect(await skipLines(dust)).toBe(1)
+      // Still sized and counted every tick; only the line is suppressed.
+      expect(await skipLines(dust)).toBe(0)
+      // A tick where the position is absent forgets it, so its return is reported immediately.
+      expect(await skipLines(null)).toBe(0)
+      expect(await skipLines(dust)).toBe(1)
+    })
+
+    it('keeps both modes of a matured-and-unhealthy slot that skip for the same reason', async () => {
+      const planSkipLog = createPlanSkipLog()
+      const out = lensOut({ blockTimestamp: 2020n, collaterals: [slot({ maxLif: MAX_LIF })] })
+      const modes = async () => {
+        const { events } = await runWith({ planSkipLog, out, headroomFloorBps: 10_000 })
+        return events.filter(e => e.event === 'plan.skipped').map(e => e.fields?.postMaturityMode)
+      }
+      expect(await modes()).toStrictEqual([false, true])
+      expect(await modes()).toStrictEqual([])
+    })
+
+    it('logs a skip again when its mode changes under the same slot and reason', async () => {
+      const planSkipLog = createPlanSkipLog()
+      const modes = async (out: LensOut) => {
+        const { events } = await runWith({ planSkipLog, out, headroomFloorBps: 10_000 })
+        return events.filter(e => e.event === 'plan.skipped').map(e => e.fields?.postMaturityMode)
+      }
+      const collaterals = [slot({ maxLif: MAX_LIF })]
+      // Unhealthy before maturity sizes normal mode only; healthy after it, post-maturity only.
+      expect(await modes(lensOut({ blockTimestamp: 1000n, collaterals }))).toStrictEqual([false])
+      expect(
+        await modes(lensOut({ healthy: true, blockTimestamp: 2020n, collaterals }))
+      ).toStrictEqual([true])
+    })
+
     it('reports nothing_to_seize without recording backoff or cooldown', async () => {
       // An empty best slot would otherwise build a (0, 0) plan, which isBadDebtRealization reads as a
       // write-off against a still-solvent position.
@@ -1044,7 +1092,7 @@ describe('runTick', () => {
     })
 
     it('does not gate a matured-and-unhealthy position that normal mode funds at maxLif', async () => {
-      // Regression companion to the sizing test: same instant as above but UNHEALTHY, so both on-chain
+      // Regression companion to the sizing test: same instant as above but UNHEALTHY, so both onchain
       // gates are open and normal mode wins with the full maxLif. It must be worked, not skipped.
       const { counters, quoteCalls } = await runWith({
         headroomFloorBps: 100,
@@ -1164,7 +1212,7 @@ describe('runTick', () => {
     })
 
     it('uses the LIF the plan was sized at, not the one chain time implies', async () => {
-      // Matured AND unhealthy opens both on-chain gates, and sizing picks by surplus: one second past
+      // Matured AND unhealthy opens both onchain gates, and sizing picks by surplus: one second past
       // maturity the post-maturity ramp is still ~WAD, so normal mode wins with the full maxLif and a
       // 1000-unit break-even. Deriving the LIF here from `blockTimestamp > maturity` instead would use
       // the ramping value, put break-even at 1100, and reject a route the chain funds.
@@ -1802,7 +1850,7 @@ describe('runTick', () => {
   })
   describe('position join key', () => {
     it('emits one id that joins plan.built to the queue tx.sent', async () => {
-      // BOTS-90's acceptance criterion as a test: grouping a maturity's events by `id` must not split
+      // Grouping a maturity's events by `id` must not split
       // one position. Broadcast through the REAL queue, since the split was between the tick's field
       // name and the queue's — a stubbed submit cannot see it.
       const spy = spyLogger()

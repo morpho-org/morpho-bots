@@ -57,6 +57,8 @@ config:
       - '0x5555555555555555555555555555555555555555555555555555555555555555'
     referenceMarketId: '0x7777777777777777777777777777777777777777777777777777777777777777'
     referenceLookbackSeconds: '259200'
+    acceptedLossFactor:
+      '0x5555555555555555555555555555555555555555555555555555555555555555': '0'
   setup:
     nativeReserveWei: '10000000000000000'
     maxFeeGwei: '100'
@@ -168,8 +170,46 @@ files over `--set` for the `config` block for the same reason.
   variables are captured at container start): follow a rotation with
   `kubectl rollout restart statefulset/<release-name>`, exactly like an edited
   `existingConfigSecret`.
+- Re-arming a lend-halted market means changing `config.markets.acceptedLossFactor` (or an
+  `ACCEPTED_LOSS_FACTOR` JSON object through `env`/`envFrom`, which replaces the YAML mapping) and
+  upgrading; see [Loss-factor guard](../../README.md#loss-factor-guard).
 - To keep the whole file out of Helm release storage, pre-create a Secret with the complete
   configuration under the key `quoter-bot.yaml` and set `existingConfigSecret`.
+
+## Runtime secret from AWS secrets manager
+
+`externalSecret.enabled` replaces the hand-applied runtime Secret with an
+[External Secrets Operator](https://external-secrets.io) sync: the chart renders a namespaced
+`SecretStore` (AWS Secrets Manager, authenticating as the chart-managed ServiceAccount through
+`auth.jwt.serviceAccountRef`) and an `ExternalSecret` `<fullname>-runtime` that `dataFrom`
+extracts a flat JSON object of environment variables from `externalSecret.remoteKey` (a secret
+name or ARN, e.g. `quoter-bot/prd/1/runtime`). The rendered Secret is appended to `envFrom`
+after any `envFrom` entries, so its keys override `config` like any other environment variable.
+
+Prerequisites:
+
+- External Secrets Operator installed in the cluster (`external-secrets.io/v1` CRDs).
+- `serviceAccount.create: true` with an IRSA (`eks.amazonaws.com/role-arn`) annotation — the
+  render fails without both; that
+  IAM role needs `secretsmanager:GetSecretValue`/`DescribeSecret` on `remoteKey` and
+  `kms:Decrypt` on the secret's key — no other Secrets Manager or KMS access. (EKS Pod Identity
+  does not apply here: the operator, not the bot pod, exchanges the ServiceAccount token.)
+- Optional [Stakater Reloader](https://github.com/stakater/Reloader): the StatefulSet is
+  annotated `secret.reloader.stakater.com/reload: <fullname>-runtime`, so a rotated value
+  restarts the pod automatically (environment variables are captured at container start).
+  Without Reloader, a rotation still syncs into the Secret on `refreshInterval` but the pod
+  needs a manual `kubectl rollout restart`.
+
+```yaml
+serviceAccount:
+  create: true
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::<account>:role/tools-quoter-bot-<env>-<chain>
+externalSecret:
+  enabled: true
+  remoteKey: quoter-bot/prd/1/runtime
+  region: eu-west-3
+```
 
 ## Parameters
 
@@ -196,12 +236,13 @@ files over `--set` for the `config` block for the same reason.
 
 ### Configuration
 
-| Key                    | Default | Meaning                                                                                                                             |
-| ---------------------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| `config`               | `{}`    | Complete bot YAML configuration, rendered verbatim into a Secret and passed via `--config`.                                         |
-| `existingConfigSecret` | `''`    | Pre-created Secret with the full file under key `quoter-bot.yaml`; replaces the rendered Secret.                                    |
-| `env`                  | `[]`    | Extra `EnvVar` objects; environment overrides YAML (signer secret, `BETTERSTACK_*`). `XDG_STATE_HOME` is reserved and filtered out. |
-| `envFrom`              | `[]`    | Extra `EnvFromSource` objects for whole Secrets/ConfigMaps of overrides.                                                            |
+| Key                    | Default | Meaning                                                                                                                                                                                                                                                                       |
+| ---------------------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `config`               | `{}`    | Complete bot YAML configuration, rendered verbatim into a Secret and passed via `--config`.                                                                                                                                                                                   |
+| `existingConfigSecret` | `''`    | Pre-created Secret with the full file under key `quoter-bot.yaml`; replaces the rendered Secret.                                                                                                                                                                              |
+| `env`                  | `[]`    | Extra `EnvVar` objects; environment overrides YAML (signer secret, `BETTERSTACK_*`). `XDG_STATE_HOME` is reserved and filtered out.                                                                                                                                           |
+| `envFrom`              | `[]`    | Extra `EnvFromSource` objects for whole Secrets/ConfigMaps of overrides.                                                                                                                                                                                                      |
+| `externalSecret`       | off     | Fetch the runtime environment Secret from AWS Secrets Manager via External Secrets Operator — see below. Requires `serviceAccount.create: true` with an IRSA (`eks.amazonaws.com/role-arn`) annotation; the Secret becomes `<fullname>-runtime` and is appended to `envFrom`. |
 
 ### Persistence and security
 
@@ -254,7 +295,7 @@ files over `--set` for the `config` block for the same reason.
   `persistence.existingClaim`. Chain truth wins for everything else on restart.
 - **No probes.** The bot exposes no ports; it fails loudly and exits non-zero, and Kubernetes
   restarts it. Watch the structured `tx.*`/cycle events in the JSON Lines log stream, or
-  configure Better Stack shipping and its heartbeat through `env`.
+  configure Better Stack shipping through `env`.
 - **Upgrades.** `helm upgrade` with a changed `config` rolls the pod (SIGTERM drain, offer
   cleanup, then start); expect the transition to take up to the grace period. With an
   unchanged pod template nothing restarts, so a moved `latest` image is only picked up after

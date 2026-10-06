@@ -2,9 +2,6 @@ import { addressSchema } from '@repo/utils'
 import { isAddress } from 'viem'
 import { z } from 'zod'
 
-// ---------------------------------------------------------------------------
-// Per-collateral swap routing config (operator-tooling JSON, e.g. the seed script)
-// ---------------------------------------------------------------------------
 // Shape: { "<chainId>": { "<collateralToken>": <venue entry> } }, where the entry is a
 // discriminated union on `venue`:
 //   - { venue: 'uniswap-v3', router, fee, slippageBps }  (direct, no API key)

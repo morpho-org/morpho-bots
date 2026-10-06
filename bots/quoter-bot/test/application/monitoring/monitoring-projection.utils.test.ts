@@ -4,6 +4,7 @@ import type { BootstrapRunResult } from '../../../src/application/bootstrap/posi
 import type { LadderRunResult } from '../../../src/application/ladder/ladder-quoter.service'
 import type { SetupCheckReport } from '../../../src/application/setup/setup-check.service'
 
+import { LEND_HALTED_REPEAT_CYCLES } from '../../../src/application/monitoring/monitoring-event'
 import { createMonitoringProjection } from '../../../src/application/monitoring/monitoring-projection.utils'
 
 const marketId = `0x${'11'.repeat(32)}` as const
@@ -24,17 +25,17 @@ const consumingResult = (consumed: bigint): LadderRunResult =>
     action: 'rest',
     verbose: {
       config: { marketId },
-      currentState: { status: 'not-read', reason: 'configuration-invalid' },
-      stateAfterCheck: { status: 'not-read', reason: 'configuration-invalid' },
+      currentState: { status: 'observed', market: {} },
+      stateAfterCheck: { status: 'observed', market: {} },
       groupConsumption: [
         {
           groupId,
           marketId,
           side: 'higher',
           groupRateBps: 500n,
-          maxAssets: 1_000n,
+          maxUnits: 1_000n,
           consumed,
-          remainingAssets: 1_000n - consumed
+          remainingUnits: 1_000n - consumed
         }
       ]
     }
@@ -141,8 +142,8 @@ describe('createMonitoringProjection', () => {
         errorName: 'ProviderError',
         verbose: {
           config: { marketId },
-          currentState: { status: 'not-read', reason: 'configuration-invalid' },
-          stateAfterCheck: { status: 'not-read', reason: 'configuration-invalid' },
+          currentState: { status: 'observed', position: {} },
+          stateAfterCheck: { status: 'observed', position: {} },
           submittedTransactions: [transaction]
         }
       },
@@ -152,8 +153,8 @@ describe('createMonitoringProjection', () => {
         action: 'publish',
         verbose: {
           config: { marketId },
-          currentState: { status: 'not-read', reason: 'configuration-invalid' },
-          stateAfterCheck: { status: 'not-read', reason: 'configuration-invalid' },
+          currentState: { status: 'observed', position: {} },
+          stateAfterCheck: { status: 'observed', position: {} },
           submittedTransactions: [transaction]
         }
       }
@@ -201,7 +202,7 @@ describe('createMonitoringProjection', () => {
         side: 'lower',
         state: 'empty',
         rungs: 0,
-        totalAssets: 0n
+        totalUnits: 0n
       },
       {
         event: 'book.observed',
@@ -209,7 +210,7 @@ describe('createMonitoringProjection', () => {
         side: 'higher',
         state: 'empty',
         rungs: 0,
-        totalAssets: 0n
+        totalUnits: 0n
       }
     ])
   })
@@ -247,7 +248,7 @@ describe('createMonitoringProjection', () => {
         side: 'lower',
         state: 'quoting',
         rungs: 1,
-        totalAssets: 100n,
+        totalUnits: 100n,
         bestRateBps: 450n,
         worstRateBps: 450n,
         centerRateBps: 500n
@@ -382,7 +383,7 @@ describe('createMonitoringProjection', () => {
     )
 
     expect(projection.ladder([consumingResult(120n)])).toContainEqual(
-      expect.objectContaining({ event: 'offer.consumed', consumedDeltaAssets: 20n })
+      expect.objectContaining({ event: 'offer.consumed', consumedDeltaUnits: 20n })
     )
   })
 
@@ -396,10 +397,10 @@ describe('createMonitoringProjection', () => {
       event: 'offer.consumed',
       marketId,
       side: 'higher',
-      consumedDeltaAssets: 150n,
       groupRateBps: 500n,
-      remainingAssets: 750n,
-      groupId
+      groupId,
+      consumedDeltaUnits: 150n,
+      remainingUnits: 750n
     })
   })
 
@@ -409,7 +410,85 @@ describe('createMonitoringProjection', () => {
     projection.ladder([{ marketId, status: 'observed', action: 'rest' } as LadderRunResult])
 
     expect(projection.ladder([consumingResult(180n)])).toContainEqual(
-      expect.objectContaining({ event: 'offer.consumed', consumedDeltaAssets: 80n })
+      expect.objectContaining({ event: 'offer.consumed', consumedDeltaUnits: 80n })
     )
+  })
+})
+
+describe('createMonitoringProjection lend halts', () => {
+  const halted = (lossFactor: bigint) => ({
+    marketId,
+    status: 'applied' as const,
+    action: 'lend-halted' as const,
+    reason: 'loss-factor-mismatch' as const,
+    lossFactor,
+    acceptedLossFactor: 5n,
+    defaulted: false,
+    direction: lossFactor > 5n ? ('above' as const) : ('below' as const)
+  })
+  const lendHaltedRecords = (events: readonly { event: string }[]) =>
+    events.filter(event => event.event === 'guardrail.lend-halted')
+
+  test.each(['bootstrap', 'ladder'] as const)(
+    'projects a %s lend halt into its cycle and guardrail records',
+    workflow => {
+      const events = createMonitoringProjection()[workflow]([halted(6n)])
+
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          event: 'cycle.completed',
+          workflow,
+          status: 'applied',
+          action: 'lend-halted',
+          reason: 'loss-factor-mismatch'
+        })
+      )
+      expect(lendHaltedRecords(events)).toEqual([
+        {
+          event: 'guardrail.lend-halted',
+          workflow,
+          marketId,
+          lossFactor: 6n,
+          acceptedLossFactor: 5n,
+          defaulted: false,
+          direction: 'above',
+          incrementalLossBps: 1n
+        }
+      ])
+    }
+  )
+
+  test('omits the incremental loss below the accepted value', () => {
+    const [record] = lendHaltedRecords(createMonitoringProjection().ladder([halted(4n)]))
+
+    expect(record).toMatchObject({ direction: 'below' })
+    expect(record).not.toHaveProperty('incrementalLossBps')
+  })
+
+  test('emits on each transition and at a low rate while a halt continues unchanged', () => {
+    const projection = createMonitoringProjection()
+    const counts = [
+      ...Array.from({ length: LEND_HALTED_REPEAT_CYCLES + 1 }, () => halted(6n)),
+      halted(7n),
+      { marketId, status: 'observed' as const, action: 'rest' as const },
+      halted(7n)
+    ].map(result => lendHaltedRecords(projection.ladder([result])).length)
+
+    expect(counts).toEqual([
+      1,
+      ...Array.from({ length: LEND_HALTED_REPEAT_CYCLES - 1 }, () => 0),
+      1,
+      1,
+      0,
+      1
+    ])
+  })
+
+  test('tracks each workflow halt separately', () => {
+    const projection = createMonitoringProjection()
+
+    expect(lendHaltedRecords(projection.ladder([halted(6n)]))).toHaveLength(1)
+    expect(lendHaltedRecords(projection.bootstrap([halted(6n)]))).toHaveLength(1)
+    expect(lendHaltedRecords(projection.ladder([halted(6n)]))).toHaveLength(0)
   })
 })

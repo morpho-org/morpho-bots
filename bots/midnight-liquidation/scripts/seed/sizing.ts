@@ -11,7 +11,7 @@ const BPS = 10_000n
 
 /**
  * Given the live oracle `price`, the collateral `lltv`, a target debt in loan-token base units, and
- * a `drawdownBps` price-drop buffer, returns the collateral to supply, the resulting on-chain
+ * a `drawdownBps` price-drop buffer, returns the collateral to supply, the resulting onchain
  * `maxDebt`, and the `units` of debt to take. Guarantees `units <= maxDebt` (so `take`'s seller-health
  * check passes) and `units = floor(maxDebt * (1 - drawdown))`, so a `drawdownBps` price drop makes
  * `maxDebt < units` (liquidatable).

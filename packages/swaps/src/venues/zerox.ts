@@ -21,7 +21,7 @@ type ZeroxQuote = {
 /**
  * Quotes 0x via the one-step AllowanceHolder `/quote` endpoint, which returns ready-to-use calldata
  * and a plain-ERC20-`approve` spender (no Permit2 signature). The bought token lands on `taker` (the
- * Executor) by default. `sellAmount` is committed off-chain (route-bound calldata), so the resulting
+ * Executor) by default. `sellAmount` is committed offchain (route-bound calldata), so the resulting
  * {@link Swap} carries `amountIn: { source: 'fixed' }`.
  */
 export async function quoteZerox(

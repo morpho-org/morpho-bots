@@ -15,8 +15,8 @@ import { marketId } from '../market'
 // decodes the structs natively; no hand-written ABI fragment or manual abi.encode/decode is needed.
 //
 // Blue debt accrues continuously, so the lens simulates interest accrual before the health check.
-// MarketParams are recovered on-chain via idToMarketParams(id) (see ./market-params.ts); the lens
-// re-derives the id from the supplied params on-chain, so mismatched params read an uncreated market
+// MarketParams are recovered onchain via idToMarketParams(id) (see ./market-params.ts); the lens
+// re-derives the id from the supplied params onchain, so mismatched params read an uncreated market
 // and return valid=false.
 //
 // Compiled to a deployless factory by soltag's Vitest/esbuild integrations; `sol``` throws if the
@@ -154,7 +154,7 @@ contract BlueLiquidationLens {
 `
 
 /** What the lens reads for one (marketParams, borrower) pair. The lens re-derives the id from
- * `params` on-chain and reads state at it, so a mismatched param set is rejected (valid=false). */
+ * `params` onchain and reads state at it, so a mismatched param set is rejected (valid=false). */
 export type LensInput = { params: MarketParams; borrower: Address }
 
 /** The decoded Solidity `LensOut` struct (uint64/128/256 → bigint per viem). */
@@ -173,14 +173,14 @@ type RawLensOut = {
 
 /**
  * The per-pair reading, with the market's `params` echoed back from the input. When `valid` is true
- * the on-chain id-commitment check passed, so these params are the ones the market at that id was
+ * the onchain id-commitment check passed, so these params are the ones the market at that id was
  * created with — safe to feed straight into `quote`, `plan`, and `liquidate`.
  */
 export type LensOut = RawLensOut & { params: MarketParams }
 
 /**
  * Reads the liquidation lens for every pair in one deployless, chunked `eth_call` (no signer, no
- * cache — decisions need fresh state). The lens re-derives each market id from its params on-chain.
+ * cache — decisions need fresh state). The lens re-derives each market id from its params onchain.
  * Returns a map keyed by {@link lensKey} over `marketId(params)`. The `client` must use viem-dlc's
  * deployless transport (built in `client.ts`).
  */

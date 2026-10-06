@@ -55,7 +55,6 @@ export type DeepRequired<T> = {
     : NonNullable<T[K]>
 }
 
-// oxlint-disable-next-line typescript/no-empty-object-type
 export function typedEntries<T extends {}>(obj: T) {
   return Object.entries(obj) as {
     [K in keyof T]-?: [K, T[K]]

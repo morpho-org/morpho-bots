@@ -1,21 +1,29 @@
 import type { Hex } from 'viem'
 
+import { MAX_OFFER_CAP } from '@morpho-org/midnight-sdk'
 import { describe, expect, test, vi } from 'vitest'
 
 import type { BootstrapSubmittedTransaction } from '../../../src/application/bootstrap/position-bootstrap-verbose'
+import type { BootstrapOffer } from '../../../src/domain/position-bootstrap'
+import type { ExposureSnapshotReader } from '../../../src/infrastructure/exposure/exposure-snapshot.utils'
 
 import { BootstrapOwnershipCleanupError } from '../../../src/application/bootstrap/bootstrap-ownership-cleanup.error'
 import { BootstrapAdapterError } from '../../../src/infrastructure/bootstrap/bootstrap-adapter.error'
 import { BootstrapHardHaltError } from '../../../src/infrastructure/bootstrap/bootstrap-hard-halt.error'
 import { MidnightBootstrapMakeService } from '../../../src/infrastructure/bootstrap/bootstrap-make.service'
+import { admitExposureCandidate } from '../../../src/infrastructure/exposure/exposure-admission.utils'
+import { readExposureSnapshot } from '../../../src/infrastructure/exposure/exposure-snapshot.utils'
+
+const BPS_WAD = 10n ** 14n
 
 const marketId: Hex = `0x${'11'.repeat(32)}`
 const groupId: Hex = `0x${'22'.repeat(32)}`
 const publishedGroupId: Hex = `0x${'33'.repeat(32)}`
 const cancellationHash: Hex = `0x${'aa'.repeat(32)}`
+const cancellation = { txHash: cancellationHash, blockNumber: 1n }
 const publicationHash: Hex = `0x${'bb'.repeat(32)}`
 const ratificationHash: Hex = `0x${'cc'.repeat(32)}`
-const desiredOffer = {
+const desiredOffer: BootstrapOffer = {
   marketId,
   assets: 100n,
   rateBps: 500n,
@@ -26,6 +34,7 @@ describe('MidnightBootstrapMakeService', () => {
   test('reads only the reconciled market book for spread validation', async () => {
     let selectedMarket: Hex | undefined
     const service = new MidnightBootstrapMakeService({
+      admitPublication: async () => ({ admitted: true as const, capacityAssets: 0n }),
       listActiveGroups: async () => [],
       listBookOffers: async (market: Hex) => {
         selectedMarket = market
@@ -50,6 +59,7 @@ describe('MidnightBootstrapMakeService', () => {
     const reserved: (typeof desiredOffer)[] = []
     const projected: { offer: typeof desiredOffer; exactTick?: bigint }[] = []
     const service = new MidnightBootstrapMakeService({
+      admitPublication: async () => ({ admitted: true as const, capacityAssets: 0n }),
       listActiveGroups: async () => [],
       listBookOffers: async () => [
         { groupId, marketId, buy: false, tick: 100n },
@@ -63,7 +73,7 @@ describe('MidnightBootstrapMakeService', () => {
             buy: true,
             tick: exactTick,
             tickSpacing: 1n,
-            effectiveRateBps: exactTick === 100n ? 450n : 460n
+            effectiveRateWad: (exactTick === 100n ? 450n : 460n) * BPS_WAD
           }
         }
         return {
@@ -115,8 +125,9 @@ describe('MidnightBootstrapMakeService', () => {
       groupId: publishedGroupId,
       publish: async () => publicationHash
     }))
-    const invalidate = vi.fn(async () => cancellationHash)
+    const invalidate = vi.fn(async () => cancellation)
     const service = new MidnightBootstrapMakeService({
+      admitPublication: async () => ({ admitted: true as const, capacityAssets: 0n }),
       listActiveGroups: async () => [
         {
           id: publishedGroupId,
@@ -140,7 +151,7 @@ describe('MidnightBootstrapMakeService', () => {
         tick: exactTick ?? (offer.rateBps === 460n ? 99n : 105n),
         tickSpacing: 1n,
         continuousFeeCap: 17n,
-        ...(exactTick === undefined ? {} : { effectiveRateBps: 450n })
+        ...(exactTick === undefined ? {} : { effectiveRateWad: 450n * BPS_WAD })
       }),
       preparePublication,
       reserveGroup: async () => {},
@@ -165,6 +176,7 @@ describe('MidnightBootstrapMakeService', () => {
 
   test('fails closed when the crossed-sell projection lacks effective-rate evidence', async () => {
     const service = new MidnightBootstrapMakeService({
+      admitPublication: async () => ({ admitted: true as const, capacityAssets: 0n }),
       listActiveGroups: async () => [],
       listBookOffers: async () => [{ groupId, marketId, buy: false, tick: 100n }],
       toProspectiveBookOffer: async () => ({ marketId, buy: true, tick: 105n }),
@@ -192,13 +204,14 @@ describe('MidnightBootstrapMakeService', () => {
 
   test('fails closed when spacing evidence is missing for a rebounding reprice', async () => {
     const service = new MidnightBootstrapMakeService({
+      admitPublication: async () => ({ admitted: true as const, capacityAssets: 0n }),
       listActiveGroups: async () => [],
       listBookOffers: async () => [{ groupId, marketId, buy: false, tick: 100n }],
       toProspectiveBookOffer: async (_offer, exactTick) => ({
         marketId,
         buy: true,
         tick: exactTick ?? 105n,
-        ...(exactTick === undefined ? {} : { effectiveRateBps: 450n })
+        ...(exactTick === undefined ? {} : { effectiveRateWad: 450n * BPS_WAD })
       }),
       preparePublication: async () => ({ groupId: publishedGroupId, publish: async () => {} }),
       reserveGroup: async () => {},
@@ -229,6 +242,7 @@ describe('MidnightBootstrapMakeService', () => {
       publish: async () => publicationHash
     }))
     const service = new MidnightBootstrapMakeService({
+      admitPublication: async () => ({ admitted: true as const, capacityAssets: 0n }),
       listActiveGroups: async () => [],
       listBookOffers: async () => [{ groupId, marketId, buy: false, tick: 100n }],
       toProspectiveBookOffer: async (_offer, exactTick) => {
@@ -239,8 +253,8 @@ describe('MidnightBootstrapMakeService', () => {
           buy: true,
           tick: exactTick,
           tickSpacing: 1n,
-          effectiveRateBps:
-            exactTickProjections === 1 ? 450n : exactTickProjections === 4 ? 700n : 455n
+          effectiveRateWad:
+            (exactTickProjections === 1 ? 450n : exactTickProjections === 4 ? 700n : 455n) * BPS_WAD
         }
       },
       preparePublication,
@@ -273,6 +287,7 @@ describe('MidnightBootstrapMakeService', () => {
       publish: async () => publicationHash
     }))
     const service = new MidnightBootstrapMakeService({
+      admitPublication: async () => ({ admitted: true as const, capacityAssets: 0n }),
       listActiveGroups: async () => [],
       listOwnedGroupIds: async () => [publishedGroupId],
       listBookOffers: async () => [
@@ -284,7 +299,7 @@ describe('MidnightBootstrapMakeService', () => {
         buy: true,
         tick: exactTick ?? (offer.rateBps === 460n ? 99n : 105n),
         tickSpacing: 1n,
-        ...(exactTick === undefined ? {} : { effectiveRateBps: 450n })
+        ...(exactTick === undefined ? {} : { effectiveRateWad: 450n * BPS_WAD })
       }),
       preparePublication,
       reserveGroup: async () => {},
@@ -311,6 +326,7 @@ describe('MidnightBootstrapMakeService', () => {
   test('publishes nothing when no in-range tick clears the crossing sell', async () => {
     const events: string[] = []
     const service = new MidnightBootstrapMakeService({
+      admitPublication: async () => ({ admitted: true as const, capacityAssets: 0n }),
       listActiveGroups: async () => [],
       listBookOffers: async () => [{ groupId, marketId, buy: false, tick: 100n }],
       toProspectiveBookOffer: async (_offer, exactTick) => ({
@@ -318,7 +334,9 @@ describe('MidnightBootstrapMakeService', () => {
         buy: true,
         tick: exactTick ?? 100n,
         tickSpacing: 1n,
-        ...(exactTick === undefined ? {} : { effectiveRateBps: exactTick === 100n ? 450n : 700n })
+        ...(exactTick === undefined
+          ? {}
+          : { effectiveRateWad: (exactTick === 100n ? 450n : 700n) * BPS_WAD })
       }),
       preparePublication: async () => {
         events.push('prepare')
@@ -360,6 +378,7 @@ describe('MidnightBootstrapMakeService', () => {
 
   test('ignores a retained crossing that is unrelated to the prospective buy', async () => {
     const service = new MidnightBootstrapMakeService({
+      admitPublication: async () => ({ admitted: true as const, capacityAssets: 0n }),
       listActiveGroups: async () => [],
       listBookOffers: async () => [
         { groupId, marketId, buy: false, tick: 100n },
@@ -387,6 +406,7 @@ describe('MidnightBootstrapMakeService', () => {
   test('never publishes a prospective buy that crosses the current whole book', async () => {
     let published = false
     const service = new MidnightBootstrapMakeService({
+      admitPublication: async () => ({ admitted: true as const, capacityAssets: 0n }),
       listActiveGroups: async () => [],
       listBookOffers: async () => [{ marketId, buy: false, tick: 100n }],
       toProspectiveBookOffer: async () => ({ marketId, buy: true, tick: 100n }),
@@ -415,6 +435,7 @@ describe('MidnightBootstrapMakeService', () => {
   test('reloads the whole book immediately before publishing a safe offer', async () => {
     const events: string[] = []
     const service = new MidnightBootstrapMakeService({
+      admitPublication: async () => ({ admitted: true as const, capacityAssets: 0n }),
       listActiveGroups: async () => [],
       listBookOffers: async () => {
         events.push('book')
@@ -442,6 +463,7 @@ describe('MidnightBootstrapMakeService', () => {
   test('returns confirmed cancellation and publication hashes in submission order', async () => {
     const submitted: BootstrapSubmittedTransaction[] = []
     const service = new MidnightBootstrapMakeService({
+      admitPublication: async () => ({ admitted: true as const, capacityAssets: 0n }),
       listActiveGroups: async () => [{ id: groupId, marketId, assets: 100n, rateBps: 400n }],
       listBookOffers: async () => [],
       toProspectiveBookOffer: async () => ({ marketId, buy: true, tick: 100n }),
@@ -461,7 +483,7 @@ describe('MidnightBootstrapMakeService', () => {
       releaseGroupReservation: async () => {},
       invalidate: async (_group, observer) => {
         await observer?.({ operation: 'cancel', txHash: cancellationHash })
-        return cancellationHash
+        return cancellation
       },
       invalidateBatch: async () => {}
     })
@@ -492,6 +514,7 @@ describe('MidnightBootstrapMakeService', () => {
   test('retains a confirmed cancel when bootstrap ownership cleanup fails', async () => {
     let invalidations = 0
     const service = new MidnightBootstrapMakeService({
+      admitPublication: async () => ({ admitted: true as const, capacityAssets: 0n }),
       listActiveGroups: async () => [{ id: groupId, marketId, assets: 100n, rateBps: 400n }],
       listOwnedGroupIds: async () => [groupId],
       listBookOffers: async () => [],
@@ -502,9 +525,9 @@ describe('MidnightBootstrapMakeService', () => {
       releaseGroupReservation: async () => {},
       invalidate: async () => {
         invalidations += 1
-        return cancellationHash
+        return cancellation
       },
-      invalidateBatch: async () => cancellationHash,
+      invalidateBatch: async () => cancellation,
       forgetGroups: async () => {
         throw new BootstrapAdapterError('group-ownership-state')
       }
@@ -528,6 +551,7 @@ describe('MidnightBootstrapMakeService', () => {
 
   test('does not interrupt receipt handling when the submission observer fails', async () => {
     const service = new MidnightBootstrapMakeService({
+      admitPublication: async () => ({ admitted: true as const, capacityAssets: 0n }),
       listActiveGroups: async () => [],
       listBookOffers: async () => [],
       toProspectiveBookOffer: async () => ({ marketId, buy: true, tick: 100n }),
@@ -541,7 +565,7 @@ describe('MidnightBootstrapMakeService', () => {
       reserveGroup: async () => {},
       confirmPublishedGroup: async () => {},
       releaseGroupReservation: async () => {},
-      invalidate: async () => cancellationHash,
+      invalidate: async () => cancellation,
       invalidateBatch: async () => {}
     })
 
@@ -563,6 +587,7 @@ describe('MidnightBootstrapMakeService', () => {
     const forgotten: Hex[] = []
     const batched: Hex[] = []
     const service = new MidnightBootstrapMakeService({
+      admitPublication: async () => ({ admitted: true as const, capacityAssets: 0n }),
       listActiveGroups: async () => [],
       listOwnedGroupIds: async () => [groupId],
       listBookOffers: async () => [],
@@ -574,10 +599,10 @@ describe('MidnightBootstrapMakeService', () => {
       forgetGroups: async (groupIds: readonly Hex[]) => {
         forgotten.push(...groupIds)
       },
-      invalidate: async () => cancellationHash,
+      invalidate: async () => cancellation,
       invalidateBatch: async groups => {
         batched.push(...groups)
-        return cancellationHash
+        return cancellation
       }
     })
 
@@ -592,9 +617,17 @@ describe('MidnightBootstrapMakeService', () => {
     const owned = new Set<Hex>()
     const invalidated: Hex[] = []
     const transport = {
+      admitPublication: async () => ({ admitted: true as const, capacityAssets: 0n }),
       listActiveGroups: async () =>
         owned.has(publishedGroupId)
-          ? [{ id: publishedGroupId, marketId, assets: 100n, rateBps: 500n }]
+          ? [
+              {
+                id: publishedGroupId,
+                marketId,
+                assets: 100n,
+                rateBps: 500n
+              }
+            ]
           : [],
       listBookOffers: async () => [],
       toProspectiveBookOffer: async () => ({ marketId, buy: true, tick: 100n }),
@@ -630,6 +663,7 @@ describe('MidnightBootstrapMakeService', () => {
   test('does not publish when durable reservation fails', async () => {
     const events: string[] = []
     const service = new MidnightBootstrapMakeService({
+      admitPublication: async () => ({ admitted: true as const, capacityAssets: 0n }),
       listActiveGroups: async () => [],
       listBookOffers: async () => [],
       toProspectiveBookOffer: async () => ({ marketId, buy: true, tick: 100n }),
@@ -664,6 +698,7 @@ describe('MidnightBootstrapMakeService', () => {
   test('cleans the durable reservation when publication fails', async () => {
     const events: string[] = []
     const service = new MidnightBootstrapMakeService({
+      admitPublication: async () => ({ admitted: true as const, capacityAssets: 0n }),
       listActiveGroups: async () => [],
       listBookOffers: async () => [],
       toProspectiveBookOffer: async () => ({ marketId, buy: true, tick: 100n }),
@@ -700,6 +735,7 @@ describe('MidnightBootstrapMakeService', () => {
     const tracked = new Set<Hex>()
     const invalidated: Hex[] = []
     const transport = {
+      admitPublication: async () => ({ admitted: true as const, capacityAssets: 0n }),
       listActiveGroups: async () => [],
       listOwnedGroupIds: async () => [...tracked],
       listBookOffers: async () => [],
@@ -756,6 +792,7 @@ describe('MidnightBootstrapMakeService', () => {
     const tracked = new Set<Hex>()
     const events: string[] = []
     const service = new MidnightBootstrapMakeService({
+      admitPublication: async () => ({ admitted: true as const, capacityAssets: 0n }),
       listActiveGroups: async () => [],
       listBookOffers: async () => [],
       toProspectiveBookOffer: async () => ({ marketId, buy: true, tick: 100n }),
@@ -794,6 +831,7 @@ describe('MidnightBootstrapMakeService', () => {
     const tracked = new Set<Hex>()
     const events: string[] = []
     const service = new MidnightBootstrapMakeService({
+      admitPublication: async () => ({ admitted: true as const, capacityAssets: 0n }),
       listActiveGroups: async () => [],
       listBookOffers: async () => [],
       toProspectiveBookOffer: async () => ({ marketId, buy: true, tick: 100n }),
@@ -831,6 +869,7 @@ describe('MidnightBootstrapMakeService', () => {
   test('excludes groups being replaced from prospective spread validation', async () => {
     const events: string[] = []
     const service = new MidnightBootstrapMakeService({
+      admitPublication: async () => ({ admitted: true as const, capacityAssets: 0n }),
       listActiveGroups: async () => [{ id: groupId, marketId, assets: 100n, rateBps: 500n }],
       listBookOffers: async () => [
         { groupId, marketId, buy: true, tick: 101n },
@@ -861,6 +900,7 @@ describe('MidnightBootstrapMakeService', () => {
     let activeReadCount = 0
     const events: string[] = []
     const service = new MidnightBootstrapMakeService({
+      admitPublication: async () => ({ admitted: true as const, capacityAssets: 0n }),
       listActiveGroups: async () => {
         activeReadCount += 1
         return activeReadCount === 1 ? [{ id: groupId, marketId, assets: 100n, rateBps: 500n }] : []
@@ -892,6 +932,7 @@ describe('MidnightBootstrapMakeService', () => {
   test('prepares and reserves a replacement before invalidation and releases it if invalidation fails', async () => {
     const events: string[] = []
     const service = new MidnightBootstrapMakeService({
+      admitPublication: async () => ({ admitted: true as const, capacityAssets: 0n }),
       listActiveGroups: async () => [{ id: groupId, marketId, assets: 100n, rateBps: 500n }],
       listBookOffers: async () => [],
       toProspectiveBookOffer: async () => ({ marketId, buy: true, tick: 100n }),
@@ -928,6 +969,7 @@ describe('MidnightBootstrapMakeService', () => {
 
   test('preserves invalidation failure when reservation rollback storage also fails', async () => {
     const service = new MidnightBootstrapMakeService({
+      admitPublication: async () => ({ admitted: true as const, capacityAssets: 0n }),
       listActiveGroups: async () => [{ id: groupId, marketId, assets: 100n, rateBps: 500n }],
       listBookOffers: async () => [],
       toProspectiveBookOffer: async () => ({ marketId, buy: true, tick: 100n }),
@@ -957,6 +999,7 @@ describe('MidnightBootstrapMakeService', () => {
   test('validates a replacement spread before invalidating its live group', async () => {
     const events: string[] = []
     const service = new MidnightBootstrapMakeService({
+      admitPublication: async () => ({ admitted: true as const, capacityAssets: 0n }),
       listActiveGroups: async () => [{ id: groupId, marketId, assets: 100n, rateBps: 500n }],
       listBookOffers: async () => [{ marketId, buy: false, tick: 100n }],
       toProspectiveBookOffer: async () => ({ marketId, buy: true, tick: 100n }),
@@ -987,9 +1030,15 @@ describe('MidnightBootstrapMakeService', () => {
     const secondMarketId: Hex = `0x${'44'.repeat(32)}`
     const events: string[] = []
     const service = new MidnightBootstrapMakeService({
+      admitPublication: async () => ({ admitted: true as const, capacityAssets: 0n }),
       listActiveGroups: async () => [
         { id: groupId, marketId, assets: 100n, rateBps: 500n },
-        { id: groupId, marketId: secondMarketId, assets: 100n, rateBps: 600n }
+        {
+          id: groupId,
+          marketId: secondMarketId,
+          assets: 100n,
+          rateBps: 600n
+        }
       ],
       listBookOffers: async () => [],
       toProspectiveBookOffer: async () => ({ marketId, buy: true, tick: 100n }),
@@ -1016,9 +1065,15 @@ describe('MidnightBootstrapMakeService', () => {
     const secondMarketId: Hex = `0x${'44'.repeat(32)}`
     const attempted: Hex[] = []
     const service = new MidnightBootstrapMakeService({
+      admitPublication: async () => ({ admitted: true as const, capacityAssets: 0n }),
       listActiveGroups: async () => [
         { id: groupId, marketId, assets: 100n, rateBps: 500n },
-        { id: groupId, marketId: secondMarketId, assets: 100n, rateBps: 600n }
+        {
+          id: groupId,
+          marketId: secondMarketId,
+          assets: 100n,
+          rateBps: 600n
+        }
       ],
       listBookOffers: async () => [],
       toProspectiveBookOffer: async () => ({ marketId, buy: true, tick: 100n }),
@@ -1040,6 +1095,7 @@ describe('MidnightBootstrapMakeService', () => {
   test('cancels an explicit cleanup candidate omitted from active groups', async () => {
     const attempted: Hex[] = []
     const service = new MidnightBootstrapMakeService({
+      admitPublication: async () => ({ admitted: true as const, capacityAssets: 0n }),
       listActiveGroups: async () => [],
       listOwnedGroupIds: async () => [groupId],
       listBookOffers: async () => [],
@@ -1070,6 +1126,7 @@ describe('MidnightBootstrapMakeService', () => {
       markPublicationStarted = resolve
     })
     const service = new MidnightBootstrapMakeService({
+      admitPublication: async () => ({ admitted: true as const, capacityAssets: 0n }),
       listActiveGroups: async () => [],
       listOwnedGroupIds: async () => [groupId],
       listBookOffers: async () => [],
@@ -1108,6 +1165,7 @@ describe('MidnightBootstrapMakeService', () => {
     const lastGroupId: Hex = `0x${'44'.repeat(32)}`
     const attempted: (readonly Hex[])[] = []
     const service = new MidnightBootstrapMakeService({
+      admitPublication: async () => ({ admitted: true as const, capacityAssets: 0n }),
       listActiveGroups: async () => [
         { id: groupId, marketId, assets: 100n, rateBps: 500n },
         { id: publishedGroupId, marketId, assets: 100n, rateBps: 500n },
@@ -1137,5 +1195,402 @@ describe('MidnightBootstrapMakeService', () => {
         { groupId: lastGroupId, errorName: 'BootstrapAdapterError' }
       ]
     })
+  })
+})
+
+describe('MidnightBootstrapMakeService exposure admission', () => {
+  const replacementTransport = (
+    overrides: Partial<ConstructorParameters<typeof MidnightBootstrapMakeService>[0]> = {}
+  ) => {
+    const events: string[] = []
+    const transport: ConstructorParameters<typeof MidnightBootstrapMakeService>[0] = {
+      admitPublication: async () => ({ admitted: true as const, capacityAssets: 0n }),
+      listActiveGroups: async () => [{ id: groupId, marketId, assets: 100n, rateBps: 400n }],
+      listBookOffers: async () => [],
+      toProspectiveBookOffer: async () => ({ marketId, buy: true, tick: 100n }),
+      preparePublication: async () => ({
+        groupId: publishedGroupId,
+        publish: async () => {
+          events.push('publish')
+          return publicationHash
+        }
+      }),
+      reserveGroup: async () => {
+        events.push('reserve')
+      },
+      confirmPublishedGroup: async () => {
+        events.push('confirm')
+      },
+      releaseGroupReservation: async () => {
+        events.push('release')
+      },
+      invalidate: async group => {
+        events.push(`cancel:${group}`)
+        return cancellation
+      },
+      invalidateBatch: async () => {},
+      ...overrides
+    }
+    return { events, service: new MidnightBootstrapMakeService(transport) }
+  }
+
+  test('withholds a replacement whose old buy filled while its cancellation landed', async () => {
+    const chain = { credit: 0n, cash: 200n, oldConsumed: 0n }
+    const reader: ExposureSnapshotReader = {
+      readLatestBlock: async () => ({ number: 12n, timestamp: 1_000n }),
+      readPositions: async () => [{ marketId, credit: chain.credit, debt: 0n, lossFactor: 0n }],
+      readCash: async () => ({ cashBalance: chain.cash, allowance: 1_000n }),
+      readConsumed: async groupIds => groupIds.map(id => (id === groupId ? chain.oldConsumed : 0n))
+    }
+    const admissions: (bigint | undefined)[] = []
+    const { events, service } = replacementTransport({
+      invalidate: async group => {
+        events.push(`cancel:${group}`)
+        chain.credit += 100n
+        chain.cash -= 100n
+        chain.oldConsumed = MAX_OFFER_CAP
+        return { txHash: cancellationHash, blockNumber: 12n }
+      },
+      admitPublication: async candidate => {
+        admissions.push(candidate.minimumBlockNumber)
+        const snapshot = await readExposureSnapshot({
+          reader,
+          indexedGroups: [
+            {
+              id: groupId,
+              cap: { kind: 'assets', maximum: 100n },
+              consumed: 0n,
+              offers: [{ marketId, maker: `0x${'ab'.repeat(20)}`, buy: true, tick: 1n }]
+            }
+          ],
+          durableReservations: [
+            {
+              groupId: candidate.groupId,
+              marketIds: [marketId],
+              maxUnits: candidate.assets
+            }
+          ],
+          ...(candidate.minimumBlockNumber === undefined
+            ? {}
+            : { minimumBlockNumber: candidate.minimumBlockNumber }),
+          adapterError: BootstrapAdapterError
+        })
+        return admitExposureCandidate({
+          candidate: {
+            marketId,
+            groupIds: [candidate.groupId],
+            buyAssets: candidate.assets,
+            accepted: { acceptedLossFactor: 0n, defaulted: true },
+            limits: {
+              kind: 'bootstrap',
+              offerSize: 1_000n,
+              creditTarget: 1_000n,
+              maximumMarketExposure: 100n,
+              maximumTotalExposure: 1_000n
+            }
+          },
+          snapshot,
+          adapterError: BootstrapAdapterError
+        })
+      }
+    })
+    const result = await service.reconcile({ marketId, desiredOffer, reason: 'replace' })
+
+    expect(result).toEqual({
+      submittedTransactions: [{ operation: 'cancel', txHash: cancellationHash }],
+      publicationWithheld: { reason: 'capacity-changed' }
+    })
+    expect(admissions).toEqual([12n])
+    expect(events).toEqual(['reserve', `cancel:${groupId}`, 'release'])
+  })
+
+  test('retains a matching group without taking an admission snapshot', async () => {
+    const { service } = replacementTransport({
+      listActiveGroups: async () => [
+        {
+          id: groupId,
+          marketId,
+          assets: 100n,
+          rateBps: 500n,
+          tick: 100n,
+          offerCount: 1,
+          continuousFeeCap: 0n
+        }
+      ],
+      toProspectiveBookOffer: async () => ({
+        marketId,
+        buy: true,
+        tick: 100n,
+        continuousFeeCap: 0n
+      }),
+      admitPublication: async () => {
+        throw new Error('a retained group must not be admitted')
+      }
+    })
+
+    expect(await service.reconcile({ marketId, desiredOffer, reason: 'replace' })).toBe('unchanged')
+  })
+
+  test('raises an empty tick window before reserving or cancelling anything', async () => {
+    const { events, service } = replacementTransport({
+      toProspectiveBookOffer: async () => {
+        throw new BootstrapAdapterError('rate-window-empty')
+      }
+    })
+
+    await expect(
+      service.reconcile({ marketId, desiredOffer, reason: 'replace' })
+    ).rejects.toMatchObject({ operation: 'rate-window-empty' })
+    expect(events).toEqual([])
+  })
+
+  test('withholds a publication whose market loss factor moved after the cancellations', async () => {
+    const { events, service } = replacementTransport({
+      admitPublication: async () => ({
+        admitted: false,
+        reason: 'loss-factor-mismatch' as const,
+        lossFactor: 4n,
+        acceptedLossFactor: 5n,
+        defaulted: false,
+        direction: 'below' as const,
+        capacityAssets: 0n as const
+      })
+    })
+
+    expect(await service.reconcile({ marketId, desiredOffer, reason: 'replace' })).toEqual({
+      submittedTransactions: [{ operation: 'cancel', txHash: cancellationHash }],
+      publicationWithheld: {
+        reason: 'loss-factor-mismatch',
+        lossFactor: 4n,
+        acceptedLossFactor: 5n,
+        defaulted: false,
+        direction: 'below'
+      }
+    })
+    expect(events).toEqual(['reserve', `cancel:${groupId}`, 'release'])
+  })
+
+  test('withholds as snapshot-unavailable and releases the reservation', async () => {
+    const { events, service } = replacementTransport({
+      admitPublication: async () => {
+        throw new BootstrapAdapterError('snapshot-unavailable')
+      }
+    })
+
+    expect(await service.reconcile({ marketId, desiredOffer, reason: 'replace' })).toEqual({
+      submittedTransactions: [{ operation: 'cancel', txHash: cancellationHash }],
+      publicationWithheld: {
+        reason: 'snapshot-unavailable',
+        errorName: 'BootstrapAdapterError',
+        snapshotErrorOperation: 'snapshot-unavailable'
+      }
+    })
+    expect(events).toEqual(['reserve', `cancel:${groupId}`, 'release'])
+  })
+
+  test('fails with the confirmed cancellations when a withheld reservation cannot be released', async () => {
+    const { events, service } = replacementTransport({
+      admitPublication: async () => ({
+        admitted: false,
+        reason: 'capacity-changed' as const,
+        capacityAssets: 0n
+      }),
+      releaseGroupReservation: async () => {
+        throw new TypeError('reservation unavailable')
+      }
+    })
+
+    const error = await service
+      .reconcile({ marketId, desiredOffer, reason: 'replace' })
+      .catch(value => value)
+
+    expect(error).toBeInstanceOf(BootstrapAdapterError)
+    expect(error).toMatchObject({
+      operation: 'publication-reservation-cleanup',
+      reservationCleanupErrorName: 'TypeError',
+      confirmedTransactions: [{ operation: 'cancel', txHash: cancellationHash }]
+    })
+    expect(events).not.toContain('publish')
+  })
+
+  test('takes a fresh admission for each market publication', async () => {
+    const otherMarketId: Hex = `0x${'44'.repeat(32)}`
+    const admitted: Hex[] = []
+    const { service } = replacementTransport({
+      listActiveGroups: async () => [],
+      toProspectiveBookOffer: async offer => ({ marketId: offer.marketId, buy: true, tick: 100n }),
+      admitPublication: async candidate => {
+        admitted.push(candidate.marketId)
+        return { admitted: true as const, capacityAssets: 0n }
+      }
+    })
+
+    await service.reconcile({ marketId, desiredOffer, reason: 'publish' })
+    await service.reconcile({
+      marketId: otherMarketId,
+      desiredOffer: { ...desiredOffer, marketId: otherMarketId },
+      reason: 'publish'
+    })
+
+    expect(admitted).toEqual([marketId, otherMarketId])
+  })
+
+  test('keeps a missing-intent snapshot failure distinguishable from a lagging head', async () => {
+    const { service } = replacementTransport({
+      admitPublication: async () => {
+        throw new BootstrapAdapterError('missing-owned-group-intent')
+      }
+    })
+
+    expect(await service.reconcile({ marketId, desiredOffer, reason: 'replace' })).toMatchObject({
+      publicationWithheld: {
+        reason: 'snapshot-unavailable',
+        errorName: 'BootstrapAdapterError',
+        snapshotErrorOperation: 'missing-owned-group-intent'
+      }
+    })
+  })
+
+  test('omits the snapshot operation for a failure that carries none', async () => {
+    const { service } = replacementTransport({
+      admitPublication: async () => {
+        throw new TypeError('private provider detail')
+      }
+    })
+
+    const result = await service.reconcile({ marketId, desiredOffer, reason: 'replace' })
+
+    expect(result).toMatchObject({
+      publicationWithheld: { reason: 'snapshot-unavailable', errorName: 'TypeError' }
+    })
+    expect(
+      result && typeof result === 'object' ? result.publicationWithheld : undefined
+    ).not.toHaveProperty('snapshotErrorOperation')
+  })
+})
+
+describe('MidnightBootstrapMakeService market invalidation', () => {
+  const secondGroupId: Hex = `0x${'44'.repeat(32)}`
+  const transport = (events: string[], failForget: boolean) => ({
+    admitPublication: async () => ({ admitted: true as const, capacityAssets: 0n }),
+    listActiveGroups: async () => [
+      { id: groupId, marketId, assets: 100n, rateBps: 500n },
+      { id: secondGroupId, marketId, assets: 100n, rateBps: 500n }
+    ],
+    listBookOffers: async () => [],
+    toProspectiveBookOffer: async () => ({ marketId, buy: true, tick: 100n }),
+    preparePublication: async () => {
+      throw new Error('invalidation must not prepare a publication')
+    },
+    reserveGroup: async () => {},
+    confirmPublishedGroup: async () => {},
+    releaseGroupReservation: async () => {},
+    forgetGroups: async (groupIds: readonly Hex[]) => {
+      events.push(`forget:${groupIds.join(',')}`)
+      if (failForget) throw new TypeError('state unavailable')
+    },
+    invalidate: async (id: Hex) => {
+      events.push(`cancel:${id}`)
+      return cancellation
+    },
+    invalidateBatch: async (groupIds: readonly Hex[]) => {
+      events.push(`cancel-batch:${groupIds.join(',')}`)
+      return cancellation
+    }
+  })
+
+  test('cancels every group in one batch before forgetting any, even when forgetting fails', async () => {
+    const events: string[] = []
+
+    const error = await new MidnightBootstrapMakeService(transport(events, true))
+      .reconcile({ marketId, reason: 'loss-factor-mismatch' })
+      .catch((value: unknown) => value)
+
+    expect(events).toEqual([
+      `cancel-batch:${groupId},${secondGroupId}`,
+      `forget:${groupId},${secondGroupId}`
+    ])
+    expect(error).toBeInstanceOf(BootstrapOwnershipCleanupError)
+    expect(error).toMatchObject({
+      cleanupErrorName: 'TypeError',
+      submittedTransactions: [{ operation: 'cancel', txHash: cancellationHash }]
+    })
+  })
+
+  test('keeps every group owned and rethrows when the batched cancellation fails', async () => {
+    const events: string[] = []
+    const failing = transport(events, false)
+    failing.invalidateBatch = async (groupIds: readonly Hex[]) => {
+      events.push(`cancel-batch:${groupIds.join(',')}`)
+      throw new BootstrapAdapterError('transaction-reverted')
+    }
+
+    await expect(
+      new MidnightBootstrapMakeService(failing).reconcile({
+        marketId,
+        reason: 'loss-factor-mismatch'
+      })
+    ).rejects.toMatchObject({ operation: 'transaction-reverted' })
+    expect(events).toEqual([`cancel-batch:${groupId},${secondGroupId}`])
+  })
+
+  test('replaces several groups in one batch and admits against its receipt block', async () => {
+    const events: string[] = []
+    const admissions: (bigint | undefined)[] = []
+    const service = new MidnightBootstrapMakeService({
+      ...transport(events, false),
+      admitPublication: async candidate => {
+        admissions.push(candidate.minimumBlockNumber)
+        return { admitted: true as const, capacityAssets: 0n }
+      },
+      preparePublication: async () => ({
+        groupId: publishedGroupId,
+        publish: async () => {
+          events.push('publish')
+          return publicationHash
+        }
+      }),
+      invalidate: async () => {
+        throw new Error('replacement of several groups must be batched')
+      },
+      invalidateBatch: async (groupIds: readonly Hex[]) => {
+        events.push(`cancel-batch:${groupIds.join(',')}`)
+        return { txHash: cancellationHash, blockNumber: 9n }
+      }
+    })
+
+    await service.reconcile({ marketId, desiredOffer, reason: 'replace' })
+
+    expect(admissions).toEqual([9n])
+    expect(events).toEqual([
+      `cancel-batch:${groupId},${secondGroupId}`,
+      `forget:${groupId},${secondGroupId}`,
+      'publish'
+    ])
+  })
+
+  test('records a failed reservation release when the batched replacement fails', async () => {
+    const events: string[] = []
+    const service = new MidnightBootstrapMakeService({
+      ...transport(events, false),
+      preparePublication: async () => ({ groupId: publishedGroupId, publish: async () => {} }),
+      releaseGroupReservation: async () => {
+        throw new TypeError('state unavailable')
+      },
+      invalidateBatch: async () => {
+        throw new BootstrapAdapterError('transaction-reverted')
+      }
+    })
+
+    const error = await service
+      .reconcile({ marketId, desiredOffer, reason: 'replace' })
+      .catch((value: unknown) => value)
+
+    expect(error).toBeInstanceOf(BootstrapAdapterError)
+    expect(error).toMatchObject({
+      operation: 'transaction-reverted',
+      reservationCleanupErrorName: 'TypeError'
+    })
+    expect(events).toEqual([])
   })
 })

@@ -119,7 +119,7 @@ function compose(
   selector: VenueSelector,
   overrides: {
     venues?: ('0x' | '1inch')[]
-    excludeCollaterals?: `0x${string}`[]
+    excludeCollaterals?: Address[]
     logger?: Logger
     httpClient?: RateLimitedClient
     unwrappers?: readonly Unwrapper[]

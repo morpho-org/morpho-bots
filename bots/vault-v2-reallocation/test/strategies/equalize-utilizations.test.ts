@@ -1,3 +1,5 @@
+import type { Address } from 'viem'
+
 import { wholePercentToWAD } from '@repo/utils'
 import { getAddress, parseUnits } from 'viem'
 import { describe, expect, it } from 'vitest'
@@ -5,7 +7,7 @@ import { describe, expect, it } from 'vitest'
 import { createEqualizeUtilizationsStrategy } from '../../src/strategies/equalize-utilizations'
 import { makeMarket, makeMarketParams, makeVaultData, RATE_AT_TARGET, VAULT } from '../helpers'
 
-const makeStrategy = (minUtilizationDeltaBips: (vault: `0x${string}`) => number = () => 0) =>
+const makeStrategy = (minUtilizationDeltaBips: (vault: Address) => number = () => 0) =>
   createEqualizeUtilizationsStrategy({
     capBufferWad: wholePercentToWAD(99.99),
     minUtilizationDeltaBips

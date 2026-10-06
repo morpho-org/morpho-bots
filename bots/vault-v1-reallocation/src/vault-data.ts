@@ -30,7 +30,7 @@ export type VaultMarketData = {
    */
   isAdaptiveCurve: boolean
   /**
-   * The vault's idle market: the zero-collateral market MetaMorpho uses to park unallocated assets.
+   * The vault's idle market: the zero-collateral market Vault V1 uses to park unallocated assets.
    * It never borrows, so no rate strategy applies to it — it only ever absorbs or supplies a plan's
    * imbalance.
    */
@@ -43,7 +43,7 @@ export type VaultData = {
   curator: Address
   /**
    * `isAllocator(eoa)` on this vault, read in the same call as the snapshot. Combined with `owner`
-   * and `curator` it is the whole of MetaMorpho's `onlyAllocatorRole`.
+   * and `curator` it is the whole of Vault V1's `onlyAllocatorRole`.
    */
   isAllocator: boolean
   marketsData: VaultMarketData[]

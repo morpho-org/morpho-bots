@@ -25,7 +25,7 @@ import { VaultV1AccrualReferenceLens } from './reference-lens.sol'
 // The production lens no longer calls `Morpho.accrueInterest`; it projects the same arithmetic
 // read-only so the deployless envelope's STATICCALL dispatch can reach it. This asserts the
 // projection is EXACT by running both lenses at one pinned block and diffing every field the
-// reallocation sizing consumes. The reference lens does the accrual on-chain, so it is an
+// reallocation sizing consumes. The reference lens does the accrual onchain, so it is an
 // independent oracle — it shares no code with the projection, and deliberately does not use the
 // vendored math.
 //
@@ -34,7 +34,7 @@ import { VaultV1AccrualReferenceLens } from './reference-lens.sol'
 // behind an unset variable is a gate that silently never runs.
 //
 // Gauntlet USDC Prime on Base: listed, ~$400M, an 8-market withdraw queue spanning several IRMs —
-// verified on-chain at this block. It is not Blue's fee recipient, so the fail-closed path is not
+// verified onchain at this block. It is not Blue's fee recipient, so the fail-closed path is not
 // what is under test here.
 
 const VAULT = getAddress('0xeE8F4eC5672F09119b96Ab6fB59C27E1b7e44b61')
@@ -46,7 +46,7 @@ const EOA = getAddress(`0x${'11'.repeat(20)}`)
 
 const describeFork = RPC_URL ? describe : describe.skip
 
-describeFork('vault-v1 read-only accrual equals on-chain accrual', () => {
+describeFork('vault-v1 read-only accrual equals onchain accrual', () => {
   it('matches the reference lens on every sizing field', async () => {
     const rpcUrl = RPC_URL as string
     const vault = VAULT
@@ -94,7 +94,7 @@ describeFork('vault-v1 read-only accrual equals on-chain accrual', () => {
       expect(got?.totalBorrowAssets, `market ${i} totalBorrowAssets`).toBe(want.totalBorrowAssets)
       expect(got?.vaultAssets, `market ${i} vaultAssets`).toBe(want.vaultAssets)
       expect(got?.cap, `market ${i} cap`).toBe(want.cap)
-      // The one value that moved off-chain. The reference's `rateAtTarget` is what Blue's own
+      // The one value that moved offchain. The reference's `rateAtTarget` is what Blue's own
       // `borrowRate` advanced it to, so this checks `advanceRateAtTarget` against the chain rather
       // than against itself — without it the client-side advance is the only unverified step left.
       expect(got ? advanceRateAtTarget(got) : undefined, `market ${i} rateAtTarget`).toBe(

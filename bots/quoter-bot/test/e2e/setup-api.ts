@@ -38,6 +38,7 @@ const route = (request: Request) => {
                 chain_id: MARKET.chainId,
                 consumed: '0',
                 max_assets: '1',
+                max_units: '0',
                 offers: [
                   {
                     // Unconfigured market: outside the bot's exposure model, so readiness must fail

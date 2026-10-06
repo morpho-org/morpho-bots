@@ -35,7 +35,7 @@ const PAGE_LIMIT = 100
  * limit. {@link PAGE_LIMIT} × this = 10,000 candidates, far above any realistic Midnight universe.
  * Hitting it is logged loud (`discover.max_pages`) because silently truncating a paginated candidate
  * set is *under-inclusion* — a liquidatable position we would then never see (over-inclusion is
- * harmless; the on-chain lens filters non-liquidatable pairs).
+ * harmless; the onchain lens filters non-liquidatable pairs).
  */
 export const MAX_DISCOVERY_PAGES = 100
 
@@ -52,7 +52,7 @@ export const LIQUIDATION_CANDIDATES_PATH = '/markets/midnight/liquidation-candid
 
 // Validates and normalizes one raw response row into a candidate, or `null` if malformed. Only
 // `market_id` + `borrower` feed the pipeline — the lens re-derives everything else (debt, health,
-// gates, maturity) fresh on-chain — so the rest of the row is intentionally ignored.
+// gates, maturity) fresh onchain — so the rest of the row is intentionally ignored.
 function parseCandidate(row: unknown): BorrowerCandidate | null {
   if (typeof row !== 'object' || row === null) return null
   const { market_id: marketId, borrower } = row as { market_id?: unknown; borrower?: unknown }
@@ -72,7 +72,7 @@ function parseCandidate(row: unknown): BorrowerCandidate | null {
  * endpoint, following the cursor across every page. The page fetcher is injected so this parsing is
  * unit-testable without a live endpoint; the runtime adapter is {@link createApiCandidateSource}.
  * Malformed rows are skipped and (market, borrower) pairs are de-duplicated across pages. Over-
- * inclusion is harmless — the on-chain lens drops non-liquidatable pairs — but a truncated page walk
+ * inclusion is harmless — the onchain lens drops non-liquidatable pairs — but a truncated page walk
  * would be under-inclusion, so the {@link MAX_DISCOVERY_PAGES} backstop logs loud rather than
  * silently stopping.
  */
@@ -141,7 +141,7 @@ export function createApiCandidateSource(deps: {
               chain_ids: [deps.chainId],
               health_factor_lte: deps.healthFactorLte,
               // `include_matured` is always sent: a matured market is liquidatable regardless of
-              // health factor and the on-chain gate liquidates on maturity, so those positions must
+              // health factor and the onchain gate liquidates on maturity, so those positions must
               // be in the candidate set even when their health factor sits above `healthFactorLte`.
               include_matured: 'true',
               limit: deps.limit ?? PAGE_LIMIT,

@@ -1,23 +1,32 @@
 import type { Hex } from 'viem'
 
+import { MathLib } from '@morpho-org/morpho-ts'
+
 import type {
   BootstrapMakeResult,
   BootstrapSubmittedTransaction,
   BootstrapTransactionSubmittedObserver
 } from '../../application/bootstrap/position-bootstrap-verbose'
 import type { BootstrapMakeService } from '../../application/bootstrap/position-bootstrap.service'
-import type { BootstrapOffer } from '../../domain/bootstrap/position-bootstrap'
+import type { BootstrapOffer } from '../../domain/position-bootstrap'
+import type { ExposureAdmission, PublicationWithheld } from '../exposure/exposure-admission.utils'
+import type { QuoterConfirmedTransaction } from '../transaction/quoter-transaction-executor'
 import type { BootstrapCrossBookOffer } from './bootstrap-cross-book.utils'
 import type { BootstrapActiveGroup } from './bootstrap-position.service'
 
 import { BootstrapOwnershipCleanupError } from '../../application/bootstrap/bootstrap-ownership-cleanup.error'
-import { operatorErrorName } from '../../application/operator-error-name.utils'
+import { operatorErrorName } from '../../application/monitoring/operator-error-name.utils'
+import { isAprWadInRange } from '../../domain/tick-window'
+import { snapshotUnavailable, withheldByAdmission } from '../exposure/exposure-admission.utils'
+import { minimumBlockAfter } from '../exposure/exposure-snapshot.utils'
 import { BootstrapAdapterError } from './bootstrap-adapter.error'
 import { resolveBootstrapProspectiveOffer } from './bootstrap-cross-book.utils'
 import { BootstrapHardHaltError } from './bootstrap-hard-halt.error'
 import { bootstrapMarketGroupIds } from './bootstrap-spread.utils'
 
 type BootstrapBookOffer = BootstrapCrossBookOffer
+
+const BPS_WAD = MathLib.WAD / 10_000n
 
 /** Protocol transport for confirmed Midnight publication and group invalidation. */
 interface BootstrapOfferTransport {
@@ -48,24 +57,38 @@ interface BootstrapOfferTransport {
   confirmPublishedGroup(group: Hex): Promise<void>
   /** Removes intent after publication fails. @param group - Unpublished group ID. @returns Completion after durable storage. */
   releaseGroupReservation(group: Hex): Promise<void>
+  /**
+   * Checks a reserved publication against a fresh exposure snapshot.
+   * @param candidate - Market, the publication's own group, its assets, and the block every
+   * replaced group's cancellation landed in.
+   * @returns Whether the offer still fits every configured limit and the market's accepted loss
+   * factor.
+   * @throws When no snapshot at or after `minimumBlockNumber` can be read.
+   */
+  admitPublication(candidate: {
+    marketId: Hex
+    groupId: Hex
+    assets: bigint
+    minimumBlockNumber?: bigint
+  }): Promise<ExposureAdmission>
   /** Removes confirmed canceled groups from durable ownership. @param groups - Canceled group IDs. @returns Completion after durable storage; configured IDs remain configuration-owned. */
   forgetGroups?(groups: readonly Hex[]): Promise<void>
-  /** Invalidates one active group onchain. @param group - Active group ID. @returns Completion after receipt confirmation. */
+  /** Invalidates one active group onchain. @param group - Active group ID. @returns Canonical transaction hash and receipt block after confirmation. */
   invalidate(
     group: Hex,
     onTransactionSubmitted?: BootstrapTransactionSubmittedObserver
-  ): Promise<Hex | void>
+  ): Promise<QuoterConfirmedTransaction | void>
   /**
    * Invalidates every listed group in one native Midnight multicall.
    * @param groups - Ordered distinct group IDs cancelled together.
    * @param onTransactionSubmitted - Optional observer notified once after wallet submission.
-   * @returns The shared canonical transaction hash after receipt confirmation.
+   * @returns The shared canonical transaction hash and receipt block after confirmation.
    * @throws An adapter error when policy validation, submission, or receipt confirmation fails.
    */
   invalidateBatch(
     groups: readonly Hex[],
     onTransactionSubmitted?: BootstrapTransactionSubmittedObserver
-  ): Promise<Hex | void>
+  ): Promise<QuoterConfirmedTransaction | void>
 }
 
 /** Serialized production adapter for one-cycle bootstrap publication and hard halts. */
@@ -83,7 +106,9 @@ export class MidnightBootstrapMakeService implements BootstrapMakeService {
    * @throws When any protocol mutation or confirmation fails.
    * @remarks Mutations are serialized; publication never races invalidation. An active offer with
    * the requested protocol tick, assets, and continuous-fee cap is retained even when raw
-   * reference-rate metadata moved.
+   * reference-rate metadata moved. A new publication is re-admitted against a snapshot at or after
+   * every replaced group's cancellation receipt; one that no longer fits is released unpublished
+   * and reported as `publicationWithheld`.
    */
   reconcile(parameters: {
     marketId: Hex
@@ -96,10 +121,13 @@ export class MidnightBootstrapMakeService implements BootstrapMakeService {
       | 'replace'
       | 'target-reached'
       | 'no-capacity'
+      | 'rate-out-of-range'
       | 'auto-refill-disabled'
+      | 'loss-factor-mismatch'
       | 'market-read-failed'
     onTransactionSubmitted?: BootstrapTransactionSubmittedObserver
   }) {
+    // oxlint-disable-next-line complexity
     return this.enqueue(async () => {
       const submittedTransactions: BootstrapSubmittedTransaction[] = []
       const groups = await this.strategyGroups()
@@ -149,8 +177,9 @@ export class MidnightBootstrapMakeService implements BootstrapMakeService {
             cappedOffer === resolved.offer
               ? resolved.prospective
               : await this.transport.toProspectiveBookOffer(cappedOffer, resolved.prospective.tick)
-          const publicationRateBps = publicationProspective.effectiveRateBps ?? cappedOffer.rateBps
-          if (publicationRateBps < minimumRateBps || publicationRateBps > maximumRateBps) {
+          const publicationRateWad =
+            publicationProspective.effectiveRateWad ?? cappedOffer.rateBps * BPS_WAD
+          if (!isAprWadInRange(publicationRateWad, { minimumRateBps, maximumRateBps })) {
             throw new BootstrapAdapterError('negative-spread')
           }
           resolvedOffer = cappedOffer
@@ -181,30 +210,20 @@ export class MidnightBootstrapMakeService implements BootstrapMakeService {
           groupId => groupId !== retainedGroup?.id && !this.confirmedCanceledGroups.has(groupId)
         )
       )
+      const cancellationBlocks: bigint[] = []
       try {
-        for (const groupId of invalidatedGroupIds) {
-          const txHash = await this.transport.invalidate(
-            groupId,
-            this.safeObserver(parameters.onTransactionSubmitted)
-          )
-          const cancellation = txHash ? ({ operation: 'cancel', txHash } as const) : undefined
-          if (cancellation) submittedTransactions.push(cancellation)
-          this.confirmedCanceledGroups.add(groupId)
-          try {
-            await this.transport.forgetGroups?.([groupId])
-          } catch (error) {
-            throw new BootstrapOwnershipCleanupError(
-              groupId,
-              [...submittedTransactions],
-              operatorErrorName(error)
-            )
-          }
-        }
+        await this.cancelThenForget(
+          [...invalidatedGroupIds],
+          submittedTransactions,
+          cancellationBlocks,
+          parameters.onTransactionSubmitted
+        )
       } catch (error) {
         if (publication) {
           try {
             await this.transport.releaseGroupReservation(publication.groupId)
           } catch (cleanupError) {
+            // oxlint-disable-next-line max-depth
             if (error instanceof BootstrapAdapterError) {
               error.recordReservationCleanupFailure(operatorErrorName(cleanupError))
             }
@@ -235,7 +254,23 @@ export class MidnightBootstrapMakeService implements BootstrapMakeService {
           ? ('unchanged' as const)
           : ({ submittedTransactions } satisfies BootstrapMakeResult)
       }
-      if (publication) {
+      if (publication && resolvedOffer) {
+        const publicationWithheld = await this.admit({
+          marketId: parameters.marketId,
+          groupId: publication.groupId,
+          assets: resolvedOffer.assets,
+          ...minimumBlockAfter(cancellationBlocks)
+        })
+        if (publicationWithheld) {
+          try {
+            await this.transport.releaseGroupReservation(publication.groupId)
+          } catch (cleanupError) {
+            throw new BootstrapAdapterError('publication-reservation-cleanup')
+              .recordReservationCleanupFailure(operatorErrorName(cleanupError))
+              .recordConfirmedTransactions(submittedTransactions)
+          }
+          return { submittedTransactions, publicationWithheld } satisfies BootstrapMakeResult
+        }
         try {
           const publicationResult = await publication.publish(
             this.safeObserver(parameters.onTransactionSubmitted)
@@ -250,6 +285,7 @@ export class MidnightBootstrapMakeService implements BootstrapMakeService {
             error instanceof BootstrapAdapterError &&
             ['transaction-reverted', 'ratifier-transaction-reverted'].includes(error.operation)
           ) {
+            // oxlint-disable-next-line max-depth
             try {
               await this.transport.releaseGroupReservation(publication.groupId)
             } catch {
@@ -306,11 +342,7 @@ export class MidnightBootstrapMakeService implements BootstrapMakeService {
    * @remarks All groups still requiring cancellation share one native Midnight multicall.
    */
   hardHalt(parameters: {
-    reason:
-      | 'reference-read-failed'
-      | 'bootstrap-decision-failed'
-      | 'bootstrap-configuration-failed'
-      | 'market-invalidation-failed'
+    reason: 'reference-read-failed' | 'bootstrap-decision-failed' | 'market-invalidation-failed'
     onTransactionSubmitted?: BootstrapTransactionSubmittedObserver
   }) {
     void parameters
@@ -351,11 +383,11 @@ export class MidnightBootstrapMakeService implements BootstrapMakeService {
     )
     if (pendingGroupIds.length === 0) return { submittedTransactions }
     try {
-      const txHash = await this.transport.invalidateBatch(
+      const confirmed = await this.transport.invalidateBatch(
         pendingGroupIds,
         this.safeObserver(onTransactionSubmitted)
       )
-      if (txHash) submittedTransactions.push({ operation: 'cancel', txHash })
+      if (confirmed) submittedTransactions.push({ operation: 'cancel', txHash: confirmed.txHash })
       for (const groupId of pendingGroupIds) this.confirmedCanceledGroups.add(groupId)
       await this.transport.forgetGroups?.(pendingGroupIds)
     } catch (error) {
@@ -364,6 +396,52 @@ export class MidnightBootstrapMakeService implements BootstrapMakeService {
       )
     }
     return { submittedTransactions }
+  }
+
+  /**
+   * Cancels every listed group in one transaction before forgetting any, so a failed ownership
+   * write can never skip a cancellation.
+   * @throws The cancellation failure, with every group still owned; or
+   * `BootstrapOwnershipCleanupError` once the cancellation confirmed but forgetting failed.
+   * @remarks Two or more groups share one native Midnight multicall; a lone group uses one
+   * `setConsumed` call.
+   */
+  private async cancelThenForget(
+    groupIds: readonly Hex[],
+    submittedTransactions: BootstrapSubmittedTransaction[],
+    cancellationBlocks: bigint[],
+    onTransactionSubmitted?: BootstrapTransactionSubmittedObserver
+  ) {
+    if (groupIds.length === 0) return
+    const observer = this.safeObserver(onTransactionSubmitted)
+    const confirmed =
+      groupIds.length === 1
+        ? await this.transport.invalidate(groupIds[0]!, observer)
+        : await this.transport.invalidateBatch(groupIds, observer)
+    if (confirmed) {
+      submittedTransactions.push({ operation: 'cancel', txHash: confirmed.txHash })
+      cancellationBlocks.push(confirmed.blockNumber)
+    }
+    for (const groupId of groupIds) this.confirmedCanceledGroups.add(groupId)
+    try {
+      await this.transport.forgetGroups?.(groupIds)
+    } catch (error) {
+      throw new BootstrapOwnershipCleanupError(
+        groupIds[0]!,
+        [...submittedTransactions],
+        operatorErrorName(error)
+      )
+    }
+  }
+
+  private async admit(
+    candidate: Parameters<BootstrapOfferTransport['admitPublication']>[0]
+  ): Promise<PublicationWithheld | undefined> {
+    try {
+      return withheldByAdmission(await this.transport.admitPublication(candidate))
+    } catch (error) {
+      return snapshotUnavailable(error)
+    }
   }
 
   private safeObserver(

@@ -3,22 +3,23 @@ import { morphoViemExtension } from '@morpho-org/morpho-sdk'
 import { createPublicClient, http, isAddressEqual } from 'viem'
 
 import type { OfferInvalidationPort } from '../../application/invalidation/offer-invalidation.service'
-import type { OperatorAdapterOperation } from '../../application/operator-error-name.utils'
+import type { OperatorAdapterOperation } from '../../application/monitoring/operator-error-name.utils'
 import type { ConfigService } from '../../config/config.service'
 
 import { supportedChain } from '../../config/supported-chains.utils'
+import { BootstrapAdapterError } from '../bootstrap/bootstrap-adapter.error'
 import { createBootstrapGroupOwnership } from '../bootstrap/bootstrap-group-ownership.utils'
-import { readBootstrapGroups } from '../bootstrap/bootstrap-groups.utils'
 import { createLadderGroupOwnership } from '../ladder/ladder-group-ownership.utils'
-import { createSignerAccount } from '../make/signer-account.utils'
+import { readMakerOfferGroups } from '../provider/offer-groups.utils'
+import { assertOfferInvalidationTransaction } from '../transaction/offer-invalidation-transaction.utils'
 import {
   createQuoterTransactionExecutor,
   type QuoterTransactionExecutor
 } from '../transaction/quoter-transaction-executor'
+import { createSignerAccount } from '../transaction/signer-account.utils'
 import { invalidateOffersBatch } from './batch-offer-invalidation.utils'
 import { OfferInvalidationAdapterError } from './offer-invalidation-adapter.error'
 import { offerInvalidationGroupIds } from './offer-invalidation-group.utils'
-import { assertOfferInvalidationTransaction } from './offer-invalidation-transaction.utils'
 
 const providerOperation = async <Result>(
   operation: OperatorAdapterOperation,
@@ -64,8 +65,7 @@ export const createProductionOfferInvalidationPort = (
   })
   const ladderOwnership = createLadderGroupOwnership({
     chainId: config.chainId,
-    maker,
-    strategyMarketIds: config.ladder.map(item => item.marketId)
+    maker
   })
 
   const preflight = () =>
@@ -90,7 +90,8 @@ export const createProductionOfferInvalidationPort = (
   const listActiveGroupIds = () =>
     providerOperation('offer-groups-read', async () => {
       const [groups, bootstrapGroupIds, ladderGroupIds] = await Promise.all([
-        readBootstrapGroups({
+        readMakerOfferGroups({
+          adapterError: BootstrapAdapterError,
           chainId: config.chainId,
           maker,
           morphoApiBaseUrl: config.morphoApiBaseUrl,
@@ -160,13 +161,15 @@ export const createProductionOfferInvalidationPort = (
           midnight: config.setup.midnight,
           maker,
           groupIds,
-          execute: transaction =>
-            transactionExecutor.execute({
-              transaction,
-              operation: 'cancel-batch',
-              label: 'invalidation:cancel-batch',
-              onTransactionSubmitted
-            })
+          execute: async transaction =>
+            (
+              await transactionExecutor.execute({
+                transaction,
+                operation: 'cancel-batch',
+                label: 'invalidation:cancel-batch',
+                onTransactionSubmitted
+              })
+            ).txHash
         })
       ),
     invalidate: (groupId, onTransactionSubmitted) =>
@@ -180,12 +183,13 @@ export const createProductionOfferInvalidationPort = (
           account: maker
         })
 
-        return transactionExecutor.execute({
+        const { txHash } = await transactionExecutor.execute({
           transaction,
           operation: 'cancel',
           label: `invalidation:cancel:${groupId}`,
           onTransactionSubmitted
         })
+        return txHash
       }),
     forgetGroups: groupIds =>
       providerOperation('ownership-cleanup', async () => {

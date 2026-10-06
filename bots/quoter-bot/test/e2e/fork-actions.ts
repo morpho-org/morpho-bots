@@ -1,8 +1,12 @@
-import { midnightAbi, Offer, OfferUtils, Tree } from '@morpho-org/midnight-sdk'
+import type { Address, Hex } from 'viem'
+
+import { midnightAbi, midnightBundlesAbi, Offer, OfferUtils, Tree } from '@morpho-org/midnight-sdk'
 import { morphoViemExtension } from '@morpho-org/morpho-sdk'
 import {
   createWalletClient,
+  decodeFunctionData,
   encodeAbiParameters,
+  encodeFunctionData,
   erc20Abi,
   http,
   isAddressEqual,
@@ -33,7 +37,7 @@ import {
 const TOKEN_BALANCE_STORAGE_SLOT = 9n
 const TAKER_COLLATERAL = 100_000_000n
 
-const tokenBalanceStorageKey = (account: `0x${string}`) =>
+const tokenBalanceStorageKey = (account: Address) =>
   keccak256(
     encodeAbiParameters(parseAbiParameters('address, uint256'), [
       account,
@@ -41,11 +45,31 @@ const tokenBalanceStorageKey = (account: `0x${string}`) =>
     ])
   )
 
+const sellExactUnits = <T extends { data: Hex }>(transaction: T, units: bigint): T => {
+  const { functionName, args } = decodeFunctionData({
+    abi: midnightBundlesAbi,
+    data: transaction.data
+  })
+  if (functionName !== 'midnightBundlesV1SupplyCollateralAndSellWithAssetsTarget') {
+    throw new TypeError(`Unexpected maker-lend take bundle ${functionName}`)
+  }
+  const [, , ...rest] = args
+  return {
+    ...transaction,
+    data: encodeFunctionData({
+      abi: midnightBundlesAbi,
+      functionName: 'midnightBundlesV1SupplyCollateralAndSellWithUnitsTarget',
+      args: [units, 0n, ...rest]
+    })
+  }
+}
+
 /**
  * Executes a real partial or full maker-lend fill through Morpho SDK and forked Midnight contracts.
  * @param anvil - Running Base fork.
  * @param router - Stateful HTTP Router boundary indexing published payloads.
- * @param assets - Positive USDC assets borrowed from the maker offer.
+ * @param target - Positive USDC assets borrowed from the maker offer, or the exact credit units to
+ * sell into it, which is how a take consumes all of a units cap.
  * @returns Successful fork transaction receipt.
  * @throws When the Router has no buy offer or any SDK requirement/simulation/transaction fails.
  * @remarks Funds only the disposable fork taker through a pinned token storage-layout fixture.
@@ -53,8 +77,9 @@ const tokenBalanceStorageKey = (account: `0x${string}`) =>
 export const takeMakerLend = async (
   anvil: AnvilHandle,
   router: RouterApiHandle,
-  assets: bigint
+  target: bigint | { units: bigint }
 ) => {
+  const amount = typeof target === 'bigint' ? target : target.units
   const active = await router.activeOffers()
   const item = active.find(candidate => OfferUtils.toStruct({ offer: candidate.offer }).buy)
   if (!item) throw new TypeError('Expected an active maker-lend offer')
@@ -78,9 +103,9 @@ export const takeMakerLend = async (
     accountAddress: ANVIL_TAKER_ACCOUNT.address,
     marketData,
     collateralAssets: TAKER_COLLATERAL,
-    loanAssets: assets,
-    maxUnits: assets * 2n,
-    takeableOffers: [{ units: assets * 2n, offer, ratifierData: item.ratifierData }],
+    loanAssets: amount,
+    maxUnits: amount * 2n,
+    takeableOffers: [{ units: amount * 2n, offer, ratifierData: item.ratifierData }],
     deadline: maxUint256
   })
   for (const requirement of await output.getRequirements()) {
@@ -93,7 +118,9 @@ export const takeMakerLend = async (
     const receipt = await wallet.waitForTransactionReceipt({ hash })
     if (receipt.status !== 'success') throw new TypeError('Taker requirement reverted')
   }
-  const hash = await wallet.sendTransaction(output.buildTx())
+  const hash = await wallet.sendTransaction(
+    typeof target === 'bigint' ? output.buildTx() : sellExactUnits(output.buildTx(), target.units)
+  )
   const receipt = await wallet.waitForTransactionReceipt({ hash })
   if (receipt.status !== 'success') throw new TypeError('Maker-lend take reverted')
   const block = await wallet.getBlock({ blockTag: 'latest' })

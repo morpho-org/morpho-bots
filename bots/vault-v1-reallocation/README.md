@@ -1,6 +1,6 @@
 # vault-v1-reallocation
 
-Reallocates liquidity between the Morpho Blue markets of whitelisted MetaMorpho (Vault V1) vaults,
+Reallocates liquidity between the Morpho Blue Markets of whitelisted Vault V1 Vaults,
 migrated from the standalone
 [morpho-blue-reallocation-bot](https://github.com/morpho-org/morpho-blue-reallocation-bot) repo onto
 the shared `@repo/bot-kit` runtime.
@@ -27,7 +27,7 @@ vault concurrently, so a pass costs the slowest vault rather than the sum:
    [src/state/lens.sol.ts](./src/state/lens.sol.ts): the vault's `owner` / `curator` /
    `isAllocator(eoa)`, its withdraw queue, and per market the params, accrued Blue state, the vault's
    position, the cap, and `rateAtTarget`. The lens calls `Morpho.accrueInterest` inside the simulation
-   before reading, so the numbers are the market's exact on-chain state at that block — no client-side
+   before reading, so the numbers are the market's exact onchain state at that block — no client-side
    accrual, no block-timestamp handling. One vault therefore costs **one billed RPC call per pass**,
    not the ~55–65 the previous `fetchAccrualVault` fan-out billed for a 10-market vault.
 3. Re-check that the EOA still satisfies `onlyAllocatorRole` — the snapshot's `isAllocator`, `owner`,
@@ -119,7 +119,7 @@ value on the service.
 | `REALLOCATION_INTERVAL_MS`                                | no       | `600000`    | min wall-clock ms between passes                         |
 | `MIN_APY_DELTA_BIPS`                                      | no       | `25`        | strategy-config overrides win                            |
 | `MIN_UTILIZATION_DELTA_BIPS`                              | no       | `250`       | strategy-config overrides win                            |
-| `ALLOW_IDLE_REALLOCATION`                                 | no       | `true`      | apy-range only                                           |
+| `ALLOW_IDLE_REALLOCATION`                                 | no       | `true`      | `APY-range` only                                         |
 | `DRY_RUN`                                                 | no       | `false`     | plan + simulate + log, never submit                      |
 | `MAX_FEE_GWEI`                                            | no       | `300`       | policy + queue fee ceiling                               |
 | `LOG_LEVEL`                                               | no       | `info`      | debug/info/warn/error                                    |

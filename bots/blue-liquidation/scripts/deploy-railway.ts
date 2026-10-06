@@ -359,7 +359,7 @@ await ensureContext()
 const betterstackHost = process.env.BETTERSTACK_INGESTING_HOST?.trim()
 const betterstackToken = process.env.BETTERSTACK_SOURCE_TOKEN?.trim()
 
-// --- bot-<chainId>: one liquidation runner per chain. The in-container var names stay RPC_URL /
+// bot-<chainId>: one liquidation runner per chain. The in-container var names stay RPC_URL /
 // LIQUIDATOR_PRIVATE_KEY (the chainId suffix is only an operator-side convention). The whole venue
 // posture is SYNCHRONIZED every full run — ENABLE_LIFI and ALLOW_DETECTION_ONLY set explicitly
 // (true or false), and each venue key either set from this run's inputs or DELETED when absent:

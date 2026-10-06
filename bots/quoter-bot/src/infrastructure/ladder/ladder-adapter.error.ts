@@ -1,5 +1,5 @@
 import type { LadderSubmittedTransaction } from '../../application/ladder/ladder-verbose'
-import type { OperatorAdapterOperation } from '../../application/operator-error-name.utils'
+import type { OperatorAdapterOperation } from '../../application/monitoring/operator-error-name.utils'
 
 /** Stable production ladder-adapter failure without provider data or credentials. */
 export class LadderAdapterError extends Error {

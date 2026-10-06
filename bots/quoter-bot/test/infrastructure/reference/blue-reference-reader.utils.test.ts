@@ -43,6 +43,8 @@ const funded = (totalSupplyAssets: bigint) =>
     lastUpdate: LAST_UPDATE
   })
 
+const head = { blockNumber: 1_000n, timestamp: LAST_UPDATE + 2_000n }
+
 const client = (latest: bigint, timestampOf: (blockNumber: bigint) => bigint) => ({
   getBlock: async (parameters: { blockTag: 'latest' } | { blockNumber: bigint }) =>
     'blockTag' in parameters
@@ -70,7 +72,9 @@ describe('createBlueReferenceReader', () => {
       BASE_CHAIN_ID
     )
 
-    const error: unknown = await reader.readAtOrBefore(500n).catch(value => value)
+    const error: unknown = await reader
+      .readAtOrBefore(500n, { blockNumber: 1_000n, timestamp: 1_000n })
+      .catch(value => value)
 
     expect(error).toBeInstanceOf(ReferenceAdapterError)
     expect(error).toMatchObject({ operation: 'reference-uninitialized' })
@@ -120,12 +124,28 @@ describe('createBlueReferenceReader', () => {
     )
 
     // Blocks are two seconds apart, so a target one second past block 500 resolves back to it.
-    expect(await reader.readAtOrBefore(LAST_UPDATE + 1_001n)).toMatchObject({ blockNumber: 500n })
-    expect(await reader.readAtOrBefore(LAST_UPDATE + 1_000n)).toMatchObject({ blockNumber: 500n })
+    expect(await reader.readAtOrBefore(LAST_UPDATE + 1_001n, head)).toMatchObject({
+      blockNumber: 500n
+    })
+    expect(await reader.readAtOrBefore(LAST_UPDATE + 1_000n, head)).toMatchObject({
+      blockNumber: 500n
+    })
     expect(fetchMarket).toHaveBeenLastCalledWith(marketId, expect.anything(), {
       blockNumber: 500n,
       deployless: false
     })
+  })
+
+  test('searches from the given head without reading a newer latest block', async () => {
+    fetchMarket.mockResolvedValue(funded(1_000_000_000n))
+    const readers = client(2_000n, block => LAST_UPDATE + block * 2n)
+    const getBlock = vi.spyOn(readers, 'getBlock')
+    const reader = createBlueReferenceReader(marketId, readers as never, BASE_CHAIN_ID)
+
+    expect(await reader.readAtOrBefore(LAST_UPDATE + 3_000n, head)).toMatchObject({
+      blockNumber: 1_000n
+    })
+    expect(getBlock).not.toHaveBeenCalledWith({ blockTag: 'latest' })
   })
 
   test('rejects a target older than the chain instead of reading genesis state', async () => {
@@ -136,7 +156,7 @@ describe('createBlueReferenceReader', () => {
       BASE_CHAIN_ID
     )
 
-    await expect(reader.readAtOrBefore(LAST_UPDATE - 1n)).rejects.toMatchObject({
+    await expect(reader.readAtOrBefore(LAST_UPDATE - 1n, head)).rejects.toMatchObject({
       operation: 'reference-history'
     })
     expect(fetchMarket).not.toHaveBeenCalled()

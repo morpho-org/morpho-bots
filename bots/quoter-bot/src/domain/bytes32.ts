@@ -1,3 +1,4 @@
+import type { Hex } from 'viem'
 /**
  * Checks exact bytes32 syntax without importing account or provider-capable viem modules.
  * @param value - Candidate hexadecimal identifier.
@@ -10,5 +11,4 @@ export const isBytes32 = (value: string) => /^0x[0-9a-fA-F]{64}$/.test(value)
  * @param value - Previously validated bytes32 identifier.
  * @returns The lower-case 0x-prefixed representation.
  */
-export const normalizeBytes32 = (value: string): `0x${string}` =>
-  `0x${value.slice(2).toLowerCase()}`
+export const normalizeBytes32 = (value: string): Hex => `0x${value.slice(2).toLowerCase()}`

@@ -424,8 +424,6 @@ describe('loadConfig', () => {
     )
   })
 
-  // --- Venue enablement -----------------------------------------------------
-
   it('enables 1inch when only ONEINCH_API_KEY is set', () => {
     const config = loadConfig(baseEnv({ ZEROX_API_KEY: undefined, ONEINCH_API_KEY: 'k' }), deps)
     expect(config.venues.enabled).toEqual(['1inch'])
@@ -498,8 +496,6 @@ describe('loadConfig', () => {
       /ZEROX_BASE_URL is not a valid URL/
     )
   })
-
-  // --- Markets whitelist + probe --------------------------------------------
 
   it('overrides the markets API URL and refresh interval from env', () => {
     const config = loadConfig(
@@ -586,8 +582,6 @@ describe('loadConfig', () => {
     expect(config.probe.staleMs).toBe(30_000)
     expect(config.probe.httpRps).toBe(2)
   })
-
-  // --- Quoting + discovery (unchanged) --------------------------------------
 
   it('parses quoting tunables from env, overriding defaults', () => {
     const config = loadConfig(

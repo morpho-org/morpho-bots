@@ -11,11 +11,12 @@ import { base } from 'viem/chains'
 import { describe, expect, test } from 'vitest'
 
 import { SafeProviderError } from '../../../src/application/setup/safe-provider.error'
-import { requestJson } from '../../../src/infrastructure/setup-state/http-json.utils'
-import { ProviderPaginationError } from '../../../src/infrastructure/setup-state/provider-pagination.error'
-import { ProviderReadError } from '../../../src/infrastructure/setup-state/provider-read.error'
-import { executeProviderRead } from '../../../src/infrastructure/setup-state/provider-read.utils'
-import { ProviderResponseError } from '../../../src/infrastructure/setup-state/provider-response.error'
+import { MAX_LOSS_FACTOR } from '../../../src/domain/loss-factor'
+import { requestJson } from '../../../src/infrastructure/provider/http-json.utils'
+import { ProviderPaginationError } from '../../../src/infrastructure/provider/provider-pagination.error'
+import { ProviderReadError } from '../../../src/infrastructure/provider/provider-read.error'
+import { executeProviderRead } from '../../../src/infrastructure/provider/provider-read.utils'
+import { ProviderResponseError } from '../../../src/infrastructure/provider/provider-response.error'
 import { ViemSetupStateService } from '../../../src/infrastructure/setup-state/viem-setup-state.service'
 
 // bun's `Bun.serve` accepted a Web-standard fetch handler and exposed `.port`/`.stop()`. These tests
@@ -93,6 +94,7 @@ const createState = (
     ladderSellGroupIds?: readonly Hex[]
     referenceLookbackSeconds?: bigint
     withdrawnReferenceMarket?: boolean
+    lossFactor?: unknown
   } = {}
 ) => {
   const calls: string[] = []
@@ -135,6 +137,7 @@ const createState = (
         }
       }
       if (functionName === 'tickSpacing') return 4
+      if (functionName === 'lossFactor') return overrides.lossFactor ?? 0n
       throw new Error(`unexpected ${String(functionName)}`)
     }
   }
@@ -546,7 +549,7 @@ describe('ViemSetupStateService', () => {
     }
   })
 
-  test('reads a configured book from the market registry and on-chain state concurrently', async () => {
+  test('reads a configured book from the market registry and onchain state concurrently', async () => {
     const { state, calls } = createState({})
 
     expect(await state.getBook(marketId)).toEqual({
@@ -1206,5 +1209,18 @@ describe('ViemSetupStateService', () => {
     })
 
     await expect(state.inspectOffers(maker)).rejects.toThrow('Morpho API offer item limit exceeded')
+  })
+
+  test('reads a market loss factor and rejects a response that is not a uint128', async () => {
+    expect(
+      await createState({}, { lossFactor: MAX_LOSS_FACTOR }).state.getLossFactor(marketId)
+    ).toBe(MAX_LOSS_FACTOR)
+    for (const lossFactor of [1, -1n, MAX_LOSS_FACTOR + 1n]) {
+      const error = await createState({}, { lossFactor })
+        .state.getLossFactor(marketId)
+        .catch((value: unknown) => value)
+      expect(error).toBeInstanceOf(ProviderResponseError)
+      expect(error).toMatchObject({ operation: 'market-loss-factor' })
+    }
   })
 })

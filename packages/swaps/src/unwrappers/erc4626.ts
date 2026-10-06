@@ -39,11 +39,11 @@ const erc4626Abi = [
 // `redeem(uint256 shares, address receiver, address owner)`: the shares word sits right after the
 // 4-byte selector, so splicing the Executor's live share balance there makes the redeem burn
 // exactly what arrived — required for midnight's cap-binding branch (seizedAssets is derived
-// on-chain) and it absorbs donations to the shared singleton.
+// onchain) and it absorbs donations to the shared singleton.
 export const ERC4626_SHARES_OFFSET = 4n
 
 /**
- * Detects ERC4626 vault shares and converts them into a balance-spliced
+ * Detects ERC-4626 vault shares and converts them into a balance-spliced
  * `redeem(shares, executor, executor)` step (no approval needed — the vault burns the caller's own
  * shares). Detection probes `asset()` (memoized per token, negatives included) and gates on
  * `previewRedeem(amountIn)` succeeding with a non-zero output — which by spec also filters

@@ -1,13 +1,16 @@
 import type { Address, Hex } from 'viem'
 
-import type { OperatorAdapterOperation } from '../operator-error-name.utils'
+import type { LendHalt, LossFactorDirection } from '../../domain/loss-factor'
+import type { OperatorAdapterOperation } from './operator-error-name.utils'
+
+import { incrementalLossBps } from '../../domain/loss-factor'
 
 /**
  * Version of the shipped event contract, bound once into logger context rather than onto each record.
  * @remarks Bump on any breaking field rename or removal so a consumer can pin. Adding an optional
  * field is not breaking.
  */
-export const MONITORING_SCHEMA_VERSION = 2
+export const MONITORING_SCHEMA_VERSION = 3
 
 /** Workflow that produced one monitoring record. */
 export type MonitoringWorkflow = 'setup-check' | 'bootstrap' | 'ladder'
@@ -23,12 +26,14 @@ export type MonitoringSide = 'lower' | 'higher'
  * enforced by construction rather than by types:
  *
  * - **Units.** Every `*Assets` field is an unsigned raw smallest-unit amount of the configured
- *   `loanAsset`, and every `*Bps` field is an integer basis-point value. Both serialize as decimal
- *   strings because the bot-kit logger flattens `bigint` before shipping. The bot never reads token
- *   decimals, so no field is human-scaled.
+ *   `loanAsset`, every `*Units` field is an unsigned raw amount of Midnight credit units (face, in
+ *   the same smallest unit), and every `*Bps` field is an integer basis-point value. All serialize as
+ *   decimal strings because the bot-kit logger flattens `bigint` before shipping. The bot never reads
+ *   token decimals, so no field is human-scaled. Capacity, reservation, and exposure-cap
+ *   `*Assets` fields count face credit, as `creditAssets` does.
  * - **Cardinality.** Only `workflow`, `marketId`, `side`, `status`, `stage`, `action`, `reason`,
- *   `check`, `bound`, `cap`, `operation`, `state`, `referenceMode`, and `adapterOperation` may be
- *   used as grouping dimensions; `adapterOperation` is an allowlisted literal, never provider text.
+ *   `check`, `bound`, `cap`, `operation`, `state`, `referenceMode`, `direction`, `defaulted`, and
+ *   `adapterOperation` may be used as grouping dimensions; `adapterOperation` is an allowlisted literal, never provider text.
  *   `txHash` and `groupId` are unbounded trace-only correlation fields and must never be grouped on.
  *   Error text never appears — only allowlisted `errorName` classifications.
  */
@@ -64,16 +69,27 @@ export type MonitoringEvent =
       durationMs?: number
       errorName?: string
       adapterOperation?: OperatorAdapterOperation
+      /** Allowlisted cause of a `snapshot-unavailable` failure. */
+      snapshotErrorOperation?: OperatorAdapterOperation
     }
   | {
-      event: 'guardrail.rate-clamped'
+      /**
+       * Derived rates outside the hard range, or ladder sells above `maximumSellRateBps`, were
+       * omitted, never clamped onto `bound`; `outermostRateBps` is the most extreme omitted rate.
+       */
+      event: 'guardrail.rate-omitted'
       workflow: MonitoringWorkflow
       marketId: Hex
       side?: MonitoringSide
-      clampedRungs: number
-      bound: 'minimum' | 'maximum'
+      omittedRungs: number
+      omittedAssets: bigint
+      bound: 'minimum' | 'maximum' | 'sell-ceiling'
+      outermostRateBps: bigint
+      referenceRateBps?: bigint
       minimumRateBps: bigint
       maximumRateBps: bigint
+      /** Ceiling a same-market bootstrap derives for ladder sells, when one applies. */
+      maximumSellRateBps?: bigint
     }
   | {
       event: 'guardrail.cross-book-cleared'
@@ -120,6 +136,44 @@ export type MonitoringEvent =
     }
   | { event: 'guardrail.spread-rejected'; marketId: Hex }
   | {
+      /** A prepared publication was released unpublished after its replaced groups were cancelled. */
+      event: 'guardrail.publication-withheld'
+      workflow: MonitoringWorkflow
+      marketId: Hex
+      reason:
+        | 'capacity-changed'
+        | 'price-changed'
+        | 'loss-factor-mismatch'
+        | 'snapshot-unavailable'
+        | 'below-minimum-offer'
+        | 'rate-out-of-range'
+      /** Router minimum offer size in raw loan assets, present for `below-minimum-offer`. */
+      minimumAssets?: string
+    }
+  | {
+      /**
+       * A desired side left unpublished because its tick window was empty. The bootstrap buy is side
+       * `higher` and reports only its snapshot here; its publication block reports
+       * `guardrail.publication-withheld` with `rate-out-of-range`.
+       */
+      event: 'guardrail.side-withdrawn'
+      workflow: 'ladder' | 'bootstrap'
+      marketId: Hex
+      side: MonitoringSide
+    }
+  | {
+      /** Lending is halted by a loss-factor mismatch; cadence per {@link createLendHaltedEvents}. */
+      event: 'guardrail.lend-halted'
+      workflow: MonitoringWorkflow
+      marketId: Hex
+      lossFactor: bigint
+      acceptedLossFactor: bigint
+      defaulted: boolean
+      direction: LossFactorDirection
+      /** Lender credit slashed since the accepted value; present only for `above`. */
+      incrementalLossBps?: bigint
+    }
+  | {
       event: 'guardrail.halted'
       workflow: MonitoringWorkflow
       marketId?: Hex
@@ -134,6 +188,16 @@ export type MonitoringEvent =
       marketId: Hex
       referenceRateBps: bigint
       targetRateBps?: bigint
+    }
+  | {
+      /** Lend-rate skew a configured inventory skew applied to the decision's higher side. */
+      event: 'inventory-skew.observed'
+      workflow: MonitoringWorkflow
+      marketId: Hex
+      inventorySkewBps: bigint
+      skewClamped: boolean
+      creditAssets: bigint
+      neutralCredit: bigint
     }
   | {
       event: 'position.observed'
@@ -161,7 +225,7 @@ export type MonitoringEvent =
       side: MonitoringSide
       state: 'quoting' | 'empty'
       rungs: number
-      totalAssets: bigint
+      totalUnits: bigint
       bestRateBps?: bigint
       worstRateBps?: bigint
       centerRateBps?: bigint
@@ -170,9 +234,9 @@ export type MonitoringEvent =
       event: 'offer.consumed'
       marketId: Hex
       side: MonitoringSide
-      consumedDeltaAssets: bigint
+      consumedDeltaUnits: bigint
       groupRateBps: bigint
-      remainingAssets: bigint
+      remainingUnits: bigint
       groupId: Hex
     }
   | {
@@ -209,15 +273,19 @@ const MONITORING_EVENT_NAMES = [
   'market.configured',
   'bot.failed',
   'cycle.completed',
-  'guardrail.rate-clamped',
+  'guardrail.rate-omitted',
   'guardrail.cross-book-cleared',
   'guardrail.book-cleared',
   'guardrail.book-crossed',
   'guardrail.exposure-capped',
   'guardrail.rungs-truncated',
   'guardrail.spread-rejected',
+  'guardrail.publication-withheld',
+  'guardrail.side-withdrawn',
+  'guardrail.lend-halted',
   'guardrail.halted',
   'reference.observed',
+  'inventory-skew.observed',
   'position.observed',
   'bootstrap.progress',
   'book.observed',
@@ -268,3 +336,110 @@ export const adapterOperationOf = (result: {
   marketId: Hex
   adapterOperation?: OperatorAdapterOperation
 }) => (result.adapterOperation === undefined ? {} : { adapterOperation: result.adapterOperation })
+
+/**
+ * Projects the allowlisted cause behind a `snapshot-unavailable` failure onto a monitoring record.
+ * @param result - One sanitized market outcome.
+ * @returns `{ snapshotErrorOperation }` when the result carries one, otherwise an empty object.
+ */
+export const snapshotErrorOperationOf = (result: object) =>
+  'snapshotErrorOperation' in result && result.snapshotErrorOperation !== undefined
+    ? { snapshotErrorOperation: result.snapshotErrorOperation as OperatorAdapterOperation }
+    : {}
+
+/**
+ * Projects a withheld publication into its guardrail record.
+ * @param workflow - Strategy that prepared the publication.
+ * @param result - One sanitized market outcome.
+ * @returns One `guardrail.publication-withheld` record, or none for any other outcome.
+ */
+export const publicationWithheldEvents = (
+  workflow: MonitoringWorkflow,
+  result: {
+    marketId: Hex
+    status: string
+    action?: string
+    reason?: string
+    adapterOperation?: string
+    minimumAssets?: string
+  }
+): readonly MonitoringEvent[] => {
+  const reason =
+    result.action === 'publication-withheld'
+      ? result.reason === 'loss-factor-mismatch' ||
+        result.reason === 'price-changed' ||
+        result.reason === 'below-minimum-offer' ||
+        result.reason === 'rate-out-of-range'
+        ? result.reason
+        : ('capacity-changed' as const)
+      : result.status === 'failed' && result.adapterOperation === 'snapshot-unavailable'
+        ? ('snapshot-unavailable' as const)
+        : undefined
+  return reason === undefined
+    ? []
+    : [
+        {
+          event: 'guardrail.publication-withheld',
+          workflow,
+          marketId: result.marketId,
+          reason,
+          ...(reason === 'below-minimum-offer' && result.minimumAssets !== undefined
+            ? { minimumAssets: result.minimumAssets }
+            : {})
+        }
+      ]
+}
+
+/** Cycles a continuing, unchanged lend halt stays silent between repeated `guardrail.lend-halted` records. */
+export const LEND_HALTED_REPEAT_CYCLES = 10
+
+const lendHaltOf = (result: object): LendHalt | undefined =>
+  'lossFactor' in result &&
+  'acceptedLossFactor' in result &&
+  'defaulted' in result &&
+  'direction' in result
+    ? (result as LendHalt)
+    : undefined
+
+/**
+ * Creates the stateful `guardrail.lend-halted` projection for one process.
+ * @returns A projection emitting a record when a market's halt starts or its values change, and
+ * again every {@link LEND_HALTED_REPEAT_CYCLES} cycles while it continues unchanged.
+ * @remarks Any result carrying a known halt counts, including one whose cancellation failed or
+ * halted the strategy. A market whose result carries none ends its halt; one absent from a cycle
+ * keeps it.
+ */
+export const createLendHaltedEvents = () => {
+  const halts = new Map<string, { values: string; cycles: number }>()
+  return (
+    workflow: MonitoringWorkflow,
+    results: readonly { marketId: Hex }[]
+  ): readonly MonitoringEvent[] =>
+    results.flatMap(result => {
+      const key = `${workflow}:${result.marketId}`
+      const halt = lendHaltOf(result)
+      if (!halt) {
+        halts.delete(key)
+        return []
+      }
+      const values = `${halt.lossFactor}:${halt.acceptedLossFactor}`
+      const previous = halts.get(key)
+      const repeated =
+        previous?.values === values && previous.cycles + 1 < LEND_HALTED_REPEAT_CYCLES
+      halts.set(key, { values, cycles: repeated ? previous.cycles + 1 : 0 })
+      if (repeated) return []
+      const lossBps = incrementalLossBps(halt)
+      return [
+        {
+          event: 'guardrail.lend-halted',
+          workflow,
+          marketId: result.marketId,
+          lossFactor: halt.lossFactor,
+          acceptedLossFactor: halt.acceptedLossFactor,
+          defaulted: halt.defaulted,
+          direction: halt.direction,
+          ...(lossBps === undefined ? {} : { incrementalLossBps: lossBps })
+        }
+      ]
+    })
+}

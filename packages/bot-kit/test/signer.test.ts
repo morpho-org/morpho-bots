@@ -1,10 +1,11 @@
 import type { Hex } from 'viem'
 
-import { InvalidInputRpcError, keccak256, parseTransaction } from 'viem'
+import { InvalidInputRpcError, keccak256, MethodNotFoundRpcError, parseTransaction } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
 import { base } from 'viem/chains'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import type { Logger } from '../src/logger'
 import type { Policy } from '../src/policy'
 
 import { EXECUTOR_SELECTOR, PolicyViolationError } from '../src/policy'
@@ -48,13 +49,16 @@ const isRpcFailure = (value: unknown): value is RpcFailure =>
 
 const signedTransactionHash = (body: RpcBody): Hex => keccak256(body.params?.[0] as Hex)
 
-// Canned JSON-RPC: maps method → result/function. Any unmocked method throws (surfaces a missing
-// stub).
+// Canned JSON-RPC: maps method → result/function. Any unmocked method answers "method not found",
+// as a node without it would; viem does not retry that code, so `eth_fillTransaction` falls back
+// at once and a genuinely missing stub still fails the call it belongs to.
 function mockRpc(results: Record<string, unknown>) {
   const handler = async (_url: unknown, init?: { body?: string }): Promise<Response> => {
     const body = JSON.parse(init?.body ?? '{}') as RpcBody
-    if (!(body.method in results)) throw new Error(`unmocked RPC method ${body.method}`)
-    const value = results[body.method]
+    const value =
+      body.method in results
+        ? results[body.method]
+        : rpcFailure(MethodNotFoundRpcError.code, `unmocked RPC method ${body.method}`)
     const result = typeof value === 'function' ? await value(body) : value
     if (isRpcFailure(result)) {
       return Response.json({ jsonrpc: '2.0', id: body.id, error: result.rpcError })
@@ -399,5 +403,125 @@ describe('createSigner', () => {
       })
     ).rejects.toMatchObject({ check: 'selector' })
     expect(sends).toBe(0)
+  })
+})
+
+describe('sign and broadcastRaw', () => {
+  afterEach(() => vi.restoreAllMocks())
+
+  const REQUEST = {
+    to: EXECUTOR,
+    data: EXECUTOR_SELECTOR,
+    maxFeePerGas: 1_000_000_000n,
+    maxPriorityFeePerGas: 1_000_000n
+  } as const
+
+  it('broadcastRaw sends exactly the bytes whose hash sign returned', async () => {
+    const sent: Hex[] = []
+    mockRpc({
+      eth_chainId: `0x${base.id.toString(16)}`,
+      eth_estimateGas: '0x5208',
+      eth_getBlockByNumber: { baseFeePerGas: '0x7' },
+      eth_sendRawTransaction: (body: RpcBody) => {
+        sent.push(body.params?.[0] as Hex)
+        return signedTransactionHash(body)
+      }
+    })
+    const { sign, broadcastRaw } = createSigner({ ...CONFIG, policy: POLICY })
+    const signed = await sign({ ...REQUEST, nonce: 9 })
+    expect(sent).toEqual([])
+    expect(parseTransaction(signed.raw)).toMatchObject({ nonce: 9, to: EXECUTOR })
+    expect(signed).toEqual({
+      nonce: 9,
+      txHash: keccak256(signed.raw),
+      raw: signed.raw,
+      gas: STUB_GAS
+    })
+
+    expect(await broadcastRaw(signed.raw)).toEqual({})
+    expect(sent).toEqual([signed.raw])
+  })
+
+  it('sign at an explicit nonce never moves the send cursor', async () => {
+    mockRpc({
+      eth_chainId: `0x${base.id.toString(16)}`,
+      eth_getTransactionCount: '0x5',
+      eth_estimateGas: '0x5208',
+      eth_getBlockByNumber: { baseFeePerGas: '0x7' },
+      eth_sendRawTransaction: signedTransactionHash
+    })
+    const { sign, send } = createSigner(CONFIG)
+    await sign({ ...REQUEST, nonce: 40 })
+    expect((await send(REQUEST)).nonce).toBe(5)
+  })
+
+  it('sign refuses a policy violation before signing', async () => {
+    mockRpc({
+      eth_chainId: `0x${base.id.toString(16)}`,
+      eth_estimateGas: '0x5208',
+      eth_getBlockByNumber: { baseFeePerGas: '0x7' }
+    })
+    const account = privateKeyToAccount(KEY)
+    const signTransaction = vi.spyOn(account, 'signTransaction')
+    const error = vi.fn()
+    const logger = { error } as unknown as Logger
+    const { sign } = createAccountSigner({ ...CONFIG, account, policy: POLICY, logger })
+    const refused = sign({ ...REQUEST, data: '0xdeadbeef', nonce: 1 })
+    await expect(refused).rejects.toBeInstanceOf(PolicyViolationError)
+    await expect(refused).rejects.toMatchObject({ check: 'selector' })
+    expect(signTransaction).not.toHaveBeenCalled()
+    expect(error).toHaveBeenCalledWith('signer.policy_violation', {
+      check: 'selector',
+      reason: expect.any(String),
+      to: EXECUTOR,
+      nonce: 1
+    })
+  })
+
+  it.each([
+    ['preparing', 'eth_estimateGas'],
+    ['signing', 'signTransaction']
+  ])('send gives its claimed nonce back when %s fails', async (_, failing) => {
+    let fail = true
+    mockRpc({
+      eth_chainId: `0x${base.id.toString(16)}`,
+      eth_getTransactionCount: '0x5',
+      eth_estimateGas: () => {
+        if (fail && failing === 'eth_estimateGas') return rpcFailure(-32000, 'execution reverted')
+        return '0x5208'
+      },
+      eth_getBlockByNumber: { baseFeePerGas: '0x7' },
+      eth_sendRawTransaction: signedTransactionHash
+    })
+    const account = privateKeyToAccount(KEY)
+    if (failing === 'signTransaction') {
+      vi.spyOn(account, 'signTransaction').mockRejectedValueOnce(new Error('kms unavailable'))
+    }
+    const { send } = createAccountSigner({ ...CONFIG, account })
+    await expect(send(REQUEST)).rejects.toThrow()
+    fail = false
+    expect((await send(REQUEST)).nonce).toBe(5)
+  })
+
+  it('broadcastRaw throws a definitive rejection and reports an ambiguous one as unknown', async () => {
+    let answer: unknown = rpcFailure(-32000, 'nonce too low')
+    mockRpc({
+      eth_chainId: `0x${base.id.toString(16)}`,
+      eth_estimateGas: '0x5208',
+      eth_getBlockByNumber: { baseFeePerGas: '0x7' },
+      eth_sendRawTransaction: () => {
+        if (answer instanceof Error) throw answer
+        return answer
+      }
+    })
+    const { sign, broadcastRaw } = createSigner(CONFIG)
+    const { raw } = await sign({ ...REQUEST, nonce: 3 })
+    await expect(broadcastRaw(raw)).rejects.toBeInstanceOf(InvalidInputRpcError)
+    answer = rpcFailure(-32000, 'already known')
+    expect(await broadcastRaw(raw)).toEqual({ broadcastUnknown: true })
+    answer = PROBE
+    expect(await broadcastRaw(raw)).toEqual({ broadcastUnknown: true })
+    answer = new Error('rpc timeout after broadcast')
+    expect(await broadcastRaw(raw)).toEqual({ broadcastUnknown: true })
   })
 })

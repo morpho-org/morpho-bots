@@ -1,6 +1,6 @@
-import type { BootstrapConfig } from '../src/domain/bootstrap/position-bootstrap'
-import type { LadderConfig } from '../src/domain/ladder/ladder'
+import type { InventorySkewConfig, LadderConfig } from '../src/domain/ladder'
 import type { MaturityPremiumConfig } from '../src/domain/maturity-premium'
+import type { BootstrapConfig } from '../src/domain/position-bootstrap'
 import type { TargetRateConfigured } from '../src/domain/target-rate'
 import type { ReferenceBand } from './reference-response.utils'
 
@@ -9,11 +9,22 @@ import {
   LADDER_MARKET_FIELDS,
   bootstrapConfigsValue,
   ladderConfigsValue,
-  parseBytes32
+  parseBytes32,
+  withBootstrapSellCeilings
 } from '../src/config/market-collections'
-import { clampRateBps } from '../src/domain/cross-book'
-import { generateLadderWithDiagnostics, offerMaxAssetsByRung } from '../src/domain/ladder/ladder'
-import { highestReachableMaturityPremiumBps } from '../src/domain/maturity-premium'
+import {
+  generateLadderWithDiagnostics,
+  isLendOnlyLadder,
+  offerCapsByRung
+} from '../src/domain/ladder'
+import {
+  hasAttainableMaturityPremiumBps,
+  highestReachableMaturityPremiumBps,
+  MATURITY_PREMIUM_MAX_MATURITY_SECONDS,
+  MATURITY_PREMIUM_YEAR_SECONDS,
+  resolveMaturityPremiumBps
+} from '../src/domain/maturity-premium'
+import { violatedRateBound } from '../src/domain/rate-range'
 import { CollectionImportError } from './collection-import.error'
 import { CollectionValidationError } from './collection-validation.error'
 import { FragmentCodecError } from './fragment-codec.error'
@@ -28,6 +39,11 @@ export type MaturityPremiumInput = {
   premiumPerYearBps: string
   maximumPremiumBps?: string
 }
+export type InventorySkewInput = {
+  unitsPerStep: string
+  neutralCredit?: string
+  maxSkewBps?: string
+}
 export type BootstrapInput = Record<
   Exclude<
     (typeof BOOTSTRAP_MARKET_FIELDS)[number],
@@ -36,9 +52,16 @@ export type BootstrapInput = Record<
   string
 > & { autoRefill: boolean; targetRate: TargetRateInput; maturityPremium?: MaturityPremiumInput }
 export type LadderInput = Record<
-  Exclude<(typeof LADDER_MARKET_FIELDS)[number], 'targetRate' | 'maturityPremium'>,
+  Exclude<
+    (typeof LADDER_MARKET_FIELDS)[number],
+    'targetRate' | 'maturityPremium' | 'inventorySkew'
+  >,
   string
-> & { targetRate: TargetRateInput; maturityPremium?: MaturityPremiumInput }
+> & {
+  targetRate: TargetRateInput
+  maturityPremium?: MaturityPremiumInput
+  inventorySkew?: InventorySkewInput
+}
 
 export type PlaygroundState = {
   bootstrap: BootstrapInput[]
@@ -56,11 +79,11 @@ export type AssetFormatter = (rawAmount: string) => string
 const rawAssetFormatter: AssetFormatter = rawAmount => rawAmount
 
 export const BOOTSTRAP_FIELDS = [
-  ['marketId', 'Market ID', '0x-prefixed 32-byte Midnight market id', 'text'],
+  ['marketId', 'Market ID', '0x-prefixed 32-byte Midnight Market id', 'text'],
   [
     'targetRate.strategy',
     'Target rate source',
-    'trailing-average supply APY on the reference Blue market over the operator-configured window, or a fixed rate you set',
+    'trailing-average supply APY on the reference Blue Market over the operator-configured window, or a fixed rate you set',
     'target-rate-select'
   ],
   [
@@ -118,11 +141,11 @@ export const BOOTSTRAP_FIELDS = [
   ['autoRefill', 'Auto-refill', 'Lend again if the position later falls below target', 'checkbox']
 ] as const
 export const LADDER_FIELDS = [
-  ['marketId', 'Market ID', '0x-prefixed 32-byte Midnight market id', 'text'],
+  ['marketId', 'Market ID', '0x-prefixed 32-byte Midnight Market id', 'text'],
   [
     'targetRate.strategy',
     'Target rate source',
-    'trailing-average supply APY on the reference Blue market over the operator-configured window, or a fixed rate you set',
+    'trailing-average supply APY on the reference Blue Market over the operator-configured window, or a fixed rate you set',
     'target-rate-select'
   ],
   [
@@ -172,7 +195,7 @@ export const LADDER_FIELDS = [
   [
     'lowerRateBudgetAssets',
     'Reduce-only budget',
-    'For offers below the centre, which reduce an existing position',
+    'For offers below the centre, which reduce an existing position; 0 quotes lending only',
     'number'
   ],
   [
@@ -223,6 +246,7 @@ export const LADDER_FIELDS = [
 ] as const
 
 const DEFAULT_MARKET_ID = `0x${'5'.repeat(64)}`
+const DEFAULT_LADDER_MARKET_ID = `0x${'7'.repeat(64)}`
 
 export const createDefaultBootstrap = (marketId = DEFAULT_MARKET_ID): BootstrapInput => ({
   marketId,
@@ -238,7 +262,7 @@ export const createDefaultBootstrap = (marketId = DEFAULT_MARKET_ID): BootstrapI
   autoRefill: true
 })
 
-export const createDefaultLadder = (marketId = DEFAULT_MARKET_ID): LadderInput => ({
+export const createDefaultLadder = (marketId = DEFAULT_LADDER_MARKET_ID): LadderInput => ({
   marketId,
   targetRate: { strategy: 'variable_rate_avg' },
   quotePremiumBps: '0',
@@ -259,6 +283,26 @@ export const createDefaultLadder = (marketId = DEFAULT_MARKET_ID): LadderInput =
   maximumRateBps: '800'
 })
 
+const ADDED_MARKET_ID_BASES = { bootstrap: 0n, ladder: 1n << 128n } as const
+
+/**
+ * Picks a market id for an entry added to one collection.
+ * @param state - Current playground state; ids used by either collection are skipped.
+ * @param kind - Collection the entry joins.
+ * @returns The lowest free id in that collection's own range. The ranges are disjoint, so an added
+ * bootstrap and an added ladder never share a market, and never meet the same-market sell-ceiling
+ * rule, even when both are added before the state re-renders.
+ */
+export const nextMarketId = (state: PlaygroundState, kind: keyof PlaygroundState) => {
+  const existing = new Set(
+    [...state.bootstrap, ...state.ladder].map(item => item.marketId.toLowerCase())
+  )
+  for (let value = ADDED_MARKET_ID_BASES[kind] + 1n; ; value++) {
+    const candidate = `0x${value.toString(16).padStart(64, '0')}`
+    if (!existing.has(candidate)) return candidate
+  }
+}
+
 export const createDefaultPlaygroundState = (): PlaygroundState => ({
   bootstrap: [createDefaultBootstrap()],
   ladder: [createDefaultLadder()]
@@ -275,6 +319,12 @@ const maturityPremiumInput = (config: MaturityPremiumConfig): MaturityPremiumInp
   ...(config.maximumPremiumBps === undefined
     ? {}
     : { maximumPremiumBps: String(config.maximumPremiumBps) })
+})
+
+const inventorySkewInput = (config: InventorySkewConfig): InventorySkewInput => ({
+  unitsPerStep: String(config.unitsPerStep),
+  ...(config.neutralCredit === undefined ? {} : { neutralCredit: String(config.neutralCredit) }),
+  ...(config.maxSkewBps === undefined ? {} : { maxSkewBps: String(config.maxSkewBps) })
 })
 
 const bootstrapInput = (config: TargetRateConfigured<BootstrapConfig>): BootstrapInput => ({
@@ -315,18 +365,20 @@ const ladderInput = (config: TargetRateConfigured<LadderConfig>): LadderInput =>
   bookCrossedCooldownSeconds: String(config.bookCrossedCooldownSeconds),
   movementToleranceBps: String(config.movementToleranceBps),
   minimumRateBps: String(config.minimumRateBps),
-  maximumRateBps: String(config.maximumRateBps)
+  maximumRateBps: String(config.maximumRateBps),
+  ...(config.inventorySkew === undefined
+    ? {}
+    : { inventorySkew: inventorySkewInput(config.inventorySkew) })
 })
 
 const allowlist = (items: readonly { marketId: string }[]) =>
   items.map((item, index) => parseBytes32(item.marketId, `collection[${index}].marketId`))
 
-const parseBootstrap = (value: unknown) => {
+const bootstrapConfigs = (value: unknown) => {
   const items = value as BootstrapInput[]
-  return bootstrapConfigsValue(value, allowlist(Array.isArray(items) ? items : [])).map(
-    bootstrapInput
-  )
+  return bootstrapConfigsValue(value, allowlist(Array.isArray(items) ? items : []))
 }
+const parseBootstrap = (value: unknown) => bootstrapConfigs(value).map(bootstrapInput)
 const parseLadder = (value: unknown) => {
   const items = value as LadderInput[]
   return ladderConfigsValue(value, allowlist(Array.isArray(items) ? items : [])).map(ladderInput)
@@ -348,11 +400,12 @@ export const validateBootstrapCollection = (items: BootstrapInput[]) =>
  * @param items - Ordered ladder inputs as typed, which may not parse.
  * @returns One sentence per entry whose rungs span more than its configured range, naming the span
  * it needs and the width it has; empty when a shape fits or its integers are unusable.
- * @remarks Restates the runtime's own `sideWidth * 2 > maximumRateBps - minimumRateBps` invariant
- * so the sanitized parser message gains the arithmetic an operator needs to fix it.
+ * @remarks Restates the runtime's own shape-fit invariant, which spans only the lending rungs for a
+ * lend-only ladder, so the sanitized parser message gains the arithmetic an operator needs to fix it.
  */
 const ladderShapeDiagnostics = (items: LadderInput[]): string[] =>
   items.flatMap((item, index) => {
+    const lendOnly = /^0+$/.test(item.lowerRateBudgetAssets.trim())
     const raw = [
       item.spreadBps,
       item.stepBps,
@@ -369,11 +422,14 @@ const ladderShapeDiagnostics = (items: LadderInput[]): string[] =>
       bigint
     ]
     if (count <= 0n || maximum < minimum) return []
-    const span = (spread / 2n + (count - 1n) * step) * 2n
+    const rungSpan = (count - 1n) * step
+    const span = lendOnly ? rungSpan : (spread / 2n + rungSpan) * 2n
     const width = maximum - minimum
     if (span <= width) return []
     return [
-      `Ladder ${index + 1}: ${count} rungs per side with a ${spread} BPS spread and a ${step} BPS step span ${span} BPS, but ${minimum}–${maximum} BPS is only ${width} BPS wide. Lower the rung count, the step or the spread, or widen the rate bounds.`
+      lendOnly
+        ? `Ladder ${index + 1}: ${count} lending rungs with a ${step} BPS step span ${span} BPS, but ${minimum}–${maximum} BPS is only ${width} BPS wide. Lower the rung count or the step, or widen the rate bounds.`
+        : `Ladder ${index + 1}: ${count} rungs per side with a ${spread} BPS spread and a ${step} BPS step span ${span} BPS, but ${minimum}–${maximum} BPS is only ${width} BPS wide. Lower the rung count, the step or the spread, or widen the rate bounds.`
     ]
   })
 
@@ -386,19 +442,36 @@ export const validateLadderCollection = (items: LadderInput[]) => {
 export type BootstrapGraphicModel = {
   marketId: string
   referenceRateBps: string
+  /** Premium-adjusted ask, true even outside the bounds; the component clamps only its plot. */
   quotedRateBps: string
-  /** Far-maturity end of the clamped quote range, present only with a maturity premium. */
+  /** False when `quotedRateBps` is outside the bounds, where the runtime publishes no offer. */
+  offerPublished: boolean
+  /**
+   * Highest rate published across maturities; present only with a maturity premium that publishes
+   * at some maturity.
+   */
   maximumQuotedRateBps?: string
   minimumRateBps: string
   maximumRateBps: string
   creditTarget: string
   acceptedCredit: string
   offerSize: string
-  /** Reference range over which the quote tracks instead of saturating at a bound. */
+  /** Reference range over which the quote stays inside the bounds and an offer is published. */
   referenceBand?: ReferenceBand
-  /** Present when a rate leaves the plotted range or a rung saturates, explaining the markers. */
+  /** Present when a rate leaves the plotted range or an offer is omitted, explaining the markers. */
   notice?: string
   callouts: { label: string; value: string; parameters: string[] }[]
+}
+
+const highestAttainablePremiumAtMostBps = (config: MaturityPremiumConfig, ceilingBps: bigint) => {
+  const lastSecondsAtMost =
+    ((ceilingBps + 1n) * MATURITY_PREMIUM_YEAR_SECONDS - 1n) / config.premiumPerYearBps
+  return resolveMaturityPremiumBps(
+    config,
+    lastSecondsAtMost < MATURITY_PREMIUM_MAX_MATURITY_SECONDS
+      ? lastSecondsAtMost
+      : MATURITY_PREMIUM_MAX_MATURITY_SECONDS
+  )
 }
 
 const referenceWasSupplied = (
@@ -439,7 +512,7 @@ const referenceOriginSentence = (
 /**
  * Derives a synthetic reference whose premium-adjusted quote is the integer midpoint of the bounds,
  * or renders the supplied reference rate instead; a maturity premium additionally renders the
- * clamped quote range reachable across maturities.
+ * quote range reachable across maturities.
  * @param referenceRateBps - Reference-market rate applied to every `variable_rate_avg` entry, as
  * one `REFERENCE_MARKET_ID` serves a whole process. Omitted means the synthetic derivation.
  * A `hardcoded` entry ignores it, exactly as the runtime does.
@@ -449,6 +522,7 @@ export const deriveBootstrapGraphicModels = (
   formatAssets: AssetFormatter = rawAssetFormatter,
   referenceRateBps?: bigint
 ): BootstrapGraphicModel[] =>
+  // oxlint-disable-next-line complexity
   parseBootstrap(items).map(item => {
     const minimum = BigInt(item.minimumRateBps)
     const maximum = BigInt(item.maximumRateBps)
@@ -458,35 +532,49 @@ export const deriveBootstrapGraphicModels = (
         ? BigInt(item.targetRate.hardcodedRateBps)
         : (referenceRateBps ?? (minimum + maximum) / 2n - premium)
     const baseQuoted = reference + premium
-    // The runtime clamps every bootstrap rate before it publishes one, in
-    // decidePositionBootstrapWithDiagnostics, so the quote this preview renders is always the
-    // clamped one and the unclamped base survives only to say what it would have asked for. With a
-    // maturity premium the quote additionally spans the reachable envelope, bounded by the cap and
-    // the protocol's 100-year maturity horizon.
-    const quoted = clampRateBps(baseQuoted, minimum, maximum)
-    const maximumQuoted =
+    // The runtime publishes no bootstrap offer whose rate is outside the bounds, in
+    // decidePositionBootstrapWithDiagnostics, so the model keeps the true ask and flags it
+    // unpublished. With a maturity premium the quote additionally spans the reachable envelope,
+    // bounded by the cap and the protocol's 100-year maturity horizon.
+    const range = { minimumRateBps: minimum, maximumRateBps: maximum }
+    const offerPublished = violatedRateBound(baseQuoted, range) === undefined
+    const maturityPremium: MaturityPremiumConfig | undefined =
       item.maturityPremium === undefined
         ? undefined
-        : clampRateBps(
-            baseQuoted +
-              highestReachableMaturityPremiumBps({
-                shape: 'linear',
-                premiumPerYearBps: BigInt(item.maturityPremium.premiumPerYearBps),
-                ...(item.maturityPremium.maximumPremiumBps === undefined
-                  ? {}
-                  : { maximumPremiumBps: BigInt(item.maturityPremium.maximumPremiumBps) })
-              }),
-            minimum,
-            maximum
-          )
+        : {
+            shape: 'linear',
+            premiumPerYearBps: BigInt(item.maturityPremium.premiumPerYearBps),
+            ...(item.maturityPremium.maximumPremiumBps === undefined
+              ? {}
+              : { maximumPremiumBps: BigInt(item.maturityPremium.maximumPremiumBps) })
+          }
+    const reachableQuoted =
+      maturityPremium === undefined
+        ? undefined
+        : baseQuoted + highestReachableMaturityPremiumBps(maturityPremium)
+    const reachableBound =
+      reachableQuoted === undefined ? undefined : violatedRateBound(reachableQuoted, range)
+    const maximumQuoted =
+      maturityPremium === undefined ||
+      reachableQuoted === undefined ||
+      !hasAttainableMaturityPremiumBps(maturityPremium, minimum - baseQuoted, maximum - baseQuoted)
+        ? undefined
+        : reachableBound === 'maximum'
+          ? baseQuoted + highestAttainablePremiumAtMostBps(maturityPremium, maximum - baseQuoted)
+          : reachableQuoted
     const origin = referenceOriginWord(item.targetRate.strategy, referenceRateBps)
     const issues: string[] = []
     if (reference <= 0n) issues.push(`the ${origin} reference ${reference} BPS is not positive`)
     else if (reference < minimum || reference > maximum) {
       issues.push(`the ${origin} reference ${reference} BPS falls outside the plotted range`)
     }
-    if (baseQuoted !== quoted) {
-      issues.push(`the quote asks ${baseQuoted} BPS and saturates at ${quoted} BPS`)
+    if (!offerPublished) {
+      issues.push(`the quote asks ${baseQuoted} BPS, outside the range, so no offer is published`)
+    }
+    if (reachableBound === 'maximum') {
+      issues.push(
+        `the far-maturity quote reaches ${reachableQuoted} BPS, so no offer is published at maturities that far out`
+      )
     }
     const notice =
       issues.length === 0
@@ -499,7 +587,8 @@ export const deriveBootstrapGraphicModels = (
     return {
       marketId: item.marketId,
       referenceRateBps: String(reference),
-      quotedRateBps: String(quoted),
+      quotedRateBps: String(baseQuoted),
+      offerPublished,
       ...(maximumQuoted === undefined ? {} : { maximumQuotedRateBps: String(maximumQuoted) }),
       minimumRateBps: item.minimumRateBps,
       maximumRateBps: item.maximumRateBps,
@@ -532,10 +621,10 @@ export const deriveBootstrapGraphicModels = (
           label: 'Quote premium',
           value:
             item.targetRate.strategy === 'hardcoded'
-              ? `Your quote is a fixed ${clampRateBps(reference + premium, minimum, maximum)} BPS — the ${reference} BPS target ${premium < 0n ? `minus ${-premium}` : `plus ${premium}`} BPS, clamped into ${item.minimumRateBps}–${item.maximumRateBps} BPS. It does not follow the market`
+              ? `Your quote is a fixed ${reference + premium} BPS — the ${reference} BPS target ${premium < 0n ? `minus ${-premium}` : `plus ${premium}`} BPS, published only inside ${item.minimumRateBps}–${item.maximumRateBps} BPS. It does not follow the market`
               : band === undefined
-                ? `Your quote is the market rate ${premium < 0n ? `minus ${-premium}` : `plus ${premium}`} BPS, which never lands inside ${item.minimumRateBps}–${item.maximumRateBps} BPS, so it always sticks at a limit`
-                : `Your quote is the market rate ${premium < 0n ? `minus ${-premium}` : `plus ${premium}`} BPS, so it follows the market while that rate is ${band.lowestRateBps}–${band.highestRateBps} BPS and sticks at ${item.minimumRateBps} or ${item.maximumRateBps} BPS outside it${
+                ? `Your quote is the market rate ${premium < 0n ? `minus ${-premium}` : `plus ${premium}`} BPS, which never lands inside ${item.minimumRateBps}–${item.maximumRateBps} BPS, so no offer is ever published`
+                : `Your quote is the market rate ${premium < 0n ? `minus ${-premium}` : `plus ${premium}`} BPS, so it follows the market while that rate is ${band.lowestRateBps}–${band.highestRateBps} BPS and publishes no offer outside it${
                     item.maturityPremium === undefined
                       ? ''
                       : '. That band is measured at maturity; the maturity premium shifts it as time to maturity grows'
@@ -585,7 +674,7 @@ export const deriveBootstrapGraphicModels = (
         {
           label: 'Not shown here',
           value:
-            'Live offers, balances, positions and the order book. This page reads no chain data, so nothing above reflects the current market',
+            'Live offers, balances, positions and the offer book. This page reads no chain data, so nothing above reflects the current market',
           parameters: []
         }
       ]
@@ -621,9 +710,9 @@ export type LadderGraphicModel = {
   plotHeight: number
   rateToY: (rateBps: string) => number
   rungs: LadderGraphicRung[]
-  /** Reference range over which no rung pins to a hard bound. */
+  /** Reference range over which no rung is omitted at a hard bound. */
   referenceBand?: ReferenceBand
-  /** Present when a rate leaves the plotted range or a rung saturates, explaining the markers. */
+  /** Present when a rate leaves the plotted range or an offer is omitted, explaining the markers. */
   notice?: string
   callouts: { label: string; value: string; parameters: string[] }[]
 }
@@ -651,53 +740,68 @@ export const clampPlotPercent = (percent: number): number => Math.min(100, Math.
  * @param referenceRateBps - Reference-market rate applied to every `variable_rate_avg` entry, as
  * one `REFERENCE_MARKET_ID` serves a whole process. Omitted means the synthetic derivation.
  * A `hardcoded` entry ignores it, exactly as the runtime does.
+ * @param creditAssets - Face credit every `inventorySkew` entry is priced at, in the band too.
+ * Omitted means none held, so the preview shows the unskewed buys.
  * @throws `ConfigValidationError` from the shared collection parser when any entry is invalid. A
- * reference outside the configured bounds is not a failure, and neither is a rung saturating on
- * one: the preview is still generated and carries a `notice` naming what saturated.
+ * reference outside the configured bounds is not a failure, and neither is a rung omitted past
+ * one: the preview is still generated and carries a `notice` naming what was omitted.
  * @remarks Pure and browser-safe with no provider, logging, or persistence access. Center values
- * stay unclamped because the runtime clamps individual rungs, never the center; markers clamp
+ * stay unclamped because the runtime omits individual rungs, never moves the center; markers clamp
  * only their plot coordinate through {@link clampPlotPercent}.
  */
 export const generateLadderGraphicModels = (
   value: LadderInput[] | PlaygroundState,
   formatAssets: AssetFormatter = rawAssetFormatter,
-  referenceRateBps?: bigint
-): LadderGraphicModel[] =>
-  parseLadder(collectionFromArgument(value)).map(input => {
-    const config = ladderConfigsValue(
-      [input],
-      [parseBytes32(input.marketId, 'ladder[0].marketId')]
-    )[0]!
+  referenceRateBps?: bigint,
+  creditAssets = 0n
+): LadderGraphicModel[] => {
+  const inputs = parseLadder(collectionFromArgument(value))
+  const configs = withBootstrapSellCeilings(
+    Array.isArray(value) ? [] : bootstrapConfigs(value.bootstrap),
+    ladderConfigsValue(inputs, allowlist(inputs))
+  )
+  // oxlint-disable-next-line complexity
+  return inputs.map((input, index) => {
+    const config = configs[index]!
     const minimum = config.minimumRateBps
     const maximum = config.maximumRateBps
+    const midpoint = (minimum + maximum) / 2n
+    const lendOnlyHighestCenter =
+      maximum - config.spreadBps / 2n - BigInt(config.rungCount - 1) * config.stepBps
+    const derivedCenter =
+      isLendOnlyLadder(config) && lendOnlyHighestCenter < midpoint
+        ? lendOnlyHighestCenter
+        : midpoint
     const reference =
       input.targetRate.strategy === 'hardcoded'
         ? BigInt(input.targetRate.hardcodedRateBps)
-        : (referenceRateBps ?? (minimum + maximum) / 2n - config.quotePremiumBps)
+        : (referenceRateBps ?? derivedCenter - config.quotePremiumBps)
     // The deterministic preview anchors the shape at the zero-premium (at-maturity) center. The
-    // model carries true center values — the runtime clamps individual rungs, never the center —
-    // and the component clamps only marker plot coordinates into the axis.
-    // Diagnostics rather than the plain quote: a rung walking past a bound saturates onto it
-    // silently, and neighbouring saturated rungs then share one rate and one plot coordinate. The
-    // derived midpoint reference could never reach that — validateLadderConfig keeps the full
-    // shape inside the bounds around a centred reference — so only a supplied one makes it
+    // model carries true center values — the runtime omits individual rungs, never moves the
+    // center — and the component clamps only marker plot coordinates into the axis.
+    // Diagnostics rather than the plain quote: a rung walking past a bound is omitted silently.
+    // The derived midpoint reference could never reach that — validateLadderConfig keeps the full
+    // shape inside the bounds around a centred reference, lowered just enough for a lend-only
+    // ladder — so only a supplied one makes it
     // observable, and the notice has to say it happened.
     const { quote: generated, diagnostics } = generateLadderWithDiagnostics({
       config,
       referenceRateBps: reference,
-      ...(config.maturityPremium === undefined ? {} : { secondsToMaturity: 0n })
+      ...(config.maturityPremium === undefined ? {} : { secondsToMaturity: 0n }),
+      ...(config.inventorySkew === undefined ? {} : { capacities: { creditAssets } })
     })
-    const saturatedRungs =
-      diagnostics.lower.clampedToMinimumRungs +
-      diagnostics.lower.clampedToMaximumRungs +
-      diagnostics.higher.clampedToMinimumRungs +
-      diagnostics.higher.clampedToMaximumRungs
+    const omittedRungs =
+      diagnostics.lower.omittedBelowMinimumRungs +
+      diagnostics.lower.omittedAboveMaximumRungs +
+      diagnostics.lower.omittedAboveSellCeilingRungs +
+      diagnostics.higher.omittedBelowMinimumRungs +
+      diagnostics.higher.omittedAboveMaximumRungs
     const maximumCenter =
       config.maturityPremium === undefined
         ? undefined
         : generated.centerRateBps + highestReachableMaturityPremiumBps(config.maturityPremium)
     const amountOf = (rawAmount: bigint) => formatAssets(String(rawAmount))
-    const referenceBand = ladderReferenceBand(config)
+    const referenceBand = ladderReferenceBand(config, creditAssets)
     // Every marker the component can clamp needs to say so, not just the reference: a premium can
     // push the center outside the plotted range while the reference itself sits inside it.
     const origin = referenceOriginWord(input.targetRate.strategy, referenceRateBps)
@@ -712,9 +816,9 @@ export const generateLadderGraphicModels = (
     if (maximumCenter !== undefined && (maximumCenter < minimum || maximumCenter > maximum)) {
       pinned.push(`the far-maturity center ${maximumCenter} BPS falls outside it`)
     }
-    if (saturatedRungs > 0) {
+    if (omittedRungs > 0) {
       pinned.push(
-        `${saturatedRungs} ${saturatedRungs === 1 ? 'rung walks' : 'rungs walk'} past a bound and saturate on it, so saturated neighbours share one rate`
+        `${omittedRungs} ${omittedRungs === 1 ? 'rung walks' : 'rungs walk'} past a bound and ${omittedRungs === 1 ? 'is' : 'are'} omitted with ${omittedRungs === 1 ? 'its' : 'their'} allocation`
       )
     }
     const notice =
@@ -723,7 +827,7 @@ export const generateLadderGraphicModels = (
         : `Markers are pinned to the edge of the range: ${pinned.join(
             ' and '
           )}.${referenceOriginSentence(input.targetRate.strategy, referenceRateBps)}`
-    const caps = offerMaxAssetsByRung(generated)
+    const caps = offerCapsByRung(generated)
     const paired = (side: 'higher' | 'lower') => {
       const rungs = generated[side]
       const sideCaps = caps[side]
@@ -806,7 +910,9 @@ export const generateLadderGraphicModels = (
           : []),
         {
           label: 'Full spread and step',
-          value: `${config.rungCount} rungs per side. The two rungs closest to the centre sit ${config.spreadBps} BPS apart, then each further rung steps out ${config.stepBps} BPS`,
+          value: isLendOnlyLadder(config)
+            ? `${config.rungCount} lending rungs. The innermost sits ${config.spreadBps / 2n} BPS above the centre, then each further rung steps out ${config.stepBps} BPS`
+            : `${config.rungCount} rungs per side. The two rungs closest to the centre sit ${config.spreadBps} BPS apart, then each further rung steps out ${config.stepBps} BPS`,
           parameters: ['spreadBps', 'stepBps', 'rungCount']
         },
         {
@@ -819,17 +925,23 @@ export const generateLadderGraphicModels = (
         },
         {
           label: 'Budgets',
-          value: `Lends up to ${amountOf(config.higherRateBudgetAssets)} above the centre, and offers up to ${amountOf(config.lowerRateBudgetAssets)} below it to reduce an existing position`,
+          value: isLendOnlyLadder(config)
+            ? `Lends up to ${amountOf(config.higherRateBudgetAssets)} above the centre and never offers below it: credit it holds is kept to maturity`
+            : `Lends up to ${amountOf(config.higherRateBudgetAssets)} above the centre, and offers up to ${amountOf(config.lowerRateBudgetAssets)} below it to reduce an existing position`,
           parameters: ['higherRateBudgetAssets', 'lowerRateBudgetAssets']
         },
         {
           label: 'Minimum offer size',
-          value: `Every funded rung gets at least ${amountOf(config.minimumOfferAssets)}; when a side cannot cover them all its outermost rungs are dropped. Your budgets cover ${config.higherRateBudgetAssets / config.minimumOfferAssets} lending and ${config.lowerRateBudgetAssets / config.minimumOfferAssets} reduce-only rungs, against the ${config.rungCount} configured`,
+          value: `Every funded rung gets at least ${amountOf(config.minimumOfferAssets)}; when a side cannot cover them all its outermost rungs are dropped. ${
+            isLendOnlyLadder(config)
+              ? `Your budget covers ${config.higherRateBudgetAssets / config.minimumOfferAssets} lending rungs`
+              : `Your budgets cover ${config.higherRateBudgetAssets / config.minimumOfferAssets} lending and ${config.lowerRateBudgetAssets / config.minimumOfferAssets} reduce-only rungs`
+          }, against the ${config.rungCount} configured`,
           parameters: ['minimumOfferAssets', 'higherRateBudgetAssets', 'lowerRateBudgetAssets']
         },
         {
           label: 'Exposure caps',
-          value: `Cap the lending side only: ${amountOf(config.targetMarketExposureAssets)} in this market and ${amountOf(config.maximumTotalExposureAssets)} across every configured market, whichever binds first. Reduce-only offers are not capped by either`,
+          value: `Cap the lending side${isLendOnlyLadder(config) ? '' : ' only'}: ${amountOf(config.targetMarketExposureAssets)} in this market and ${amountOf(config.maximumTotalExposureAssets)} across every configured market, whichever binds first${isLendOnlyLadder(config) ? '' : '. Reduce-only offers are not capped by either'}`,
           parameters: ['targetMarketExposureAssets', 'maximumTotalExposureAssets']
         },
         {
@@ -864,16 +976,17 @@ export const generateLadderGraphicModels = (
         {
           label: 'Not shown here',
           value:
-            'Live offers, balances, positions and the order book. This page reads no chain data, so nothing above reflects the current market',
+            'Live offers, balances, positions and the offer book. This page reads no chain data, so nothing above reflects the current market',
           parameters: []
         }
       ]
     }
   })
+}
 
 const MAXIMUM_COLLECTION_JSON_BYTES = 128 * 1024
 const MAXIMUM_JSON_NESTING = 128
-const scannerSyntax = Symbol('scannerSyntax')
+const scannerSyntax = new Error('scannerSyntax')
 
 /** Detects duplicate object names before JSON.parse can overwrite them. */
 const assertNoDuplicateJsonMembers = (text: string) => {
@@ -899,8 +1012,10 @@ const assertNoDuplicateJsonMembers = (text: string) => {
         }
         for (let index = 0; index < decoded.length; index++) {
           const code = decoded.charCodeAt(index)
+          // oxlint-disable-next-line max-depth
           if (code >= 0xd800 && code <= 0xdbff) {
             const next = decoded.charCodeAt(index + 1)
+            // oxlint-disable-next-line max-depth
             if (Number.isNaN(next) || next < 0xdc00 || next > 0xdfff)
               throw new StrictJsonError('Import contains an invalid Unicode surrogate')
             index++
@@ -913,6 +1028,7 @@ const assertNoDuplicateJsonMembers = (text: string) => {
       if (character === '\\') {
         const escape = text[position++]
         if (escape === 'u') {
+          // oxlint-disable-next-line max-depth
           if (!/^[0-9a-f]{4}$/i.test(text.slice(position, position + 4))) syntax()
           position += 4
         } else if (!escape || !'"\\/bfnrt'.includes(escape)) syntax()
@@ -1127,18 +1243,32 @@ export const exportBootstrapMarketsEnvValue = (items: BootstrapInput[]) => {
   assertValid(items, validateBootstrapCollection)
   return JSON.stringify(items)
 }
-export const exportLadderJson = (items: LadderInput[]) => {
-  assertValid(items, validateLadderCollection)
-  return `${JSON.stringify(items, null, 2)}\n`
+const assertValidLadder = (value: LadderInput[] | PlaygroundState) => {
+  const result = Array.isArray(value)
+    ? validateLadderCollection(value)
+    : validatePlaygroundState(value)
+  if (!result.valid) throw new CollectionValidationError('Collection is invalid')
+  return collectionFromArgument(value)
 }
-export const exportLadderMarketsEnvValue = (value: LadderInput[] | PlaygroundState) => {
-  const items = collectionFromArgument(value)
-  assertValid(items, validateLadderCollection)
-  return JSON.stringify(items)
-}
+export const exportLadderJson = (value: LadderInput[] | PlaygroundState) =>
+  `${JSON.stringify(assertValidLadder(value), null, 2)}\n`
+export const exportLadderMarketsEnvValue = (value: LadderInput[] | PlaygroundState) =>
+  JSON.stringify(assertValidLadder(value))
 
 export const validatePlaygroundState = (state: PlaygroundState) => {
   const bootstrap = validateBootstrapCollection(state.bootstrap)
   const ladder = validateLadderCollection(state.ladder)
-  return { valid: bootstrap.valid && ladder.valid, errors: [...bootstrap.errors, ...ladder.errors] }
+  const pairing =
+    bootstrap.valid && ladder.valid
+      ? validation(() =>
+          withBootstrapSellCeilings(
+            bootstrapConfigs(state.bootstrap),
+            ladderConfigsValue(state.ladder, allowlist(state.ladder))
+          )
+        )
+      : { valid: true, errors: [] }
+  return {
+    valid: bootstrap.valid && ladder.valid && pairing.valid,
+    errors: [...bootstrap.errors, ...ladder.errors, ...pairing.errors]
+  }
 }

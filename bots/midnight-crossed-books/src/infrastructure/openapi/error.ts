@@ -4,6 +4,7 @@ interface UpstreamApiErrorParameters {
   cause?: unknown
 }
 
+// oxlint-disable-next-line repo/error-class-file
 class UpstreamApiError extends Error {
   readonly endpoint: string
   readonly status: number | undefined
@@ -20,12 +21,14 @@ class UpstreamApiError extends Error {
   }
 }
 
+// oxlint-disable-next-line repo/error-class-file
 export class MorphoApiError extends UpstreamApiError {
   constructor(parameters: UpstreamApiErrorParameters) {
     super('MorphoApiError', `Morpho API request failed: ${parameters.endpoint}`, parameters)
   }
 }
 
+// oxlint-disable-next-line repo/error-class-file
 export class RouterApiError extends UpstreamApiError {
   constructor(parameters: UpstreamApiErrorParameters) {
     super('RouterApiError', `Router API request failed: ${parameters.endpoint}`, parameters)

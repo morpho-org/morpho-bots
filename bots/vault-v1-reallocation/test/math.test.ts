@@ -83,7 +83,7 @@ describe('IRM curve inversion', () => {
   })
 })
 
-describe('apy/rate conversions', () => {
+describe('APY/rate conversions', () => {
   it('round-trips an APY through the per-second rate within tolerance', () => {
     const apy = wholePercentToWAD(5)
     const roundTripped = rateToApy(apyToRate(apy))

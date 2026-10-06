@@ -12,7 +12,7 @@ const MAX_CAUSE_DEPTH = 32
 
 /**
  * `true` only for a failure the CONTRACT produced (revert, no code / empty return): the one kind of
- * `readContract` error that proves "this token is not an ERC4626 vault" and is safe to memoize.
+ * `readContract` error that proves "this token is not an ERC-4626 vault" and is safe to memoize.
  * Transport-layer failures (HTTP, timeout, RPC) must NOT be classified here — memoizing one would
  * mislabel a real vault for the process lifetime, so callers rethrow them instead (→ the existing
  * `failed` outcome + backoff, which recovers).

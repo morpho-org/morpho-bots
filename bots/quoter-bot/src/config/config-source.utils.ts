@@ -13,6 +13,7 @@ export type ConfigurationSource = {
   values: Record<string, unknown>
   bootstrap: unknown
   ladder: unknown
+  acceptedLossFactor?: unknown
   path?: string
 }
 
@@ -105,7 +106,13 @@ const yamlKeys = {
   ],
   contracts: ['midnightAddress', 'loanAssetAddress', 'ratifierAddress'],
   apis: ['morphoBaseUrl', 'routerBaseUrl'],
-  markets: ['allowlist', 'referenceMarketId', 'referenceLookbackSeconds', 'v0OfferGroupIds'],
+  markets: [
+    'allowlist',
+    'referenceMarketId',
+    'referenceLookbackSeconds',
+    'v0OfferGroupIds',
+    'acceptedLossFactor'
+  ],
   setup: [
     'nativeReserveWei',
     'signerNativeReserveWei',
@@ -154,9 +161,33 @@ const yamlKeys = {
     'bookCrossedCooldownSeconds',
     'movementToleranceBps',
     'minimumRateBps',
-    'maximumRateBps'
+    'maximumRateBps',
+    'inventorySkew'
   ]
 } as const
+
+/** Inputs an earlier release read, each with its YAML path; setting one now fails loud. */
+const retiredKeys = [{ environment: 'OFFER_CAP_KIND', yaml: ['markets', 'offerCapKind'] }] as const
+
+const retiredKeyError = (field: string) =>
+  new ConfigValidationError(
+    field,
+    'retired',
+    `${field} was removed: every offer is capped in credit units. Unset it; see "Upgrading to unit-capped offers" in the README`
+  )
+
+const rejectRetiredKeys = (environment: Environment, yaml: unknown) => {
+  for (const { environment: key, yaml: path } of retiredKeys) {
+    if (environment[key] !== undefined) throw retiredKeyError(key)
+    const group =
+      typeof yaml === 'object' && yaml !== null
+        ? (yaml as Record<string, unknown>)[path[0]]
+        : undefined
+    if (typeof group === 'object' && group !== null && path[1] in group) {
+      throw retiredKeyError(path.join('.'))
+    }
+  }
+}
 
 const record = (value: unknown, field: string): Record<string, unknown> => {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
@@ -231,6 +262,7 @@ const yamlSource = (input: unknown, readOnly: boolean): ConfigurationSource => {
   const root = record(input, 'configuration')
   rejectUnknownKeys(root, yamlKeys.root)
   const values: Record<string, unknown> = {}
+  let acceptedLossFactor: Record<string, unknown> | undefined
 
   const mapGroup = (
     groupName: keyof Pick<typeof yamlKeys, 'chain' | 'identity' | 'contracts' | 'apis' | 'setup'>,
@@ -319,6 +351,8 @@ const yamlSource = (input: unknown, readOnly: boolean): ConfigurationSource => {
       )
     if (markets.v0OfferGroupIds !== undefined)
       values.V0_OFFER_GROUP_IDS = stringList(markets.v0OfferGroupIds, 'markets.v0OfferGroupIds')
+    if (markets.acceptedLossFactor !== undefined)
+      acceptedLossFactor = record(markets.acceptedLossFactor, 'markets.acceptedLossFactor')
   }
 
   let bootstrap: unknown = []
@@ -345,7 +379,7 @@ const yamlSource = (input: unknown, readOnly: boolean): ConfigurationSource => {
     })
   }
 
-  return { values, bootstrap, ladder }
+  return { values, bootstrap, ladder, ...(acceptedLossFactor ? { acceptedLossFactor } : {}) }
 }
 
 const parseYaml = (text: string) => {
@@ -355,7 +389,8 @@ const parseYaml = (text: string) => {
   if (!text.trim()) throw new ConfigFileError('empty')
   try {
     const document = parseDocument(text, { schema: 'failsafe', uniqueKeys: true })
-    if (document.errors.length > 0 || document.warnings.length > 0) throw document.errors
+    if (document.errors.length > 0 || document.warnings.length > 0)
+      throw new AggregateError([...document.errors, ...document.warnings])
     rejectUnsafeYamlNodes(document)
     if (document.contents === null) throw new ConfigFileError('empty')
     return document
@@ -373,9 +408,12 @@ const yamlDocumentValue = (
     const bootstrap = document.contents.get('bootstrap', true)
     if (isSeq(bootstrap)) {
       for (const [index, item] of bootstrap.items.entries()) {
+        // oxlint-disable-next-line max-depth
         if (!isMap(item)) continue
         const autoRefill = item.get('autoRefill', true)
+        // oxlint-disable-next-line max-depth
         if (autoRefill === undefined) continue
+        // oxlint-disable-next-line max-depth
         if (
           !isScalar(autoRefill) ||
           autoRefill.type !== 'PLAIN' ||
@@ -476,6 +514,7 @@ const retainedIdentityKeysByMethod: Readonly<Record<string, readonly string[]>> 
   aws: ['makerAddress', 'awsKmsKeyId', 'awsRegion']
 }
 
+// oxlint-disable-next-line complexity
 const removeOverriddenYamlValues = (input: unknown, environment: Environment) => {
   if (typeof input !== 'object' || input === null || Array.isArray(input)) return
   const root = input as Record<string, unknown>
@@ -487,6 +526,7 @@ const removeOverriddenYamlValues = (input: unknown, environment: Environment) =>
     if (typeof identity === 'object' && identity !== null && !Array.isArray(identity)) {
       const retained = new Set(retainedIdentityKeysByMethod[environmentMethod] ?? ['makerAddress'])
       for (const key of yamlKeys.identity) {
+        // oxlint-disable-next-line max-depth
         if (!retained.has(key)) delete (identity as Record<string, unknown>)[key]
       }
     }
@@ -507,27 +547,49 @@ const removeOverriddenYamlValues = (input: unknown, environment: Environment) =>
   }
   if (environment.BOOTSTRAP_MARKETS !== undefined) delete root.bootstrap
   if (environment.LADDER_MARKETS !== undefined) delete root.ladder
+  const markets = root.markets
+  if (
+    acceptedLossFactorOverride(environment) !== undefined &&
+    typeof markets === 'object' &&
+    markets !== null &&
+    !Array.isArray(markets)
+  ) {
+    delete (markets as Record<string, unknown>).acceptedLossFactor
+  }
 }
 
-const parseMarketsValue = (name: 'BOOTSTRAP_MARKETS' | 'LADDER_MARKETS', text: string) => {
+/**
+ * Compose forwards an unset optional variable as `''`, which must not replace the YAML mapping.
+ * @see https://docs.docker.com/compose/how-tos/environment-variables/variable-interpolation/
+ */
+const acceptedLossFactorOverride = (environment: Environment) =>
+  environment.ACCEPTED_LOSS_FACTOR?.trim() ? environment.ACCEPTED_LOSS_FACTOR : undefined
+
+const parseJsonValue = (
+  name: 'BOOTSTRAP_MARKETS' | 'LADDER_MARKETS' | 'ACCEPTED_LOSS_FACTOR',
+  text: string
+) => {
   if (Buffer.byteLength(text, 'utf8') > MAX_CONFIGURATION_SOURCE_BYTES) {
     throw new ConfigValidationError(name, 'too-large', `${name} exceeds the maximum supported size`)
   }
   try {
     JSON.parse(text)
     const document = parseDocument(text, { intAsBigInt: true, uniqueKeys: true })
-    if (document.errors.length > 0) throw document.errors
+    if (document.errors.length > 0) throw new AggregateError(document.errors)
     rejectUnsafeYamlNodes(document)
     return document.toJS({ maxAliasCount: 0 }) as unknown
   } catch {
     throw new ConfigValidationError(
       name,
       'malformed-json',
-      `${name} must be a JSON array with unique object keys`
+      name === 'ACCEPTED_LOSS_FACTOR'
+        ? `${name} must be a JSON object with unique keys`
+        : `${name} must be a JSON array with unique object keys`
     )
   }
 }
 
+// oxlint-disable-next-line complexity
 const readConfiguration = async (
   path: string,
   explicit: boolean,
@@ -598,6 +660,7 @@ const readConfiguration = async (
  * same handle, and falls back only when opening the higher-precedence candidate reports `ENOENT`.
  * Reads configuration only; it does not mutate the environment or configuration files.
  */
+// oxlint-disable-next-line complexity
 export const loadConfigurationSources = async (
   environment: Environment,
   options: ConfigurationLoadOptions = {}
@@ -631,6 +694,7 @@ export const loadConfigurationSources = async (
   const raw = document
     ? yamlDocumentValue(document, environment.BOOTSTRAP_MARKETS === undefined)
     : {}
+  rejectRetiredKeys(environment, raw)
   removeOverriddenYamlValues(raw, environment)
   const readOnly = options.readOnly === true
   const source = yamlSource(raw, readOnly)
@@ -646,10 +710,14 @@ export const loadConfigurationSources = async (
       source.values[key] = environment[key]
   }
   if (environment.BOOTSTRAP_MARKETS !== undefined) {
-    source.bootstrap = parseMarketsValue('BOOTSTRAP_MARKETS', environment.BOOTSTRAP_MARKETS)
+    source.bootstrap = parseJsonValue('BOOTSTRAP_MARKETS', environment.BOOTSTRAP_MARKETS)
   }
   if (environment.LADDER_MARKETS !== undefined) {
-    source.ladder = parseMarketsValue('LADDER_MARKETS', environment.LADDER_MARKETS)
+    source.ladder = parseJsonValue('LADDER_MARKETS', environment.LADDER_MARKETS)
+  }
+  const acceptedLossFactor = acceptedLossFactorOverride(environment)
+  if (acceptedLossFactor !== undefined) {
+    source.acceptedLossFactor = parseJsonValue('ACCEPTED_LOSS_FACTOR', acceptedLossFactor)
   }
   return { ...source, path }
 }
@@ -667,6 +735,7 @@ export const configurationFromEnvironment = (
   environment: Environment,
   options: Pick<ConfigurationLoadOptions, 'readOnly'> = {}
 ): ConfigurationSource => {
+  rejectRetiredKeys(environment, undefined)
   const values: Record<string, unknown> = {}
   for (const key of environmentKeys) {
     if (
@@ -684,11 +753,23 @@ export const configurationFromEnvironment = (
   }
   let bootstrap: unknown = []
   if (environment.BOOTSTRAP_MARKETS !== undefined) {
-    bootstrap = parseMarketsValue('BOOTSTRAP_MARKETS', environment.BOOTSTRAP_MARKETS)
+    bootstrap = parseJsonValue('BOOTSTRAP_MARKETS', environment.BOOTSTRAP_MARKETS)
   }
   const ladder =
     environment.LADDER_MARKETS === undefined
       ? []
-      : parseMarketsValue('LADDER_MARKETS', environment.LADDER_MARKETS)
-  return { values, bootstrap, ladder }
+      : parseJsonValue('LADDER_MARKETS', environment.LADDER_MARKETS)
+  return {
+    values,
+    bootstrap,
+    ladder,
+    ...(acceptedLossFactorOverride(environment) === undefined
+      ? {}
+      : {
+          acceptedLossFactor: parseJsonValue(
+            'ACCEPTED_LOSS_FACTOR',
+            acceptedLossFactorOverride(environment)!
+          )
+        })
+  }
 }

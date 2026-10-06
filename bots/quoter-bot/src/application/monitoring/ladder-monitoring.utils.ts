@@ -1,11 +1,17 @@
 import type { Hex } from 'viem'
 
-import type { LadderQuoteSet, LadderRung, LadderSideDiagnostics } from '../../domain/ladder/ladder'
+import { MAX_OFFER_CAP } from '@morpho-org/midnight-sdk'
+
+import type { LadderQuoteSet, LadderRung, LadderSideDiagnostics } from '../../domain/ladder'
 import type { LadderRunResult } from '../ladder/ladder-quoter.service'
 import type { LadderGroupConsumption, LadderVerboseDetails } from '../ladder/ladder-verbose'
 import type { MonitoringEvent, MonitoringSide } from './monitoring-event'
 
-import { adapterOperationOf } from './monitoring-event'
+import {
+  adapterOperationOf,
+  publicationWithheldEvents,
+  snapshotErrorOperationOf
+} from './monitoring-event'
 
 const SIDES: readonly MonitoringSide[] = ['lower', 'higher']
 
@@ -24,7 +30,7 @@ const sideBook = (marketId: Hex, side: MonitoringSide, quote?: LadderQuoteSet): 
     side,
     state: rungs.length === 0 ? 'empty' : 'quoting',
     rungs: rungs.length,
-    totalAssets: rungs.reduce((sum, rung) => sum + rung.assets, 0n),
+    totalUnits: rungs.reduce((sum, rung) => sum + rung.assets, 0n),
     ...(rates.length === 0
       ? {}
       : {
@@ -41,40 +47,66 @@ const sideBook = (marketId: Hex, side: MonitoringSide, quote?: LadderQuoteSet): 
   }
 }
 
+const rateOmitted = (
+  marketId: Hex,
+  side: MonitoringSide,
+  verbose: Pick<LadderVerboseDetails, 'config' | 'referenceRateBps'>,
+  omission: {
+    bound: 'minimum' | 'maximum' | 'sell-ceiling'
+    rungs: number
+    assets: bigint
+    rateBps?: bigint
+  }
+): readonly MonitoringEvent[] =>
+  omission.rungs > 0 && omission.rateBps !== undefined
+    ? [
+        {
+          event: 'guardrail.rate-omitted',
+          workflow: 'ladder',
+          marketId,
+          side,
+          omittedRungs: omission.rungs,
+          omittedAssets: omission.assets,
+          bound: omission.bound,
+          outermostRateBps: omission.rateBps,
+          ...defined('referenceRateBps', verbose.referenceRateBps),
+          minimumRateBps: verbose.config.minimumRateBps,
+          maximumRateBps: verbose.config.maximumRateBps,
+          ...defined('maximumSellRateBps', verbose.config.maximumSellRateBps)
+        }
+      ]
+    : []
+
 const sideGuardrails = (
   marketId: Hex,
   side: MonitoringSide,
   diagnostics: LadderSideDiagnostics,
-  config: LadderVerboseDetails['config']
+  verbose: Pick<LadderVerboseDetails, 'config' | 'referenceRateBps'>
 ): readonly MonitoringEvent[] => [
-  ...(diagnostics.clampedToMinimumRungs > 0
-    ? [
-        {
-          event: 'guardrail.rate-clamped',
-          workflow: 'ladder',
-          marketId,
-          side,
-          clampedRungs: diagnostics.clampedToMinimumRungs,
-          bound: 'minimum',
-          minimumRateBps: config.minimumRateBps,
-          maximumRateBps: config.maximumRateBps
-        } satisfies MonitoringEvent
-      ]
-    : []),
-  ...(diagnostics.clampedToMaximumRungs > 0
-    ? [
-        {
-          event: 'guardrail.rate-clamped',
-          workflow: 'ladder',
-          marketId,
-          side,
-          clampedRungs: diagnostics.clampedToMaximumRungs,
-          bound: 'maximum',
-          minimumRateBps: config.minimumRateBps,
-          maximumRateBps: config.maximumRateBps
-        } satisfies MonitoringEvent
-      ]
-    : []),
+  ...rateOmitted(marketId, side, verbose, {
+    bound: 'minimum',
+    rungs: diagnostics.omittedBelowMinimumRungs,
+    assets: diagnostics.omittedBelowMinimumAssets,
+    ...(diagnostics.lowestOmittedRateBps === undefined
+      ? {}
+      : { rateBps: diagnostics.lowestOmittedRateBps })
+  }),
+  ...rateOmitted(marketId, side, verbose, {
+    bound: 'maximum',
+    rungs: diagnostics.omittedAboveMaximumRungs,
+    assets: diagnostics.omittedAboveMaximumAssets,
+    ...(diagnostics.highestOmittedRateBps === undefined
+      ? {}
+      : { rateBps: diagnostics.highestOmittedRateBps })
+  }),
+  ...rateOmitted(marketId, side, verbose, {
+    bound: 'sell-ceiling',
+    rungs: diagnostics.omittedAboveSellCeilingRungs,
+    assets: diagnostics.omittedAboveSellCeilingAssets,
+    ...(diagnostics.highestOmittedAboveSellCeilingRateBps === undefined
+      ? {}
+      : { rateBps: diagnostics.highestOmittedAboveSellCeilingRateBps })
+  }),
   ...(diagnostics.clearedRungs > 0
     ? [
         {
@@ -99,6 +131,7 @@ const sideGuardrails = (
     : [])
 ]
 
+// oxlint-disable-next-line complexity
 const verboseEvents = (
   marketId: Hex,
   verbose: LadderVerboseDetails,
@@ -135,9 +168,17 @@ const verboseEvents = (
     const activeQuote = observedAfter.activeQuote
     events.push(...SIDES.map(side => sideBook(marketId, side, activeQuote)))
   }
+  if (verbose.diagnostics?.inventorySkew) {
+    events.push({
+      event: 'inventory-skew.observed',
+      workflow: 'ladder',
+      marketId,
+      ...verbose.diagnostics.inventorySkew
+    })
+  }
   if (verbose.diagnostics) {
     for (const side of SIDES) {
-      events.push(...sideGuardrails(marketId, side, verbose.diagnostics[side], verbose.config))
+      events.push(...sideGuardrails(marketId, side, verbose.diagnostics[side], verbose))
     }
   }
   for (const side of SIDES) {
@@ -211,6 +252,7 @@ export const ladderMonitoringEvents = (
         ...('reason' in result ? { reason: result.reason } : {}),
         ...('errorName' in result ? { errorName: result.errorName } : {}),
         ...adapterOperationOf(result),
+        ...snapshotErrorOperationOf(result),
         ...(result.verbose?.durationMs === undefined
           ? {}
           : { durationMs: result.verbose.durationMs })
@@ -227,6 +269,10 @@ export const ladderMonitoringEvents = (
         ...adapterOperationOf(result)
       })
     }
+    events.push(...publicationWithheldEvents('ladder', result))
+    for (const side of 'withdrawnSides' in result ? (result.withdrawnSides ?? []) : []) {
+      events.push({ event: 'guardrail.side-withdrawn', workflow: 'ladder', marketId, side })
+    }
     if (result.verbose) events.push(...verboseEvents(marketId, result.verbose, result.status))
     return events
   })
@@ -241,7 +287,7 @@ const RETAINED_BASELINE_CYCLES = 500
 
 /** Per-group fill baselines carried across ladder cycles. */
 type LadderConsumptionBaselines = {
-  groups: Map<Hex, { consumedAssets: bigint; lastSeenCycle: number }>
+  groups: Map<Hex, { consumed: bigint; lastSeenCycle: number }>
   cycle: number
 }
 
@@ -284,15 +330,15 @@ export const ladderConsumptionEvents = (
     result => result.verbose?.groupConsumption ?? []
   )
   for (const group of consumption) {
-    if (seen.has(group.groupId)) continue
+    if (seen.has(group.groupId) || group.consumed === MAX_OFFER_CAP) continue
     seen.add(group.groupId)
     const previous = baselines.groups.get(group.groupId)
-    const before = previous?.consumedAssets
+    const before = previous?.consumed
     // Only ever advance. The group API is eventually consistent and can return an older `consumed`
     // after a newer one; lowering the baseline would re-emit the already-counted portion when the
     // next fresh value arrives.
     baselines.groups.set(group.groupId, {
-      consumedAssets: before === undefined || group.consumed > before ? group.consumed : before,
+      consumed: before === undefined || group.consumed > before ? group.consumed : before,
       lastSeenCycle: baselines.cycle
     })
     if (before === undefined || group.consumed <= before) continue
@@ -300,9 +346,9 @@ export const ladderConsumptionEvents = (
       event: 'offer.consumed',
       marketId: group.marketId,
       side: group.side,
-      consumedDeltaAssets: group.consumed - before,
+      consumedDeltaUnits: group.consumed - before,
       groupRateBps: group.groupRateBps,
-      remainingAssets: group.remainingAssets,
+      remainingUnits: group.remainingUnits,
       groupId: group.groupId
     })
   }

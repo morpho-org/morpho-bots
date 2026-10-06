@@ -1,14 +1,16 @@
 import type { Hex } from 'viem'
 
+import { MathLib } from '@morpho-org/morpho-ts'
+
 // Midnight protocol constants shared by the sizing, lens, and execution modules. They are pinned
-// here at scaffold time and verified against their on-chain derivations in test/constants.test.ts.
+// here at scaffold time and verified against their onchain derivations in test/constants.test.ts.
 // Operational tuning whose correct value
 // depends on the chain (block-poll cadence, stuck-tx thresholds, settle cooldown, fee floors) lives
 // in each chain's `TuningConfig` row in `config.ts`, because its meaning differs per chain; the
 // mechanisms it feeds live in `@repo/bot-kit`, and swap-venue constants live in `@repo/swaps`.
 
 /** 1e18 fixed-point one ("WAD") — the base scalar for Midnight's rate and share math. */
-export const WAD = 10n ** 18n
+export const WAD = MathLib.WAD
 
 /** Oracle price scale (1e36 = WAD²): collateralUsd = amount * price / ORACLE_PRICE_SCALE. */
 export const ORACLE_PRICE_SCALE = 10n ** 36n

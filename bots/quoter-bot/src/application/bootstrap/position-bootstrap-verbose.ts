@@ -1,13 +1,15 @@
 import type { Hex } from 'viem'
 
+import type { LossFactorObservation } from '../../domain/loss-factor'
 import type {
-  BootstrapConfig,
   BootstrapDecisionDiagnostics,
   BootstrapOffer,
   BootstrapPosition,
   BootstrapRate,
-  PositionBootstrapDecision
-} from '../../domain/bootstrap/position-bootstrap'
+  PositionBootstrapDecision,
+  ValidBootstrapConfig
+} from '../../domain/position-bootstrap'
+import type { PublicationWithheld } from '../../infrastructure/exposure/exposure-admission.utils'
 
 /** Bootstrap transaction identity shared by immediate submission and confirmed-result records. */
 export type BootstrapSubmittedTransaction = {
@@ -38,12 +40,16 @@ export type BootstrapMakeResult =
   | {
       /** Confirmed transactions submitted by this mutation request, in submission order. */
       submittedTransactions: readonly BootstrapSubmittedTransaction[]
+      /** Why a prepared publication was released unpublished after the cancellations confirmed. */
+      publicationWithheld?: PublicationWithheld
     }
 
 /** Complete position projection shown for a verbose bootstrap check. */
 export type BootstrapVerbosePosition = BootstrapPosition & {
   /** Current onchain bootstrap debt for the market. */
   debt: bigint
+  /** Snapshot-block market loss factor beside the accepted value. */
+  lossFactor: LossFactorObservation
   /** Representative active strategy-owned offer, when one exists. */
   activeOffer?: BootstrapOffer
   /** Whether multiple or otherwise inconsistent active groups require reconciliation. */
@@ -66,17 +72,11 @@ export type BootstrapVerboseState =
       /** Sanitized error classification without provider payloads or credentials. */
       errorName: string
     }
-  | {
-      /** Indicates that safety validation deliberately prevented a provider read. */
-      status: 'not-read'
-      /** Stable explanation for suppressing the read. */
-      reason: 'configuration-invalid'
-    }
 
 /** Opt-in diagnostic context attached to one bootstrap market result. */
 export type BootstrapVerboseDetails = {
-  /** Complete validated or rejected market strategy configuration. */
-  config: BootstrapConfig
+  /** Complete validated market strategy configuration. */
+  config: ValidBootstrapConfig
   /** Fresh provider state observed before the decision. */
   currentState: BootstrapVerboseState
   /** State used by the decision after accounting for earlier plans in the same cycle. */
@@ -95,7 +95,7 @@ export type BootstrapVerboseDetails = {
   submittedTransactions?: readonly BootstrapSubmittedTransaction[]
   /** Fresh provider state read after the check or mutation completed. */
   stateAfterCheck: BootstrapVerboseState
-  /** Rate-clamp and size-cap observations from derivation, when a rate-derived decision was made. */
+  /** Rate-range and size-cap observations from derivation, when a rate-derived decision was made. */
   diagnostics?: BootstrapDecisionDiagnostics
   /** Wall-clock duration of this market's check, including the post-check verbose re-read. */
   durationMs?: number

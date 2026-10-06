@@ -15,6 +15,8 @@ minimumReleaseAgeExclude:
 # No dependency lifecycle script runs unless opted in here — add entries deliberately. esbuild is
 # the only dependency in the tree that needs one; any future addition is a reviewable change.
 allowBuilds:
+  # Its postinstall only probes for the platform binary, which ships as an optional dependency.
+  '@swc/core': false
   esbuild: true
 # Make an un-opted-in build script a hard install failure, not a warning. Without this the
 # default-deny above is advisory, which defeats the point of the migration.
@@ -27,7 +29,7 @@ enablePrePostScripts: true
 
 # Migrating the lockfile re-resolves every caret range, so entries that bun.lock had already
 # resolved to a lower version are pinned exactly here. This keeps the migration a no-op on
-# dependency versions, per the TIB's non-goal; relaxing any of these is a separate, deliberate bump.
+# dependency versions; relaxing any of these is a separate, deliberate bump.
 catalog:
   # Pinned exactly for the quoter-bot direct-KMS path.
   '@aws-sdk/client-kms': 3.1101.0
@@ -72,13 +74,31 @@ catalog:
   # settings (0.8.35, optimizer runs=200).
   solc: 0.8.35
   soltag: ^0.0.17
-  tsx: 4.21.0
+  tsx: 4.22.0
   typescript: 6.0.2
   viem: 2.47.17
   vite: 7.3.6
-  vitest: 4.1.2
+  vitest: 4.1.11
   # Must match the zod that `@morpho-org/morpho-sdk` (and knip) resolve. viem's transitive `abitype`
   # declares an optional peer on zod, so a workspace package holding a DIFFERENT zod major gets its
   # own peer-variation copy of viem — two `BaseError` classes, and every cross-package `instanceof`
   # against a viem error silently returns false. `test/viem-dedupe.test.ts` guards the invariant.
-  zod: 4.4.3
+  zod: 4.5.0
+
+patchedDependencies:
+  soltag@0.0.17: patches/soltag@0.0.17.patch
+
+overrides:
+  # GHSA-ph9p-34f9-6g65, GHSA-52f5-9888-hmc6: solc (pinned, see catalog) pins tmp 0.0.33 exactly.
+  # solc-js moved to tmp 0.2.6 in solc 0.8.37; 0.2.7 also fixes GHSA-7c78-jf6q-g5cm in 0.2.6.
+  # Drop this once solc is bumped past a release that ships a fixed tmp.
+  solc>tmp: 0.2.7
+  # ws 8.18.3 (pinned exactly by viem 2.47.17) has GHSA-96hv-2xvq-fx4p and GHSA-58qx-3vcg-4xpx.
+  # Mirrors viem's own move to ws 8.21.0 (https://github.com/wevm/viem/pull/4788, viem 2.54.2); drop
+  # this once the catalog's viem pins ws >= 8.21.0.
+  viem>ws: 8.21.0
+  # AIKIDO-2026-26118, AIKIDO-2026-963596: @ethereumjs/util 10.1.2 (via @ethereumjs/wallet) resolves
+  # @noble/curves/@noble/hashes 2.2.0. curves 2.3.0 pins hashes 2.3.0, below the hashes fix, so both
+  # go to 2.4.0. Drop this once @ethereumjs/util resolves @noble/curves >= 2.4.0 on its own.
+  '@ethereumjs/util>@noble/curves': 2.4.0
+  '@ethereumjs/util>@noble/hashes': 2.4.0

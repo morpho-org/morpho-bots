@@ -1,3 +1,5 @@
+import type { Address } from 'viem'
+
 import { readFileSync } from 'node:fs'
 import { describe, expect, test, vi } from 'vitest'
 
@@ -17,7 +19,7 @@ import { InvalidSimulationCallerAddressError } from '../../src/config/invalid-si
 import { ResolverPrivateKeyRequiredError } from '../../src/config/resolver-private-key-required.error'
 
 const KEY = `0x${'11'.repeat(32)}`
-const CALLER: `0x${string}` = `0x${'22'.repeat(20)}`
+const CALLER: Address = `0x${'22'.repeat(20)}`
 const TARGET = { environment: 'production', projectId: 'project-id', service: 'bot' }
 const TOKEN = { header: 'project-access-token' as const, value: 'railway-token' }
 

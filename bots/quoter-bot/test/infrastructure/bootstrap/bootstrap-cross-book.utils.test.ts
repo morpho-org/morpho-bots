@@ -2,11 +2,13 @@ import type { Hex } from 'viem'
 
 import { describe, expect, test, vi } from 'vitest'
 
-import type { BootstrapOffer } from '../../../src/domain/bootstrap/position-bootstrap'
+import type { BootstrapOffer } from '../../../src/domain/position-bootstrap'
 import type { BootstrapCrossBookOffer } from '../../../src/infrastructure/bootstrap/bootstrap-cross-book.utils'
 
 import { BootstrapAdapterError } from '../../../src/infrastructure/bootstrap/bootstrap-adapter.error'
 import { resolveBootstrapProspectiveOffer } from '../../../src/infrastructure/bootstrap/bootstrap-cross-book.utils'
+
+const BPS_WAD = 10n ** 14n
 
 const marketId: Hex = `0x${'11'.repeat(32)}`
 const otherMarketId: Hex = `0x${'22'.repeat(32)}`
@@ -58,7 +60,7 @@ describe('resolveBootstrapProspectiveOffer', () => {
 
   test('reprices a crossing buy the clearance above the highest-rate sell', async () => {
     const toProspectiveBookOffer = projector([
-      { tick: 100n, tickSpacing: 1n, effectiveRateBps: 450n },
+      { tick: 100n, tickSpacing: 1n, effectiveRateWad: 450n * BPS_WAD },
       { tick: 99n, tickSpacing: 1n }
     ])
 
@@ -82,7 +84,7 @@ describe('resolveBootstrapProspectiveOffer', () => {
 
   test('clamps the cleared rate at the configured maximum', async () => {
     const toProspectiveBookOffer = projector([
-      { tick: 100n, tickSpacing: 1n, effectiveRateBps: 595n },
+      { tick: 100n, tickSpacing: 1n, effectiveRateWad: 595n * BPS_WAD },
       { tick: 99n, tickSpacing: 1n }
     ])
 
@@ -101,10 +103,10 @@ describe('resolveBootstrapProspectiveOffer', () => {
 
   test('steps one spacing below the sell when rounding rebounds onto its tick', async () => {
     const toProspectiveBookOffer = projector([
-      { tick: 100n, tickSpacing: 1n, effectiveRateBps: 450n },
+      { tick: 100n, tickSpacing: 1n, effectiveRateWad: 450n * BPS_WAD },
       { tick: 100n, tickSpacing: 1n },
-      { tick: 99n, tickSpacing: 1n, effectiveRateBps: 455n },
-      { tick: 99n, tickSpacing: 1n, effectiveRateBps: 455n }
+      { tick: 99n, tickSpacing: 1n, effectiveRateWad: 455n * BPS_WAD },
+      { tick: 99n, tickSpacing: 1n, effectiveRateWad: 455n * BPS_WAD }
     ])
 
     const resolved = await resolveBootstrapProspectiveOffer({
@@ -119,7 +121,13 @@ describe('resolveBootstrapProspectiveOffer', () => {
 
     expect(resolved).toEqual({
       offer: { ...desiredOffer, rateBps: 455n },
-      prospective: { marketId, buy: true, tick: 99n, tickSpacing: 1n, effectiveRateBps: 455n }
+      prospective: {
+        marketId,
+        buy: true,
+        tick: 99n,
+        tickSpacing: 1n,
+        effectiveRateWad: 455n * BPS_WAD
+      }
     })
     expect(toProspectiveBookOffer).toHaveBeenNthCalledWith(
       3,
@@ -135,10 +143,10 @@ describe('resolveBootstrapProspectiveOffer', () => {
 
   test('publishes nothing when the final exact-tick rate drifts beyond the hard bounds', async () => {
     const toProspectiveBookOffer = projector([
-      { tick: 100n, tickSpacing: 1n, effectiveRateBps: 450n },
+      { tick: 100n, tickSpacing: 1n, effectiveRateWad: 450n * BPS_WAD },
       { tick: 100n, tickSpacing: 1n },
-      { tick: 99n, tickSpacing: 1n, effectiveRateBps: 600n },
-      { tick: 99n, tickSpacing: 1n, effectiveRateBps: 601n }
+      { tick: 99n, tickSpacing: 1n, effectiveRateWad: 600n * BPS_WAD },
+      { tick: 99n, tickSpacing: 1n, effectiveRateWad: 601n * BPS_WAD }
     ])
 
     expect(
@@ -155,9 +163,30 @@ describe('resolveBootstrapProspectiveOffer', () => {
     expect(toProspectiveBookOffer).toHaveBeenCalledTimes(4)
   })
 
+  test('publishes nothing for a cleared tick whose APR exceeds the maximum by a fraction of a BPS', async () => {
+    const toProspectiveBookOffer = projector([
+      { tick: 100n, tickSpacing: 1n, effectiveRateWad: 450n * BPS_WAD },
+      { tick: 100n, tickSpacing: 1n },
+      { tick: 99n, tickSpacing: 1n, effectiveRateWad: 600n * BPS_WAD + 26n * 10n ** 11n }
+    ])
+
+    expect(
+      await resolveBootstrapProspectiveOffer({
+        desiredOffer,
+        prospective: { marketId, buy: true, tick: 100n },
+        replacedGroupIds: new Set(),
+        book: [sell(100n)],
+        toProspectiveBookOffer,
+        minimumRateBps: 400n,
+        maximumRateBps: 600n
+      })
+    ).toBeUndefined()
+    expect(toProspectiveBookOffer).toHaveBeenCalledTimes(3)
+  })
+
   test('publishes nothing when the sell already rests at the lowest protocol tick', async () => {
     const toProspectiveBookOffer = projector([
-      { tick: 0n, tickSpacing: 1n, effectiveRateBps: 450n },
+      { tick: 0n, tickSpacing: 1n, effectiveRateWad: 450n * BPS_WAD },
       { tick: 0n, tickSpacing: 1n }
     ])
 
@@ -176,9 +205,9 @@ describe('resolveBootstrapProspectiveOffer', () => {
 
   test('publishes nothing when the only clearing tick leaves the hard range', async () => {
     const toProspectiveBookOffer = projector([
-      { tick: 100n, tickSpacing: 1n, effectiveRateBps: 450n },
+      { tick: 100n, tickSpacing: 1n, effectiveRateWad: 450n * BPS_WAD },
       { tick: 100n, tickSpacing: 1n },
-      { tick: 99n, tickSpacing: 1n, effectiveRateBps: 700n }
+      { tick: 99n, tickSpacing: 1n, effectiveRateWad: 700n * BPS_WAD }
     ])
 
     expect(
@@ -242,7 +271,10 @@ describe('resolveBootstrapProspectiveOffer', () => {
       prospective: { marketId, buy: true, tick: 105n },
       replacedGroupIds: new Set(),
       book: [sell(100n)],
-      toProspectiveBookOffer: projector([{ tick: 100n, effectiveRateBps: 450n }, { tick: 100n }]),
+      toProspectiveBookOffer: projector([
+        { tick: 100n, effectiveRateWad: 450n * BPS_WAD },
+        { tick: 100n }
+      ]),
       minimumRateBps: 400n,
       maximumRateBps: 600n
     })

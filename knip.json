@@ -1,7 +1,6 @@
 {
   "$schema": "https://unpkg.com/knip@5/schema.json",
   "exclude": ["enumMembers", "classMembers"],
-  "ignore": [".claude/**"],
   "ignoreBinaries": ["forge", "mkfifo", "railway"],
   "workspaces": {
     ".": {
@@ -15,7 +14,8 @@
       "entry": [
         "src/release-intent/orchestrate/*.ts",
         "src/pr-size/orchestrate/*.ts",
-        "src/public-mirror/orchestrate/*.ts"
+        "src/public-mirror/orchestrate/*.ts",
+        "src/checks/orchestrate/*.ts"
       ]
     },
     "packages/logging": {},
@@ -23,6 +23,7 @@
     "packages/observability": {},
     "packages/telemetry": {},
     "packages/offers": {},
+    "packages/oxlint-plugin": {},
     "packages/swaps": {},
     "bots/midnight-liquidation": {
       "ignore": ["src/generated/**"],
@@ -42,6 +43,10 @@
     "bots/vault-v2-reallocation": {
       "entry": ["src/index.ts", "scripts/probe-live-lens.ts"],
       "ignoreDependencies": ["@repo/contracts"]
+    },
+    "bots/monitor-bot": {
+      "ignore": ["src/generated/**"],
+      "entry": ["src/index.ts", "scripts/create-channels.ts"]
     },
     "bots/midnight-crossed-books": {
       "ignore": ["src/infrastructure/*/generated/**"]

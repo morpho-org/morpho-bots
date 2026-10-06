@@ -3,7 +3,7 @@ import type { Address, Hex } from 'viem'
 import { TakeAmountsLib } from '@morpho-org/midnight-sdk'
 import { describe, expect, test } from 'vitest'
 
-import type { OwnedOverlapBookOffer } from '../../../src/infrastructure/intentional-overlap.utils'
+import type { OwnedOverlapBookOffer } from '../../../src/domain/intentional-overlap'
 
 import {
   bookCrossesRestingLadder,

@@ -22,8 +22,9 @@ describe('shared market collection boundary', () => {
     expect(runtimeHexListValue).toBe(hexListValue)
     expect(runtimeParseBytes32).toBe(parseBytes32)
 
-    const marketId = createDefaultBootstrap().marketId
-    const markets = [parseBytes32(marketId, 'marketId')]
+    const markets = [createDefaultBootstrap(), createDefaultLadder()].map(item =>
+      parseBytes32(item.marketId, 'marketId')
+    )
     expect(runtimeBootstrapConfigsValue([createDefaultBootstrap()], markets)).toEqual(
       bootstrapConfigsValue([createDefaultBootstrap()], markets)
     )

@@ -4,9 +4,9 @@ import type { CollateralSlot, PlanInput } from '../sizing/plan'
 import type { LensOut } from '../state/lens.sol'
 
 /**
- * Off-chain liquidatability, composed from a fresh lens reading — mirrors the gate `liquidate()`
+ * Offchain liquidatability, composed from a fresh lens reading — mirrors the gate `liquidate()`
  * enforces: `debt > 0 && !locked && (now > maturity || unhealthy)`, AND the per-element checks the
- * lens already performed on-chain (`valid` = the market exists; `gateAllows` = the liquidator
+ * lens already performed onchain (`valid` = the market exists; `gateAllows` = the liquidator
  * gate admits the Executor). `now` is the lens's `blockTimestamp` (chain time, not host clock).
  */
 export function isLiquidatable(out: LensOut): boolean {

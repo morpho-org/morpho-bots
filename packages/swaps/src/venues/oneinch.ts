@@ -20,7 +20,7 @@ type OneInchSwap = {
  * calldata. Approval is a plain ERC20 `approve` to the static AggregationRouterV6 (no Permit2). Output
  * is sent to `receiver` (the Executor). The floor is requested as an absolute `minReturn` rather than a
  * `slippage` percentage, so the returned {@link Swap} reports the router's own bound
- * (`minOutSource: 'venue'`) instead of reconstructing one. `amount` is committed off-chain, so the
+ * (`minOutSource: 'venue'`) instead of reconstructing one. `amount` is committed offchain, so the
  * {@link Swap} carries `amountIn: { source: 'fixed' }`.
  */
 export async function quoteOneInch(

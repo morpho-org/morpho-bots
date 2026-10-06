@@ -1,5 +1,5 @@
 // Guards the EIP-712 typehashes that scripts/seed/offers.ts pins from HashLib @ morpho-org/midnight
-// 336b924a. These constants are the crux of the deployment migration: when the on-chain Offer struct
+// 336b924a. These constants are the crux of the deployment migration: when the onchain Offer struct
 // changed (maxUnits/maxAssets uint256 -> uint128) the OFFER and OfferTree typehashes changed, and a
 // stale constant here would silently produce offers no ratifier accepts. Recomputing each hash from its
 // canonical EIP-712 type string catches any future struct drift the same way this migration required.

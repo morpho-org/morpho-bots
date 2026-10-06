@@ -1,6 +1,6 @@
 # vault-v2-reallocation
 
-Reallocates liquidity between the Morpho Blue markets of whitelisted Morpho Vault V2 vaults (via
+Reallocates liquidity between the Morpho Blue Markets of whitelisted Morpho Vault V2 Vaults (via
 each vault's MorphoMarketV1 adapter), migrated from the standalone
 [vault-v2-reallocation-bot](https://github.com/morpho-org/vault-v2-reallocation-bot) repo onto the
 shared `@repo/bot-kit` runtime. Sibling of [vault-v1-reallocation](../vault-v1-reallocation).
@@ -29,7 +29,7 @@ default 10 min) throttles the actual reallocation passes. Each pass, per whiteli
    `rateAtTarget`, and the `absoluteCap`/`relativeCap`/`allocation` triple for the market,
    collateral, and adapter cap ids. The lens calls `Morpho.accrueInterest` inside the simulation
    before reading — and reads `totalAssets()` after, so the vault-level accrual folds in the
-   adapters' just-accrued real assets — meaning the numbers are exact on-chain state at that block
+   adapters' just-accrued real assets — meaning the numbers are exact onchain state at that block
    with no client-side accrual. One vault therefore costs **one billed RPC call per pass**, not the
    ~40–70 the previous `fetchAccrualVaultV2` fan-out + cap multicall billed for a 20-market vault.
    No Morpho API dependency.
@@ -76,11 +76,11 @@ adapter (see `@repo/bot-kit`'s `Policy.multicall`).
 
 Assumptions and posture:
 
-- **Exactly one Morpho Blue market adapter per vault** (either adapter-contract generation,
+- **Exactly one Morpho Blue Market adapter per vault** (either adapter-contract generation,
   `MorphoMarketV1Adapter` or `MorphoMarketV1AdapterV2` — live vaults use the latter) — startup and
-  every fetch fail loud otherwise. `forceDeallocate`, liquidity adapters, gates, and MetaMorpho
+  every fetch fail loud otherwise. `forceDeallocate`, liquidity adapters, gates, and Vault V1
   (VaultV1) adapters are out of scope.
-- **The adapter's on-chain market list is the candidate set.** The original adapter generation
+- **The adapter's onchain market list is the candidate set.** The original adapter generation
   removes a market from its list when its allocation hits zero, so a fully-deallocated market
   cannot be re-entered by this bot until some allocator supplies it again — size deallocations
   accordingly (the strategies never fully exit a market on their own; only the vault-wide target
@@ -118,7 +118,7 @@ docker-compose and the Railway deploy script):
 | `REALLOCATION_INTERVAL_MS`                                | no       | `600000`                | min wall-clock ms between passes                     |
 | `MIN_APY_DELTA_BIPS`                                      | no       | `25`                    | strategy-config overrides win                        |
 | `MIN_UTILIZATION_DELTA_BIPS`                              | no       | `250`                   | strategy-config overrides win                        |
-| `ALLOW_IDLE_REALLOCATION`                                 | no       | `true`                  | apy-range only                                       |
+| `ALLOW_IDLE_REALLOCATION`                                 | no       | `true`                  | `APY-range` only                                     |
 | `DRY_RUN`                                                 | no       | `false`                 | plan + simulate + log, never submit                  |
 | `MAX_FEE_GWEI`                                            | no       | `300`                   | policy + queue fee ceiling                           |
 | `LOG_LEVEL`                                               | no       | `info`                  | debug/info/warn/error                                |

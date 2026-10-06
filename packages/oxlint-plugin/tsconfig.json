@@ -1,0 +1,9 @@
+{
+  "extends": "@repo/typescript-config/base",
+  "compilerOptions": {
+    "types": ["node"],
+    "allowImportingTsExtensions": true
+  },
+  "include": ["src", "test"],
+  "exclude": ["node_modules"]
+}

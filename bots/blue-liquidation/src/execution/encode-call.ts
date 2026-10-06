@@ -23,7 +23,7 @@ const CALLBACK_DATA_INDEX = 1n
  * The sell path and repay approval ride inside `data` as the Executor callback queue: a
  * `(bytes[] queue, bytes returnData)` blob its `fallback` decodes and runs. The plan's steps chain
  * the seized collateral to the loan token — a plain collateral is one venue swap; exotic collateral
- * is unwrap step(s) (ERC4626 redeem etc.) then usually a venue swap, or none when the unwrap chain
+ * is unwrap step(s) (ERC-4626 redeem etc.) then usually a venue swap, or none when the unwrap chain
  * already ends in the loan token. Blue ignores the callback return, so `returnData` is empty `0x`.
  * Trailing sweeps drain both market tokens plus every intermediate to the EOA.
  *
@@ -46,7 +46,7 @@ export function encodeLiquidationExec(params: {
   // The callback queue the Executor runs when Blue calls back into `onMorphoLiquidate`. The seized
   // collateral is already on the Executor; the steps convert it to the loan token, then the repay
   // allowance pair approves Blue to pull `repaidAssets` — balance-based because that amount is
-  // recomputed on-chain.
+  // recomputed onchain.
   const callbackQueue: Hex[] = [
     ...plan.steps.flatMap(step => stepCalls(step, executor)),
     ...approvePair(loanToken, morpho, executor)

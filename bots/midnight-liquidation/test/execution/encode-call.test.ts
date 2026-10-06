@@ -288,7 +288,7 @@ describe('encodeLiquidationExec', () => {
     const unwrapPlan: SwapPlan = {
       steps: [
         {
-          // ERC4626 redeem: the vault burns the caller's own shares — no approvalSpender.
+          // ERC-4626 redeem: the vault burns the caller's own shares — no approvalSpender.
           tokenIn: COLLATERAL,
           tokenOut: UNDERLYING,
           target: COLLATERAL,

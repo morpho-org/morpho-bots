@@ -1,4 +1,4 @@
-import type { Hex } from 'viem'
+import type { Address, Hex } from 'viem'
 
 import { isAddress, isAddressEqual } from 'viem'
 
@@ -12,6 +12,7 @@ import type {
 } from './setup-check.service'
 
 import { isSupportedChainId } from '../../config/supported-chains.utils'
+import { acceptedLossFactorOf, lendHalt } from '../../domain/loss-factor'
 import { SafeProviderError } from './safe-provider.error'
 
 const SAFE_ERROR_NAMES = new Set([
@@ -72,6 +73,7 @@ const SAFE_SIGNER_OPERATIONS = new Set<SafeSignerFailure['operation']>([
   'kms-sign'
 ])
 
+// oxlint-disable-next-line complexity
 const safeProviderFailure = (
   error: unknown,
   provider: SafeProviderFailure['provider']
@@ -230,8 +232,8 @@ export const setupResult = (
  * @remarks Only markets drive readiness. Group ownership is a local durable record, so a redeploy
  * onto a fresh filesystem orphans the bot's own live groups; halting on that cannot self-heal until
  * every orphan expires. Downgrading to a warning is only safe because reservations count every live
- * maker buy group rather than only attributed ones — see `ladderCashReservations` in
- * `infrastructure/ladder/ladder-cash-reservation.utils.ts`.
+ * maker buy group rather than only attributed ones — see `readExposureSnapshot` in
+ * `infrastructure/exposure/exposure-snapshot.utils.ts`.
  */
 export const unsafeOffersStatus = (offers: {
   unknownNamespaces: readonly string[]
@@ -332,7 +334,7 @@ const isTransientFailedCheck = (check: SetupCheck) => {
 export const hasOnlyTransientProviderFailures = (report: SetupCheckReport) =>
   !report.ready && report.checks.every(isTransientFailedCheck)
 
-const bookProblems = (requestedId: `0x${string}`, book: BookSetup, config: SetupCheckConfig) => {
+const bookProblems = (requestedId: Hex, book: BookSetup, config: SetupCheckConfig) => {
   const reasons: unknown[] = []
   if (book.id !== requestedId) reasons.push(`provider returned ${book.id}`)
   if (!book.allowlisted) reasons.push('not allowlisted')
@@ -359,7 +361,7 @@ const bookProblems = (requestedId: `0x${string}`, book: BookSetup, config: Setup
 export const chainCheck = (
   config: SetupCheckConfig,
   chainId: Captured<number>,
-  midnightCode: Captured<`0x${string}` | undefined>,
+  midnightCode: Captured<Hex | undefined>,
   referenceChainId?: Captured<number>
 ) => {
   const required = { chainId: config.chainId, midnightCode: 'deployed' }
@@ -397,7 +399,7 @@ export const chainCheck = (
  */
 export const booksCheck = (
   config: SetupCheckConfig,
-  books: readonly { requestedId: `0x${string}`; response: Captured<BookSetup> }[]
+  books: readonly { requestedId: Hex; response: Captured<BookSetup> }[]
 ) => {
   const required = 'all configured books valid'
   if (config.marketIds.length === 0) {
@@ -416,4 +418,76 @@ export const booksCheck = (
     return problem.reasons.length === 0 ? [] : [problem]
   })
   return setupResult('books', invalidBooks.length === 0, invalidBooks, required)
+}
+
+/**
+ * Grades every configured market's loss factor against its accepted value.
+ * @param config - Markets and their operator-accepted loss factors.
+ * @param reads - Captured per-market loss-factor reads.
+ * @returns `passed` when every market equals its accepted value, otherwise `warning` listing each
+ * market that differs or could not be read.
+ * @remarks Never `failed`: a failed readiness exits before any writer starts, which would leave live
+ * buys uncancelled. Each listed market is lend-halted by the workflows themselves.
+ */
+export const lossFactorCheck = (
+  config: SetupCheckConfig,
+  reads: readonly { requestedId: Hex; response: Captured<bigint> }[]
+): SetupCheck => {
+  const halted = reads.flatMap(({ requestedId, response }): Record<string, unknown>[] => {
+    const accepted = acceptedLossFactorOf(config.acceptedLossFactor, requestedId)
+    if (!response.ok) return [{ id: requestedId, ...accepted, providerError: response.error }]
+    const halt = lendHalt({ lossFactor: response.value, ...accepted })
+    return halt ? [{ id: requestedId, ...halt }] : []
+  })
+  return {
+    name: 'loss-factor',
+    status: halted.length === 0 ? 'passed' : 'warning',
+    observed: halted,
+    required: 'every market loss factor equals markets.acceptedLossFactor (default 0)',
+    ...(halted.length === 0
+      ? {}
+      : {
+          remediation:
+            'listed markets stop lending; after reviewing the realized loss, set markets.acceptedLossFactor to the observed lossFactor and redeploy'
+        })
+  }
+}
+
+/**
+ * Grades the maker's loan-token approval to Midnight.
+ * @param allowance - Observed spender and remaining allowance.
+ * @param config - Midnight address and the full-deployment allowance from `calculateRequiredAllowance`.
+ * @param startup - Whether this is the one-time startup check rather than a monitoring cycle.
+ * @returns `failed` for a different spender, or for a zero allowance at startup when any buy is
+ * configured; otherwise `warning` below `requiredAllowance` and `passed` at or above it.
+ * @remarks Monitoring never fails on the amount: both writers size buys by the lesser of balance and
+ * allowance, so fills that draw a finite approval down shrink the book instead of halting it.
+ */
+export const loanAllowanceCheck = (
+  allowance: { spender: Address; amount: bigint },
+  config: Pick<SetupCheckConfig, 'midnight' | 'requiredAllowance'>,
+  startup: boolean
+): SetupCheck => {
+  const requiresApproval = startup && config.requiredAllowance > 0n
+  const required = requiresApproval
+    ? { spender: config.midnight, minimum: 1n, fullDeployment: config.requiredAllowance }
+    : { spender: config.midnight, fullDeployment: config.requiredAllowance }
+  const status = !sameAddress(allowance.spender, config.midnight)
+    ? 'failed'
+    : requiresApproval && allowance.amount === 0n
+      ? 'failed'
+      : allowance.amount < config.requiredAllowance
+        ? 'warning'
+        : 'passed'
+  return {
+    name: 'loan-allowance',
+    status,
+    observed: allowance,
+    required,
+    ...(status === 'passed'
+      ? {}
+      : {
+          remediation: `approve Midnight to spend the loan asset; buys shrink to the remaining allowance, ${config.requiredAllowance} funds one full deployment of the configured buy exposure, and every buy fill, including rebuys after sells, draws a finite approval down`
+        })
+  }
 }

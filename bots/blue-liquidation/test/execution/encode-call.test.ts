@@ -1,5 +1,5 @@
 import type { SwapPlan, SwapStep } from '@repo/swaps'
-import type { Hex } from 'viem'
+import type { Address, Hex } from 'viem'
 
 import { decodeAbiParameters, decodeFunctionData, getAddress } from 'viem'
 import { describe, expect, it } from 'vitest'
@@ -125,7 +125,7 @@ const LIQUIDATE_ABI = [
   }
 ] as const
 
-// The intermediate underlying an ERC4626 collateral redeems into before the venue swap.
+// The intermediate underlying an ERC-4626 collateral redeems into before the venue swap.
 const UNDERLYING = getAddress('0x8888888888888888888888888888888888888888')
 
 function singleStepPlan(step: Omit<SwapStep, 'tokenIn' | 'tokenOut'>): SwapPlan {
@@ -154,8 +154,8 @@ const fixedPlan = singleStepPlan({
   approvalSpender: getAddress('0x0000000000001fF3684f28c67538d4D072C22734')
 })
 
-// An ERC4626 redeem step: the vault burns the caller's own shares, so no approvalSpender.
-const redeemStep = (tokenOut: `0x${string}`): SwapStep => ({
+// An ERC-4626 redeem step: the vault burns the caller's own shares, so no approvalSpender.
+const redeemStep = (tokenOut: Address): SwapStep => ({
   tokenIn: MARKET.collateralToken,
   tokenOut,
   target: MARKET.collateralToken,

@@ -5,12 +5,14 @@ import { cycleHasFailure, cycleRequiresHalt, waitForMonitorInterval } from '@rep
 import { withActiveSpan } from '@repo/telemetry'
 
 import type {
-  LadderConfig,
   LadderDiagnostics,
   LadderMarketState,
-  LadderQuoteSet
-} from '../../domain/ladder/ladder'
-import type { OperatorAdapterOperation } from '../operator-error-name.utils'
+  LadderQuoteSet,
+  LadderWithdrawnSide,
+  ValidLadderConfig
+} from '../../domain/ladder'
+import type { LendHalt, LossFactorObservation } from '../../domain/loss-factor'
+import type { OperatorAdapterOperation } from '../monitoring/operator-error-name.utils'
 import type {
   LadderBookReconciliation,
   LadderBookSideCrossingReport,
@@ -26,27 +28,58 @@ import type {
 import {
   effectiveLadderPremiumBps,
   generateLadderWithDiagnostics,
-  shouldRecenter,
-  validateLadderConfig
-} from '../../domain/ladder/ladder'
-import { LadderConfigurationError } from '../../domain/ladder/ladder-configuration.error'
-import { LadderAdapterError } from '../../infrastructure/ladder/ladder-adapter.error'
+  shouldRecenter
+} from '../../domain/ladder'
+import { LadderConfigurationError } from '../../domain/ladder-configuration.error'
+import { lendHalt } from '../../domain/loss-factor'
 import {
   MARKET_FAILURE_BUDGET_CYCLES,
   createMarketFailureBudget
-} from '../market-failure-budget.utils'
-import { marketObservationMatured } from '../market-maturity.utils'
-import { adapterOperationField, operatorErrorName } from '../operator-error-name.utils'
+} from '../../domain/market-failure-budget'
+import { marketObservationMatured } from '../../domain/market-maturity'
+import { snapshotErrorOperationField } from '../../infrastructure/exposure/exposure-admission.utils'
+import { LadderAdapterError } from '../../infrastructure/ladder/ladder-adapter.error'
+import { adapterOperationField, operatorErrorName } from '../monitoring/operator-error-name.utils'
 import { LadderOwnershipCleanupError } from './ladder-ownership-cleanup.error'
 import { sameLadderQuoteSet } from './ladder-quoter.utils'
 
 const SIDES = ['lower', 'higher'] as const
 
+const withdrawnSidesUnion = (
+  snapshot: readonly LadderWithdrawnSide[],
+  publication: readonly LadderWithdrawnSide[] = []
+) => {
+  const sides = SIDES.filter(side => snapshot.includes(side) || publication.includes(side))
+  return sides.length === 0 ? undefined : sides
+}
+
+const withWithdrawnSides = <T extends LadderRunOutcome>(
+  outcome: T,
+  withdrawnSides: readonly LadderWithdrawnSide[] | undefined
+): T => (withdrawnSides === undefined ? outcome : { ...outcome, withdrawnSides })
+
 const loggedMakeResult = (result: LadderMakeResult) =>
   result === 'logged' || (result !== undefined && result.logged === true)
 
+const confirmedCancellation = (transactions: readonly LadderSubmittedTransaction[]) =>
+  transactions.some(transaction => transaction.operation === 'cancel')
+
+const withheldAfterCancellation = (error: unknown) =>
+  error instanceof LadderAdapterError &&
+  error.operation === 'publication-reservation-cleanup' &&
+  confirmedCancellation(error.confirmedTransactions)
+
 /** Consumer-owned port for fresh position and capacity inputs for one ladder market. */
 export interface LadderPositionService {
+  /**
+   * Reads only the market loss factor beside its accepted value, at one block.
+   * @param marketId - Canonical market identifier to inspect.
+   * @returns The observation that decides whether this market may lend.
+   * @throws When the loss factor cannot be read or is not a uint128.
+   * @remarks Kept apart from {@link LadderPositionService.readMarket} so no book, group, or
+   * snapshot failure can stop a halted market's buys from being cancelled.
+   */
+  readLendGuard(marketId: Hex): Promise<LossFactorObservation>
   /**
    * Reads current side, market, and total capacities.
    * @param marketId - Canonical market identifier to inspect.
@@ -134,17 +167,27 @@ export interface LadderMakeService {
     onTransactionSubmitted?: LadderTransactionSubmittedObserver
   }): Promise<LadderMakeResult>
   /**
+   * Cancels every durably owned buy group of one market and nothing else.
+   * @param parameters - Market, stable reason, and optional transaction-submission observer.
+   * @returns `logged` for a dry-run, otherwise the confirmed cancellation.
+   * @throws When any unconsumed buy group cannot be cancelled with a confirmed receipt; ownership
+   * is kept for every group whose cancellation is not confirmed.
+   * @remarks Reads no book and prepares no replacement, so neither can stop the cancellation. Sell
+   * groups are untouched.
+   */
+  cancelBuys(parameters: {
+    marketId: Hex
+    reason: 'loss-factor-mismatch' | 'guard-read-failed'
+    onTransactionSubmitted?: LadderTransactionSubmittedObserver
+  }): Promise<LadderMakeResult>
+  /**
    * Invalidates all strategy-owned roots after an unsafe cycle-level failure.
    * @param parameters - Stable safety reason and optional transaction-submission observer.
    * @returns `logged` for a dry-run, otherwise confirmed cancellation hashes.
    * @throws When complete strategy-root invalidation cannot be confirmed.
    */
   hardHalt(parameters: {
-    reason:
-      | 'ladder-configuration-failed'
-      | 'reference-read-failed'
-      | 'ladder-decision-failed'
-      | 'market-invalidation-failed'
+    reason: 'reference-read-failed' | 'ladder-decision-failed' | 'market-invalidation-failed'
     onTransactionSubmitted?: LadderTransactionSubmittedObserver
   }): Promise<LadderMakeResult>
   /**
@@ -160,14 +203,48 @@ export interface LadderMakeService {
 }
 
 type LadderRunOutcome =
-  | { marketId: Hex; status: 'observed'; action: 'rest' }
+  | {
+      marketId: Hex
+      status: 'observed'
+      action: 'rest'
+      withdrawnSides?: readonly LadderWithdrawnSide[]
+    }
+  | ({
+      marketId: Hex
+      status: 'observed' | 'applied' | 'logged'
+      action: 'lend-halted'
+      reason: 'loss-factor-mismatch'
+    } & LendHalt)
   | { marketId: Hex; status: 'observed' | 'applied' | 'logged'; action: 'matured' }
   | {
       marketId: Hex
       status: 'applied' | 'logged'
       action: 'publish' | 'replace'
       reason: 'publish' | 'recenter' | 'resize' | 'book-crossed'
+      withdrawnSides?: readonly LadderWithdrawnSide[]
     }
+  | {
+      marketId: Hex
+      /** `applied` only when replaced groups were cancelled; nothing is ever published. */
+      status: 'observed' | 'applied' | 'logged'
+      action: 'publication-withdrawn'
+      reason: 'publish' | 'recenter' | 'resize' | 'book-crossed'
+      withdrawnSides: readonly LadderWithdrawnSide[]
+    }
+  | {
+      marketId: Hex
+      status: 'applied'
+      action: 'publication-withheld'
+      reason: 'capacity-changed' | 'price-changed'
+      withdrawnSides?: readonly LadderWithdrawnSide[]
+    }
+  | ({
+      marketId: Hex
+      status: 'applied'
+      action: 'publication-withheld'
+      reason: 'loss-factor-mismatch'
+      withdrawnSides?: readonly LadderWithdrawnSide[]
+    } & LendHalt)
   | {
       marketId: Hex
       status: 'failed'
@@ -179,22 +256,36 @@ type LadderRunOutcome =
   | {
       marketId: Hex
       status: 'failed'
+      stage: 'guard-read'
+      invalidated: boolean
+      invalidationLogged?: boolean
+      errorName: string
+      adapterOperation?: OperatorAdapterOperation
+    }
+  | ({
+      marketId: Hex
+      status: 'failed'
       stage: 'reconcile'
       invalidated: boolean
       errorName: string
+      adapterOperation?: OperatorAdapterOperation
+      snapshotErrorOperation?: OperatorAdapterOperation
       ownershipCleanupErrorName?: string
-    }
-  | {
+      withdrawnSides?: readonly LadderWithdrawnSide[]
+    } & Partial<LendHalt>)
+  | ({
       marketId: Hex
       status: 'halted'
-      stage: 'configuration' | 'reference-read' | 'decision' | 'market-invalidation'
+      stage: 'reference-read' | 'decision' | 'market-invalidation'
+      /** Why the failed market invalidation was attempted, when it was a lend halt. */
+      reason?: 'loss-factor-mismatch' | 'guard-read'
       strategyInvalidated: boolean
       strategyInvalidationLogged?: boolean
       errorName: string
       adapterOperation?: OperatorAdapterOperation
       marketInvalidationErrorName?: string
       invalidationErrorName?: string
-    }
+    } & Partial<LendHalt>)
 
 /** Sanitized outcome for one configured market in a ladder cycle. */
 export type LadderRunResult = LadderRunOutcome & {
@@ -249,7 +340,7 @@ export class LadderQuoterService {
     private readonly positions: LadderPositionService,
     private readonly rates: LadderReferenceRateService,
     private readonly make: LadderMakeService,
-    private readonly configs: readonly LadderConfig[]
+    private readonly configs: readonly ValidLadderConfig[]
   ) {}
 
   /**
@@ -264,6 +355,7 @@ export class LadderQuoterService {
    * through the make port after the final in-flight cycle. Verbose cycles perform a fresh
    * market/active-quote read after every check and emit submitted transaction hashes immediately.
    */
+  // oxlint-disable-next-line complexity
   async runContinuously(parameters: {
     signal: AbortSignal
     onCycle?: (results: readonly LadderRunResult[]) => void | Promise<void>
@@ -278,10 +370,6 @@ export class LadderQuoterService {
         'requires at least one configured market for monitoring'
       )
     }
-    const runRemovedMarketCleanup = async () => this.make.cleanupRemovedMarkets?.()
-    if (parameters.runOperation) await parameters.runOperation(runRemovedMarketCleanup)
-    else await runRemovedMarketCleanup()
-
     const intervalMs = parameters.intervalMs ?? this.monitorIntervalMs()
     if (!Number.isSafeInteger(intervalMs) || intervalMs <= 0) {
       throw new LadderConfigurationError(
@@ -322,9 +410,15 @@ export class LadderQuoterService {
         cycles += 1
 
         for (const result of results) {
+          // oxlint-disable-next-line max-depth
           if (result.status === 'failed' && result.stage === 'reconcile') {
             unresolvedPublicationMarkets.add(result.marketId)
-          } else if (result.status === 'applied' || result.status === 'logged') {
+          } else if (
+            result.status === 'applied' ||
+            result.status === 'logged' ||
+            ('action' in result &&
+              (result.action === 'lend-halted' || result.action === 'publication-withdrawn'))
+          ) {
             unresolvedPublicationMarkets.delete(result.marketId)
           }
         }
@@ -396,11 +490,11 @@ export class LadderQuoterService {
   }
 
   /**
-   * Preflights every config, then reconciles one fresh cycle for each configured market.
+   * Reconciles one fresh cycle for each configured market.
    * @param parameters - Optional verbose flag and immediate transaction-submission observer.
    * @returns Ordered outcomes; dry-run make requests are `logged`, never `applied`.
-   * @throws `LadderConfigurationError` when no market is configured. Other handled config,
-   * provider, decision, and invalidation failures are returned as sanitized outcomes.
+   * @throws `LadderConfigurationError` when no market is configured. Other handled provider,
+   * decision, and invalidation failures are returned as sanitized outcomes.
    * @remarks Retains an active center inside the inclusive movement tolerance while still deriving
    * fresh sizes. Verbose mode adds a fresh post-check read without exposing signer or provider
    * details. All publication and invalidation side effects pass exclusively through `make`. A market
@@ -409,41 +503,31 @@ export class LadderQuoterService {
    * quoting and monitoring continues into later cycles. A resting ladder a third party has
    * crossed on a clearable side is replaced with reason `book-crossed` once that side's cooldown
    * has elapsed; `make` rechecks the crossing under its own lock, so one that cleared in between
-   * mutates nothing and the cycle reports `rest`.
+   * mutates nothing and the cycle reports `rest`. Every market's loss-factor guard, and the buy
+   * cancellation it requires, runs before removed-market cleanup or any other read or mutation, so
+   * no failure there can leave a mismatched buy live.
    */
+  // oxlint-disable-next-line complexity
   async runOnce(parameters: LadderRunParameters = {}) {
     if (this.configs.length === 0) {
       throw new LadderConfigurationError('ladder', 'requires at least one configured market')
     }
-    await this.make.cleanupRemovedMarkets?.()
+    const guarded = new Map<Hex, LadderRunResult>()
     for (const config of this.configs) {
-      try {
-        validateLadderConfig(config)
-      } catch (error) {
-        const result = await this.halt(
-          config.marketId,
-          'configuration',
-          error,
-          'ladder-configuration-failed',
-          parameters
-        )
-        const submittedTransactions =
-          result.makeResult !== undefined && result.makeResult !== 'logged'
-            ? result.makeResult.submittedTransactions
-            : []
-        return [
-          await this.completeResult(config, result.result, parameters, {
-            config,
-            currentState: { status: 'not-read', reason: 'configuration-invalid' },
-            ...(submittedTransactions.length > 0 ? { submittedTransactions } : {})
-          })
-        ]
-      }
+      const result = await this.guardLending(config, parameters, Date.now())
+      if (!result) continue
+      if (result.status === 'halted') return [...guarded.values(), result]
+      guarded.set(config.marketId, result)
     }
-
+    await this.make.cleanupRemovedMarkets?.()
     const results: LadderRunResult[] = []
     for (const config of this.configs) {
       const startedAt = Date.now()
+      const lendHalted = guarded.get(config.marketId)
+      if (lendHalted) {
+        results.push(lendHalted)
+        continue
+      }
       let active: LadderQuoteSet | undefined
       // Sampled here rather than after reconciliation: replacing a quote forgets the old group from
       // durable ownership, so a fill on it would never be observed on the cycle that replaced it —
@@ -567,6 +651,7 @@ export class LadderQuoterService {
       let desired: LadderQuoteSet
       let decision: 'publish' | 'recenter' | 'resize' | 'rest' | 'book-crossed'
       let diagnostics: LadderDiagnostics | undefined
+      let snapshotWithdrawnSides: LadderWithdrawnSide[] = []
       try {
         const targetRateBps =
           referenceRateBps + effectiveLadderPremiumBps(config, secondsToMaturity)
@@ -591,8 +676,13 @@ export class LadderQuoterService {
               })
         diagnostics = generation.diagnostics
         const generated = generation.quote
+        snapshotWithdrawnSides = SIDES.filter(
+          side => market.withdrawnSides?.includes(side) && generated[side].length > 0
+        )
         desired = {
           ...generated,
+          ...(snapshotWithdrawnSides.includes('lower') ? { lower: [] } : {}),
+          ...(snapshotWithdrawnSides.includes('higher') ? { higher: [] } : {}),
           ...(referenceObservationId === undefined ? {} : { referenceObservationId })
         }
         if (!active) decision = 'publish'
@@ -632,7 +722,7 @@ export class LadderQuoterService {
 
       const desiredPublication =
         desired.lower.length === 0 && desired.higher.length === 0 ? undefined : desired
-      if (!active && !desiredPublication) decision = 'rest'
+      if (!active && !desiredPublication && snapshotWithdrawnSides.length === 0) decision = 'rest'
 
       const bookCrossing = this.bookCrossingReport(config, market)
       const bookCrossedSides =
@@ -683,16 +773,20 @@ export class LadderQuoterService {
         results.push(
           await this.completeResult(
             config,
-            {
-              marketId: config.marketId,
-              status: 'failed',
-              stage: 'reconcile',
-              invalidated: ownershipCleanup !== undefined,
-              errorName: operatorErrorName(error),
-              ...(ownershipCleanup
-                ? { ownershipCleanupErrorName: ownershipCleanup.cleanupErrorName }
-                : {})
-            },
+            withWithdrawnSides(
+              {
+                marketId: config.marketId,
+                status: 'failed',
+                stage: 'reconcile',
+                invalidated: ownershipCleanup !== undefined || withheldAfterCancellation(error),
+                errorName: operatorErrorName(error),
+                ...adapterOperationField(error),
+                ...(ownershipCleanup
+                  ? { ownershipCleanupErrorName: ownershipCleanup.cleanupErrorName }
+                  : {})
+              },
+              withdrawnSidesUnion(snapshotWithdrawnSides)
+            ),
             parameters,
             {
               ...verbosePlan,
@@ -709,23 +803,42 @@ export class LadderQuoterService {
       const settled =
         reconciliation === undefined || reconciliation === 'logged' ? undefined : reconciliation
       const bookReconciliation = settled?.reconciliation
-      if (bookReconciliation?.applied === true) {
+      if (bookReconciliation?.applied === true && !settled?.publicationWithheld) {
         this.advanceBookCrossedCooldown(config.marketId, bookReconciliation)
       }
       const submittedTransactions = settled?.submittedTransactions
+      const withdrawnSides = withdrawnSidesUnion(snapshotWithdrawnSides, settled?.withdrawnSides)
       const reconciled = {
         ...verbosePlan,
         ...(submittedTransactions ? { submittedTransactions } : {}),
         ...(settled?.bookClearedRungs ? { bookClearedRungs: settled.bookClearedRungs } : {}),
+        ...(withdrawnSides ? { withdrawnSides } : {}),
         ...(bookReconciliation ? { bookReconciliation } : {})
       }
-      const nothingLeftToClear =
-        decision === 'book-crossed' && bookReconciliation?.applied === false
-      if (decision === 'rest' || nothingLeftToClear) {
+      const withheld = settled?.publicationWithheld
+      if (withheld) {
         results.push(
           await this.completeResult(
             config,
-            { marketId: config.marketId, status: 'observed', action: 'rest' },
+            withWithdrawnSides<LadderRunOutcome>(
+              withheld.reason !== 'snapshot-unavailable'
+                ? {
+                    marketId: config.marketId,
+                    status: 'applied',
+                    action: 'publication-withheld',
+                    ...withheld
+                  }
+                : {
+                    marketId: config.marketId,
+                    status: 'failed',
+                    stage: 'reconcile',
+                    invalidated: confirmedCancellation(submittedTransactions ?? []),
+                    errorName: withheld.errorName,
+                    adapterOperation: withheld.reason,
+                    ...snapshotErrorOperationField(withheld)
+                  },
+              withdrawnSides
+            ),
             parameters,
             reconciled,
             startedAt
@@ -733,15 +846,50 @@ export class LadderQuoterService {
         )
         continue
       }
+      const nothingLeftToClear =
+        decision === 'book-crossed' && bookReconciliation?.applied === false
+      if (decision === 'rest' || nothingLeftToClear) {
+        results.push(
+          await this.completeResult(
+            config,
+            withWithdrawnSides(
+              { marketId: config.marketId, status: 'observed', action: 'rest' },
+              withdrawnSides
+            ),
+            parameters,
+            reconciled,
+            startedAt
+          )
+        )
+        continue
+      }
+      const publishedSides = SIDES.filter(
+        side => (desiredPublication?.[side].length ?? 0) > 0 && !withdrawnSides?.includes(side)
+      )
       results.push(
         await this.completeResult(
           config,
-          {
-            marketId: config.marketId,
-            status: loggedMakeResult(reconciliation) ? 'logged' : 'applied',
-            action: decision === 'publish' ? 'publish' : 'replace',
-            reason: decision
-          },
+          withdrawnSides && publishedSides.length === 0
+            ? {
+                marketId: config.marketId,
+                status: loggedMakeResult(reconciliation)
+                  ? 'logged'
+                  : confirmedCancellation(submittedTransactions ?? [])
+                    ? 'applied'
+                    : 'observed',
+                action: 'publication-withdrawn',
+                reason: decision,
+                withdrawnSides
+              }
+            : withWithdrawnSides(
+                {
+                  marketId: config.marketId,
+                  status: loggedMakeResult(reconciliation) ? 'logged' : 'applied',
+                  action: decision === 'publish' ? 'publish' : 'replace',
+                  reason: decision
+                },
+                withdrawnSides
+              ),
           parameters,
           reconciled,
           startedAt
@@ -760,7 +908,7 @@ export class LadderQuoterService {
    * elapsed: the throttle may only ever suppress on positive evidence that it is too soon.
    */
   private bookCrossingReport(
-    config: LadderConfig,
+    config: ValidLadderConfig,
     market: LadderMarketState
   ): { lower: LadderBookSideCrossingReport; higher: LadderBookSideCrossingReport } | undefined {
     const crossing = market.bookCrossing
@@ -797,7 +945,7 @@ export class LadderQuoterService {
   }
 
   private async settleMaturedMarket(
-    config: LadderConfig,
+    config: ValidLadderConfig,
     currentState: LadderVerboseState,
     parameters: LadderRunParameters,
     startedAt: number
@@ -859,8 +1007,116 @@ export class LadderQuoterService {
     )
   }
 
+  /**
+   * Cancels a market's buys when its loss factor differs from the accepted value or cannot be read.
+   * @returns The market's outcome for this cycle, or `undefined` when the market may lend.
+   */
+  private async guardLending(
+    config: ValidLadderConfig,
+    parameters: LadderRunParameters,
+    startedAt: number
+  ): Promise<LadderRunResult | undefined> {
+    let halt: LendHalt | undefined
+    let guardError: unknown
+    try {
+      halt = lendHalt(await this.positions.readLendGuard(config.marketId))
+      if (!halt) return undefined
+    } catch (error) {
+      guardError = error
+    }
+    const verbosePlan: LadderVerbosePlan = {
+      config,
+      currentState: halt
+        ? { status: 'lend-halted', lossFactor: halt }
+        : { status: 'failed', errorName: operatorErrorName(guardError) },
+      decision: 'lend-halted'
+    }
+    let cancellation: LadderMakeResult
+    try {
+      cancellation = await this.make.cancelBuys({
+        marketId: config.marketId,
+        reason: halt ? 'loss-factor-mismatch' : 'guard-read-failed',
+        onTransactionSubmitted: this.marketObserver(config.marketId, parameters)
+      })
+    } catch (error) {
+      if (error instanceof LadderOwnershipCleanupError) {
+        return this.completeResult(
+          config,
+          {
+            marketId: config.marketId,
+            status: 'failed',
+            stage: 'reconcile',
+            invalidated: true,
+            errorName: operatorErrorName(error),
+            ownershipCleanupErrorName: error.cleanupErrorName,
+            ...halt
+          },
+          parameters,
+          { ...verbosePlan, submittedTransactions: error.submittedTransactions },
+          startedAt
+        )
+      }
+      const stopped = await this.halt(
+        config.marketId,
+        'market-invalidation',
+        guardError ?? error,
+        'market-invalidation-failed',
+        parameters,
+        error
+      )
+      return this.completeResult(
+        config,
+        stopped.result.status === 'halted'
+          ? { ...stopped.result, reason: halt ? 'loss-factor-mismatch' : 'guard-read', ...halt }
+          : stopped.result,
+        parameters,
+        verbosePlan,
+        startedAt
+      )
+    }
+    const logged = loggedMakeResult(cancellation)
+    const submittedTransactions =
+      cancellation === undefined || cancellation === 'logged'
+        ? []
+        : cancellation.submittedTransactions
+    const verbose = {
+      ...verbosePlan,
+      ...(submittedTransactions.length > 0 ? { submittedTransactions } : {})
+    }
+    if (!halt) {
+      return this.completeResult(
+        config,
+        {
+          marketId: config.marketId,
+          status: 'failed',
+          stage: 'guard-read',
+          invalidated: !logged,
+          ...(logged ? { invalidationLogged: true } : {}),
+          errorName: operatorErrorName(guardError),
+          ...adapterOperationField(guardError)
+        },
+        parameters,
+        verbose,
+        startedAt
+      )
+    }
+    return this.completeResult(
+      config,
+      {
+        marketId: config.marketId,
+        status: logged ? 'logged' : submittedTransactions.length > 0 ? 'applied' : 'observed',
+        action: 'lend-halted',
+        reason: 'loss-factor-mismatch',
+        ...halt
+      },
+      parameters,
+      verbose,
+      startedAt
+    )
+  }
+
   private async failedMarketRead(
-    config: LadderConfig,
+    config: ValidLadderConfig,
     error: unknown,
     parameters: LadderRunParameters
   ): Promise<{ result: LadderRunOutcome; invalidation?: LadderMakeResult }> {
@@ -879,7 +1135,8 @@ export class LadderQuoterService {
           stage: 'market-read',
           invalidated: !loggedMakeResult(invalidation),
           ...(loggedMakeResult(invalidation) ? { invalidationLogged: true } : {}),
-          errorName: operatorErrorName(error)
+          errorName: operatorErrorName(error),
+          ...adapterOperationField(error)
         },
         invalidation
       }
@@ -900,17 +1157,14 @@ export class LadderQuoterService {
   }
 
   private async completeResult(
-    config: LadderConfig,
+    config: ValidLadderConfig,
     result: LadderRunOutcome,
     parameters: LadderRunParameters,
     verbose: LadderVerbosePlan,
     startedAt?: number
   ): Promise<LadderRunResult> {
     if (parameters.verbose !== true) return result
-    const stateAfterCheck =
-      verbose.currentState.status === 'not-read'
-        ? verbose.currentState
-        : await this.readVerboseState(config.marketId)
+    const stateAfterCheck = await this.readVerboseState(config.marketId)
     return {
       ...result,
       verbose: {
@@ -932,7 +1186,7 @@ export class LadderQuoterService {
    * @throws Rethrows any non-configuration failure instead of silently dropping diagnostics.
    */
   private premiumDiagnostics(
-    config: LadderConfig,
+    config: ValidLadderConfig,
     referenceRateBps: bigint,
     secondsToMaturity: bigint | undefined
   ): Pick<LadderVerboseDetails, 'maturityPremiumBps' | 'targetRateBps'> {

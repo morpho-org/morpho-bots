@@ -6,8 +6,8 @@ import {
 } from '@repo/observability'
 import { hasTelemetryConfig, startBotTelemetry } from '@repo/telemetry'
 
-import { operatorErrorName } from './application/operator-error-name.utils'
-import { VersionService } from './application/version.service'
+import { operatorErrorName } from './application/monitoring/operator-error-name.utils'
+import { VersionService } from './application/quoter-bot/version.service'
 import { createApplication } from './bootstrap'
 import { resolveObservabilityChainId } from './config/observability-chain.utils'
 import {
@@ -62,7 +62,7 @@ const observability = createBotObservability({
   logger: monitoringLogger
 })
 const removeProcessObservers = installProcessObservers(observability)
-await observability.start()
+observability.start()
 
 const recordObserver = telemetry.enabled ? createTelemetryRecordObserver() : undefined
 const entrypointObservability = recordObserver

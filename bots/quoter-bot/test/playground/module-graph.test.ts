@@ -43,13 +43,16 @@ describe('playground browser module graph', () => {
       'playground/strict-json.error.ts',
       'src/config/config-validation.error.ts',
       'src/config/market-collections.ts',
-      'src/domain/bootstrap/bootstrap-configuration.error.ts',
-      'src/domain/bootstrap/position-bootstrap.ts',
+      'src/domain/bootstrap-configuration.error.ts',
       'src/domain/bytes32.ts',
       'src/domain/cross-book.ts',
-      'src/domain/ladder/ladder-configuration.error.ts',
-      'src/domain/ladder/ladder.ts',
-      'src/domain/maturity-premium.ts'
+      'src/domain/frozen-copy.ts',
+      'src/domain/ladder-configuration.error.ts',
+      'src/domain/ladder.ts',
+      'src/domain/loss-factor.ts',
+      'src/domain/maturity-premium.ts',
+      'src/domain/position-bootstrap.ts',
+      'src/domain/rate-range.ts'
     ])
     for (const forbidden of [
       'config.utils',

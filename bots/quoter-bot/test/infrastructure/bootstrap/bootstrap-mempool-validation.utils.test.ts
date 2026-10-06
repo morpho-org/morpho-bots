@@ -3,6 +3,7 @@ import { describe, expect, test } from 'vitest'
 import { BootstrapAdapterError } from '../../../src/infrastructure/bootstrap/bootstrap-adapter.error'
 import { BootstrapMempoolValidationError } from '../../../src/infrastructure/bootstrap/bootstrap-mempool-validation.error'
 import {
+  isBelowMinimumOfferRejection,
   validateBootstrapMempoolPayload,
   validateBootstrapMempoolPublication
 } from '../../../src/infrastructure/bootstrap/bootstrap-mempool-validation.utils'
@@ -82,5 +83,33 @@ describe('validateBootstrapMempoolPayload', () => {
     expect(error).toMatchObject({
       issues: [{ rule: 'min_offer_assets_usd', minimumAssets: 42n }]
     })
+  })
+})
+
+describe('isBelowMinimumOfferRejection', () => {
+  test('accepts a minimum-size rejection that reports the Router floor', () => {
+    expect(
+      isBelowMinimumOfferRejection(
+        new BootstrapMempoolValidationError([
+          { rule: 'min_offer_assets_usd', minimumAssets: 100_000_000n }
+        ])
+      )
+    ).toBe(true)
+  })
+
+  test('treats a minimum-size rule without a floor as a missing token policy', () => {
+    expect(
+      isBelowMinimumOfferRejection(
+        new BootstrapMempoolValidationError([{ rule: 'min_offer_assets_usd' }])
+      )
+    ).toBe(false)
+    expect(
+      isBelowMinimumOfferRejection(
+        new BootstrapMempoolValidationError([
+          { rule: 'min_offer_assets_usd', minimumAssets: 100_000_000n },
+          { rule: 'min_offer_assets_usd' }
+        ])
+      )
+    ).toBe(false)
   })
 })

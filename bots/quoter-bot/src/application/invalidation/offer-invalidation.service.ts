@@ -1,6 +1,6 @@
 import type { Hex } from 'viem'
 
-import { operatorErrorName } from '../operator-error-name.utils'
+import { operatorErrorName } from '../monitoring/operator-error-name.utils'
 import { OfferInvalidationFailedError } from './offer-invalidation-failed.error'
 
 /** One cancellation transaction observed immediately after wallet submission. */
@@ -88,6 +88,7 @@ export class OfferInvalidationService {
    * group, and never retries serially after submission. Observer failures never interrupt receipt
    * handling for an already-submitted transaction.
    */
+  // oxlint-disable-next-line complexity
   async run(
     parameters: {
       groupId?: Hex

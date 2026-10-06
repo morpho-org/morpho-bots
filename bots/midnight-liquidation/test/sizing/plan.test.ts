@@ -193,7 +193,7 @@ describe('plan', () => {
     expect(plan(input, { seizeCapMarginBps: 0 })).toEqual(plan(input))
   })
 
-  // Matured AND unhealthy opens both on-chain gates; the plan must pick the higher-surplus mode.
+  // Matured AND unhealthy opens both onchain gates; the plan must pick the higher-surplus mode.
   it('prefers normal mode for a matured-and-unhealthy position early in the LIF ramp', () => {
     // 60s past maturity the post-maturity LIF is ~1.0006 (surplus ≈ 0.6 WAD on a 1000-WAD repay);
     // normal mode pays the full maxLif immediately (surplus ≈ 36 WAD). The slot is rcf-exempt, so both

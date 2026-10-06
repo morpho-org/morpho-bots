@@ -123,12 +123,14 @@ describe('createTelemetryRecordObserver', () => {
   test('maps guardrails, transactions, fills, and setup checks to counters', async () => {
     const observer = createTelemetryRecordObserver()
     observer.record({
-      event: 'guardrail.rate-clamped',
+      event: 'guardrail.rate-omitted',
       workflow: 'ladder',
       marketId: MARKET_ID,
       side: 'higher',
-      clampedRungs: 2,
+      omittedRungs: 2,
+      omittedAssets: 7n,
       bound: 'maximum',
+      outermostRateBps: 950n,
       minimumRateBps: 200n,
       maximumRateBps: 800n
     })
@@ -157,9 +159,9 @@ describe('createTelemetryRecordObserver', () => {
       event: 'offer.consumed',
       marketId: MARKET_ID,
       side: 'lower',
-      consumedDeltaAssets: 250_000_000n,
+      consumedDeltaUnits: 250_000_000n,
       groupRateBps: 400n,
-      remainingAssets: 750_000_000n,
+      remainingUnits: 750_000_000n,
       groupId: '0x8888888888888888888888888888888888888888888888888888888888888888'
     })
     observer.record({ event: 'setup.check-failed', check: 'native-balance', status: 'failed' })
@@ -176,7 +178,7 @@ describe('createTelemetryRecordObserver', () => {
     expect(metricByName(collected, 'quoter_bot.guardrail.events')?.dataPoints).toEqual([
       {
         attributes: {
-          type: 'rate-clamped',
+          type: 'rate-omitted',
           workflow: 'ladder',
           marketId: MARKET_ID,
           side: 'higher',
@@ -216,7 +218,7 @@ describe('createTelemetryRecordObserver', () => {
         value: 1
       }
     ])
-    expect(metricByName(collected, 'quoter_bot.offers.consumed_assets')?.dataPoints).toEqual([
+    expect(metricByName(collected, 'quoter_bot.offers.consumed_units')?.dataPoints).toEqual([
       { attributes: { marketId: MARKET_ID, side: 'lower' }, value: 250_000_000 }
     ])
     expect(metricByName(collected, 'quoter_bot.setup.checks')?.dataPoints).toEqual([
@@ -224,6 +226,45 @@ describe('createTelemetryRecordObserver', () => {
     ])
     expect(metricByName(collected, 'quoter_bot.transaction.lifecycle')?.dataPoints).toEqual([
       { attributes: { state: 'replaced' }, value: 1 }
+    ])
+  })
+
+  test('zeroes total units when a quoting book side empties with no active quote', async () => {
+    const observer = createTelemetryRecordObserver()
+    const project = (activeQuote?: object) =>
+      ladderMonitoringEvents([
+        {
+          marketId: MARKET_ID,
+          status: 'observed',
+          action: 'rest',
+          verbose: {
+            config: { marketId: MARKET_ID },
+            currentState: { status: 'observed', market: {} },
+            stateAfterCheck: {
+              status: 'observed',
+              market: {},
+              ...(activeQuote ? { activeQuote } : {})
+            }
+          }
+        } as unknown as LadderRunResult
+      ])
+    const quote = {
+      centerRateBps: 500n,
+      lower: [{ rateBps: 450n, assets: 100n }],
+      higher: [{ rateBps: 550n, assets: 40n }]
+    }
+    for (const event of project(quote)) observer.record(event)
+    expect(metricByName(await collect(), 'quoter_bot.book.total_units')?.dataPoints).toEqual([
+      { attributes: { marketId: MARKET_ID, side: 'lower' }, value: 100 },
+      { attributes: { marketId: MARKET_ID, side: 'higher' }, value: 40 }
+    ])
+
+    for (const event of project()) observer.record(event)
+    exporter.reset()
+
+    expect(metricByName(await collect(), 'quoter_bot.book.total_units')?.dataPoints).toEqual([
+      { attributes: { marketId: MARKET_ID, side: 'lower' }, value: 0 },
+      { attributes: { marketId: MARKET_ID, side: 'higher' }, value: 0 }
     ])
   })
 
@@ -248,7 +289,7 @@ describe('createTelemetryRecordObserver', () => {
       side: 'higher',
       state: 'quoting',
       rungs: 3,
-      totalAssets: 1_500_000_000n,
+      totalUnits: 1_500_000_000n,
       bestRateBps: 420n
     })
     observer.record({
@@ -290,7 +331,7 @@ describe('createTelemetryRecordObserver', () => {
       side: 'higher',
       state: 'quoting',
       rungs: 3,
-      totalAssets: 1_500_000_000n,
+      totalUnits: 1_500_000_000n,
       bestRateBps: 420n,
       centerRateBps: 400n
     })
@@ -300,7 +341,7 @@ describe('createTelemetryRecordObserver', () => {
       side: 'lower',
       state: 'quoting',
       rungs: 2,
-      totalAssets: 500_000_000n,
+      totalUnits: 500_000_000n,
       centerRateBps: 380n
     })
     const beforeEmpty = await collect()
@@ -314,7 +355,7 @@ describe('createTelemetryRecordObserver', () => {
       side: 'higher',
       state: 'empty',
       rungs: 0,
-      totalAssets: 0n
+      totalUnits: 0n
     })
     exporter.reset()
     const afterEmpty = await collect()
@@ -347,7 +388,7 @@ describe('createTelemetryRecordObserver', () => {
                 higher
               }
             },
-            stateAfterCheck: { status: 'not-read', reason: 'configuration-invalid' }
+            stateAfterCheck: { status: 'failed', errorName: 'ProviderReadError' }
           }
         } as unknown as LadderRunResult
       ])
@@ -365,7 +406,7 @@ describe('createTelemetryRecordObserver', () => {
       side: 'higher',
       state: 'empty',
       rungs: 0,
-      totalAssets: 0n,
+      totalUnits: 0n,
       centerRateBps: 500n
     })
     for (const event of oneSided) observer.record(event)
@@ -402,9 +443,9 @@ describe('createTelemetryRecordObserver', () => {
       event: 'offer.consumed',
       marketId: MARKET_ID,
       side: 'lower',
-      consumedDeltaAssets: 1n,
+      consumedDeltaUnits: 1n,
       groupRateBps: 1n,
-      remainingAssets: 1n,
+      remainingUnits: 1n,
       groupId: '0x9999999999999999999999999999999999999999999999999999999999999999'
     })
     const attributeKeys = (await collect())
@@ -430,5 +471,133 @@ describe('createTelemetryRecordObserver', () => {
     ]) {
       expect(() => observer.record(record)).not.toThrow()
     }
+  })
+
+  test('counts lend halts by direction and gauges which markets are halted', async () => {
+    const observer = createTelemetryRecordObserver()
+    observer.record({
+      event: 'guardrail.lend-halted',
+      workflow: 'ladder',
+      marketId: MARKET_ID,
+      lossFactor: 6n,
+      acceptedLossFactor: 5n,
+      defaulted: false,
+      direction: 'above',
+      incrementalLossBps: 1n
+    })
+    observer.record({
+      event: 'cycle.completed',
+      workflow: 'ladder',
+      marketId: MARKET_ID,
+      status: 'applied',
+      action: 'lend-halted'
+    })
+    observer.record({
+      event: 'cycle.completed',
+      workflow: 'bootstrap',
+      marketId: MARKET_ID,
+      status: 'observed',
+      action: 'rest'
+    })
+    observer.record({
+      event: 'cycle.completed',
+      workflow: 'bootstrap',
+      marketId: MARKET_ID,
+      status: 'failed',
+      stage: 'guard-read'
+    })
+    const collected = await collect()
+
+    expect(metricByName(collected, 'quoter_bot.guardrail.events')?.dataPoints).toEqual([
+      {
+        attributes: {
+          type: 'lend-halted',
+          workflow: 'ladder',
+          marketId: MARKET_ID,
+          direction: 'above'
+        },
+        value: 1
+      }
+    ])
+    expect(metricByName(collected, 'quoter_bot.market.lend_halted')?.dataPoints).toEqual([
+      { attributes: { workflow: 'ladder', marketId: MARKET_ID }, value: 1 },
+      { attributes: { workflow: 'bootstrap', marketId: MARKET_ID }, value: 0 }
+    ])
+  })
+
+  test('gauges a market as halted when its cancellation failed', async () => {
+    const observer = createTelemetryRecordObserver()
+    observer.record({
+      event: 'cycle.completed',
+      workflow: 'ladder',
+      marketId: MARKET_ID,
+      status: 'halted',
+      stage: 'market-invalidation',
+      reason: 'loss-factor-mismatch'
+    })
+    observer.record({
+      event: 'guardrail.lend-halted',
+      workflow: 'ladder',
+      marketId: MARKET_ID,
+      lossFactor: 6n,
+      acceptedLossFactor: 5n,
+      defaulted: false,
+      direction: 'above'
+    })
+
+    expect(metricByName(await collect(), 'quoter_bot.market.lend_halted')?.dataPoints).toEqual([
+      { attributes: { workflow: 'ladder', marketId: MARKET_ID }, value: 1 }
+    ])
+  })
+
+  test('gauges a market as halted when admission withheld a buy for its loss factor', async () => {
+    const observer = createTelemetryRecordObserver()
+    observer.record({
+      event: 'cycle.completed',
+      workflow: 'bootstrap',
+      marketId: MARKET_ID,
+      status: 'applied',
+      action: 'publication-withheld',
+      reason: 'loss-factor-mismatch'
+    })
+
+    expect(metricByName(await collect(), 'quoter_bot.market.lend_halted')?.dataPoints).toEqual([
+      { attributes: { workflow: 'bootstrap', marketId: MARKET_ID }, value: 1 }
+    ])
+  })
+
+  test('gauges the inventory skew and counts a price-changed withholding', async () => {
+    const observer = createTelemetryRecordObserver()
+    observer.record({
+      event: 'inventory-skew.observed',
+      workflow: 'ladder',
+      marketId: MARKET_ID,
+      inventorySkewBps: 40n,
+      skewClamped: false,
+      creditAssets: 1_000n,
+      neutralCredit: 0n
+    })
+    observer.record({
+      event: 'guardrail.publication-withheld',
+      workflow: 'ladder',
+      marketId: MARKET_ID,
+      reason: 'price-changed'
+    })
+
+    const collected = await collect()
+    expect(metricByName(collected, 'quoter_bot.market.inventory_skew_bps')?.dataPoints).toEqual([
+      { attributes: { workflow: 'ladder', marketId: MARKET_ID }, value: 40 }
+    ])
+    expect(metricByName(collected, 'quoter_bot.guardrail.events')?.dataPoints).toEqual([
+      {
+        attributes: {
+          type: 'publication-withheld',
+          workflow: 'ladder',
+          marketId: MARKET_ID,
+          reason: 'price-changed'
+        },
+        value: 1
+      }
+    ])
   })
 })

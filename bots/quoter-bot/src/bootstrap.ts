@@ -26,30 +26,32 @@ import { LadderQuoterService } from './application/ladder/ladder-quoter.service'
 import { botConfiguredEvents } from './application/monitoring/bot-configured.utils'
 import { serializeQuoterBotWrites } from './application/quoter-bot/quoter-bot-mutation.utils'
 import { QuoterBotService } from './application/quoter-bot/quoter-bot.service'
+import { cancelOwnedOffersOnStartupFailure } from './application/quoter-bot/startup-cleanup.utils'
+import { VersionService } from './application/quoter-bot/version.service'
 import { SetupCheckAbortedError } from './application/setup/setup-check-aborted.error'
 import { SetupCheckService } from './application/setup/setup-check.service'
-import { VersionService } from './application/version.service'
 import { ConfigValidationError } from './config/config-validation.error'
 import { ConfigService as RuntimeConfigService } from './config/config.service'
-import { BootstrapConfigurationError } from './domain/bootstrap/bootstrap-configuration.error'
-import { LadderConfigurationError } from './domain/ladder/ladder-configuration.error'
+import { BootstrapConfigurationError } from './domain/bootstrap-configuration.error'
+import { LadderConfigurationError } from './domain/ladder-configuration.error'
 import { requiresVariableRateReference } from './domain/target-rate'
 import { createBootstrapGroupOwnership } from './infrastructure/bootstrap/bootstrap-group-ownership.utils'
+import { ReadOnlyBootstrapMakeService } from './infrastructure/bootstrap/bootstrap-make.read-only'
 import { createProductionBootstrapAdapters } from './infrastructure/bootstrap/production-bootstrap'
 import { Cli } from './infrastructure/cli/cli'
 import { readPasswordInteractively } from './infrastructure/cli/password-prompt.utils'
 import { createProductionOfferInvalidationPort } from './infrastructure/invalidation/production-offer-invalidation'
 import { createLadderGroupOwnership } from './infrastructure/ladder/ladder-group-ownership.utils'
+import { ReadOnlyLadderMakeService } from './infrastructure/ladder/ladder-make.read-only'
 import { createProductionLadderAdapters } from './infrastructure/ladder/production-ladder'
-import { ReadOnlyBootstrapMakeService } from './infrastructure/make/read-only-bootstrap-make.service'
-import { ReadOnlyLadderMakeService } from './infrastructure/make/read-only-ladder-make.service'
-import { createSignerAccount } from './infrastructure/make/signer-account.utils'
+import { requestJson } from './infrastructure/provider/http-json.utils'
 import { createChainReader } from './infrastructure/setup-state/chain-reader.utils'
-import { requestJson } from './infrastructure/setup-state/http-json.utils'
 import { ViemSetupStateService } from './infrastructure/setup-state/viem-setup-state.service'
+import { assertCurrentStrategyStates } from './infrastructure/strategy-state/strategy-state-file.utils'
 import { createQuoterTransactionExecutor } from './infrastructure/transaction/quoter-transaction-executor'
 import { createQuoterTransactionLogger } from './infrastructure/transaction/quoter-transaction-logger.utils'
 import { QuoterTransactionError } from './infrastructure/transaction/quoter-transaction.error'
+import { createSignerAccount } from './infrastructure/transaction/signer-account.utils'
 
 type Environment = Record<string, string | undefined>
 
@@ -102,6 +104,35 @@ const assertStateHasNoPendingSignerNonce = async (state: SetupStateService) => {
   }
 }
 
+const removedMarketTombstones = async (
+  make: Pick<LadderMakeService, 'cleanupRemovedMarkets'>
+): Promise<readonly Hex[]> => (await make.cleanupRemovedMarkets?.()) ?? []
+
+/**
+ * Runs a writer's post-signer startup, cancelling both strategies' owned offers if it fails.
+ * @remarks Read-only startups run unguarded; see {@link cancelOwnedOffersOnStartupFailure}.
+ */
+const guardWriterStartup = <T>(
+  config: ConfigService,
+  options: { signal: AbortSignal; writeEvent?: CliRuntimeOptions['writeEvent'] },
+  owners: {
+    ladder: Pick<LadderMakeService, 'cleanup'>
+    bootstrap: () => Promise<Pick<BootstrapMakeService, 'cleanup'>>
+  },
+  startup: () => Promise<T>
+) =>
+  config.readOnly
+    ? startup()
+    : cancelOwnedOffersOnStartupFailure(
+        {
+          signal: options.signal,
+          writeEvent: options.writeEvent,
+          ladder: async () => owners.ladder,
+          bootstrap: owners.bootstrap
+        },
+        startup
+      )
+
 type Dependencies = {
   createState?: (config: ConfigService) => SetupStateService
   /** Replaces provider ports while retaining default application-service composition. */
@@ -146,8 +177,7 @@ const defaultState = async (config: ConfigService, ignoredOfferGroupIds: readonl
   })
   const ladderOwnership = createLadderGroupOwnership({
     chainId: config.chainId,
-    maker: config.setup.maker,
-    strategyMarketIds: config.ladder.map(item => item.marketId)
+    maker: config.setup.maker
   })
 
   return new ViemSetupStateService(
@@ -193,7 +223,8 @@ const defaultState = async (config: ConfigService, ignoredOfferGroupIds: readonl
  * concurrent independent reads through `Promise.all`. `--readonly` selects address-only identity
  * before any private-key validation and replaces every workflow mutation port with terminal output.
  * Writer commands first clean up durable ladder groups for removed markets, then assert readiness
- * before running their application service. Setup monitoring emits read-only readiness reports
+ * before running their application service; a failure in either cancels both strategies' owned offers
+ * before the command exits. Setup monitoring emits read-only readiness reports
  * at a one-minute cadence and halts nonzero on the first failed report. Bootstrap monitoring uses
  * the same cadence and invalidates strategy-owned groups after its shutdown signal. Ladder
  * monitoring uses the shortest configured ladder cadence and invalidates active owned ladder groups
@@ -216,12 +247,13 @@ export const createApplication = (
    */
   run(argv: readonly string[], runtime?: CliRuntimeOptions): Promise<unknown>
 } => {
-  const loadConfig = (options: {
+  const loadConfig = async (options: {
     configPath?: string
     readOnly: boolean
     signerEnvironment?: Record<string, string>
     signal: AbortSignal
   }) => {
+    await assertCurrentStrategyStates()
     const effectiveEnvironment = { ...environment }
     const method = options.signerEnvironment?.KEY_STORAGE_METHOD
     if (method === 'private-key') {
@@ -286,43 +318,54 @@ export const createApplication = (
         : undefined
       const ladderAdapters = await (dependencies.createLadderAdapters?.(config) ??
         createProductionLadderAdapters(config, sharedAccount, sharedExecutor))
-      if (options.signal.aborted) throw new SetupCheckAbortedError()
-      if (!config.readOnly) {
-        if (stateOverride) await assertStateHasNoPendingSignerNonce(stateOverride)
-        else await sharedExecutor!.assertNoPendingNonce()
-      }
-      const ignoredOfferGroupIds =
-        config.readOnly || config.bootstrap.length === 0 || config.ladder.length === 0
-          ? []
-          : ((await ladderAdapters.make.cleanupRemovedMarkets?.()) ?? [])
-      const state = stateOverride ?? (await defaultState(config, ignoredOfferGroupIds))
-      await new SetupCheckService(
-        state,
-        config.setup,
-        config.readOnly,
-        requiresVariableRateReference(config.bootstrap)
-      ).assertReady(options.signal)
-      const injectedAdapters = dependencies.createBootstrapAdapters?.(config, ignoredOfferGroupIds)
       const writeReadOnlyEvent = parseEventWriter(options.writeEvent)
-      const adapters =
-        injectedAdapters ??
-        (await createProductionBootstrapAdapters(
+      const composeBootstrap = (ignoredOfferGroupIds: readonly Hex[]) =>
+        dependencies.createBootstrapAdapters?.(config, ignoredOfferGroupIds) ??
+        createProductionBootstrapAdapters(
           config,
           writeReadOnlyEvent,
           sharedAccount,
           ignoredOfferGroupIds,
           sharedExecutor
-        ))
-      if (options.signal.aborted) throw new SetupCheckAbortedError()
-      const make =
-        config.readOnly && injectedAdapters
-          ? new ReadOnlyBootstrapMakeService(writeReadOnlyEvent)
-          : adapters.make
-      return new PositionBootstrapService(
-        adapters.positions,
-        adapters.rates,
-        make,
-        config.bootstrap
+        )
+      let adapters: Awaited<ReturnType<typeof composeBootstrap>> | undefined
+      return guardWriterStartup(
+        config,
+        options,
+        {
+          ladder: ladderAdapters.make,
+          bootstrap: async () => (adapters ?? (await composeBootstrap([]))).make
+        },
+        async () => {
+          if (options.signal.aborted) throw new SetupCheckAbortedError()
+          if (!config.readOnly) {
+            if (stateOverride) await assertStateHasNoPendingSignerNonce(stateOverride)
+            else await sharedExecutor!.assertNoPendingNonce()
+          }
+          const ignoredOfferGroupIds =
+            config.readOnly || config.bootstrap.length === 0 || config.ladder.length === 0
+              ? []
+              : await removedMarketTombstones(ladderAdapters.make)
+          const state = stateOverride ?? (await defaultState(config, ignoredOfferGroupIds))
+          await new SetupCheckService(
+            state,
+            config.setup,
+            config.readOnly,
+            requiresVariableRateReference(config.bootstrap)
+          ).assertReady(options.signal)
+          adapters = await composeBootstrap(ignoredOfferGroupIds)
+          if (options.signal.aborted) throw new SetupCheckAbortedError()
+          const make =
+            config.readOnly && dependencies.createBootstrapAdapters
+              ? new ReadOnlyBootstrapMakeService(writeReadOnlyEvent)
+              : adapters.make
+          return new PositionBootstrapService(
+            adapters.positions,
+            adapters.rates,
+            make,
+            config.bootstrap
+          )
+        }
       )
     },
     async options => {
@@ -331,7 +374,8 @@ export const createApplication = (
       if (options.signal.aborted) throw new SetupCheckAbortedError()
       const stateOverride = dependencies.createState?.(config)
       const sharedAccount =
-        config.identity.readOnly || dependencies.createLadderAdapters
+        config.identity.readOnly ||
+        (dependencies.createBootstrapAdapters && dependencies.createLadderAdapters)
           ? undefined
           : await createSignerAccount(config.identity)
       const sharedExecutor = sharedAccount
@@ -343,31 +387,51 @@ export const createApplication = (
         : undefined
       const adapters = await (dependencies.createLadderAdapters?.(config) ??
         createProductionLadderAdapters(config, sharedAccount, sharedExecutor))
-      if (options.signal.aborted) throw new SetupCheckAbortedError()
-      if (!config.readOnly) {
-        if (stateOverride) await assertStateHasNoPendingSignerNonce(stateOverride)
-        else await sharedExecutor!.assertNoPendingNonce()
-      }
-      const ignoredOfferGroupIds =
-        config.readOnly || config.ladder.length === 0
-          ? []
-          : ((await adapters.make.cleanupRemovedMarkets?.()) ?? [])
-      const state = stateOverride ?? (await defaultState(config, ignoredOfferGroupIds))
-      await new SetupCheckService(
-        state,
-        config.setup,
-        config.readOnly,
-        requiresVariableRateReference(config.ladder)
-      ).assertReady(options.signal)
       const writeReadOnlyEvent = parseEventWriter(options.writeEvent)
-      const make = config.readOnly
-        ? new ReadOnlyLadderMakeService(
-            adapters.make,
-            writeReadOnlyEvent,
-            adapters.validateReconcile
-          )
-        : adapters.make
-      return new LadderQuoterService(adapters.positions, adapters.rates, make, config.ladder)
+      return guardWriterStartup(
+        config,
+        options,
+        {
+          ladder: adapters.make,
+          bootstrap: async () =>
+            (
+              await (dependencies.createBootstrapAdapters?.(config) ??
+                createProductionBootstrapAdapters(
+                  config,
+                  writeReadOnlyEvent,
+                  sharedAccount,
+                  [],
+                  sharedExecutor
+                ))
+            ).make
+        },
+        async () => {
+          if (options.signal.aborted) throw new SetupCheckAbortedError()
+          if (!config.readOnly) {
+            if (stateOverride) await assertStateHasNoPendingSignerNonce(stateOverride)
+            else await sharedExecutor!.assertNoPendingNonce()
+          }
+          const ignoredOfferGroupIds =
+            config.readOnly || config.ladder.length === 0
+              ? []
+              : await removedMarketTombstones(adapters.make)
+          const state = stateOverride ?? (await defaultState(config, ignoredOfferGroupIds))
+          await new SetupCheckService(
+            state,
+            config.setup,
+            config.readOnly,
+            requiresVariableRateReference(config.ladder)
+          ).assertReady(options.signal)
+          const make = config.readOnly
+            ? new ReadOnlyLadderMakeService(
+                adapters.make,
+                writeReadOnlyEvent,
+                adapters.validateReconcile
+              )
+            : adapters.make
+          return new LadderQuoterService(adapters.positions, adapters.rates, make, config.ladder)
+        }
+      )
     },
     async options => {
       const config = await loadConfig(options)
@@ -424,65 +488,74 @@ export const createApplication = (
         : undefined
       const ladderAdapters = await (dependencies.createLadderAdapters?.(config) ??
         createProductionLadderAdapters(config, sharedAccount, sharedExecutor))
-      if (options.signal.aborted) throw new SetupCheckAbortedError()
-      if (!config.readOnly) {
-        if (stateOverride) await assertStateHasNoPendingSignerNonce(stateOverride)
-        else await sharedExecutor!.assertNoPendingNonce()
-      }
-      const ignoredOfferGroupIds = config.readOnly
-        ? []
-        : ((await ladderAdapters.make.cleanupRemovedMarkets?.()) ?? [])
-
-      const state = stateOverride ?? (await defaultState(config, ignoredOfferGroupIds))
-      const setup = new SetupCheckService(
-        state,
-        config.setup,
-        config.readOnly,
-        requiresVariableRateReference([...config.bootstrap, ...config.ladder])
-      )
-      await setup.assertReady(options.signal)
-
-      const injectedBootstrapAdapters = dependencies.createBootstrapAdapters?.(
-        config,
-        ignoredOfferGroupIds
-      )
-      const bootstrapAdapters = await (injectedBootstrapAdapters ??
+      const composeBootstrap = (ignoredOfferGroupIds: readonly Hex[]) =>
+        dependencies.createBootstrapAdapters?.(config, ignoredOfferGroupIds) ??
         createProductionBootstrapAdapters(
           config,
           readOnlyWriter(options.writeEvent),
           sharedAccount,
           ignoredOfferGroupIds,
           sharedExecutor
-        ))
-      if (options.signal.aborted) throw new SetupCheckAbortedError()
-      const bootstrapMake =
-        config.readOnly && injectedBootstrapAdapters
-          ? new ReadOnlyBootstrapMakeService(readOnlyWriter(options.writeEvent))
-          : bootstrapAdapters.make
-
-      const ladderMake = config.readOnly
-        ? new ReadOnlyLadderMakeService(
-            ladderAdapters.make,
-            readOnlyWriter(options.writeEvent),
-            ladderAdapters.validateReconcile
-          )
-        : ladderAdapters.make
-      const make = serializeQuoterBotWrites({ bootstrap: bootstrapMake, ladder: ladderMake })
-
-      return new QuoterBotService(
-        setup,
-        new PositionBootstrapService(
-          bootstrapAdapters.positions,
-          bootstrapAdapters.rates,
-          make.bootstrap,
-          config.bootstrap
-        ),
-        new LadderQuoterService(
-          ladderAdapters.positions,
-          ladderAdapters.rates,
-          make.ladder,
-          config.ladder
         )
+      let bootstrapAdapters: Awaited<ReturnType<typeof composeBootstrap>> | undefined
+      return guardWriterStartup(
+        config,
+        options,
+        {
+          ladder: ladderAdapters.make,
+          bootstrap: async () => (bootstrapAdapters ?? (await composeBootstrap([]))).make
+        },
+        async () => {
+          if (options.signal.aborted) throw new SetupCheckAbortedError()
+          if (!config.readOnly) {
+            if (stateOverride) await assertStateHasNoPendingSignerNonce(stateOverride)
+            else await sharedExecutor!.assertNoPendingNonce()
+          }
+          const ignoredOfferGroupIds = config.readOnly
+            ? []
+            : await removedMarketTombstones(ladderAdapters.make)
+
+          const state = stateOverride ?? (await defaultState(config, ignoredOfferGroupIds))
+          const setup = new SetupCheckService(
+            state,
+            config.setup,
+            config.readOnly,
+            requiresVariableRateReference([...config.bootstrap, ...config.ladder])
+          )
+          await setup.assertReady(options.signal)
+
+          bootstrapAdapters = await composeBootstrap(ignoredOfferGroupIds)
+          if (options.signal.aborted) throw new SetupCheckAbortedError()
+          const bootstrapMake =
+            config.readOnly && dependencies.createBootstrapAdapters
+              ? new ReadOnlyBootstrapMakeService(readOnlyWriter(options.writeEvent))
+              : bootstrapAdapters.make
+
+          const ladderMake = config.readOnly
+            ? new ReadOnlyLadderMakeService(
+                ladderAdapters.make,
+                readOnlyWriter(options.writeEvent),
+                ladderAdapters.validateReconcile
+              )
+            : ladderAdapters.make
+          const make = serializeQuoterBotWrites({ bootstrap: bootstrapMake, ladder: ladderMake })
+
+          return new QuoterBotService(
+            setup,
+            new PositionBootstrapService(
+              bootstrapAdapters.positions,
+              bootstrapAdapters.rates,
+              make.bootstrap,
+              config.bootstrap
+            ),
+            new LadderQuoterService(
+              ladderAdapters.positions,
+              ladderAdapters.rates,
+              make.ladder,
+              config.ladder
+            )
+          )
+        }
       )
     }
   )

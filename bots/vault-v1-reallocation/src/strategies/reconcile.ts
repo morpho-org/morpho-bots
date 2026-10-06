@@ -77,6 +77,7 @@ const { min } = MathLib
  * {@link MarketTarget} and {@link MAX_TARGET_UTILIZATION}.
  */
 export const createReconciler = (options: ReconcilerOptions): Strategy => {
+  // oxlint-disable-next-line complexity
   return vaultData => {
     const classify = options.classifierFor(vaultData)
     // A vault with several zero-collateral markets has only its first (in withdraw-queue order)

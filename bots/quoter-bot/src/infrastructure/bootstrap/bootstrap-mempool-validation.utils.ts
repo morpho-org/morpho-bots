@@ -43,6 +43,23 @@ const validationIssues = (error: unknown): BootstrapMempoolValidationIssue[] | u
 }
 
 /**
+ * Whether a rejection is only the Router's minimum offer size, which a capped buy can fall below.
+ * @param error - Any make failure.
+ * @returns True for a `BootstrapMempoolValidationError` whose every issue is `MinOfferAssetsUsd` with
+ * a reported floor; without one the token has no Router policy, which is an ordinary failure.
+ */
+export const isBelowMinimumOfferRejection = (
+  error: unknown
+): error is BootstrapMempoolValidationError =>
+  error instanceof BootstrapMempoolValidationError &&
+  error.issues.length > 0 &&
+  error.issues.every(
+    issue =>
+      issue.rule === MempoolPayloadValidationRule.MinOfferAssetsUsd &&
+      issue.minimumAssets !== undefined
+  )
+
+/**
  * Runs the SDK's Mempool-policy validation and translates every expected rejection.
  * @param validate - Deferred SDK preparation that performs remote Mempool validation.
  * @returns The unchanged prepared SDK output after policy validation succeeds.

@@ -4,7 +4,7 @@ import { Offer, SetterRatifierUtils, Tree, setterRatifierAbi } from '@morpho-org
 import { createWalletClient, custom, decodeFunctionData, zeroAddress } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
 import { base, mainnet } from 'viem/chains'
-import { describe, expect, test } from 'vitest'
+import { describe, expect, test, vi } from 'vitest'
 
 import {
   configuredRatifierType,
@@ -106,5 +106,64 @@ describe('prepareLadderRatification', () => {
       tree.root
     )
     expect(rpcRequests).toBe(0)
+  })
+
+  test('signs an Ecrecover tree locally and exposes no signed validation payload', async () => {
+    const account = privateKeyToAccount(`0x${'11'.repeat(32)}`)
+    const fetchSpy = vi.spyOn(globalThis, 'fetch')
+    const client = createWalletClient({
+      account,
+      chain: base,
+      transport: custom({
+        request: async () => {
+          throw new Error('Ecrecover preparation must not request RPC signing')
+        }
+      })
+    })
+    const tree = Tree.create([
+      Offer.create({
+        market: {
+          chainId: base.id,
+          midnight,
+          loanToken,
+          collateralParams: [
+            {
+              token: collateral,
+              lltv: 800_000_000_000_000_000n,
+              liquidationCursor: 0n,
+              oracle
+            }
+          ],
+          maturity: 2_000n,
+          rcfThreshold: 0n,
+          enterGate: zeroAddress,
+          liquidatorGate: zeroAddress
+        },
+        buy: true,
+        maker: account.address,
+        tick: 100n,
+        expiry: 2_000n,
+        ratifier: baseEcrecoverRatifier,
+        maxAssets: 101_000_000n,
+        continuousFeeCap: 0n
+      })
+    ])
+
+    try {
+      const prepared = await prepareLadderRatification({
+        type: 'ecrecover',
+        tree,
+        maker: account.address,
+        client,
+        account
+      })
+
+      expect(prepared.items[0]?.ratifierData).not.toBe('0x')
+      expect(prepared).not.toHaveProperty('validation')
+      expect(prepared.approval).toBeUndefined()
+      expect(fetchSpy).not.toHaveBeenCalled()
+    } finally {
+      fetchSpy.mockRestore()
+    }
   })
 })

@@ -34,7 +34,7 @@ function spyLogger() {
 const expectCounterIdentities = (c: Awaited<ReturnType<typeof runTick>>) => {
   expect(c.pairs).toBeGreaterThanOrEqual(c.liquidatable)
   expect(c.liquidatable).toBe(c.inflightSkipped + c.planSkipped + c.planned)
-  // One collateral per Blue market, so one position is one candidate and `planned` heads this sum.
+  // One collateral per Blue Market, so one position is one candidate and `planned` heads this sum.
   expect(c.planned).toBe(
     c.cooledDown + c.backoffSkipped + c.noSwapPath + c.quoteFailed + c.ok + c.reverted
   )
@@ -455,7 +455,7 @@ describe('runTick', () => {
     })
   })
   it('emits one id that joins plan.built to the queue tx.sent', async () => {
-    // BOTS-90's acceptance criterion as a test: grouping a window's events by `id` must not split one
+    // Grouping a window's events by `id` must not split one
     // position. Broadcast through the REAL queue, since the split was between the tick's field name
     // and the queue's — a stubbed submit cannot see it.
     const spy = spyLogger()

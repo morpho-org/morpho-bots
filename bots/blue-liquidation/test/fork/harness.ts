@@ -200,11 +200,16 @@ export async function startFork(
   return { anvil, rpcUrl }
 }
 
-/** Teardown: SIGKILL the forked node and await its exit so the port is freed before the next suite. */
+/** anvil writes its fork cache (`~/.foundry/cache/rpc`) only when it shuts down gracefully. */
+const CACHE_FLUSH_GRACE_MS = 5_000
+
+/** Resolves once anvil has exited and freed its port, killing it after {@link CACHE_FLUSH_GRACE_MS}. */
 export async function stopFork(anvil: ForkHandle | undefined): Promise<void> {
   if (!anvil) return
-  anvil.kill('SIGKILL')
+  const fallback = setTimeout(() => anvil.kill('SIGKILL'), CACHE_FLUSH_GRACE_MS)
+  anvil.kill('SIGTERM')
   await anvil.exited
+  clearTimeout(fallback)
 }
 
 /** Anvil cheatcode client (setBalance / setNextBlockTimestamp / mine) + public reads. */

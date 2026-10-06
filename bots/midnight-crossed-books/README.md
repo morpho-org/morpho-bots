@@ -1,6 +1,6 @@
 # Midnight crossed-books resolver
 
-The bot lists active, listed Midnight markets through the Morpho API, loads both takeable Router book sides, greedily pairs crossed asks and bids, simulates the exact resolver transaction, and submits only a profitable request.
+The bot lists active, listed Midnight Markets through the Morpho API, loads both takeable Router book sides, greedily pairs crossed asks and bids, simulates the exact resolver transaction, and submits only a profitable request.
 
 ## Architecture
 

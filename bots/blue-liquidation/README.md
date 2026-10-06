@@ -1,4 +1,4 @@
-# Blue Liquidation Bot
+# Blue liquidation bot
 
 A non-competitive, ecosystem-backstop liquidator for **Morpho Blue** on Base and Robinhood. It
 discovers at-risk borrowers via the Morpho GraphQL API, reads fresh accrued state, sizes seize-exact
@@ -15,7 +15,7 @@ position (none exist while the market is healthy), `RPC_URL_8453`, and
 
 ## Prerequisites
 
-- **pnpm** `11.1.1` (via corepack) and **Node** `24.14.1` (`.nvmrc`).
+- **pnpm** `11.11.0` (via corepack) and **Node** `24.18.1` (`.nvmrc`).
 - A chain RPC that both reads and _relays_ transactions — **not** `rpc.morpho.dev/realtime`, which
   acknowledges sends but never broadcasts them.
 - A **funded EOA** (native gas) — the liquidator and the recipient of the end-of-exec token sweeps.
@@ -79,7 +79,7 @@ With **zero venues** the bot refuses to start unless `ALLOW_DETECTION_ONLY=true`
 discovers and logs liquidatable positions but skips every liquidation (`config.no_swap_path`) — a
 rotated/forgotten key must not quietly disable liquidations.
 
-## Running Locally
+## Running locally
 
 ```sh
 export CHAIN_ID=8453
@@ -93,7 +93,7 @@ pnpm --filter @morpho-org/blue-liquidation run start
 materializes the ABI, then esbuild-bundles `dist/`), so `start` runs a plain `node` against a
 freshly built bundle. Discovery hits the public Morpho GraphQL API — no indexer or database to run.
 
-## Running With Docker Compose
+## Running with Docker Compose
 
 ```sh
 cd bots/blue-liquidation
@@ -149,7 +149,7 @@ RPC/keys). A full first-time provision needs `RPC_URL_<chainId>` + `LIQUIDATOR_P
 once the new bots are confirmed healthy in an environment, delete those services and their volumes
 from the Railway dashboard. The deploy script never deletes a database itself.
 
-## How It Works
+## How it works
 
 ### Startup
 
@@ -173,7 +173,7 @@ ascending health factor so the worst positions are always on page 1. Only `marke
 `user.address` are consumed; skip-pagination walks the full set (page size 1000, with a loud
 `discover.max_pages` backstop against silent truncation, and de-dupe across pages).
 
-Each distinct id resolves to `MarketParams` on-chain via `idToMarketParams(id)` (memoized forever —
+Each distinct id resolves to `MarketParams` onchain via `idToMarketParams(id)` (memoized forever —
 params are immutable per id), and the lens re-reads every pair fresh, so the API is a coverage
 source, never a correctness dependency: over-inclusion is harmless, API indexing lag is coverage
 latency only, and an id that doesn't resolve against this chain's singleton is dropped (with a
@@ -202,7 +202,7 @@ A per-element try/catch isolates a bad market/oracle to a zeroed `valid = false`
 
 ### Eligibility and sizing
 
-Off-chain: liquidatable ⟺ `valid && hasDebt && !healthy` (permissionless, time-independent — no gate,
+Offchain: liquidatable ⟺ `valid && hasDebt && !healthy` (permissionless, time-independent — no gate,
 lock, or maturity). Sizing (`sizing/plan.ts`) is **seize-exact**:
 
 ```
@@ -212,7 +212,7 @@ seizedAssets     = min(collateral, seizeForFullDebt)   // repaidShares = 0; Blue
 ```
 
 Pinning the seize keeps an aggregator's fixed sell amount correct. The inbound double-floor guarantees
-`repaidShares ≤ borrowShares`, so the on-chain subtraction can't underflow (proved by a brute-force
+`repaidShares ≤ borrowShares`, so the onchain subtraction can't underflow (proved by a brute-force
 sweep in `test/sizing/plan.test.ts`). When collateral binds (underwater), seizing 100% drives
 `position.collateral` to 0 and Blue socializes the residual as bad debt in the same call. LIF is a pure
 function of LLTV (`sizing/lif.ts`), capped at `1.15e18`.
@@ -273,7 +273,7 @@ name the same string `label`; it does not any more. The full set:
 `tx.dropped`, `tx.replace_failed`, `tx.onblock_error`, `nonce.sync_failed`, `queue.nonce_hole`.
 
 `plan.skipped` and `plan.built` also keep `marketId` and `borrower` as human-readable extras — for
-reading a single line, not for grouping. A Blue market has exactly one collateral, so one position is
+reading a single line, not for grouping. A Blue Market has exactly one collateral, so one position is
 one candidate: unlike `bots/midnight-liquidation`, `id` alone identifies a row and no candidate
 discriminator is emitted.
 
@@ -298,11 +298,11 @@ per tick (`discover.*`, `lens.read`, `tick.end`, `tick.error`, `block.new`), per
   - fork block + pool fee (use `probe:lens` to find one). Integer fields should be decimal strings.
     With both, it drives lens → plan → swap → exec, asserts the tx lands, the EOA gains the loan token,
     and the Executor ends holding zero of both tokens.
-  * Two fork assertions the TIB enumerates are **deferred to go-live**: (1) an underwater fixture
+  * Two fork assertions are **deferred to go-live**: (1) an underwater fixture
     asserting the collateral-binds path drives `position.collateral` to 0 and socializes the residual
     (supplier `totalSupplyAssets` drops), and (2) queue bump + replacement against a real node. The
     collateral-binds safety property is meanwhile covered by the `plan.test.ts` underflow sweep and the
-    queue bump/replace by `queue/pending-queue.test.ts`; the fork versions add on-chain proof once a
+    queue bump/replace by `queue/pending-queue.test.ts`; the fork versions add onchain proof once a
     fixture + RPC are available.
 
 ## Important operational notes
@@ -321,6 +321,6 @@ per tick (`discover.*`, `lens.read`, `tick.end`, `tick.error`, `block.new`), per
   ids that don't resolve on this chain's singleton — API schema drift or a wrong-deployment mismatch),
   and `discover.max_pages` (pagination backstop hit — under-inclusion, investigate immediately).
   There is no indexer-lag signal anymore: API indexing latency is a coverage concern only, since the
-  lens re-reads every candidate fresh on-chain each block.
+  lens re-reads every candidate fresh onchain each block.
 - **Coverage** spans every listed market server-side; the lens re-reads all discovered candidates
   each block, bounded by the `HEALTH_FACTOR_LTE` cutoff rather than a borrow-event history.

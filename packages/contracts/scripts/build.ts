@@ -39,7 +39,15 @@ await esbuild({
         build.onLoad({ filter: INCLUDE }, async ({ path }) => {
           const source = await readFile(path, 'utf8')
           const transformed = transformSolTemplates(source, path, {
-            solc: { optimizer: { enabled: true, runs: 200 } }
+            // Applies to EVERY contract compiled here, each a CREATE2 singleton whose address
+            // derives from its init code — so anything solc appends moves it off the deployed one.
+            // `bytecodeHash: 'none'` drops the source hash and `appendCBOR: false` the trailer
+            // beneath it, leaving only generated code to feed the address. `test/contracts.test.ts`
+            // pins the results. Keep in lockstep with `foundry.toml`.
+            solc: {
+              optimizer: { enabled: true, runs: 200 },
+              metadata: { bytecodeHash: 'none', appendCBOR: false }
+            }
           })
           return { contents: transformed?.code ?? source, loader: 'ts' }
         })

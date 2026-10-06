@@ -55,7 +55,7 @@ export async function quoteByVenue(
 }
 
 // Dispatches one indicative price probe to a venue. Only the aggregators support it; Uniswap has no
-// off-chain quote (its adapter merely echoes the oracle), so it is never a probe/multi-venue candidate.
+// offchain quote (its adapter merely echoes the oracle), so it is never a probe/multi-venue candidate.
 export async function priceByVenue(
   client: RateLimitedClient,
   args: { venue: Venue; baseUrls: Partial<Record<Venue, string>>; params: PriceParameters }
@@ -79,7 +79,7 @@ export async function priceByVenue(
 
 /**
  * Free, oracle-based route-quality check (no extra API call): a venue's quoted output must be within
- * `maxBps` of the oracle's no-slippage reference. The venue's own min-out is still the on-chain bound;
+ * `maxBps` of the oracle's no-slippage reference. The venue's own min-out is still the onchain bound;
  * this is a pre-broadcast guard against a bad route.
  */
 export function passesRouteQuality(args: {
@@ -481,8 +481,8 @@ const swapFreePath = (resolution: UnwrapResolution): 'no-swap' | 'unwrap-only' =
  * the loan token (PT-USDC collateral in a USDC market), and a collateral token that IS the loan token
  * (Midnight's loan-as-collateral slots), whose plan has no steps at all.
  *
- * Still oracle-sanity-checked and floor-checked: `resolution.amountIn` is the chain's threaded
- * worst-case output — an on-chain bound, not an estimate — and stands in for a venue's quoted output.
+ * Still oracle-checked and floor-checked: `resolution.amountIn` is the chain's threaded
+ * worst-case output — an onchain bound, not an estimate — and stands in for a venue's quoted output.
  * With zero steps it is exactly `request.amountIn`, so both checks reduce to statements about the
  * oracle: route quality passes unless the oracle prices the collateral more than `maxRouteImpactBps`
  * ABOVE 1:1 — {@link passesRouteQuality} is a floor, not a band, so an underpricing oracle passes at
@@ -514,7 +514,7 @@ const swapFreePlan = (args: {
     return { kind: 'failed', reason: 'bad_route' }
   }
   // The same economic floor the venue path enforces. `resolution.amountIn` is the chain's threaded
-  // WORST-CASE output, and every hop encodes its own min-out, so it is an on-chain bound rather than an
+  // WORST-CASE output, and every hop encodes its own min-out, so it is an onchain bound rather than an
   // estimate — but route quality alone does not check it against break-even, and the two thresholds are
   // unrelated: a chain can clear `maxRouteImpactBps` and still land under the repay.
   if (resolution.amountIn < request.minAcceptableAmountOut) {
@@ -563,7 +563,7 @@ export type QuoteLogger = {
  * liquidatable position it first runs the pre-swap unwrap chain, then refreshes + takes the
  * selector's best-first venue order for the POST-unwrap pair (falling back to the deterministic
  * enabled order for venues the probe couldn't rank), fetches ONE firm quote from the top venue, and
- * sanity-checks it against the oracle reference. A curve that ranked every enabled venue on unclamped
+ * checks it against the oracle reference. A curve that ranked every enabled venue on unclamped
  * rungs already names the winner, so the walk stops there; every other curve state (cold, incomplete,
  * clamped) fails open to the coverage-first fall-through through the whole enabled set. A firm quote
  * is requested only AFTER the venue is chosen, never fanned out across venues at once, and its real
@@ -807,7 +807,7 @@ export function composeMultiVenueQuoting(deps: {
           amountOutMinimum: outcome.swap.amountOutMinimum,
           // The probe-fidelity pair: what the curve interpolated this route would cost against the
           // oracle, beside the same figure off the quote the venue actually returned. Both are QUOTED
-          // costs — neither is realized on-chain execution, and reading them as such is the error the
+          // costs — neither is realized onchain execution, and reading them as such is the error the
           // pair exists to make visible.
           curveCostBps: estimates.get(venue)?.costBpsRaw ?? null,
           // Cache age of the curve those bps came off, so a fidelity reading can be attributed to

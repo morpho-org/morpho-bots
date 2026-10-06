@@ -90,7 +90,7 @@ const SWAP_INPUT_BUFFER_BPS = 1500n
 // Rough per-tx gas headroom for the ETH-spend guard preview (Base is cheap; this is a ceiling).
 const GAS_PER_TX_WEI = 2_000_000_000_000n
 // Production Midnight API — discovery reads its markets + oracles (incl. the curator `trusted_by`
-// signal) to pick a real, trusted market to clone, instead of guessing from on-chain take activity.
+// signal) to pick a real, trusted market to clone, instead of guessing from onchain take activity.
 const MIDNIGHT_API = 'https://api.morpho.org/v0/midnight'
 // The configured RPC is a caching proxy with read-after-write lag: a pre-send simulate can transiently
 // see stale state (e.g. an approval/balance from a just-mined tx). Re-simulate a few times before
@@ -351,7 +351,7 @@ async function findRatifier({
         })
       ) {
         throw new Error(
-          `hashOffer cross-check FAILED against on-chain take ${h} — offer hashing is wrong, aborting`
+          `hashOffer cross-check FAILED against onchain take ${h} — offer hashing is wrong, aborting`
         )
       }
       logger.info('seed.reference.ratifier', { txHash: h, ratifier: sample.offer.ratifier })
@@ -548,6 +548,7 @@ function printPlan({
   process.stderr.write(`${lines.join('\n')}\n`)
 }
 
+// oxlint-disable-next-line complexity
 async function main() {
   const args = parseCliArgs()
   const logger = createLogger('info')
@@ -732,7 +733,6 @@ async function main() {
 
   const ctx = { publicClient, logger }
 
-  // --- Wallet A: acquire USDC, approve Midnight, authorize the ratifier ---
   await txStep({
     ctx,
     wallet: walletA,
@@ -804,7 +804,6 @@ async function main() {
     })
   }
 
-  // --- Wallet B: wrap collateral, approve, then per-position supplyCollateral + take ---
   await txStep({
     ctx,
     wallet: walletB,
@@ -871,7 +870,6 @@ async function main() {
     })
   }
 
-  // --- Verify via the bot's own lens (retry: the caching RPC lags the just-landed takes) ---
   const pairs = positions.map(p => ({ id: p.id, borrower: accountB.address, caller: zeroAddress }))
   let lensOut = await readMidnightLiquidationLens(deploylessClient, MIDNIGHT, pairs)
   for (let attempt = 1; attempt < SIMULATE_RETRIES; attempt++) {

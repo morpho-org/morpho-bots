@@ -25,8 +25,8 @@ const LIFI_PROBE_ADDRESS = getAddress('0x000000000000000000000000000000000000dEa
  * Quotes LiFi via the one-step `/quote` endpoint, which returns ready-to-use `transactionRequest`
  * calldata and a plain-ERC20-`approve` spender (`estimate.approvalAddress` — no Permit2). The bought
  * token lands on `fromAddress` (the Executor). `slippage` is a decimal fraction (bps / 10_000). The
- * sell `fromAmount` is committed off-chain (route-bound calldata), so the resulting {@link Swap}
- * carries `amountIn: { source: 'fixed' }`, and `estimate.toAmountMin` is the server-baked on-chain
+ * sell `fromAmount` is committed offchain (route-bound calldata), so the resulting {@link Swap}
+ * carries `amountIn: { source: 'fixed' }`, and `estimate.toAmountMin` is the server-baked onchain
  * floor (same semantics as 0x's `minBuyAmount`).
  *
  * `skipSimulation=true` is required: LiFi otherwise eth_call-simulates the built tx, which needs the
