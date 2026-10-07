@@ -1009,61 +1009,32 @@ describe('bootstrap + ladder only playground follow-up', () => {
     state.ladder[0]!.lowerRateBudgetAssets = '0'
 
     expect(validatePlaygroundState(state)).toEqual({ valid: true, errors: [] })
-    expect(
-      ConfigService.from({
-        ...runtimeEnvironment(state.bootstrap[0]!.marketId),
-        BOOTSTRAP_MARKETS: JSON.stringify(state.bootstrap),
-        LADDER_MARKETS: JSON.stringify(state.ladder)
-      }).ladder[0]?.maximumSellRateBps
-    ).toBeUndefined()
     expect(generateLadderGraphicModels(state)[0]!.rungs.every(rung => rung.side === 'higher')).toBe(
       true
     )
   })
 
-  test('rejects a same-market ladder whose sells could reach the bootstrap floor, as the runtime does', () => {
+  test('accepts and previews every sell of a same-market ladder, as the runtime does', () => {
     const state = createDefaultPlaygroundState()
     state.ladder[0]!.marketId = state.bootstrap[0]!.marketId
-    const runtime = () =>
+    const sellRates = (graphic?: { rungs: { side: string; rateBps: string }[] }) =>
+      graphic?.rungs.filter(rung => rung.side === 'lower').map(rung => rung.rateBps)
+
+    expect(validatePlaygroundState(state)).toEqual({ valid: true, errors: [] })
+    expect(() =>
       ConfigService.from({
         ...runtimeEnvironment(state.bootstrap[0]!.marketId),
         BOOTSTRAP_MARKETS: JSON.stringify(state.bootstrap),
         LADDER_MARKETS: JSON.stringify(state.ladder)
       })
-
-    expect(validatePlaygroundState(state)).toEqual({
-      valid: false,
-      errors: [
-        "ladder[0].minimumRateBps must be at most bootstrap[0].minimumRateBps minus 10 BPS, so its sells stay below that bootstrap's bids"
-      ]
-    })
-    expect(runtime).toThrow(validatePlaygroundState(state).errors[0])
-    expect(() => generateLadderGraphicModels(state)).toThrow(
-      validatePlaygroundState(state).errors[0]
+    ).not.toThrow()
+    expect(exportLadderMarketsEnvValue(state)).toBe(JSON.stringify(state.ladder))
+    expect(sellRates(generateLadderGraphicModels(state)[0])).toEqual(
+      sellRates(generateLadderGraphicModels(state.ladder)[0])
     )
-    expect(() => exportLadderJson(state)).toThrow(CollectionValidationError)
-    expect(() => exportLadderMarketsEnvValue(state)).toThrow(CollectionValidationError)
-    expect(exportLadderMarketsEnvValue(state.ladder)).toBe(JSON.stringify(state.ladder))
-
-    state.bootstrap[0]!.minimumRateBps = '210'
-    expect(validatePlaygroundState(state).valid).toBe(true)
-    expect(runtime().ladder[0]?.maximumSellRateBps).toBe(200n)
   })
 
-  test('previews a same-market ladder without the sells its bootstrap floor excludes', () => {
-    const state = createDefaultPlaygroundState()
-    state.ladder[0]!.marketId = state.bootstrap[0]!.marketId
-    state.bootstrap[0]!.minimumRateBps = '400'
-    const sellRates = (graphic?: { rungs: { side: string; rateBps: string }[] }) =>
-      graphic?.rungs.filter(rung => rung.side === 'lower').map(rung => rung.rateBps)
-
-    const capped = generateLadderGraphicModels(state)[0]
-    expect(sellRates(capped)).toEqual(['300', '200'])
-    expect(capped?.notice).toContain('omitted')
-    expect(sellRates(generateLadderGraphicModels(state.ladder)[0])).toEqual(['400', '300', '200'])
-  })
-
-  test('adds a bootstrap and a ladder that pass the pairing rule, even from one stale state', () => {
+  test('adds a bootstrap and a ladder on distinct markets, even from one stale state', () => {
     const state = createDefaultPlaygroundState()
     const bootstrapMarket = nextMarketId(state, 'bootstrap')
     const ladderMarket = nextMarketId(state, 'ladder')

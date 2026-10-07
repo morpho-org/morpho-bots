@@ -71,11 +71,7 @@ export type LadderConfig = {
 
 declare const validLadderConfig: unique symbol
 /** A {@link LadderConfig} that passed {@link validateLadderConfig}, its only producer. */
-export type ValidLadderConfig = Readonly<LadderConfig> & {
-  /** Highest admissible sell rate; only {@link withBootstrapSellCeiling} sets it. */
-  readonly maximumSellRateBps?: bigint
-  readonly [validLadderConfig]: true
-}
+export type ValidLadderConfig = Readonly<LadderConfig> & { readonly [validLadderConfig]: true }
 
 /**
  * Whether a third party crosses this strategy's resting ladder on one side, and whether the
@@ -249,9 +245,8 @@ const clearedSellRateBps = (rate: bigint, bootstrapBuyRateBps: bigint | undefine
  * Whether a ladder quotes lend buys only, configured as a zero `lowerRateBudgetAssets`.
  * @param config - Ladder whose lower-side budget decides it.
  * @returns `true` exactly when `lowerRateBudgetAssets` is zero.
- * @remarks Such a ladder never publishes a sell at any held credit, so its shape checks and the
- * same-market bootstrap sell ceiling cover the higher side alone; credit it buys is held to
- * maturity.
+ * @remarks Such a ladder never publishes a sell at any held credit, so its shape checks cover the
+ * higher side alone; credit it buys is held to maturity.
  */
 export const isLendOnlyLadder = (config: Pick<LadderConfig, 'lowerRateBudgetAssets'>) =>
   config.lowerRateBudgetAssets === 0n
@@ -271,15 +266,6 @@ const assertSideBudgetsCoverOfferFloor = (config: LadderConfig) => {
   }
 }
 
-const rejectDerivedFields = (input: object) => {
-  if ('maximumSellRateBps' in input) {
-    throw new LadderConfigurationError(
-      'maximumSellRateBps',
-      'is derived from a same-market bootstrap and cannot be configured'
-    )
-  }
-}
-
 /**
  * Validates one complete static ladder shape before any provider read.
  * @param input - Untrusted strategy configuration to validate.
@@ -289,7 +275,6 @@ const rejectDerivedFields = (input: object) => {
  * @remarks Pure validation; it performs no environment, provider, logging, or publication access.
  */
 export const validateLadderConfig = <Config extends LadderConfig>(input: Config) => {
-  rejectDerivedFields(input)
   const config = frozenCopy(input)
   if (!isBytes32(config.marketId)) {
     throw new LadderConfigurationError('marketId', 'must be a 0x-prefixed bytes32 hex value')
@@ -369,35 +354,6 @@ export const validateLadderConfig = <Config extends LadderConfig>(input: Config)
     )
   }
   return config as Config & ValidLadderConfig
-}
-
-/**
- * Caps a ladder's sells strictly below a same-market bootstrap's floor bid.
- * @param config - Validated ladder quoting the bootstrap's market.
- * @param bootstrapMinimumRateBps - The bootstrap's `minimumRateBps`, below which it never bids.
- * @returns A frozen copy whose `maximumSellRateBps` is `bootstrapMinimumRateBps` minus
- * {@link CROSS_BOOK_CLEARANCE_BPS}, or `config` itself when it {@link isLendOnlyLadder}.
- * @throws LadderConfigurationError when that ceiling is below `minimumRateBps`, so no sell could
- * ever be admissible.
- * @remarks Every ask on the market is then dearer than every bid the bootstrap can publish, for any
- * reference, maturity premium, retained center, or fill history under that floor, so buying credit
- * back from the ladder after selling it to the bootstrap never profits the taker. Credit bought
- * under a lower, since-raised floor is not covered: the ceiling keeps no cost basis. Neither is a
- * pending ladder publication the bootstrap's cross-book check projects onto a different tick.
- */
-export const withBootstrapSellCeiling = <Config extends ValidLadderConfig>(
-  config: Config,
-  bootstrapMinimumRateBps: bigint
-): Config => {
-  if (isLendOnlyLadder(config)) return config
-  const maximumSellRateBps = bootstrapMinimumRateBps - CROSS_BOOK_CLEARANCE_BPS
-  if (maximumSellRateBps < config.minimumRateBps) {
-    throw new LadderConfigurationError(
-      'minimumRateBps',
-      `must be at most the same-market bootstrap minimumRateBps minus ${CROSS_BOOK_CLEARANCE_BPS} BPS`
-    )
-  }
-  return frozenCopy({ ...config, maximumSellRateBps })
 }
 
 /**
@@ -561,12 +517,10 @@ export const higherRungsRepriced = (
  * Guardrail counts observed while generating one ladder side.
  * @remarks Aggregates, never per-rung records: a side may hold up to 512 rungs and regenerate every
  * second. `fundedRungs` counts rungs allocated before omission, so the published count is
- * `fundedRungs` minus every omitted count. The omission groups are disjoint: a sell above both
- * `maximumRateBps` and the {@link ValidLadderConfig} `maximumSellRateBps` counts against the range
- * maximum, so the sell-ceiling group holds only rungs the range alone would have published. A rung
- * cleared below the own bootstrap buy may also be omitted, so `clearedRungs` and the omitted counts
- * can both include it. Each `…OmittedRateBps` is the most extreme rate in its group, present only
- * when that group is non-empty.
+ * `fundedRungs` minus both omitted counts. The two omission groups are disjoint, and a rung cleared
+ * below the own bootstrap buy may also be omitted, so `clearedRungs` and the omitted counts can both
+ * include it. `lowestOmittedRateBps` and `highestOmittedRateBps` are the most extreme rates omitted
+ * below and above the range, present only when that group is non-empty.
  */
 export type LadderSideDiagnostics = {
   configuredRungs: number
@@ -577,9 +531,6 @@ export type LadderSideDiagnostics = {
   omittedAboveMaximumRungs: number
   omittedAboveMaximumAssets: bigint
   highestOmittedRateBps?: bigint
-  omittedAboveSellCeilingRungs: number
-  omittedAboveSellCeilingAssets: bigint
-  highestOmittedAboveSellCeilingRateBps?: bigint
   clearedRungs: number
 }
 
@@ -654,8 +605,6 @@ export const generateLadderWithDiagnostics = (
       omittedBelowMinimumAssets: 0n,
       omittedAboveMaximumRungs: 0,
       omittedAboveMaximumAssets: 0n,
-      omittedAboveSellCeilingRungs: 0,
-      omittedAboveSellCeilingAssets: 0n,
       clearedRungs: 0
     }
     const rungs = allocations.flatMap((assets, index) => {
@@ -680,15 +629,6 @@ export const generateLadderWithDiagnostics = (
         )
         return []
       }
-      if (violated === 'maximum' && rateBps <= config.maximumRateBps) {
-        diagnostics.omittedAboveSellCeilingRungs += 1
-        diagnostics.omittedAboveSellCeilingAssets += assets
-        diagnostics.highestOmittedAboveSellCeilingRateBps = bigintMax(
-          diagnostics.highestOmittedAboveSellCeilingRateBps ?? rateBps,
-          rateBps
-        )
-        return []
-      }
       if (violated === 'maximum') {
         diagnostics.omittedAboveMaximumRungs += 1
         diagnostics.omittedAboveMaximumAssets += assets
@@ -702,14 +642,7 @@ export const generateLadderWithDiagnostics = (
     })
     return { rungs, diagnostics }
   }
-  const sellRateRange: RateRange =
-    config.maximumSellRateBps === undefined
-      ? rateRange
-      : {
-          ...rateRange,
-          maximumRateBps: bigintMin(config.maximumRateBps, config.maximumSellRateBps)
-        }
-  const lower = buildRungs('lower', lowerAllocations, sellRateRange)
+  const lower = buildRungs('lower', lowerAllocations, rateRange)
   const higher = buildRungs('higher', higherAllocations, rateRange)
   return {
     quote: {
@@ -759,10 +692,8 @@ export const generateLadderWithDiagnostics = (
  * published rung is in range at its budgeted size. A side left with no rung withdraws. Sells quote
  * at least {@link CROSS_BOOK_CLEARANCE_BPS} below any live own bootstrap buy so both strategies
  * cannot cross, and a configured inventory skew raises every higher rung by
- * {@link inventorySkewBps}; both apply before the range check. Sells are also omitted above
- * the {@link ValidLadderConfig} `maximumSellRateBps` when a same-market bootstrap set it. Lower
- * rungs never move with inventory. Use {@link generateLadderWithDiagnostics} when omissions must be
- * observable.
+ * {@link inventorySkewBps}; both apply before the range check. Lower rungs never move with
+ * inventory. Use {@link generateLadderWithDiagnostics} when omissions must be observable.
  */
 export const generateLadder = (parameters: GenerateLadderParameters): LadderQuoteSet =>
   generateLadderWithDiagnostics(parameters).quote

@@ -13,7 +13,6 @@ import {
   offerCapsByRung,
   shouldRecenter,
   validateLadderConfig,
-  withBootstrapSellCeiling,
   type LadderConfig,
   type ValidLadderConfig
 } from '../../src/domain/ladder'
@@ -412,8 +411,6 @@ describe('generateLadderWithDiagnostics', () => {
         omittedBelowMinimumAssets: 0n,
         omittedAboveMaximumRungs: 0,
         omittedAboveMaximumAssets: 0n,
-        omittedAboveSellCeilingRungs: 0,
-        omittedAboveSellCeilingAssets: 0n,
         clearedRungs: 0
       },
       higher: {
@@ -423,8 +420,6 @@ describe('generateLadderWithDiagnostics', () => {
         omittedBelowMinimumAssets: 0n,
         omittedAboveMaximumRungs: 0,
         omittedAboveMaximumAssets: 0n,
-        omittedAboveSellCeilingRungs: 0,
-        omittedAboveSellCeilingAssets: 0n,
         clearedRungs: 0
       }
     })
@@ -457,8 +452,6 @@ describe('generateLadderWithDiagnostics', () => {
       lowestOmittedRateBps: 50n,
       omittedAboveMaximumRungs: 0,
       omittedAboveMaximumAssets: 0n,
-      omittedAboveSellCeilingRungs: 0,
-      omittedAboveSellCeilingAssets: 0n,
       clearedRungs: 0
     })
     expect(below.diagnostics.higher.omittedBelowMinimumRungs).toBe(0)
@@ -475,8 +468,6 @@ describe('generateLadderWithDiagnostics', () => {
       omittedBelowMinimumAssets: 0n,
       omittedAboveMaximumRungs: 2,
       omittedAboveMaximumAssets: 7n,
-      omittedAboveSellCeilingRungs: 0,
-      omittedAboveSellCeilingAssets: 0n,
       highestOmittedRateBps: 950n,
       clearedRungs: 0
     })
@@ -499,8 +490,6 @@ describe('generateLadderWithDiagnostics', () => {
       omittedBelowMinimumAssets: 0n,
       omittedAboveMaximumRungs: 0,
       omittedAboveMaximumAssets: 0n,
-      omittedAboveSellCeilingRungs: 0,
-      omittedAboveSellCeilingAssets: 0n,
       clearedRungs: 1
     })
     expect(diagnostics.higher.clearedRungs).toBe(0)
@@ -522,8 +511,6 @@ describe('generateLadderWithDiagnostics', () => {
       lowestOmittedRateBps: 195n,
       omittedAboveMaximumRungs: 0,
       omittedAboveMaximumAssets: 0n,
-      omittedAboveSellCeilingRungs: 0,
-      omittedAboveSellCeilingAssets: 0n,
       clearedRungs: 3
     })
   })
@@ -819,8 +806,6 @@ describe('ladder inventory skew', () => {
             omittedBelowMinimumAssets: 0n,
             omittedAboveMaximumRungs: 0,
             omittedAboveMaximumAssets: 0n,
-            omittedAboveSellCeilingRungs: 0,
-            omittedAboveSellCeilingAssets: 0n,
             clearedRungs: 0
           },
           higher: {
@@ -830,8 +815,6 @@ describe('ladder inventory skew', () => {
             omittedBelowMinimumAssets: 0n,
             omittedAboveMaximumRungs: 0,
             omittedAboveMaximumAssets: 0n,
-            omittedAboveSellCeilingRungs: 0,
-            omittedAboveSellCeilingAssets: 0n,
             clearedRungs: 0
           }
         }
@@ -1002,73 +985,6 @@ describe('ladder inventory skew', () => {
   })
 })
 
-describe('bootstrap sell ceiling', () => {
-  test('derives the ceiling as the bootstrap floor minus the cross-book clearance', () => {
-    const capped = withBootstrapSellCeiling(config(), 360n)
-
-    expect(capped.maximumSellRateBps).toBe(350n)
-    expect(Object.isFrozen(capped)).toBe(true)
-    expect(withBootstrapSellCeiling(config(), 210n).maximumSellRateBps).toBe(200n)
-  })
-
-  test('rejects a ceiling that leaves no admissible sell', () => {
-    expect(() => withBootstrapSellCeiling(config(), 209n)).toThrow(
-      expect.objectContaining({ field: 'minimumRateBps' })
-    )
-  })
-
-  test('refuses a ceiling supplied as configuration', () => {
-    expect(() =>
-      validateLadderConfig({ ...rawConfig(), maximumSellRateBps: 350n } as LadderConfig)
-    ).toThrow(expect.objectContaining({ field: 'maximumSellRateBps' }))
-  })
-
-  test('omits sells above the ceiling and leaves buys untouched', () => {
-    const uncapped = generateLadderWithDiagnostics({ config: config(), referenceRateBps: 500n })
-    const capped = generateLadderWithDiagnostics({
-      config: withBootstrapSellCeiling(config(), 360n),
-      referenceRateBps: 500n
-    })
-
-    expect(capped.quote.lower.map(rung => rung.rateBps)).toEqual([300n, 200n])
-    expect(capped.quote.higher).toEqual(uncapped.quote.higher)
-    expect(capped.diagnostics.higher).toStrictEqual(uncapped.diagnostics.higher)
-    expect(capped.diagnostics.lower).toMatchObject({
-      fundedRungs: 3,
-      omittedAboveSellCeilingRungs: 1,
-      omittedAboveSellCeilingAssets: 3n,
-      highestOmittedAboveSellCeilingRateBps: 400n,
-      omittedAboveMaximumRungs: 0
-    })
-  })
-
-  test('attributes a sell above both bounds to the range maximum', () => {
-    const { quote, diagnostics } = generateLadderWithDiagnostics({
-      config: withBootstrapSellCeiling(config(), 710n),
-      referenceRateBps: 950n
-    })
-
-    expect(quote.lower.map(rung => rung.rateBps)).toEqual([650n])
-    expect(diagnostics.lower).toMatchObject({
-      omittedAboveMaximumRungs: 1,
-      highestOmittedRateBps: 850n,
-      omittedAboveSellCeilingRungs: 1,
-      highestOmittedAboveSellCeilingRateBps: 750n
-    })
-  })
-
-  test('still clears a live bootstrap buy priced above its floor', () => {
-    const { quote, diagnostics } = generateLadderWithDiagnostics({
-      config: withBootstrapSellCeiling(config(), 360n),
-      referenceRateBps: 500n,
-      capacities: { bootstrapBuyRateBps: 310n }
-    })
-
-    expect(quote.lower.map(rung => rung.rateBps)).toEqual([300n, 300n, 200n])
-    expect(diagnostics.lower).toMatchObject({ clearedRungs: 1, omittedAboveSellCeilingRungs: 0 })
-  })
-})
-
 describe('lend-only ladder', () => {
   const lendOnly = (overrides: Partial<LadderConfig> = {}) =>
     config({ lowerRateBudgetAssets: 0n, ...overrides })
@@ -1146,12 +1062,4 @@ describe('lend-only ladder', () => {
       }
     }
   )
-
-  test('takes no sell ceiling from a same-market bootstrap', () => {
-    const ladder = lendOnly()
-
-    expect(withBootstrapSellCeiling(ladder, 0n)).toBe(ladder)
-    expect(withBootstrapSellCeiling(ladder, 0n).maximumSellRateBps).toBeUndefined()
-    expect(() => withBootstrapSellCeiling(config(), 0n)).toThrow(LadderConfigurationError)
-  })
 })

@@ -51,12 +51,7 @@ const rateOmitted = (
   marketId: Hex,
   side: MonitoringSide,
   verbose: Pick<LadderVerboseDetails, 'config' | 'referenceRateBps'>,
-  omission: {
-    bound: 'minimum' | 'maximum' | 'sell-ceiling'
-    rungs: number
-    assets: bigint
-    rateBps?: bigint
-  }
+  omission: { bound: 'minimum' | 'maximum'; rungs: number; assets: bigint; rateBps?: bigint }
 ): readonly MonitoringEvent[] =>
   omission.rungs > 0 && omission.rateBps !== undefined
     ? [
@@ -71,8 +66,7 @@ const rateOmitted = (
           outermostRateBps: omission.rateBps,
           ...defined('referenceRateBps', verbose.referenceRateBps),
           minimumRateBps: verbose.config.minimumRateBps,
-          maximumRateBps: verbose.config.maximumRateBps,
-          ...defined('maximumSellRateBps', verbose.config.maximumSellRateBps)
+          maximumRateBps: verbose.config.maximumRateBps
         }
       ]
     : []
@@ -98,14 +92,6 @@ const sideGuardrails = (
     ...(diagnostics.highestOmittedRateBps === undefined
       ? {}
       : { rateBps: diagnostics.highestOmittedRateBps })
-  }),
-  ...rateOmitted(marketId, side, verbose, {
-    bound: 'sell-ceiling',
-    rungs: diagnostics.omittedAboveSellCeilingRungs,
-    assets: diagnostics.omittedAboveSellCeilingAssets,
-    ...(diagnostics.highestOmittedAboveSellCeilingRateBps === undefined
-      ? {}
-      : { rateBps: diagnostics.highestOmittedAboveSellCeilingRateBps })
   }),
   ...(diagnostics.clearedRungs > 0
     ? [

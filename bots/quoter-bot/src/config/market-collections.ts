@@ -7,12 +7,10 @@ import type { TargetRateConfigured, TargetRateStrategyConfig } from '../domain/t
 
 import { BootstrapConfigurationError } from '../domain/bootstrap-configuration.error'
 import { isBytes32, normalizeBytes32 } from '../domain/bytes32'
-import { CROSS_BOOK_CLEARANCE_BPS } from '../domain/cross-book'
 import {
   assertLadderShapeAtReference,
   MAX_MONITOR_INTERVAL_SECONDS,
-  validateLadderConfig,
-  withBootstrapSellCeiling
+  validateLadderConfig
 } from '../domain/ladder'
 import { LadderConfigurationError } from '../domain/ladder-configuration.error'
 import {
@@ -561,35 +559,3 @@ export const ladderConfigsValue = (
   }
   return configs
 }
-
-/**
- * Derives each ladder's sell ceiling from the bootstrap quoting the same market.
- * @param bootstrap - Validated bootstrap collection.
- * @param ladder - Validated ladder collection.
- * @returns `ladder` in order, each entry sharing a bootstrap's market carrying the
- * `maximumSellRateBps` {@link withBootstrapSellCeiling} derives.
- * @throws `ConfigValidationError` naming both entries when a ceiling leaves the ladder no
- * admissible sell.
- * @remarks Pure and browser-safe, so the runtime and the playground apply the same rule.
- */
-export const withBootstrapSellCeilings = <Config extends ValidLadderConfig>(
-  bootstrap: readonly Pick<ValidBootstrapConfig, 'marketId' | 'minimumRateBps'>[],
-  ladder: readonly Config[]
-): Config[] =>
-  ladder.map((config, index) => {
-    const bootstrapIndex = bootstrap.findIndex(item => item.marketId === config.marketId)
-    if (bootstrapIndex === -1) return config
-    try {
-      return withBootstrapSellCeiling(config, bootstrap[bootstrapIndex]!.minimumRateBps)
-    } catch (error) {
-      if (error instanceof LadderConfigurationError) {
-        const field = `ladder[${index}].${error.field}`
-        throw new ConfigValidationError(
-          field,
-          'bootstrap-overlap',
-          `${field} must be at most bootstrap[${bootstrapIndex}].minimumRateBps minus ${CROSS_BOOK_CLEARANCE_BPS} BPS, so its sells stay below that bootstrap's bids`
-        )
-      }
-      throw error
-    }
-  })

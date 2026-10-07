@@ -10,7 +10,7 @@ import { incrementalLossBps } from '../../domain/loss-factor'
  * @remarks Bump on any breaking field rename or removal so a consumer can pin. Adding an optional
  * field is not breaking.
  */
-export const MONITORING_SCHEMA_VERSION = 3
+export const MONITORING_SCHEMA_VERSION = 4
 
 /** Workflow that produced one monitoring record. */
 export type MonitoringWorkflow = 'setup-check' | 'bootstrap' | 'ladder'
@@ -74,8 +74,8 @@ export type MonitoringEvent =
     }
   | {
       /**
-       * Derived rates outside the hard range, or ladder sells above `maximumSellRateBps`, were
-       * omitted, never clamped onto `bound`; `outermostRateBps` is the most extreme omitted rate.
+       * Derived rates outside the hard range were omitted, never clamped onto `bound`;
+       * `outermostRateBps` is the most extreme omitted rate.
        */
       event: 'guardrail.rate-omitted'
       workflow: MonitoringWorkflow
@@ -83,13 +83,11 @@ export type MonitoringEvent =
       side?: MonitoringSide
       omittedRungs: number
       omittedAssets: bigint
-      bound: 'minimum' | 'maximum' | 'sell-ceiling'
+      bound: 'minimum' | 'maximum'
       outermostRateBps: bigint
       referenceRateBps?: bigint
       minimumRateBps: bigint
       maximumRateBps: bigint
-      /** Ceiling a same-market bootstrap derives for ladder sells, when one applies. */
-      maximumSellRateBps?: bigint
     }
   | {
       event: 'guardrail.cross-book-cleared'

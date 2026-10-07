@@ -78,9 +78,7 @@ bootstrap:
     premiumBps: -50
     maximumMarketExposure: '20000000000'
     maximumTotalExposure: '30000000000'
-    # A ladder on the same market sells only at or below this minimum minus 10 BPS, so this must
-    # be at least that ladder's minimumRateBps plus 10.
-    minimumRateBps: 300
+    minimumRateBps: 200
     maximumRateBps: 800
     autoRefill: false
   - marketId: '0x6666666666666666666666666666666666666666666666666666666666666666'

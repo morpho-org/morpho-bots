@@ -538,65 +538,14 @@ describe('ladder configuration loading', () => {
     }
   })
 
-  test('derives a sell ceiling only for a ladder sharing a bootstrap market', () => {
+  test('loads a same-market bootstrap and ladder whatever the bootstrap floor', () => {
     const config = ConfigService.from({
       ...baseEnvironment,
-      MARKET_IDS: `${marketId},${secondMarketId}`,
-      BOOTSTRAP_MARKETS: JSON.stringify([bootstrapItem({ minimumRateBps: '450' })]),
-      LADDER_MARKETS: JSON.stringify([
-        item({ marketId: secondMarketId }),
-        item({ minimumRateBps: '100' })
-      ])
+      BOOTSTRAP_MARKETS: JSON.stringify([bootstrapItem({ minimumRateBps: '200' })]),
+      LADDER_MARKETS: JSON.stringify([item({ minimumRateBps: '200' })])
     })
 
-    expect(config.ladder.map(entry => entry.maximumSellRateBps)).toEqual([undefined, 440n])
-  })
-
-  test('accepts a ceiling equal to the ladder minimum and rejects one below it, naming both entries', () => {
-    const load = (bootstrapMinimumRateBps: string) =>
-      ConfigService.from({
-        ...baseEnvironment,
-        BOOTSTRAP_MARKETS: JSON.stringify([
-          bootstrapItem({ minimumRateBps: bootstrapMinimumRateBps })
-        ]),
-        LADDER_MARKETS: JSON.stringify([item()])
-      })
-
-    expect(load('210').ladder[0]?.maximumSellRateBps).toBe(200n)
-    let rejected: unknown
-    try {
-      load('209')
-    } catch (error) {
-      rejected = error
-    }
-    expect(rejected).toBeInstanceOf(ConfigValidationError)
-    expect(rejected).toMatchObject({
-      field: 'ladder[0].minimumRateBps',
-      reason: 'bootstrap-overlap',
-      message: expect.stringContaining('bootstrap[0].minimumRateBps')
-    })
-  })
-
-  test('loads a lend-only ladder beside a same-market bootstrap with no sell ceiling', () => {
-    const load = (lowerRateBudgetAssets: string) =>
-      ConfigService.from({
-        ...baseEnvironment,
-        BOOTSTRAP_MARKETS: JSON.stringify([bootstrapItem({ minimumRateBps: '209' })]),
-        LADDER_MARKETS: JSON.stringify([item({ lowerRateBudgetAssets })])
-      })
-
-    const [ladder] = load('0').ladder
-    expect(ladder?.lowerRateBudgetAssets).toBe(0n)
-    expect(ladder?.maximumSellRateBps).toBeUndefined()
-    expect(() => load('10')).toThrow(ConfigValidationError)
-  })
-
-  test('refuses a sell ceiling supplied as ladder configuration', () => {
-    expect(() =>
-      ConfigService.from({
-        ...baseEnvironment,
-        LADDER_MARKETS: JSON.stringify([item({ maximumSellRateBps: '300' })])
-      })
-    ).toThrow(ConfigValidationError)
+    expect(config.bootstrap[0]?.minimumRateBps).toBe(200n)
+    expect(config.ladder[0]?.minimumRateBps).toBe(200n)
   })
 })

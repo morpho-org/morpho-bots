@@ -509,7 +509,7 @@ log source. With the shipping variables unset no log record leaves the process; 
 configuration fails loud locally and does not enable verbose diagnostics.
 
 Every record carries `bot: "quoter-bot"` and the configured `chainId`. `schemaVersion` is bound into
-the logger context of every record (currently `3`), so a
+the logger context of every record (currently `4`), so a
 consumer can pin the contract; it is bumped only on a breaking field rename or removal. Nested
 `status: "failed"`, `status: "halted"`, and `errorName` values are emitted at error level.
 Unexpected failures include only a sanitized `errorName`; private keys, RPC/API credentials, signed
@@ -541,7 +541,7 @@ no field is human-scaled — resolve decimals downstream from the `loanAsset` ad
 | `market.configured`              | Once per configured market, at startup                                                                    | `marketId`, `ladder`, `bootstrap`, `ladderIntervalSeconds?`                                                                                                                                                                                                            |
 | `bot.failed`                     | A terminal failure stops the process                                                                      | `workflow?`, `reason`, `errorName?`                                                                                                                                                                                                                                    |
 | `cycle.completed`                | Every market of every setup/bootstrap/ladder cycle                                                        | `workflow`, `marketId?`, `status`, `stage?`, `action?`, `reason?`, `durationMs?`, `errorName?`, `adapterOperation?`, `snapshotErrorOperation?`                                                                                                                         |
-| `guardrail.rate-omitted`         | A cycle omitted rates outside the hard range or sell ceiling (per side and bound, count > 0)              | `workflow`, `marketId`, `side?`, `omittedRungs`, `omittedAssets`, `bound`, `outermostRateBps`, `referenceRateBps?`, `minimumRateBps`, `maximumRateBps`, `maximumSellRateBps?`                                                                                          |
+| `guardrail.rate-omitted`         | A cycle omitted rates outside the hard range (per side and bound, count > 0)                              | `workflow`, `marketId`, `side?`, `omittedRungs`, `omittedAssets`, `bound`, `outermostRateBps`, `referenceRateBps?`, `minimumRateBps`, `maximumRateBps`                                                                                                                 |
 | `guardrail.cross-book-cleared`   | Own bootstrap-buy clearance repriced rungs during generation (per side, count > 0)                        | `workflow`, `marketId`, `side`, `clearedRungs`                                                                                                                                                                                                                         |
 | `guardrail.book-cleared`         | The opposing market book repriced rungs at publication (per side, count > 0)                              | `workflow`, `marketId`, `side`, `clearedRungs`                                                                                                                                                                                                                         |
 | `guardrail.book-crossed`         | A third party crosses the resting ladder on that side (per side, verbose cycles)                          | `workflow`, `marketId`, `side`, `clearable`, `suppressed`                                                                                                                                                                                                              |
@@ -956,23 +956,6 @@ absolute effective-center movement is strictly greater than `movementToleranceBp
 changes still resize quotes inside that tolerance. For a lend-only ladder, only the lending
 rungs have to fit: `(rungCount - 1) * stepBps` within the range.
 
-When a position bootstrap quotes the same market, the ladder's sells are admissible only at or
-below `bootstrap.minimumRateBps − 10 BPS`. The bot derives this sell ceiling when it loads the
-configuration; it is not a configuration key. A sell above it is omitted like any other
-out-of-range rung and reported with `bound: sell-ceiling`, buys are unaffected, and startup fails,
-naming both entries, when the ceiling is below the ladder's `minimumRateBps`. The bootstrap never
-bids below its own minimum, so on that market every ask the bot can publish is dearer than every
-bid: a taker who sells credit to the bootstrap never profits by buying it back from the ladder,
-whatever the reference, maturity premium, retained center, or fill history, while the bootstrap
-floor stays unchanged. Raising that floor while holding credit bought below it reopens the round
-trip for that credit, since the ceiling keeps no cost basis. The guarantee also excludes a ladder
-publication still pending indexing: the bootstrap reprices against a projection of it that can
-land on a different tick. If the sell range holds no tick near
-maturity, the ladder withdraws its sells for the cycle and keeps quoting buys. Sells still clear a
-live bootstrap buy priced above its floor. Stale-quote adverse selection within the configured
-bounds, a taker filling a resting quote after the market has moved, is accepted market-making risk.
-A lend-only ladder publishes no sell, so it takes no ceiling and never fails this check.
-
 A lend-only ladder stops new sells, not sells already on the book. To switch a writer to one:
 
 1. Stop the old writer; its shutdown cancels the groups it owns.
@@ -1185,8 +1168,13 @@ plus settlement fees, whatever the fill size or group mode. A sell fill lowers `
 move back toward the base curve.
 
 Because the skew never moves a sell, it adds no round trip to inventory from any source, including a
-same-market position bootstrap, whose own round trip the derived sell ceiling closes (see
-[Ladder fields and formulas](#ladder-fields-and-formulas)).
+same-market position bootstrap. It does not remove one that exists without it: sells clear a
+bootstrap buy only while that buy is live, so once a taker consumes the bootstrap, the ladder may
+resell that credit below the bootstrap's price. The bootstrap and the ladder are separate phases,
+and that transition loss is accepted. In the other direction, a bootstrap buy still clears every
+resting sell on its market, the ladder's included: while the ladder sells above the bootstrap's
+desired rate, an `autoRefill` buy is repriced to 10 BPS above the highest-rate sell, or withheld for
+the cycle when that exceeds the bootstrap's `maximumRateBps`.
 
 With five higher rungs of 20,000 USDC, 10 BPS apart from 5.10%, one year to maturity, 500,000 USDC
 of exposure room, and a taker who takes the whole nearest buy every cycle (credit accrues as face,

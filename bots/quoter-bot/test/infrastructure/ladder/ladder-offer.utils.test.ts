@@ -1,7 +1,7 @@
 import type { IMarket } from '@morpho-org/midnight-sdk'
 import type { Address, Hex } from 'viem'
 
-import { DEFAULT_TICK_SPACING, TakeAmountsLib, TickLib } from '@morpho-org/midnight-sdk'
+import { TakeAmountsLib, TickLib } from '@morpho-org/midnight-sdk'
 import { MathLib } from '@morpho-org/morpho-ts'
 import { describe, expect, test } from 'vitest'
 
@@ -14,15 +14,8 @@ import type {
 } from '../../../src/domain/ladder'
 import type { OpposingBookTicks } from '../../../src/infrastructure/ladder/ladder-cross-book.utils'
 
-import {
-  generateLadder,
-  offerCapsByRung,
-  validateLadderConfig,
-  withBootstrapSellCeiling
-} from '../../../src/domain/ladder'
-import { LadderConfigurationError } from '../../../src/domain/ladder-configuration.error'
+import { generateLadder, offerCapsByRung, validateLadderConfig } from '../../../src/domain/ladder'
 import { alignedRateTick, rateTickWindow } from '../../../src/domain/tick-window'
-import { createBootstrapOffer } from '../../../src/infrastructure/bootstrap/bootstrap-offer.utils'
 import { calculateLadderCapacities } from '../../../src/infrastructure/ladder/ladder-capacity.utils'
 import { retainedOpposingBookTicks } from '../../../src/infrastructure/ladder/ladder-cross-book.utils'
 import {
@@ -829,199 +822,46 @@ const buyerPays = (tick: bigint, units: bigint) => {
   return (units * price + WAD - 1n) / WAD
 }
 
-describe('buildLadderTree sell ceiling', () => {
-  const BPS_WAD = WAD / 10_000n
-  const sellQuote = (rateBps: bigint): LadderQuoteSet => ({
+describe('buildPublishableLadderTree when the full window empties between the snapshot and publication blocks', () => {
+  const snapshotNow = 95_782n
+  const publicationNow = snapshotNow + 1n
+  const narrowRange = { market, maker, ratifier, minimumRateBps: 300n, maximumRateBps: 301n }
+  const sells = [{ index: 0, rateBps: 300n, assets: 10n }]
+  const buys = [{ index: 0, rateBps: 301n, assets: 10n }]
+  const narrowQuote = (lower: LadderRung[], higher: LadderRung[]): LadderQuoteSet => ({
     ...inRangeQuote,
-    lower: [{ index: 0, rateBps, assets: 10n }]
+    lower,
+    higher
   })
 
-  test('refuses a sell above the ceiling while the range alone would admit it', () => {
-    const build = (maximumSellRateBps?: bigint) =>
-      buildLadderTree({
-        quote: sellQuote(451n),
-        market,
-        maker,
-        ratifier,
-        now,
-        minimumRateBps: 300n,
-        maximumRateBps: 600n,
-        ...(maximumSellRateBps === undefined ? {} : { maximumSellRateBps })
-      })
-
-    expect(build().tree.offers.filter(offer => !offer.buy)).toHaveLength(1)
-    expect(() => build(450n)).toThrow(expect.objectContaining({ operation: 'rate-out-of-range' }))
-  })
-
-  test('encodes every sell at or below the ceiling however coarse the ticks', () => {
-    let published = 0
-    const cases = [1, 2, 4].flatMap(tickSpacing =>
-      [600n, 86_400n, 31_536_000n].flatMap(timeToMaturity =>
-        Array.from({ length: 58 }, (_, index) => ({
-          tickSpacing,
-          timeToMaturity,
-          ceiling: 301n + 7n * BigInt(index)
-        }))
-      )
-    )
-    const encodedSells = ({ tickSpacing, timeToMaturity, ceiling }: (typeof cases)[number]) => {
-      try {
-        return buildLadderTree({
-          quote: sellQuote(ceiling),
-          market: {
-            ...market,
-            params: { ...market.params, maturity: now + timeToMaturity },
-            tickSpacing
-          } as unknown as IMarket,
-          maker,
-          ratifier,
-          now,
-          minimumRateBps: 300n,
-          maximumRateBps: 800n,
-          maximumSellRateBps: ceiling
-        }).tree.offers.filter(offer => !offer.buy)
-      } catch (error) {
-        expect(error).toMatchObject({ operation: 'rate-window-empty' })
-        return []
-      }
-    }
-    for (const sample of cases) {
-      for (const sell of encodedSells(sample)) {
-        expect(TickLib.tickToApr(sell.tick, sample.timeToMaturity)).toBeLessThanOrEqual(
-          sample.ceiling * BPS_WAD
-        )
-        published += 1
-      }
-    }
-    expect(published).toBeGreaterThan(0)
-  })
-
-  test('withdraws sells at the snapshot only under a ceiling that leaves no tick', () => {
-    const range = {
-      market,
-      now,
-      minimumRateBps: 300n,
-      maximumRateBps: 600n,
-      minimumOfferAssets: 1n
-    }
-
-    expect(snapshotRateWindow(range).withdrawnSides).toBeUndefined()
-    expect(snapshotRateWindow({ ...range, maximumSellRateBps: 300n })).toEqual({
-      withdrawnSides: ['lower'],
-      minimumOfferUnits: snapshotRateWindow(range).minimumOfferUnits
-    })
+  test('withdraws a sells-only quote', () => {
+    const quote = narrowQuote(sells, [])
     expect(
-      snapshotRateWindow({ ...range, maximumSellRateBps: 450n }).withdrawnSides
-    ).toBeUndefined()
-  })
-  test('withdraws sells when the sell window empties between the snapshot and publication blocks', () => {
-    const snapshotNow = 95_782n
-    const parameters = {
-      market,
-      maker,
-      ratifier,
-      quote: sellQuote(300n),
-      minimumRateBps: 300n,
-      maximumRateBps: 600n,
-      maximumSellRateBps: 301n
-    }
-
-    expect(
-      snapshotRateWindow({ ...parameters, now: snapshotNow, minimumOfferAssets: 1n }).withdrawnSides
-    ).toBeUndefined()
-    const atSnapshot = buildPublishableLadderTree({ ...parameters, now: snapshotNow })
-    expect(atSnapshot.withdrawnSides).toEqual([])
-    expect(atSnapshot.prepared?.groups.map(group => group.side)).toEqual([
-      'lower',
-      'higher',
-      'higher'
-    ])
-
-    const publicationNow = snapshotNow + 1n
-    expect(
-      snapshotRateWindow({ ...parameters, now: publicationNow, minimumOfferAssets: 1n })
-        .withdrawnSides
-    ).toEqual(['lower'])
-    expect(() => buildLadderTree({ ...parameters, now: publicationNow })).toThrow(
-      expect.objectContaining({ operation: 'rate-window-empty' })
-    )
-    const atPublication = buildPublishableLadderTree({ ...parameters, now: publicationNow })
-    expect(atPublication.withdrawnSides).toEqual(['lower'])
-    expect(atPublication.prepared?.groups.map(group => group.side)).toEqual(['higher', 'higher'])
-    expect(
-      buildPublishableLadderTree({
-        ...parameters,
-        quote: { ...parameters.quote, higher: [] },
-        now: publicationNow
-      })
-    ).toEqual({ withdrawnSides: ['lower'] })
-  })
-
-  describe('when the full window empties between the snapshot and publication blocks', () => {
-    const snapshotNow = 95_782n
-    const publicationNow = snapshotNow + 1n
-    const narrowRange = { market, maker, ratifier, minimumRateBps: 300n, maximumRateBps: 301n }
-    const sells = [{ index: 0, rateBps: 300n, assets: 10n }]
-    const buys = [{ index: 0, rateBps: 301n, assets: 10n }]
-    const narrowQuote = (lower: LadderRung[], higher: LadderRung[]): LadderQuoteSet => ({
-      ...inRangeQuote,
-      lower,
-      higher
-    })
-
-    test('withdraws a sells-only quote without a sell ceiling', () => {
-      const quote = narrowQuote(sells, [])
-      expect(
-        buildPublishableLadderTree({ ...narrowRange, quote, now: snapshotNow }).withdrawnSides
-      ).toEqual([])
-      expect(buildPublishableLadderTree({ ...narrowRange, quote, now: publicationNow })).toEqual({
-        withdrawnSides: ['lower']
-      })
-    })
-
-    test('withdraws both sides of a mixed quote', () => {
-      const quote = narrowQuote(sells, buys)
-      expect(
-        buildPublishableLadderTree({ ...narrowRange, quote, now: snapshotNow }).prepared?.groups
-      ).toHaveLength(2)
-      expect(buildPublishableLadderTree({ ...narrowRange, quote, now: publicationNow })).toEqual({
-        withdrawnSides: ['lower', 'higher']
-      })
-    })
-
-    test('withdraws a buys-only quote', () => {
-      const quote = narrowQuote([], buys)
-      expect(
-        buildPublishableLadderTree({ ...narrowRange, quote, now: snapshotNow }).prepared?.groups
-      ).toHaveLength(1)
-      expect(buildPublishableLadderTree({ ...narrowRange, quote, now: publicationNow })).toEqual({
-        withdrawnSides: ['higher']
-      })
+      buildPublishableLadderTree({ ...narrowRange, quote, now: snapshotNow }).withdrawnSides
+    ).toEqual([])
+    expect(buildPublishableLadderTree({ ...narrowRange, quote, now: publicationNow })).toEqual({
+      withdrawnSides: ['lower']
     })
   })
 
-  test('fails closed when the sell range holds no tick, but still builds a buy-only ladder', () => {
-    const parameters = {
-      market,
-      maker,
-      ratifier,
-      now,
-      minimumRateBps: 300n,
-      maximumRateBps: 600n,
-      maximumSellRateBps: 300n
-    }
-    const pinned = TickLib.tickToApr(
-      alignedRateTick(300n, BigInt(market.params.maturity) - now, 1n),
-      BigInt(market.params.maturity) - now
-    )
-
-    expect(pinned).not.toBe(300n * BPS_WAD)
-    expect(() => buildLadderTree({ ...parameters, quote: sellQuote(300n) })).toThrow(
-      expect.objectContaining({ operation: 'rate-window-empty' })
-    )
+  test('withdraws both sides of a mixed quote', () => {
+    const quote = narrowQuote(sells, buys)
     expect(
-      buildLadderTree({ ...parameters, quote: { ...inRangeQuote, lower: [] } }).tree.offers
+      buildPublishableLadderTree({ ...narrowRange, quote, now: snapshotNow }).prepared?.groups
     ).toHaveLength(2)
+    expect(buildPublishableLadderTree({ ...narrowRange, quote, now: publicationNow })).toEqual({
+      withdrawnSides: ['lower', 'higher']
+    })
+  })
+
+  test('withdraws a buys-only quote', () => {
+    const quote = narrowQuote([], buys)
+    expect(
+      buildPublishableLadderTree({ ...narrowRange, quote, now: snapshotNow }).prepared?.groups
+    ).toHaveLength(1)
+    expect(buildPublishableLadderTree({ ...narrowRange, quote, now: publicationNow })).toEqual({
+      withdrawnSides: ['higher']
+    })
   })
 })
 
@@ -1134,190 +974,5 @@ describe('inventory skew round trip', () => {
         assertNoProfitableBuyBack(bootstrap.tick, units, sells(ladderConfig, units, bootstrap))
       }
     }
-  })
-})
-
-describe('same-market bootstrap round trip', () => {
-  const BOOTSTRAP_MAXIMUM_RATE_BPS = 1_000n
-  const FILLS = [1n, 99_999n, 1_000_000n]
-  const ladderConfig = (overrides: Partial<LadderConfig>) =>
-    validateLadderConfig({
-      marketId,
-      quotePremiumBps: 0n,
-      spreadBps: 200n,
-      stepBps: 100n,
-      rungCount: 3,
-      sizeSkewBps: 0n,
-      lowerRateBudgetAssets: 1_000_000n,
-      higherRateBudgetAssets: 1_000_000n,
-      targetMarketExposureAssets: 10_000_000n,
-      maximumTotalExposureAssets: 10_000_000n,
-      minimumOfferAssets: 1n,
-      groupMode: 'shared-rung',
-      loopIntervalSeconds: 60,
-      bookCrossedCooldownSeconds: 180,
-      movementToleranceBps: 10n,
-      minimumRateBps: 100n,
-      maximumRateBps: 1_000n,
-      ...overrides
-    })
-  const acceptedCeiling = (config: ValidLadderConfig, bootstrapMinimumRateBps: bigint) => {
-    try {
-      return withBootstrapSellCeiling(config, bootstrapMinimumRateBps)
-    } catch (error) {
-      expect(error).toBeInstanceOf(LadderConfigurationError)
-      return undefined
-    }
-  }
-  const spacedMarket = (tickSpacing: number, maturity: bigint) =>
-    ({ ...market, params: { ...market.params, maturity }, tickSpacing }) as unknown as IMarket
-  const bootstrapBuyTick = (
-    target: IMarket,
-    at: bigint,
-    bootstrap: { rateBps: bigint; minimumRateBps: bigint }
-  ) => {
-    try {
-      return createBootstrapOffer({
-        offer: {
-          marketId,
-          assets: 1_000_000n,
-          rateBps: bootstrap.rateBps,
-          referenceObservationId: 'r'
-        },
-        market: target,
-        maker,
-        ratifier,
-        now: at,
-        minimumRateBps: bootstrap.minimumRateBps,
-        maximumRateBps: BOOTSTRAP_MAXIMUM_RATE_BPS
-      }).tick
-    } catch (error) {
-      expect(error).toMatchObject({ operation: 'rate-window-empty' })
-      return undefined
-    }
-  }
-  const rebuiltSellTicks = (
-    config: ValidLadderConfig,
-    target: IMarket,
-    at: bigint,
-    centers: { referenceRateBps: bigint; retainedCenterRateBps?: bigint }
-  ) => {
-    const quote = generateLadder({
-      config,
-      ...centers,
-      ...(config.maturityPremium === undefined
-        ? {}
-        : { secondsToMaturity: BigInt(target.params.maturity) - at })
-    })
-    if (quote.lower.length + quote.higher.length === 0) return []
-    try {
-      return buildLadderTree({
-        quote,
-        market: target,
-        maker,
-        ratifier,
-        now: at,
-        minimumRateBps: config.minimumRateBps,
-        maximumRateBps: config.maximumRateBps,
-        maximumSellRateBps: config.maximumSellRateBps!
-      })
-        .tree.offers.filter(offer => !offer.buy)
-        .map(offer => offer.tick)
-    } catch (error) {
-      expect(error).toMatchObject({ operation: 'rate-window-empty' })
-      return []
-    }
-  }
-  const assertRoundTripUnprofitable = (buyTick: bigint, sellTicks: readonly bigint[]) => {
-    for (const sellTick of sellTicks) {
-      for (const units of FILLS) {
-        expect(buyerPays(sellTick, units)).toBeGreaterThanOrEqual(sellerReceives(buyTick, units))
-      }
-    }
-    return sellTicks.length
-  }
-
-  test('never profits a taker who sells to the bootstrap floor and buys back from the rebuilt ladder', () => {
-    const target = spacedMarket(Number(DEFAULT_TICK_SPACING), now + 31_536_000n)
-    let rejected = 0
-    let checkedSells = 0
-    const shapes = [20n, 200n].flatMap(spreadBps =>
-      [10n, 100n].flatMap(stepBps => [
-        ...[-50n, 0n, 60n].map(quotePremiumBps =>
-          ladderConfig({ spreadBps, stepBps, quotePremiumBps })
-        ),
-        ladderConfig({
-          spreadBps,
-          stepBps,
-          maturityPremium: { shape: 'linear', premiumPerYearBps: 120n, maximumPremiumBps: 300n }
-        })
-      ])
-    )
-    const rebuilds = Array.from({ length: 12 }, (_, index) => BigInt(index) * 100n).flatMap(
-      referenceRateBps =>
-        [false, true].flatMap(retained =>
-          [now, now + 86_400n].map(at => ({ referenceRateBps, retained, at }))
-        )
-    )
-    for (const shape of shapes) {
-      for (const bootstrapMinimumRateBps of [100n, 110n, 115n, 300n, 520n, 900n]) {
-        const config = acceptedCeiling(shape, bootstrapMinimumRateBps)
-        if (config === undefined) {
-          rejected += 1
-          continue
-        }
-        const buyTick = bootstrapBuyTick(target, now, {
-          rateBps: bootstrapMinimumRateBps,
-          minimumRateBps: bootstrapMinimumRateBps
-        })!
-        const retainedOffsetBps = config.quotePremiumBps + config.movementToleranceBps
-        checkedSells += rebuilds.reduce(
-          (checked, { referenceRateBps, retained, at }) =>
-            checked +
-            assertRoundTripUnprofitable(
-              buyTick,
-              rebuiltSellTicks(config, target, at, {
-                referenceRateBps,
-                ...(retained ? { retainedCenterRateBps: referenceRateBps + retainedOffsetBps } : {})
-              })
-            ),
-          0
-        )
-      }
-    }
-    expect(rejected).toBeGreaterThan(0)
-    expect(checkedSells).toBeGreaterThan(0)
-  })
-
-  test('never profits the taker at the coarsest tick spacing near maturity', () => {
-    const maturities = [60n, 600n, 3_600n, 86_400n, 7n * 86_400n, 31_536_000n]
-    let seed = 246n
-    const draw = (bound: bigint) => {
-      seed = (seed * 6_364_136_223_846_793_005n + 1n) % 2n ** 64n
-      return (seed >> 16n) % bound
-    }
-    const shape = ladderConfig({ spreadBps: 20n, stepBps: 10n })
-    let checkedSells = 0
-    for (let sample = 0; sample < 1_500; sample += 1) {
-      const timeToMaturity = maturities[Number(draw(BigInt(maturities.length)))]!
-      const bootstrapMinimumRateBps = 110n + draw(800n)
-      const config = withBootstrapSellCeiling(shape, bootstrapMinimumRateBps)
-      const target = spacedMarket(Number(DEFAULT_TICK_SPACING), now + timeToMaturity)
-      const buyTick = bootstrapBuyTick(target, now, {
-        rateBps:
-          bootstrapMinimumRateBps + draw(BOOTSTRAP_MAXIMUM_RATE_BPS - bootstrapMinimumRateBps + 1n),
-        minimumRateBps: bootstrapMinimumRateBps
-      })
-      if (buyTick === undefined) continue
-      const referenceRateBps = draw(1_200n)
-      checkedSells += assertRoundTripUnprofitable(
-        buyTick,
-        rebuiltSellTicks(config, target, now + draw(timeToMaturity), {
-          referenceRateBps,
-          ...(draw(2n) === 0n ? {} : { retainedCenterRateBps: referenceRateBps + 10n })
-        })
-      )
-    }
-    expect(checkedSells).toBeGreaterThan(0)
   })
 })

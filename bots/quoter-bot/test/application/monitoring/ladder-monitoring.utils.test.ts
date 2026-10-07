@@ -11,11 +11,7 @@ import {
   ladderConsumptionEvents,
   ladderMonitoringEvents
 } from '../../../src/application/monitoring/ladder-monitoring.utils'
-import {
-  generateLadderWithDiagnostics,
-  validateLadderConfig,
-  withBootstrapSellCeiling
-} from '../../../src/domain/ladder'
+import { generateLadderWithDiagnostics, validateLadderConfig } from '../../../src/domain/ladder'
 
 const marketId = `0x${'11'.repeat(32)}` as const
 
@@ -281,11 +277,8 @@ describe('guardrail.halted', () => {
 })
 
 describe('guardrail.rate-omitted', () => {
-  const omissionResult = (
-    referenceRateBps: bigint,
-    bootstrapMinimumRateBps?: bigint
-  ): LadderRunResult => {
-    const shape = validateLadderConfig({
+  const omissionResult = (referenceRateBps: bigint): LadderRunResult => {
+    const config = validateLadderConfig({
       marketId,
       quotePremiumBps: 0n,
       spreadBps: 200n,
@@ -304,10 +297,6 @@ describe('guardrail.rate-omitted', () => {
       minimumRateBps: 200n,
       maximumRateBps: 800n
     })
-    const config =
-      bootstrapMinimumRateBps === undefined
-        ? shape
-        : withBootstrapSellCeiling(shape, bootstrapMinimumRateBps)
     const { diagnostics } = generateLadderWithDiagnostics({ config, referenceRateBps })
     return {
       marketId,
@@ -354,24 +343,5 @@ describe('guardrail.rate-omitted', () => {
 
   test('stays silent while every rung is admissible', () => {
     expect(omitted(omissionResult(500n))).toEqual([])
-  })
-
-  test('names the bootstrap sell ceiling apart from the range maximum', () => {
-    expect(omitted(omissionResult(500n, 360n))).toEqual([
-      {
-        event: 'guardrail.rate-omitted',
-        workflow: 'ladder',
-        marketId,
-        side: 'lower',
-        omittedRungs: 1,
-        omittedAssets: 3n,
-        bound: 'sell-ceiling',
-        outermostRateBps: 400n,
-        referenceRateBps: 500n,
-        minimumRateBps: 200n,
-        maximumRateBps: 800n,
-        maximumSellRateBps: 350n
-      }
-    ])
   })
 })

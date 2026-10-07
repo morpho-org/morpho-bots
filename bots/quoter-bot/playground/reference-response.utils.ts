@@ -88,7 +88,6 @@ export const ladderReferenceBand = (
     return (
       diagnostics.lower.omittedBelowMinimumRungs +
       diagnostics.lower.omittedAboveMaximumRungs +
-      diagnostics.lower.omittedAboveSellCeilingRungs +
       diagnostics.higher.omittedBelowMinimumRungs +
       diagnostics.higher.omittedAboveMaximumRungs
     )

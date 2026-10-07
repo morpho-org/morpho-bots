@@ -528,9 +528,6 @@ export const createProductionLadderAdapters = (
           now: block.timestamp,
           minimumRateBps: selectedConfig.minimumRateBps,
           maximumRateBps: selectedConfig.maximumRateBps,
-          ...(selectedConfig.maximumSellRateBps === undefined
-            ? {}
-            : { maximumSellRateBps: selectedConfig.maximumSellRateBps }),
           minimumOfferAssets: selectedConfig.minimumOfferAssets
         })
       }
@@ -739,9 +736,6 @@ export const createProductionLadderAdapters = (
       now,
       minimumRateBps: selectedConfig.minimumRateBps,
       maximumRateBps: selectedConfig.maximumRateBps,
-      ...(selectedConfig.maximumSellRateBps === undefined
-        ? {}
-        : { maximumSellRateBps: selectedConfig.maximumSellRateBps }),
       opposingBookTicks,
       ...(bootstrapTickCeiling === undefined
         ? {}

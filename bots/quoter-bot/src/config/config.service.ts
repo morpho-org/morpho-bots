@@ -31,12 +31,7 @@ import {
   unsignedBigIntValue,
   urlValue
 } from './config.utils'
-import {
-  bootstrapConfigsValue,
-  hexListValue,
-  ladderConfigsValue,
-  withBootstrapSellCeilings
-} from './market-collections'
+import { bootstrapConfigsValue, hexListValue, ladderConfigsValue } from './market-collections'
 import { signerIdentity } from './signer-identity.utils'
 import { requiresMaxRatificationGas } from './write-policy.utils'
 
@@ -171,10 +166,7 @@ export class ConfigService {
       : writePolicyValue(environment, identity.method, ratifier, chainId)
     const marketIds = hexListValue(environment, 'MARKET_IDS', false)
     const bootstrap = bootstrapConfigsValue(source.bootstrap, marketIds)
-    const ladder = withBootstrapSellCeilings(
-      bootstrap,
-      ladderConfigsValue(source.ladder, marketIds)
-    )
+    const ladder = ladderConfigsValue(source.ladder, marketIds)
 
     return new ConfigService({
       identity,

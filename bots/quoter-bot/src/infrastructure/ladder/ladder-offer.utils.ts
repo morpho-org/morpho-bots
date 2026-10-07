@@ -31,7 +31,6 @@ type BuildLadderTreeParameters = {
   now: bigint
   minimumRateBps: bigint
   maximumRateBps: bigint
-  maximumSellRateBps?: bigint
   ownBootstrapBuyTickCeiling?: bigint
   opposingBookTicks?: OpposingBookTicks
 }
@@ -190,7 +189,7 @@ export const minimumOfferUnits = (parameters: {
 
 type LadderTreeBounds = Pick<
   BuildLadderTreeParameters,
-  'market' | 'now' | 'minimumRateBps' | 'maximumRateBps' | 'maximumSellRateBps'
+  'market' | 'now' | 'minimumRateBps' | 'maximumRateBps'
 >
 
 const ladderTickRanges = (parameters: LadderTreeBounds) => {
@@ -201,29 +200,20 @@ const ladderTickRanges = (parameters: LadderTreeBounds) => {
     timeToMaturity,
     tickSpacing: BigInt(parameters.market.tickSpacing)
   }
-  const sellRange =
-    parameters.maximumSellRateBps === undefined
-      ? range
-      : {
-          ...range,
-          maximumRateBps: bigintMin(range.maximumRateBps, parameters.maximumSellRateBps)
-        }
-  return { timeToMaturity, range, sellRange }
+  return { timeToMaturity, range }
 }
 
 const LADDER_SIDES = ['lower', 'higher'] as const
 
 const emptySideWindows = (parameters: LadderTreeBounds) => {
-  const { timeToMaturity, range, sellRange } = ladderTickRanges(parameters)
-  if (timeToMaturity <= 0n) return { lower: false, higher: false }
-  const higher = isEmptyTickWindow(rateTickWindow(range))
-  return { lower: higher || isEmptyTickWindow(rateTickWindow(sellRange)), higher }
+  const { timeToMaturity, range } = ladderTickRanges(parameters)
+  const empty = timeToMaturity > 0n && isEmptyTickWindow(rateTickWindow(range))
+  return { lower: empty, higher: empty }
 }
 
 /**
  * Reads the snapshot-block rate-window state the ladder decision sizes and withdraws by.
- * @param parameters - Market, snapshot timestamp, hard rate range, optional sell ceiling, and the
- * cash rung floor.
+ * @param parameters - Market, snapshot timestamp, hard rate range, and the cash rung floor.
  * @returns The sides whose window holds no tick (an empty full window withdraws both), and
  * {@link minimumOfferUnits} whenever the full window holds one; nothing once the market has matured,
  * leaving that to the matured path.
@@ -288,13 +278,11 @@ export const buildPublishableLadderTree = (
 /**
  * Converts one domain quote set into the exact mixed-side Midnight offer tree.
  * @param parameters - Quote, fresh market, maker, ratifier, block timestamp, optional minimum and
- * maximum APR bounds in basis points, an optional lower maximum for sells alone, an optional highest
- * own bootstrap-buy tick that every sell must clear, and the optional opposing retained book ticks
- * both sides must clear.
+ * maximum APR bounds in basis points, an optional highest own bootstrap-buy tick that every sell
+ * must clear, and the optional opposing retained book ticks both sides must clear.
  * @returns Tree, protocol-group-to-rung mapping, and prospective book ticks.
  * @throws `LadderAdapterError` when the market has matured, the ladder is empty, the hard rate
- * range (or, with sells, the sell range under `maximumSellRateBps`) contains no aligned tick, or a
- * rung's rate is outside it (`rate-out-of-range`, which
+ * range contains no aligned tick, or a rung's rate is outside it (`rate-out-of-range`, which
  * generation already omits); SDK validation errors pass through.
  * @remarks Midnight prices are inverse to rates, so lower rates map to reduce-only sells and higher
  * rates map to lend buys. Each rung is encoded by {@link admissibleRateTick}, so tick rounding never
@@ -309,15 +297,11 @@ export const buildPublishableLadderTree = (
  * function constructs local values only and does not publish or mutate persisted ownership.
  */
 export const buildLadderTree = (parameters: BuildLadderTreeParameters): PreparedLadderTree => {
-  const { timeToMaturity, range, sellRange } = ladderTickRanges(parameters)
+  const { timeToMaturity, range } = ladderTickRanges(parameters)
   if (timeToMaturity <= 0n) throw new LadderAdapterError('market-matured')
   const window = rateTickWindow(range)
   if (isEmptyTickWindow(window)) throw new LadderAdapterError('rate-window-empty')
-  const sellWindow = sellRange === range ? window : rateTickWindow(sellRange)
-  if (parameters.quote.lower.length > 0 && isEmptyTickWindow(sellWindow)) {
-    throw new LadderAdapterError('rate-window-empty')
-  }
-  const lowerTicks = mergedSideTicks('lower', parameters, { window: sellWindow, range: sellRange })
+  const lowerTicks = mergedSideTicks('lower', parameters, { window, range })
   const higherTicks = mergedSideTicks('higher', parameters, { window, range })
   const lower = sideOffers('lower', lowerTicks.entries, parameters)
   const higher = sideOffers('higher', higherTicks.entries, parameters)

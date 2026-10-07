@@ -9,8 +9,7 @@ import {
   LADDER_MARKET_FIELDS,
   bootstrapConfigsValue,
   ladderConfigsValue,
-  parseBytes32,
-  withBootstrapSellCeilings
+  parseBytes32
 } from '../src/config/market-collections'
 import {
   generateLadderWithDiagnostics,
@@ -290,8 +289,8 @@ const ADDED_MARKET_ID_BASES = { bootstrap: 0n, ladder: 1n << 128n } as const
  * @param state - Current playground state; ids used by either collection are skipped.
  * @param kind - Collection the entry joins.
  * @returns The lowest free id in that collection's own range. The ranges are disjoint, so an added
- * bootstrap and an added ladder never share a market, and never meet the same-market sell-ceiling
- * rule, even when both are added before the state re-renders.
+ * bootstrap and an added ladder never share a market, even when both are added before the state
+ * re-renders.
  */
 export const nextMarketId = (state: PlaygroundState, kind: keyof PlaygroundState) => {
   const existing = new Set(
@@ -756,10 +755,7 @@ export const generateLadderGraphicModels = (
   creditAssets = 0n
 ): LadderGraphicModel[] => {
   const inputs = parseLadder(collectionFromArgument(value))
-  const configs = withBootstrapSellCeilings(
-    Array.isArray(value) ? [] : bootstrapConfigs(value.bootstrap),
-    ladderConfigsValue(inputs, allowlist(inputs))
-  )
+  const configs = ladderConfigsValue(inputs, allowlist(inputs))
   // oxlint-disable-next-line complexity
   return inputs.map((input, index) => {
     const config = configs[index]!
@@ -793,7 +789,6 @@ export const generateLadderGraphicModels = (
     const omittedRungs =
       diagnostics.lower.omittedBelowMinimumRungs +
       diagnostics.lower.omittedAboveMaximumRungs +
-      diagnostics.lower.omittedAboveSellCeilingRungs +
       diagnostics.higher.omittedBelowMinimumRungs +
       diagnostics.higher.omittedAboveMaximumRungs
     const maximumCenter =
@@ -1258,17 +1253,5 @@ export const exportLadderMarketsEnvValue = (value: LadderInput[] | PlaygroundSta
 export const validatePlaygroundState = (state: PlaygroundState) => {
   const bootstrap = validateBootstrapCollection(state.bootstrap)
   const ladder = validateLadderCollection(state.ladder)
-  const pairing =
-    bootstrap.valid && ladder.valid
-      ? validation(() =>
-          withBootstrapSellCeilings(
-            bootstrapConfigs(state.bootstrap),
-            ladderConfigsValue(state.ladder, allowlist(state.ladder))
-          )
-        )
-      : { valid: true, errors: [] }
-  return {
-    valid: bootstrap.valid && ladder.valid && pairing.valid,
-    errors: [...bootstrap.errors, ...ladder.errors, ...pairing.errors]
-  }
+  return { valid: bootstrap.valid && ladder.valid, errors: [...bootstrap.errors, ...ladder.errors] }
 }
