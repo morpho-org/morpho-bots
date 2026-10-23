@@ -142,7 +142,8 @@ release names, config Secrets, runtime Secrets, and PVCs chain-qualified in mult
 
 For AWS mode, omit the private-key Secret. Give the pod direct `kms:GetPublicKey` and `kms:Sign`
 access to one `ECC_SECG_P256K1` key, set the AWS identity fields, and set
-`setup.signerNativeReserveWei`. The KMS signer must differ from the maker, and the ratifier must be
+`setup.signerNativeReserveWei`; `setup.nativeReserveWei` is ignored, since the maker sends no
+transactions. The KMS signer must differ from the maker, and the ratifier must be
 the canonical Ecrecover ratifier.
 
 Start with a read-only rehearsal (`args: ['--readonly', 'start', '--verbose']`) to inspect

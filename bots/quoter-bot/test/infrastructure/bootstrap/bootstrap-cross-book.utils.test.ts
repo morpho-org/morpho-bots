@@ -5,7 +5,7 @@ import { describe, expect, test, vi } from 'vitest'
 import type { BootstrapOffer } from '../../../src/domain/position-bootstrap'
 import type { BootstrapCrossBookOffer } from '../../../src/infrastructure/bootstrap/bootstrap-cross-book.utils'
 
-import { BootstrapAdapterError } from '../../../src/infrastructure/bootstrap/bootstrap-adapter.error'
+import { BootstrapAdapterError } from '../../../src/errors'
 import { resolveBootstrapProspectiveOffer } from '../../../src/infrastructure/bootstrap/bootstrap-cross-book.utils'
 
 const BPS_WAD = 10n ** 14n

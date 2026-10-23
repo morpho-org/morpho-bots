@@ -3,7 +3,7 @@ import { readFileSync, rmSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { BundleFailedError } from './bundle-failed.error'
+import { BundleFailedError } from './errors'
 
 // Bundles the bot entrypoint to `dist/` so production runs a plain `node` with no TypeScript
 // transform at startup. This bot holds no soltag `sol``` templates, so no transform plugin is wired.

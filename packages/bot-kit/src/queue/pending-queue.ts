@@ -5,13 +5,13 @@ import { tryCatch } from '@repo/utils'
 
 import type { Logger } from '../logger'
 
+import { TxSendError } from '../errors'
 import { DEFAULT_MAX_SPEND_WEI } from '../policy'
 import {
   isExecutionRevert,
   revertReason as defaultRevertReason,
   revertSelector
 } from '../revert.utils'
-import { TxSendError } from '../tx-send.error'
 import { bumpFees } from './fee-policy'
 import { scanReceipts } from './receipt.utils'
 

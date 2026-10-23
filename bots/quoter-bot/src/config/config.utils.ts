@@ -4,7 +4,7 @@ import { getAddress, isAddress, isHex, parseGwei, size } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
 
 import { MAX_LOSS_FACTOR } from '../domain/loss-factor'
-import { ConfigValidationError } from './config-validation.error'
+import { ConfigValidationError } from '../errors'
 import {
   bootstrapConfigsValue,
   hexListValue,

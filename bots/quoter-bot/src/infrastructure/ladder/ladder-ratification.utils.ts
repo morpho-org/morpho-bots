@@ -11,7 +11,7 @@ import { encodeFunctionData, isAddressEqual } from 'viem'
 
 import type { SupportedChainId } from '../../config/supported-chains.utils'
 
-import { LadderAdapterError } from './ladder-adapter.error'
+import { LadderAdapterError } from '../../errors'
 import { signLadderTree } from './ladder-signature.utils'
 
 type EcrecoverSignParameters = Parameters<typeof EcrecoverRatifierUtils.sign>[0]

@@ -5,7 +5,7 @@ import type { RateLimitedClient } from '../../src/http-client'
 import type { QuoteParameters } from '../../src/types'
 
 import { ONEINCH_ROUTER } from '../../src/constants'
-import { QuoteError } from '../../src/types'
+import { QuoteError } from '../../src/errors'
 import { priceOneInch, quoteOneInch } from '../../src/venues/oneinch'
 
 // The 1inch swap must target the statically-known router for the chain (Base here); the adapter

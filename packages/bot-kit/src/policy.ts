@@ -108,20 +108,6 @@ export type PolicyCheck =
 
 export type PolicyDecision = { ok: true } | { ok: false; check: PolicyCheck; message: string }
 
-/** Raised when a prepared transaction fails the default-deny policy — an upstream bug, never sent. */
-// oxlint-disable-next-line repo/error-class-file
-export class PolicyViolationError extends Error {
-  readonly code = 'policy_violation'
-
-  constructor(
-    message: string,
-    readonly check: PolicyCheck
-  ) {
-    super(message)
-    this.name = 'PolicyViolationError'
-  }
-}
-
 /**
  * Default-deny authorization for a prepared transaction, with zero value and a caller-pinned selector
  * (`exec_606BaXt` by default) and the fee/gas/size ceilings taken from the
@@ -134,7 +120,7 @@ export class PolicyViolationError extends Error {
  * which case the envelope also authorizes each inner call declaratively (still no bot-supplied
  * code). Each bot simulates its exact request before submit regardless.
  */
-// oxlint-disable-next-line complexity, repo/utils-apart-from-classes
+// oxlint-disable-next-line complexity
 export function evaluatePolicy(policy: Policy, tx: PolicyTx): PolicyDecision {
   const deny = (check: PolicyCheck, message: string): PolicyDecision => ({
     ok: false,

@@ -17,16 +17,18 @@ import type {
 } from '../../../src/domain/ladder'
 import type { LossFactorObservation } from '../../../src/domain/loss-factor'
 
-import { LadderOwnershipCleanupError } from '../../../src/application/ladder/ladder-ownership-cleanup.error'
 import { LadderQuoterService } from '../../../src/application/ladder/ladder-quoter.service'
 import { ladderMonitoringEvents } from '../../../src/application/monitoring/ladder-monitoring.utils'
 import { createMonitoringProjection } from '../../../src/application/monitoring/monitoring-projection.utils'
 import { generateLadder, validateLadderConfig } from '../../../src/domain/ladder'
 import { MARKET_FAILURE_BUDGET_CYCLES } from '../../../src/domain/market-failure-budget'
 import { alignedRateTick } from '../../../src/domain/tick-window'
-import { LadderAdapterError } from '../../../src/infrastructure/ladder/ladder-adapter.error'
+import {
+  LadderAdapterError,
+  LadderOwnershipCleanupError,
+  ReferenceAdapterError
+} from '../../../src/errors'
 import { calculateLadderCapacities } from '../../../src/infrastructure/ladder/ladder-capacity.utils'
-import { ReferenceAdapterError } from '../../../src/infrastructure/reference/reference-adapter.error'
 
 const marketId: Hex = `0x${'55'.repeat(32)}`
 const secondMarketId: Hex = `0x${'66'.repeat(32)}`

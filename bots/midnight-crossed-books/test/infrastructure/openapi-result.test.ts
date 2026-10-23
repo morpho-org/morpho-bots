@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest'
 
-import { MorphoApiError } from '../../src/infrastructure/openapi/error'
+import { MorphoApiError } from '../../src/errors'
 import {
   unwrapOpenApiResult,
   withOpenApiErrorBoundary

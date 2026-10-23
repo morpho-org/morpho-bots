@@ -138,7 +138,7 @@ later writes until an operator reconciles the nonce.
 
 ## Error and output boundaries
 
-Expected failures use named error classes isolated in their own `*.error.ts` files. Infrastructure
+Expected failures use named error classes declared in the bot's `errors.ts`. Infrastructure
 errors are translated into stable application outcomes before reaching the CLI. Operator-visible
 reports omit private keys, maker identity, endpoints, signatures, raw transactions, response bodies,
 provider payloads, and untrusted nested error text.

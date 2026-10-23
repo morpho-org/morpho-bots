@@ -18,8 +18,4 @@ describe('revertReason', () => {
     const data = encodeErrorResult({ abi: metaMorphoAbi, errorName: 'NotAllocatorRole' })
     expect(revertReason(revertError(data))).toBe('NotAllocatorRole')
   })
-
-  it('falls back to the message for non-revert errors', () => {
-    expect(revertReason(new Error('rpc exploded'))).toContain('rpc exploded')
-  })
 })

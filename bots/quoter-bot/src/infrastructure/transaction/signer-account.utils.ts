@@ -23,8 +23,8 @@ import { createNonceManager, jsonRpc } from 'viem/nonce'
 
 import type { SignerIdentity } from '../../config/config.service'
 
+import { SignerAccountError } from '../../errors'
 import { createManagedSignerAccount } from './managed-signer-account.utils'
-import { SignerAccountError } from './signer-account.error'
 
 const SECP256K1_ORDER = 0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n
 const HALF_SECP256K1_ORDER = SECP256K1_ORDER / 2n

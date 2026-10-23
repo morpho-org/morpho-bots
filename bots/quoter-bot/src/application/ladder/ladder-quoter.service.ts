@@ -30,17 +30,19 @@ import {
   generateLadderWithDiagnostics,
   shouldRecenter
 } from '../../domain/ladder'
-import { LadderConfigurationError } from '../../domain/ladder-configuration.error'
 import { lendHalt } from '../../domain/loss-factor'
 import {
   MARKET_FAILURE_BUDGET_CYCLES,
   createMarketFailureBudget
 } from '../../domain/market-failure-budget'
 import { marketObservationMatured } from '../../domain/market-maturity'
+import {
+  LadderAdapterError,
+  LadderConfigurationError,
+  LadderOwnershipCleanupError
+} from '../../errors'
 import { snapshotErrorOperationField } from '../../infrastructure/exposure/exposure-admission.utils'
-import { LadderAdapterError } from '../../infrastructure/ladder/ladder-adapter.error'
 import { adapterOperationField, operatorErrorName } from '../monitoring/operator-error-name.utils'
-import { LadderOwnershipCleanupError } from './ladder-ownership-cleanup.error'
 import { sameLadderQuoteSet } from './ladder-quoter.utils'
 
 const SIDES = ['lower', 'higher'] as const

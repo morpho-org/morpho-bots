@@ -2,7 +2,7 @@ import type { Address } from 'viem'
 import type { Abi, Hex } from 'viem'
 
 import { getChainAddresses } from '@morpho-org/blue-sdk'
-import { createDeploylessClient, createLogger, withLogging } from '@repo/bot-kit'
+import { createDeploylessClient, createLogger, withLogging } from '@repo/kit'
 import { advanceRateAtTarget } from '@repo/utils'
 import {
   decodeFunctionResult,
@@ -20,9 +20,9 @@ import { describe, expect, it, vi } from 'vitest'
 import { readVaultV1Lens, VaultV1ReallocationLens } from '../../src/state/lens.sol'
 import { VaultV1AccrualReferenceLens } from './reference-lens.sol'
 
-// THE funds-at-risk gate for the read-only accrual rewrite.
+// THE funds-at-risk gate for the read-only accrual projection.
 //
-// The production lens no longer calls `Morpho.accrueInterest`; it projects the same arithmetic
+// The production lens does not call `Morpho.accrueInterest`; it projects the same arithmetic
 // read-only so the deployless envelope's STATICCALL dispatch can reach it. This asserts the
 // projection is EXACT by running both lenses at one pinned block and diffing every field the
 // reallocation sizing consumes. The reference lens does the accrual onchain, so it is an
@@ -56,12 +56,9 @@ describeFork('vault-v1 read-only accrual equals onchain accrual', () => {
     const { morpho, adaptiveCurveIrm } = getChainAddresses(base.id)
 
     const projected = (
-      await readVaultV1Lens(
-        client,
-        { morpho, adaptiveCurveIrm },
-        [{ vault, eoa: EOA }],
+      await readVaultV1Lens(client, { morpho, adaptiveCurveIrm }, [{ vault, eoa: EOA }], {
         blockNumber
-      )
+      })
     ).get(vault.toLowerCase())
 
     // The reference is `nonpayable`, so viem's `readContract` rejects it at the type level and the
@@ -173,12 +170,9 @@ describeFork('vault-v1 lens observability', () => {
     try {
       await withLogging(
         () =>
-          readVaultV1Lens(
-            client,
-            { morpho, adaptiveCurveIrm },
-            [{ vault: VAULT, eoa: EOA }],
-            FORK_BLOCK
-          ),
+          readVaultV1Lens(client, { morpho, adaptiveCurveIrm }, [{ vault: VAULT, eoa: EOA }], {
+            blockNumber: FORK_BLOCK
+          }),
         { logger: logger.layer, lens: 'vault-v1-reallocation' }
       )
     } finally {

@@ -1,7 +1,7 @@
 import { getAddress } from 'viem'
 import { afterEach, describe, expect, it } from 'vitest'
 
-import { InvalidConfigError } from '../src/invalid-config.error'
+import { InvalidConfigError } from '../src/errors'
 import {
   assertApyRangeValid,
   DEFAULT_APY_RANGE,

@@ -3,11 +3,11 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, test } from 'vitest'
 
+import { StrategyStateVersionError } from '../../../src/errors'
 import {
   assertCurrentStrategyStates,
   STRATEGY_STATE_VERSION
 } from '../../../src/infrastructure/strategy-state/strategy-state-file.utils'
-import { StrategyStateVersionError } from '../../../src/infrastructure/strategy-state/strategy-state-version.error'
 
 const stateName = (byte: string) => `0x${byte.repeat(32)}.json`
 

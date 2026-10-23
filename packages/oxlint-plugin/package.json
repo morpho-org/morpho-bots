@@ -13,6 +13,7 @@
   },
   "scripts": {
     "check:markdown": "node src/check-markdown.ts",
+    "check:specs": "node src/check-spec-citations.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

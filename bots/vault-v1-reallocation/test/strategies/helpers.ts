@@ -79,8 +79,8 @@ export const makeIdleMarket = (vaultAssets: bigint, cap?: bigint): VaultMarketDa
   isIdle: true
 })
 
-export const VAULT_OWNER = getAddress('0x0000000000000000000000000000000000000002')
-export const VAULT_CURATOR = getAddress('0x0000000000000000000000000000000000000003')
+const VAULT_OWNER = getAddress('0x0000000000000000000000000000000000000002')
+const VAULT_CURATOR = getAddress('0x0000000000000000000000000000000000000003')
 
 export const makeVaultData = (markets: VaultMarketData[], vault: Address = VAULT): VaultData => ({
   vaultAddress: vault,

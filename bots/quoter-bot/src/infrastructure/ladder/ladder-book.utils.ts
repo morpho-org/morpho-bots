@@ -4,8 +4,8 @@ import { bytesToHex, getAddress, hexToBytes, isAddress, isHex, size } from 'viem
 
 import type { JsonRequest } from '../provider/http-json.utils'
 
+import { LadderAdapterError } from '../../errors'
 import { requestJson } from '../provider/http-json.utils'
-import { LadderAdapterError } from './ladder-adapter.error'
 
 const MAX_ITEMS = 1_000
 

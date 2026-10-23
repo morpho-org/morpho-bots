@@ -12,14 +12,16 @@ import type {
   SetupStateService
 } from '../src/application/setup/setup-check.service'
 
-import { StartupCleanupFailedError } from '../src/application/quoter-bot/startup-cleanup-failed.error'
-import { SetupFailedError } from '../src/application/setup/setup-failed.error'
 import { createApplication } from '../src/bootstrap'
-import { ConfigValidationError } from '../src/config/config-validation.error'
+import {
+  ConfigValidationError,
+  LadderAdapterError,
+  LadderHardHaltError,
+  SetupFailedError,
+  StartupCleanupFailedError,
+  StrategyStateVersionError
+} from '../src/errors'
 import { runQuoterBotEntrypoint } from '../src/infrastructure/cli/quoter-bot-entrypoint'
-import { LadderAdapterError } from '../src/infrastructure/ladder/ladder-adapter.error'
-import { LadderHardHaltError } from '../src/infrastructure/ladder/ladder-hard-halt.error'
-import { StrategyStateVersionError } from '../src/infrastructure/strategy-state/strategy-state-version.error'
 
 const maker: Address = '0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A'
 const delegatedSigner: Address = '0x1563915e194D8CfBA1943570603F7606A3115508'

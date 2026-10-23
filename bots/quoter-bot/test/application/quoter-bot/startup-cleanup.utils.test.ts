@@ -2,10 +2,12 @@ import type { Hex } from 'viem'
 
 import { describe, expect, test, vi } from 'vitest'
 
-import { StartupCleanupFailedError } from '../../../src/application/quoter-bot/startup-cleanup-failed.error'
 import { cancelOwnedOffersOnStartupFailure } from '../../../src/application/quoter-bot/startup-cleanup.utils'
-import { LadderAdapterError } from '../../../src/infrastructure/ladder/ladder-adapter.error'
-import { LadderHardHaltError } from '../../../src/infrastructure/ladder/ladder-hard-halt.error'
+import {
+  LadderAdapterError,
+  LadderHardHaltError,
+  StartupCleanupFailedError
+} from '../../../src/errors'
 
 const groupId: Hex = `0x${'AB'.repeat(32)}`
 const txHash: Hex = `0x${'cd'.repeat(32)}`

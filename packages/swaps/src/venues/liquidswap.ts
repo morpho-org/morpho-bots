@@ -5,7 +5,7 @@ import type { RateLimitedClient } from '../http-client'
 import type { PriceParameters, PriceQuote, QuoteParameters, Swap } from '../types'
 
 import { LIQUIDSWAP_BASE_URL } from '../constants'
-import { QuoteError } from '../types'
+import { QuoteError } from '../errors'
 
 /** The LiquidSwap arm of the per-collateral swap config. */
 type LiquidSwapEntry = { baseUrl?: string }

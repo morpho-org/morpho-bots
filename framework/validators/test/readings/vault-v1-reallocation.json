@@ -1,0 +1,166 @@
+{
+  "vault-v1-reallocation@1": {
+    "a reallocation": {
+      "claims": true,
+      "reading": {
+        "ok": true,
+        "creates": [],
+        "exposes": [],
+        "carries": [],
+        "retires": [],
+        "consumes": {}
+      }
+    },
+    "a deposit one past its cap": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "a deposit exceeds its market cap"
+      }
+    },
+    "a deposit exactly at its cap": {
+      "claims": true,
+      "reading": {
+        "ok": true,
+        "creates": [],
+        "exposes": [],
+        "carries": [],
+        "retires": [],
+        "consumes": {}
+      }
+    },
+    "another vault": {
+      "claims": false,
+      "reading": {
+        "ok": false,
+        "reason": "not a configured vault"
+      }
+    },
+    "a release": {
+      "claims": false,
+      "reading": {
+        "ok": false,
+        "reason": "only transactions are read"
+      }
+    },
+    "a value-bearing call": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "a reallocation carries no value"
+      }
+    },
+    "another vault function": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "not reallocate"
+      }
+    },
+    "an unknown selector": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "not reallocate"
+      }
+    },
+    "a truncated reallocate": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "calldata does not decode"
+      }
+    },
+    "trailing bytes": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "calldata is not canonical"
+      }
+    },
+    "an empty reallocate": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "reallocate names no market"
+      }
+    },
+    "a market outside the configuration": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "a market is outside the vault configuration"
+      }
+    },
+    "a market allocated twice": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "a market is allocated twice"
+      }
+    },
+    "an allocation over its cap": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "a deposit exceeds its market cap"
+      }
+    },
+    "the rest taken before the last leg": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "only the last market takes the rest"
+      }
+    },
+    "witness with no witness": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "witness names none of the vault markets"
+      }
+    },
+    "witness with no markets": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "witness names none of the vault markets"
+      }
+    },
+    "witness with a malformed id": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "witness names a malformed market"
+      }
+    },
+    "witness with a negative cap": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "witness names a malformed market"
+      }
+    },
+    "witness with a cap that is not a bigint": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "witness names a malformed market"
+      }
+    },
+    "witness with no assets": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "witness names a malformed market"
+      }
+    },
+    "witness with a market twice": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "witness names a market twice"
+      }
+    }
+  }
+}

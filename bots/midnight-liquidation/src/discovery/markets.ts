@@ -8,7 +8,7 @@ import { isAddress, isHex } from 'viem'
 
 import type { components, paths } from '../generated/midnight-api'
 
-import { InvalidConfigError } from '../invalid-config.error'
+import { InvalidConfigError } from '../errors'
 
 // Response shapes from `GET /v0/midnight/markets` (the seed script imports these too). The spec types
 // ids/addresses as plain strings; we brand the fields the codebase consumes as viem `Hex`/`Address`

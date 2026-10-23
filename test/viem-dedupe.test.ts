@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -7,23 +7,25 @@ import { describe, expect, it } from 'vitest'
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
 
 /**
- * Every workspace member directory (`bots/*`, `packages/*`) that ships a package.json, as paths
+ * Every workspace member directory (`pnpm-workspace.yaml`'s groups) that ships a package.json, as paths
  * relative to the repo root.
  */
 const workspaceMembers = (): string[] =>
-  ['bots', 'packages'].flatMap(group =>
-    readdirSync(join(repoRoot, group), { withFileTypes: true })
-      .filter(entry => entry.isDirectory())
-      .map(entry => join(group, entry.name))
-      .filter(member => {
-        try {
-          readFileSync(join(repoRoot, member, 'package.json'))
-          return true
-        } catch {
-          return false
-        }
-      })
-  )
+  ['bots', 'packages', 'framework', 'tools']
+    .filter(group => existsSync(join(repoRoot, group)))
+    .flatMap(group =>
+      readdirSync(join(repoRoot, group), { withFileTypes: true })
+        .filter(entry => entry.isDirectory())
+        .map(entry => join(group, entry.name))
+        .filter(member => {
+          try {
+            readFileSync(join(repoRoot, member, 'package.json'))
+            return true
+          } catch {
+            return false
+          }
+        })
+    )
 
 /** Members declaring `dependency` in any dependency field — the ones whose resolution matters. */
 const membersDependingOn = (dependency: string): string[] =>

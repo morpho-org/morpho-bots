@@ -7,9 +7,11 @@ import type { BootstrapSubmittedTransaction } from '../../../src/application/boo
 import type { BootstrapOffer } from '../../../src/domain/position-bootstrap'
 import type { ExposureSnapshotReader } from '../../../src/infrastructure/exposure/exposure-snapshot.utils'
 
-import { BootstrapOwnershipCleanupError } from '../../../src/application/bootstrap/bootstrap-ownership-cleanup.error'
-import { BootstrapAdapterError } from '../../../src/infrastructure/bootstrap/bootstrap-adapter.error'
-import { BootstrapHardHaltError } from '../../../src/infrastructure/bootstrap/bootstrap-hard-halt.error'
+import {
+  BootstrapAdapterError,
+  BootstrapHardHaltError,
+  BootstrapOwnershipCleanupError
+} from '../../../src/errors'
 import { MidnightBootstrapMakeService } from '../../../src/infrastructure/bootstrap/bootstrap-make.service'
 import { admitExposureCandidate } from '../../../src/infrastructure/exposure/exposure-admission.utils'
 import { readExposureSnapshot } from '../../../src/infrastructure/exposure/exposure-snapshot.utils'

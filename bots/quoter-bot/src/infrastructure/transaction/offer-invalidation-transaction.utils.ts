@@ -3,7 +3,7 @@ import type { Address, Hex } from 'viem'
 import { MAX_OFFER_CAP, midnightAbi } from '@morpho-org/midnight-sdk'
 import { decodeFunctionData, encodeFunctionData, isAddressEqual, isHex, keccak256 } from 'viem'
 
-import { OfferInvalidationAdapterError } from '../invalidation/offer-invalidation-adapter.error'
+import { OfferInvalidationAdapterError } from '../../errors'
 
 /**
  * Enforces the exact hot-key policy for one explicit offer-group cancellation.

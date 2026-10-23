@@ -1,4 +1,4 @@
-import { SafeProviderError } from '../../application/setup/safe-provider.error'
+import { SafeProviderError } from '../../errors'
 import { retryTransientProviderRead } from './provider-retry.utils'
 
 /** Stable HTTP provider identifiers safe to include in reports. */

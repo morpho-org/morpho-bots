@@ -9,6 +9,7 @@ This is a [pnpm workspaces](https://pnpm.io/workspaces) monorepo:
 
 - `bots/` — individual bot apps (one per bot); each keeps its own `README.md`
 - `packages/` — shared libraries the bots depend on
+- `framework/` — the bot framework: dataflow engine, transaction kernel, controller
 
 Pull requests are not accepted at this time; see [CONTRIBUTING.md](./CONTRIBUTING.md). Issues are
 welcome.
@@ -46,7 +47,7 @@ repository's `quoter-bot-*` tags by the workflows under [`.github/workflows/`](.
 ## Getting started
 
 ```sh
-nvm use               # Node 24.18.1 (see .nvmrc)
+nvm use               # Node 24.22.1 (see .nvmrc)
 corepack enable pnpm  # pnpm 11.11.0, pinned by package.json#packageManager
 pnpm install
 pnpm build            # @repo/contracts ABIs, needed by the liquidation bots' tests

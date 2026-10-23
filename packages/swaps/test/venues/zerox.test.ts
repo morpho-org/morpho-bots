@@ -5,7 +5,7 @@ import type { RateLimitedClient } from '../../src/http-client'
 import type { QuoteParameters } from '../../src/types'
 
 import { ZEROX_ALLOWANCE_HOLDER } from '../../src/constants'
-import { QuoteError } from '../../src/types'
+import { QuoteError } from '../../src/errors'
 import { priceZerox, quoteZerox } from '../../src/venues/zerox'
 
 const TARGET = getAddress('0xaAaAaAaaAaAaAaaAaAAAAAAAAaaaAaAaAaaAaaAa')

@@ -5,9 +5,8 @@ import { getAddress, isAddress, isAddressEqual, isHex, parseGwei, zeroAddress } 
 import { base } from 'viem/chains'
 
 import { DEFAULT_MAX_MATCHES } from '../domain/matching.service'
-import { InvalidSimulationCallerAddressError } from './invalid-simulation-caller-address.error'
+import { InvalidSimulationCallerAddressError, ResolverPrivateKeyRequiredError } from '../errors'
 import { parseReadonly } from './readonly.utils'
-import { ResolverPrivateKeyRequiredError } from './resolver-private-key-required.error'
 
 const MIDNIGHT = getAddress('0xAdedD8ab6dE832766Fedf0FaC4992E5C4D3EA18A')
 const PRIVATE_KEY_HEX_LENGTH = 66

@@ -8,9 +8,8 @@ import type { ListedMarket, MarketId } from '../../domain/order-book'
 import type { MorphoApiClient } from './client'
 import type { paths } from './generated/morpho-api.types'
 
-import { MorphoApiError } from '../openapi/error'
+import { MorphoApiError, TruncatedMarketListError } from '../../errors'
 import { unwrapOpenApiResult, withOpenApiErrorBoundary } from '../openapi/result'
-import { TruncatedMarketListError } from './truncated-market-list.error'
 
 const MARKETS_ENDPOINT = '/v0/midnight/markets' as const satisfies keyof paths
 const PAGE_SIZE = 100

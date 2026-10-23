@@ -7,7 +7,7 @@ import type { OperatorAdapterOperation } from '../../application/monitoring/oper
 import type { ConfigService } from '../../config/config.service'
 
 import { supportedChain } from '../../config/supported-chains.utils'
-import { BootstrapAdapterError } from '../bootstrap/bootstrap-adapter.error'
+import { BootstrapAdapterError, OfferInvalidationAdapterError } from '../../errors'
 import { createBootstrapGroupOwnership } from '../bootstrap/bootstrap-group-ownership.utils'
 import { createLadderGroupOwnership } from '../ladder/ladder-group-ownership.utils'
 import { readMakerOfferGroups } from '../provider/offer-groups.utils'
@@ -18,7 +18,6 @@ import {
 } from '../transaction/quoter-transaction-executor'
 import { createSignerAccount } from '../transaction/signer-account.utils'
 import { invalidateOffersBatch } from './batch-offer-invalidation.utils'
-import { OfferInvalidationAdapterError } from './offer-invalidation-adapter.error'
 import { offerInvalidationGroupIds } from './offer-invalidation-group.utils'
 
 const providerOperation = async <Result>(
@@ -42,7 +41,7 @@ const providerOperation = async <Result>(
  * @throws `SignerAccountError` for construction failures, or `OfferInvalidationAdapterError` when
  * an injected account violates the required maker relationship.
  * @remarks The preflight checks connected Base identity, deployed Midnight bytecode, and write-mode
- * native reserve without requiring healthy books, archive data, ratifier state, allowance, or
+ * signer native reserve without requiring healthy books, archive data, ratifier state, allowance, or
  * known offer namespaces. Read-only mode never derives an account, signs, submits, or edits state.
  */
 export const createProductionOfferInvalidationPort = (
@@ -70,19 +69,11 @@ export const createProductionOfferInvalidationPort = (
 
   const preflight = () =>
     providerOperation('preflight', async () => {
-      const [chainId, code, nativeBalance] = await Promise.all([
+      const [chainId, code] = await Promise.all([
         client.getChainId(),
-        client.getCode({ address: config.setup.midnight }),
-        config.identity.readOnly
-          ? Promise.resolve(config.setup.nativeReserve)
-          : client.getBalance({ address: maker })
+        client.getCode({ address: config.setup.midnight })
       ])
-      if (
-        chainId !== config.chainId ||
-        code === undefined ||
-        code === '0x' ||
-        nativeBalance < config.setup.nativeReserve
-      ) {
+      if (chainId !== config.chainId || code === undefined || code === '0x') {
         throw new OfferInvalidationAdapterError('preflight')
       }
     })
@@ -142,10 +133,8 @@ export const createProductionOfferInvalidationPort = (
           : Promise.resolve(true)
       ])
       const signerFloor =
-        identity.method === 'aws'
-          ? (config.setup.signerNativeReserve ?? 0n)
-          : config.setup.nativeReserve
-      if (signerBalance < signerFloor || !signerAuthorized) {
+        identity.method === 'aws' ? config.setup.signerNativeReserve : config.setup.nativeReserve
+      if (signerFloor === undefined || signerBalance < signerFloor || !signerAuthorized) {
         throw new OfferInvalidationAdapterError('preflight')
       }
       await transactionExecutor.assertNoPendingNonce()

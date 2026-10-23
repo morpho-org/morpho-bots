@@ -4,7 +4,7 @@ import { describe, expect, test } from 'vitest'
 
 import type { LadderQuoteSet } from '../../../src/domain/ladder'
 
-import { LadderAdapterError } from '../../../src/infrastructure/ladder/ladder-adapter.error'
+import { LadderAdapterError } from '../../../src/errors'
 import { ReadOnlyLadderMakeService } from '../../../src/infrastructure/ladder/ladder-make.read-only'
 
 const marketId: Hex = `0x${'55'.repeat(32)}`

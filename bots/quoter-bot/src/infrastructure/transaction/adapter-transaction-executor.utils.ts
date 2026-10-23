@@ -4,7 +4,7 @@ import type {
 } from '../../application/monitoring/operator-error-name.utils'
 import type { QuoterTransactionExecutor } from './quoter-transaction-executor'
 
-import { QuoterTransactionError } from './quoter-transaction.error'
+import { QuoterTransactionError } from '../../errors'
 
 /**
  * Executes one guarded strategy write and preserves ambiguous post-broadcast outcomes.

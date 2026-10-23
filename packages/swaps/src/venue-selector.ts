@@ -8,7 +8,7 @@ import type { QuoteLogger } from './quoting'
 import type { PriceParameters, PriceQuote, Venue } from './types'
 
 import { routeCostBps } from './cost-bps.utils'
-import { InvalidProbeLadderError } from './invalid-probe-ladder.error'
+import { InvalidProbeLadderError } from './errors'
 
 /** A collateral→loan swap pair the selector probes and ranks venues for. */
 export type VenuePair = { collateral: Address; loan: Address }

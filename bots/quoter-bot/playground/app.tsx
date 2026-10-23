@@ -21,7 +21,7 @@ import {
   assetFormatter,
   resolveDecimals
 } from './asset-format.utils'
-import { CollectionImportError } from './collection-import.error'
+import { CollectionImportError, PlaygroundInitializationError } from './errors'
 import {
   maturityPremiumSelection,
   visibleFields,
@@ -50,7 +50,6 @@ import {
   validatePlaygroundState
 } from './model'
 import { playgroundErrorMessage } from './playground-error.utils'
-import { PlaygroundInitializationError } from './playground-initialization.error'
 import {
   DEFAULT_REFERENCE_RATE_BPS,
   resolveCreditHeldAssets,

@@ -4,7 +4,7 @@ import type { RateLimitedClient } from '../http-client'
 import type { PriceParameters, PriceQuote, QuoteParameters, Swap } from '../types'
 
 import { BPS, LIFI_BASE_URL, LIFI_INTEGRATOR } from '../constants'
-import { QuoteError } from '../types'
+import { QuoteError } from '../errors'
 
 /** The LiFi arm of the per-collateral swap config. */
 type LiFiEntry = { baseUrl?: string }

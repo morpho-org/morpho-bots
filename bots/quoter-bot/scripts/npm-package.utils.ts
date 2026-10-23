@@ -1,4 +1,4 @@
-import { NpmPackFailedError } from './npm-pack-failed.error'
+import { NpmPackFailedError } from './errors'
 
 /** Published npm package name; deliberately shorter than the workspace package name. */
 export const NPM_PACKAGE_NAME = '@morpho-org/quoter'

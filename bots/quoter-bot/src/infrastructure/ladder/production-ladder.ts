@@ -36,6 +36,7 @@ import { acceptedLossFactorOf, MAX_LOSS_FACTOR } from '../../domain/loss-factor'
 import { isGroupClosed, remainingCap } from '../../domain/offer-cap'
 import { mapSelectedMarketItems } from '../../domain/selected-market-items'
 import { rateTickWindow } from '../../domain/tick-window'
+import { LadderAdapterError, OfferInvalidationAdapterError } from '../../errors'
 import { createBootstrapGroupOwnership } from '../bootstrap/bootstrap-group-ownership.utils'
 import { bootstrapBookOffers, strategyBootstrapGroups } from '../bootstrap/bootstrap-groups.utils'
 import { readLivePendingBootstrapOffers } from '../bootstrap/bootstrap-pending-offer.utils'
@@ -53,7 +54,6 @@ import {
   readExposureSnapshot
 } from '../exposure/exposure-snapshot.utils'
 import { invalidateOffersBatch } from '../invalidation/batch-offer-invalidation.utils'
-import { OfferInvalidationAdapterError } from '../invalidation/offer-invalidation-adapter.error'
 import { maturityReadsByMarket } from '../provider/maturity-read.utils'
 import { readMakerOfferGroups } from '../provider/offer-groups.utils'
 import { createBlueReferenceReader } from '../reference/blue-reference-reader.utils'
@@ -74,7 +74,6 @@ import {
   ownedLadderGroupConsumption,
   reconstructOwnedLadderPublication
 } from './ladder-active-publication.utils'
-import { LadderAdapterError } from './ladder-adapter.error'
 import { readLadderBookOffers } from './ladder-book.utils'
 import {
   bookCrossesRestingLadder,

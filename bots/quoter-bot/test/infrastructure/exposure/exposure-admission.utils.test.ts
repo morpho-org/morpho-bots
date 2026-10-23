@@ -9,14 +9,13 @@ import type {
 } from '../../../src/infrastructure/exposure/exposure-snapshot.utils'
 
 import { generateLadder, validateLadderConfig } from '../../../src/domain/ladder'
-import { BootstrapAdapterError } from '../../../src/infrastructure/bootstrap/bootstrap-adapter.error'
+import { BootstrapAdapterError, LadderAdapterError } from '../../../src/errors'
 import {
   admitExposureCandidate,
   withheldByAdmission,
   snapshotBootstrapPosition,
   snapshotLadderCapacities
 } from '../../../src/infrastructure/exposure/exposure-admission.utils'
-import { LadderAdapterError } from '../../../src/infrastructure/ladder/ladder-adapter.error'
 
 const marketId: Hex = `0x${'11'.repeat(32)}`
 const otherMarketId: Hex = `0x${'12'.repeat(32)}`

@@ -14,7 +14,7 @@ const encodeMarketParams = (params: InputMarketParams): Hex =>
  * Encodes one vault's planned move as a single `VaultV2.multicall(bytes[])` — deallocate legs
  * strictly first so the idle balance is funded before allocations draw on it. Each leg is
  * `allocate/deallocate(adapter, abi.encode(marketParams), assets)`. These are the exact bytes the
- * tick simulates and the queue broadcasts.
+ * preparation simulates and the kernel validates, simulates again and signs.
  */
 export const encodeReallocation = (adapter: Address, reallocation: Reallocation): Hex =>
   encodeFunctionData({

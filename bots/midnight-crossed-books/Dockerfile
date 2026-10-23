@@ -3,7 +3,7 @@
 # packages (packages/*) resolve — docker-compose.yml sets `context: ../..`. The bot's `build` script
 # runs `generate:api` first, so the OpenAPI types are generated during the image build.
 # Node only: pnpm installs, esbuild bundles, node runs.
-FROM node:24.18.1-slim
+FROM node:24.22.1-slim
 ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
 
 # The container's environment holds a funded EOA key, so nothing here may run as root — the previous

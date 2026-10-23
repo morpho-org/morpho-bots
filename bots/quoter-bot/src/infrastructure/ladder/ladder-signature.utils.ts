@@ -2,7 +2,7 @@ import type { LocalAccount } from 'viem'
 
 import { EcrecoverRatifierUtils } from '@morpho-org/midnight-sdk'
 
-import { LadderAdapterError } from './ladder-adapter.error'
+import { LadderAdapterError } from '../../errors'
 
 type EcrecoverSignParameters = Parameters<typeof EcrecoverRatifierUtils.sign>[0]
 

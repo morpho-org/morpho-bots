@@ -1,8 +1,7 @@
 import { describe, expect, test, vi } from 'vitest'
 
+import { MorphoApiError, TruncatedMarketListError } from '../../../src/errors'
 import { MorphoApiService } from '../../../src/infrastructure/morpho-api/service'
-import { TruncatedMarketListError } from '../../../src/infrastructure/morpho-api/truncated-market-list.error'
-import { MorphoApiError } from '../../../src/infrastructure/openapi/error'
 import { MARKET_ID, OTHER_MARKET_ID } from '../../fixtures/offers'
 
 function response(body: unknown, status = 200) {

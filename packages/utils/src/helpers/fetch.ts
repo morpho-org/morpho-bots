@@ -1,6 +1,6 @@
 import type { Result } from '../types/index'
 
-import { ensureError } from './errors'
+import { ensureError } from './error.utils'
 import { tryCatch } from './tryCatch'
 
 /** Exponential backoff (ms) for retry attempt `n` (0-indexed): 200·2ⁿ → 200, 400, 800, … */
@@ -97,19 +97,4 @@ export async function fetchWithRetry<T>(
     if (!body) throw new Error(`${deps.label} parse error: empty body`)
     return body
   }
-}
-
-export async function fetchJsonResponse<T>(url: string, requestInit?: RequestInit): Promise<T> {
-  const { data: response, error: fetchError } = await tryCatch(fetch(url, requestInit))
-
-  if (fetchError || !response?.ok) {
-    throw Error(`HTTP ${response?.status ?? 'network error'}: ${url}`, { cause: fetchError })
-  }
-
-  const { data, error: parseError } = await parseJsonResponse<T>(response)
-  if (parseError) {
-    throw Error(`Failed to parse JSON: ${url}`, { cause: parseError })
-  }
-
-  return data
 }

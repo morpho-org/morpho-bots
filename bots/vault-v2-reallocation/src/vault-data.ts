@@ -3,13 +3,13 @@ import type { BatchLensTransportType } from '@repo/utils'
 import type { Address, Client, Hex, Transport } from 'viem'
 
 import { getChainAddresses } from '@morpho-org/blue-sdk'
-import { advanceRateAtTarget } from '@repo/utils'
+import { advanceRateAtTarget, tryCatch } from '@repo/utils'
 import { getAddress, isAddressEqual, zeroAddress } from 'viem'
 
 import type { LensVaultOut } from './state/lens.sol'
 
-import { InvalidVaultError } from './invalid-vault.error'
-import { KIND_UNKNOWN, readVaultV2Lens } from './state/lens.sol'
+import { InvalidVaultError } from './errors'
+import { KIND_UNKNOWN, type ReadAt, readVaultV2Lens } from './state/lens.sol'
 
 export type MarketState = {
   totalSupplyAssets: bigint
@@ -36,6 +36,11 @@ export type VaultV2MarketData = {
   cap: CapState
   /** The adapter's accrued position in this market, in assets. */
   vaultAssets: bigint
+  /**
+   * The adapter's supply shares and the market's accrued total supply shares, which with
+   * `state.totalSupplyAssets` convert a leg to the allocation the adapter reports.
+   */
+  shares: Readonly<{ vault: bigint; total: bigint }>
   /** AdaptiveCurveIRM `rateAtTarget` after accrual; 0 for markets not on that IRM. */
   rateAtTarget: bigint
   /**
@@ -68,7 +73,7 @@ export type VaultV2Data = {
   marketsData: VaultV2MarketData[]
   /**
    * Ids of the markets excluded from `apy-range` for running a foreign IRM. Precomputed here rather
-   * than in the tick — the mapping below already walks every market.
+   * than per read — the mapping below already walks every market.
    */
   nonAdaptiveCurveMarketIds: Hex[]
 }
@@ -124,6 +129,7 @@ export const toVaultV2Data = (vault: Address, row: LensVaultOut, chainId: number
       },
       cap: toCapState(market.cap),
       vaultAssets: market.vaultAssets,
+      shares: { vault: market.vaultShares, total: market.totalSupplyShares },
       rateAtTarget,
       isAdaptiveCurve: isAdaptiveCurveMarket(market.params.irm, rateAtTarget, chainId),
       isIdle: isAddressEqual(market.params.collateralToken, zeroAddress)
@@ -157,18 +163,17 @@ export const toVaultV2Data = (vault: Address, row: LensVaultOut, chainId: number
 /**
  * Reads EVERY given VaultV2's full reallocation input — factory identity, the EOA's allocator bit, idle
  * balance, adapter set, and per-market Blue state, position, `rateAtTarget`, and all three cap
- * levels — in a single deployless `eth_call` pinned to `blockNumber`, so the snapshot is coherent
+ * levels — in a single deployless `eth_call` pinned to `at`, so the snapshot is coherent
  * across markets and reproducible. The lens accrues each market onchain inside that call, so there
  * is no client-side accrual and no block-timestamp handling here.
  *
- * Throws {@link InvalidVaultError} on a non-VaultV2 address or an unsupported adapter shape (see
- * {@link toVaultV2Data}); a revert inside the lens propagates as-is. The tick catches per vault
- * either way.
+ * A revert inside the lens propagates as-is; a non-VaultV2 address or an unsupported adapter shape
+ * is carried as that vault's {@link InvalidVaultError} (see {@link toVaultV2Data}).
  */
 export const fetchVaults = async (
   client: Client<Transport<BatchLensTransportType>>,
   vaults: readonly Address[],
-  { chainId, blockNumber, eoa }: { chainId: number; blockNumber: bigint; eoa: Address }
+  { chainId, at, eoa }: { chainId: number; at: ReadAt; eoa: Address }
 ): Promise<Map<string, VaultV2Result>> => {
   const {
     morpho,
@@ -188,17 +193,17 @@ export const fetchVaults = async (
       marketV1AdapterV2Factory: morphoMarketV1AdapterV2Factory ?? zeroAddress
     },
     vaults.map(vault => ({ vault, eoa })),
-    blockNumber
+    at
   )
 
   // Converted PER ROW, inside its own try: `toVaultV2Data` rejects a non-VaultV2 address and an
   // unsupported adapter shape, and one such vault in the whitelist must not reject the batch for
-  // every other vault. The error is carried rather than thrown so the tick can attribute it.
+  // every other vault. The error is carried rather than thrown so the read can attribute it.
   const out = new Map<string, VaultV2Result>()
   for (const vault of vaults) {
     const row = rows.get(vault.toLowerCase())
     if (!row) continue
-    const { data, error } = tryCatchSync(() => toVaultV2Data(vault, row, chainId))
+    const { data, error } = tryCatch(() => toVaultV2Data(vault, row, chainId))
     out.set(vault.toLowerCase(), error ? { error } : { data })
   }
   return out
@@ -208,13 +213,3 @@ export const fetchVaults = async (
 export type VaultV2Result =
   | { data: VaultV2Data; error?: undefined }
   | { data?: undefined; error: Error }
-
-function tryCatchSync<T>(
-  fn: () => T
-): { data: T; error?: undefined } | { data?: undefined; error: Error } {
-  try {
-    return { data: fn() }
-  } catch (error) {
-    return { error: error instanceof Error ? error : new Error(String(error)) }
-  }
-}

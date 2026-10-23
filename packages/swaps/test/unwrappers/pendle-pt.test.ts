@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest'
 import type { HttpVenue, RateLimitedClient } from '../../src/http-client'
 import type { QuoteLogger } from '../../src/quoting'
 
-import { QuoteError } from '../../src/types'
+import { QuoteError } from '../../src/errors'
 import { createPendlePtUnwrapper } from '../../src/unwrappers/pendle-pt'
 
 const NOOP_LOGGER: QuoteLogger = { info: () => {}, warn: () => {} }

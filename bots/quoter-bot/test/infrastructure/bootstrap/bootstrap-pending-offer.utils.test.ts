@@ -5,7 +5,7 @@ import { describe, expect, test } from 'vitest'
 
 import type { MakerOfferGroup } from '../../../src/infrastructure/provider/offer-groups.utils'
 
-import { BootstrapAdapterError } from '../../../src/infrastructure/bootstrap/bootstrap-adapter.error'
+import { BootstrapAdapterError } from '../../../src/errors'
 import {
   pendingBootstrapOffers,
   readLivePendingBootstrapOffers,

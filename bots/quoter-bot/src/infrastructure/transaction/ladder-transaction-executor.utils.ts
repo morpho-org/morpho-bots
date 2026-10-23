@@ -1,6 +1,6 @@
 import type { QuoterTransactionExecutor } from './quoter-transaction-executor'
 
-import { LadderAdapterError } from '../ladder/ladder-adapter.error'
+import { LadderAdapterError } from '../../errors'
 import { executeAdapterTransaction } from './adapter-transaction-executor.utils'
 
 type DefiniteFailureOperation =

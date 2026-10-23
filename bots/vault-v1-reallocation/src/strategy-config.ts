@@ -1,6 +1,6 @@
 import type { Address, Hex } from 'viem'
 
-import { InvalidConfigError } from './invalid-config.error'
+import { InvalidConfigError } from './errors'
 
 type ApyRangePercent = { min: number; max: number }
 

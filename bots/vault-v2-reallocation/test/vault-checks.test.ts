@@ -1,11 +1,11 @@
-import type { Logger } from '@repo/bot-kit'
+import type { Logger } from '@repo/kit'
 
 import { getAddress } from 'viem'
 import { describe, expect, it, vi } from 'vitest'
 
 import type { VaultCheckReads } from '../src/vault-checks'
 
-import { InvalidVaultError } from '../src/invalid-vault.error'
+import { InvalidVaultError } from '../src/errors'
 import { checkVaults } from '../src/vault-checks'
 import { ADAPTER, makeMarket, makeVaultData, RATE_AT_TARGET } from './helpers'
 
@@ -37,7 +37,7 @@ describe('checkVaults', () => {
   it('returns the vault → adapter map for the signing policy', async () => {
     const { logger, events } = spyLogger()
     const adapterByVault = await checkVaults([VAULT], makeReads(), logger)
-    expect(adapterByVault).toEqual({ [VAULT]: [ADAPTER] })
+    expect(adapterByVault).toEqual({ [VAULT]: ADAPTER })
     expect(events).toEqual([])
   })
 

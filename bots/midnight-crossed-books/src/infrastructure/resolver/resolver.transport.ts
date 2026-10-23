@@ -8,7 +8,7 @@ import { call } from 'viem/actions'
 
 import type { PreparedResolution } from '../../domain/order-book'
 
-import { ReadonlyMutationError } from './readonly-mutation.error'
+import { ReadonlyMutationError } from '../../errors'
 
 export type ResolverSimulation =
   | { status: 'success'; data: Hex }

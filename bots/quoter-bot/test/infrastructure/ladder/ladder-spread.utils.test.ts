@@ -3,7 +3,7 @@ import type { Address, Hex } from 'viem'
 import { getAddress } from 'viem'
 import { describe, expect, test } from 'vitest'
 
-import { LadderAdapterError } from '../../../src/infrastructure/ladder/ladder-adapter.error'
+import { LadderAdapterError } from '../../../src/errors'
 import { assertLadderProspectiveSpread } from '../../../src/infrastructure/ladder/ladder-spread.utils'
 
 const marketId: Hex = `0x${'aa'.repeat(32)}`

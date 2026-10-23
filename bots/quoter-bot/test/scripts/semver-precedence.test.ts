@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest'
 
-import { SemverPrecedenceError } from '../../scripts/semver-precedence.error'
+import { SemverPrecedenceError } from '../../scripts/errors'
 import { comparePrecedence } from '../../scripts/semver-precedence.mjs'
 
 describe('comparePrecedence', () => {

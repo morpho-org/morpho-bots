@@ -63,7 +63,7 @@ jobs:
       # Always check out `main` first — never the event ref. The job later executes code from the
       # working tree (the setup composite action, package scripts), so the commit it switches to
       # must be proven a first-parent-main release commit before any of that runs.
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: main
           # Full history and tags: the release gate and latest-tag gate need tags and ancestry.

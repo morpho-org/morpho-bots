@@ -13,6 +13,9 @@ const COLLATERAL = getAddress('0x0000000000000000000000000000000000000020')
 const ORACLE = getAddress('0x0000000000000000000000000000000000000030')
 const IRM = getAddress('0x0000000000000000000000000000000000000040')
 
+/** Blue's usual 1e6 shares per asset, so a position's shares convert back to its assets exactly. */
+const SHARES_PER_ASSET = 1_000_000n
+
 // ~3% APY at target utilization, per second.
 export const RATE_AT_TARGET = parseUnits('0.03', 18) / SECONDS_PER_YEAR
 
@@ -62,6 +65,10 @@ export const makeMarket = (opts: {
     // divergence override `cap.allocation` explicitly.
     cap: { ...UNLIMITED_CAP, allocation: opts.vaultAssets, ...opts.cap },
     vaultAssets: opts.vaultAssets,
+    shares: {
+      vault: opts.vaultAssets * SHARES_PER_ASSET,
+      total: totalSupplyAssets * SHARES_PER_ASSET
+    },
     rateAtTarget: opts.rateAtTarget ?? RATE_AT_TARGET,
     isAdaptiveCurve: opts.isAdaptiveCurve ?? true,
     isIdle: opts.isIdle ?? false

@@ -9,15 +9,17 @@ import type {
 } from '../../../src/application/bootstrap/position-bootstrap.service'
 import type { BootstrapConfig, ValidBootstrapConfig } from '../../../src/domain/position-bootstrap'
 
-import { BootstrapOwnershipCleanupError } from '../../../src/application/bootstrap/bootstrap-ownership-cleanup.error'
 import { PositionBootstrapService } from '../../../src/application/bootstrap/position-bootstrap.service'
 import { bootstrapMonitoringEvents } from '../../../src/application/monitoring/bootstrap-monitoring.utils'
 import { createMonitoringProjection } from '../../../src/application/monitoring/monitoring-projection.utils'
-import { BootstrapConfigurationError } from '../../../src/domain/bootstrap-configuration.error'
 import { MARKET_FAILURE_BUDGET_CYCLES } from '../../../src/domain/market-failure-budget'
 import { validateBootstrapConfig } from '../../../src/domain/position-bootstrap'
-import { BootstrapAdapterError } from '../../../src/infrastructure/bootstrap/bootstrap-adapter.error'
-import { BootstrapMempoolValidationError } from '../../../src/infrastructure/bootstrap/bootstrap-mempool-validation.error'
+import {
+  BootstrapAdapterError,
+  BootstrapConfigurationError,
+  BootstrapMempoolValidationError,
+  BootstrapOwnershipCleanupError
+} from '../../../src/errors'
 
 const marketId: Hex = `0x${'11'.repeat(32)}`
 const secondMarketId: Hex = `0x${'22'.repeat(32)}`

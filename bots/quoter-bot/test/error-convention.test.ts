@@ -1,5 +1,5 @@
 import { readdirSync, readFileSync } from 'node:fs'
-import { basename, dirname, extname, join, relative } from 'node:path'
+import { dirname, extname, join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import ts from 'typescript'
 import { describe, expect, test } from 'vitest'
@@ -14,12 +14,6 @@ const sourceFiles = roots.flatMap(root => {
     })
   return walk(root)
 })
-const kebab = (value: string) =>
-  value
-    .replace(/([a-z0-9])([A-Z])/g, '$1-$2')
-    .replace(/([A-Z])([A-Z][a-z])/g, '$1-$2')
-    .toLowerCase()
-
 const inspect = (file: string) => {
   const source = ts.createSourceFile(
     file,
@@ -53,39 +47,15 @@ const inspect = (file: string) => {
 }
 
 describe('quoter-bot error convention', () => {
-  test('keeps each exported Error subclass alone in its matching kebab-case error file', () => {
+  test('exports every Error subclass', () => {
     const failures: string[] = []
     for (const file of sourceFiles) {
-      const { source, errorClasses } = inspect(file)
-      for (const declaration of errorClasses) {
+      for (const declaration of inspect(file).errorClasses) {
         const name = declaration.name?.text ?? '<anonymous>'
         const exported = declaration.modifiers?.some(
           modifier => modifier.kind === ts.SyntaxKind.ExportKeyword
         )
         if (!exported) failures.push(`${relative(packageRoot, file)}: ${name} is not exported`)
-        const expected = `${kebab(name.replace(/Error$/, ''))}.error.ts`
-        if (basename(file) !== expected) {
-          failures.push(`${relative(packageRoot, file)}: ${name} must live in ${expected}`)
-        }
-      }
-      if (file.endsWith('.error.ts')) {
-        if (errorClasses.length !== 1) {
-          failures.push(`${relative(packageRoot, file)}: expected exactly one Error subclass`)
-        }
-        const runtimeDeclarations = source.statements.filter(
-          statement =>
-            !ts.isImportDeclaration(statement) &&
-            !ts.isImportEqualsDeclaration(statement) &&
-            !ts.isInterfaceDeclaration(statement) &&
-            !ts.isTypeAliasDeclaration(statement) &&
-            !ts.isClassDeclaration(statement) &&
-            !ts.isEmptyStatement(statement)
-        )
-        if (runtimeDeclarations.length > 0) {
-          failures.push(
-            `${relative(packageRoot, file)}: error files may not contain runtime helpers`
-          )
-        }
       }
     }
     expect(failures).toEqual([])
@@ -100,10 +70,10 @@ describe('quoter-bot error convention', () => {
 
   test('does not propagate raw Commander failures into CLI usage errors', () => {
     const cli = readFileSync(join(packageRoot, 'src/infrastructure/cli/cli.ts'), 'utf8')
-    const error = readFileSync(
-      join(packageRoot, 'src/infrastructure/cli/cli-usage.error.ts'),
-      'utf8'
-    )
+    const errors = inspect(join(packageRoot, 'src/errors.ts'))
+    const error = errors.errorClasses
+      .find(declaration => declaration.name?.text === 'CliUsageError')
+      ?.getText(errors.source)
 
     expect(cli).not.toMatch(/new CliUsageError\([^)]*error\.message/s)
     expect(cli).not.toMatch(/new CliUsageError\([^)]*cause/s)

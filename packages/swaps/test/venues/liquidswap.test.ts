@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest'
 import type { RateLimitedClient } from '../../src/http-client'
 import type { PriceParameters, QuoteParameters } from '../../src/types'
 
-import { QuoteError } from '../../src/types'
+import { QuoteError } from '../../src/errors'
 import { priceLiquidSwap, quoteLiquidSwap } from '../../src/venues/liquidswap'
 
 const TARGET = getAddress('0xaAaAaAaaAaAaAaaAaAAAAAAAAaaaAaAaAaaAaaAa')

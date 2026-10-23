@@ -5,7 +5,7 @@ import type { BootstrapOffer } from '../../domain/position-bootstrap'
 import type { ExposurePosition } from '../exposure/exposure-snapshot.utils'
 
 import { acceptedLossFactorOf } from '../../domain/loss-factor'
-import { BootstrapAdapterError } from './bootstrap-adapter.error'
+import { BootstrapAdapterError } from '../../errors'
 
 /**
  * Accrued position snapshot returned by the production Midnight reader.

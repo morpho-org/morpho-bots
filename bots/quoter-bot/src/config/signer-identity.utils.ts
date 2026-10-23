@@ -4,7 +4,7 @@ import { inspect } from 'node:util'
 
 import type { Environment } from './config.utils'
 
-import { ConfigValidationError } from './config-validation.error'
+import { ConfigValidationError } from '../errors'
 import { privateKeyValue } from './config.utils'
 
 /** Validated signer identity selected by the CLI runtime mode. */

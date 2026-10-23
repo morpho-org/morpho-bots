@@ -3,7 +3,7 @@ import { dirname, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import ts from 'typescript'
 
-import { JSDocValidationError } from './js-doc-validation.error'
+import { JSDocValidationError } from './errors'
 
 type Rule = 'summary' | 'params' | 'returns' | 'throws' | 'concurrency' | 'deadline' | 'read-only'
 

@@ -14,8 +14,8 @@ import type {
   TxRequest
 } from '../../src/queue/pending-queue'
 
+import { TxSendError } from '../../src/errors'
 import { createPendingQueue } from '../../src/queue/pending-queue'
-import { TxSendError } from '../../src/tx-send.error'
 
 // Gas the signer reports back for a stub send; the spend ceiling is priced against it.
 const STUB_GAS = 1_000_000n

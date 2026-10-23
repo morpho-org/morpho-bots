@@ -17,7 +17,7 @@ import { createPublicClient, getAbiItem, http, isAddressEqual, toFunctionSelecto
 import type { ConfigService } from '../../config/config.service'
 
 import { supportedChain } from '../../config/supported-chains.utils'
-import { QuoterTransactionError } from './quoter-transaction.error'
+import { QuoterTransactionError } from '../../errors'
 
 /** Write operations with distinct target, selector, gas, and calldata policy. */
 export type QuoterTransactionOperation = 'publish' | 'cancel' | 'cancel-batch' | 'ratify'

@@ -1,0 +1,312 @@
+{
+  "vault-v2-reallocation@1": {
+    "a reallocation": {
+      "claims": true,
+      "reading": {
+        "ok": true,
+        "creates": [],
+        "exposes": [],
+        "carries": [],
+        "retires": [],
+        "consumes": {}
+      }
+    },
+    "a full deallocation": {
+      "claims": true,
+      "reading": {
+        "ok": true,
+        "creates": [],
+        "exposes": [],
+        "carries": [],
+        "retires": [],
+        "consumes": {}
+      }
+    },
+    "an allocation exactly at its absolute caps": {
+      "claims": true,
+      "reading": {
+        "ok": true,
+        "creates": [],
+        "exposes": [],
+        "carries": [],
+        "retires": [],
+        "consumes": {}
+      }
+    },
+    "an allocation exactly at its relative cap": {
+      "claims": true,
+      "reading": {
+        "ok": true,
+        "creates": [],
+        "exposes": [],
+        "carries": [],
+        "retires": [],
+        "consumes": {}
+      }
+    },
+    "an accrued position one past its cap": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "an allocation breaches its market absolute cap"
+      }
+    },
+    "an accrued position at its cap": {
+      "claims": true,
+      "reading": {
+        "ok": true,
+        "creates": [],
+        "exposes": [],
+        "carries": [],
+        "retires": [],
+        "consumes": {}
+      }
+    },
+    "a deallocation over a lowered cap": {
+      "claims": true,
+      "reading": {
+        "ok": true,
+        "creates": [],
+        "exposes": [],
+        "carries": [],
+        "retires": [],
+        "consumes": {}
+      }
+    },
+    "an allocation over its market absolute cap": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "an allocation breaches its market absolute cap"
+      }
+    },
+    "an allocation over its collateral relative cap": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "an allocation breaches its collateral relative cap"
+      }
+    },
+    "an allocation over its adapter absolute cap": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "an allocation breaches its adapter absolute cap"
+      }
+    },
+    "another vault": {
+      "claims": false,
+      "reading": {
+        "ok": false,
+        "reason": "not a configured vault"
+      }
+    },
+    "an allocation the rounding keeps within its cap": {
+      "claims": true,
+      "reading": {
+        "ok": true,
+        "creates": [],
+        "exposes": [],
+        "carries": [],
+        "retires": [],
+        "consumes": {}
+      }
+    },
+    "an allocation a unit past the cap the rounding leaves": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "an allocation breaches its market absolute cap"
+      }
+    },
+    "an allocation minting fewer shares than assets": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "an allocation mints fewer shares than assets"
+      }
+    },
+    "a leg whose caps the witness does not name": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "witness does not name a cap the leg moves"
+      }
+    },
+    "a leg whose market cap the witness does not name": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "witness does not name a cap the leg moves"
+      }
+    },
+    "a release": {
+      "claims": false,
+      "reading": {
+        "ok": false,
+        "reason": "only transactions are read"
+      }
+    },
+    "a value-bearing call": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "a reallocation carries no value"
+      }
+    },
+    "a direct allocate": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "not multicall"
+      }
+    },
+    "an unknown selector": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "not multicall"
+      }
+    },
+    "a truncated multicall": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "calldata does not decode"
+      }
+    },
+    "trailing bytes": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "calldata is not canonical"
+      }
+    },
+    "an empty multicall": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "multicall carries no leg"
+      }
+    },
+    "a nested multicall": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "an inner call is not allocate or deallocate"
+      }
+    },
+    "another vault function inside": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "an inner call is not allocate or deallocate"
+      }
+    },
+    "a leg with trailing bytes": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "calldata is not canonical"
+      }
+    },
+    "an unknown adapter": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "a leg names an unknown adapter"
+      }
+    },
+    "a leg that moves nothing": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "a leg moves nothing"
+      }
+    },
+    "a deallocation after an allocation": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "a deallocation follows an allocation"
+      }
+    },
+    "adapter data that is not one market": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "adapter data is not one market"
+      }
+    },
+    "a market outside the adapter": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "a market is outside the adapter configuration"
+      }
+    },
+    "a deallocation past its position": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "a deallocation exceeds its position"
+      }
+    },
+    "witness with no witness": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "witness does not describe the vault"
+      }
+    },
+    "witness with no total assets": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "witness does not describe the vault"
+      }
+    },
+    "witness with a malformed cap": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "witness names a malformed cap"
+      }
+    },
+    "witness with a negative allocation": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "witness names a malformed cap"
+      }
+    },
+    "witness with a cap twice": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "witness names a cap twice"
+      }
+    },
+    "witness with a malformed position": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "witness names a malformed position"
+      }
+    },
+    "witness with more shares than the market": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "witness names a malformed position"
+      }
+    },
+    "witness with a position twice": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "witness names a position twice"
+      }
+    }
+  }
+}

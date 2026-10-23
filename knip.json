@@ -10,7 +10,16 @@
     "packages/utils": {},
     "packages/contracts": {},
     "packages/bot-kit": {},
-    "packages/ci-scripts": {
+    "packages/kit": {},
+    "framework/engine": {},
+    "framework/kernel": {},
+    "framework/validators": {},
+    "framework/controller": {},
+    "framework/tests": {
+      "entry": ["src/worker.ts"],
+      "ignoreDependencies": ["tsx"]
+    },
+    "tools/ci-scripts": {
       "entry": [
         "src/release-intent/orchestrate/*.ts",
         "src/pr-size/orchestrate/*.ts",
@@ -25,6 +34,7 @@
     "packages/offers": {},
     "packages/oxlint-plugin": {},
     "packages/swaps": {},
+    "tools/sessions": {},
     "bots/midnight-liquidation": {
       "ignore": ["src/generated/**"],
       "entry": [

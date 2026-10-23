@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { LensVaultOut } from '../src/state/lens.sol'
 
-import { InvalidVaultError } from '../src/invalid-vault.error'
+import { InvalidVaultError } from '../src/errors'
 import { toVaultV2Data } from '../src/vault-data'
 
 const CHAIN_ID = 8453
@@ -44,10 +44,9 @@ const makeLensMarket = (
     vaultAssets: parseUnits('10000', 6),
     rateAtTargetStored: parseUnits('0.03', 18) / (365n * 24n * 60n * 60n),
     utilizationBefore: parseUnits('0.5', 18),
-    // `elapsed: 0` keeps `advanceRateAtTarget` an identity here, so these fixtures assert on the
-    // stored rate exactly as they did before the read-only projection. The advance itself has its
-    // own test below.
+    // `elapsed: 0` keeps `advanceRateAtTarget` an identity, so these fixtures assert on the stored rate.
     elapsed: 0n,
+    vaultShares: 0n,
     ...overrides
   }
 }

@@ -10,7 +10,7 @@ import {
 } from '@morpho-org/midnight-sdk'
 import { decodeFunctionData, isAddressEqual, isHex, size } from 'viem'
 
-import { LadderAdapterError } from '../ladder/ladder-adapter.error'
+import { LadderAdapterError } from '../../errors'
 
 /**
  * Enforces the exact Setter root-approval policy before the ladder hot key broadcasts it.

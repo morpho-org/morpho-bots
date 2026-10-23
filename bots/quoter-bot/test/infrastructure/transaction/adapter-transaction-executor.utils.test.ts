@@ -4,9 +4,8 @@ import { describe, expect, test } from 'vitest'
 
 import type { QuoterTransactionExecutor } from '../../../src/infrastructure/transaction/quoter-transaction-executor'
 
-import { BootstrapAdapterError } from '../../../src/infrastructure/bootstrap/bootstrap-adapter.error'
+import { BootstrapAdapterError, QuoterTransactionError } from '../../../src/errors'
 import { executeAdapterTransaction } from '../../../src/infrastructure/transaction/adapter-transaction-executor.utils'
-import { QuoterTransactionError } from '../../../src/infrastructure/transaction/quoter-transaction.error'
 
 const transactionHash: Hex = `0x${'11'.repeat(32)}`
 const transaction = {

@@ -2,7 +2,7 @@ import type { Hex } from 'viem'
 
 import { bytesToHex, hexToBytes, isHex, size } from 'viem'
 
-import { CliUsageError } from './cli-usage.error'
+import { CliUsageError } from '../../errors'
 
 /**
  * Validates and canonicalizes the optional CLI offer-group selector.

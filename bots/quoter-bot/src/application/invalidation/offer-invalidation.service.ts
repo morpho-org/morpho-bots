@@ -1,7 +1,7 @@
 import type { Hex } from 'viem'
 
+import { OfferInvalidationFailedError } from '../../errors'
 import { operatorErrorName } from '../monitoring/operator-error-name.utils'
-import { OfferInvalidationFailedError } from './offer-invalidation-failed.error'
 
 /** One cancellation transaction observed immediately after wallet submission. */
 export type OfferInvalidationTransactionSubmittedEvent = {

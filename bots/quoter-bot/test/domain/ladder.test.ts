@@ -16,8 +16,8 @@ import {
   type LadderConfig,
   type ValidLadderConfig
 } from '../../src/domain/ladder'
-import { LadderConfigurationError } from '../../src/domain/ladder-configuration.error'
 import { MATURITY_PREMIUM_YEAR_SECONDS } from '../../src/domain/maturity-premium'
+import { LadderConfigurationError } from '../../src/errors'
 
 const marketId: Hex = `0x${'55'.repeat(32)}`
 const rawConfig = (overrides: Partial<LadderConfig> = {}): LadderConfig => ({

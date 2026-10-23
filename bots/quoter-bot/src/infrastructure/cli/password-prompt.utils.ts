@@ -1,6 +1,6 @@
 import type { EventEmitter } from 'node:events'
 
-import { CliUsageError } from './cli-usage.error'
+import { CliUsageError } from '../../errors'
 
 type InteractiveInput = Pick<EventEmitter, 'on' | 'off'> & {
   isTTY?: boolean

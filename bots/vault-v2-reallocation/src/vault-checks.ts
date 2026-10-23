@@ -1,4 +1,4 @@
-import type { Logger } from '@repo/bot-kit'
+import type { Logger } from '@repo/kit'
 import type { Address } from 'viem'
 
 import type { VaultV2Data } from './vault-data'
@@ -18,16 +18,16 @@ export type VaultCheckReads = {
 /**
  * Startup validation of the whitelist, run concurrently across vaults: each must hold code and
  * resolve as a factory-made VaultV2 with exactly one Morpho Blue Market adapter — the signing
- * policy authorizes every whitelisted address as a tx target and pins its adapter, so any mismatch
- * throws `InvalidVaultError`. The allocator role is only probed and warned about
- * (`allocator.missing_role`): a pending grant must not crash-loop the bot, and the tick re-checks
- * and resumes on its own. Returns the vault → adapter map the signing policy binds to.
+ * policy authorizes every whitelisted address as a tx target and the validator pins its adapter, so
+ * any mismatch throws `InvalidVaultError`. The allocator role is only probed and warned about
+ * (`allocator.missing_role`): a pending grant must not crash-loop the bot, and each read re-checks
+ * and resumes on its own. Returns the vault → adapter map the validator binds to.
  */
 export const checkVaults = async (
   vaults: readonly Address[],
   reads: VaultCheckReads,
   logger: Logger
-): Promise<Record<Address, readonly Address[]>> => {
+): Promise<Record<Address, Address>> => {
   const entries = await Promise.all(
     vaults.map(async vault => {
       await reads.assertDeployed(vault)
@@ -38,7 +38,7 @@ export const checkVaults = async (
           detail: 'grant the allocator role to the EOA'
         })
       }
-      return [vault, [vaultData.adapterAddress]] as const
+      return [vault, vaultData.adapterAddress] as const
     })
   )
   return Object.fromEntries(entries)

@@ -11,8 +11,8 @@ import type {
 import type { BlockHeader } from '../provider/historical-block.utils'
 
 import { supportedChain } from '../../config/supported-chains.utils'
+import { ReferenceAdapterError } from '../../errors'
 import { findBlockAtOrBefore } from '../provider/historical-block.utils'
-import { ReferenceAdapterError } from './reference-adapter.error'
 
 const WAD = MathLib.WAD
 

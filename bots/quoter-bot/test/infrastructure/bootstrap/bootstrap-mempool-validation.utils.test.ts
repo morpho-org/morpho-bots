@@ -1,7 +1,6 @@
 import { describe, expect, test } from 'vitest'
 
-import { BootstrapAdapterError } from '../../../src/infrastructure/bootstrap/bootstrap-adapter.error'
-import { BootstrapMempoolValidationError } from '../../../src/infrastructure/bootstrap/bootstrap-mempool-validation.error'
+import { BootstrapAdapterError, BootstrapMempoolValidationError } from '../../../src/errors'
 import {
   isBelowMinimumOfferRejection,
   validateBootstrapMempoolPayload,

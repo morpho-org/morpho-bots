@@ -1,10 +1,11 @@
-import type { LogLevel } from '@repo/bot-kit'
+import type { Finality, LogLevel } from '@repo/kit'
 import type { Address, Chain, Hex } from 'viem'
 
+import { parseFinality } from '@repo/kit'
 import { getAddress, isAddress, isHex, parseGwei } from 'viem'
 import { base, mainnet } from 'viem/chains'
 
-import { InvalidConfigError } from './invalid-config.error'
+import { InvalidConfigError } from './errors'
 
 // Chains this bot supports. VaultV2 addresses come from VAULT_WHITELIST and the Blue
 // deployment addresses are resolved by chainId inside blue-sdk-viem's fetchers, so an entry here is
@@ -20,9 +21,17 @@ const PRIVATE_KEY_HEX_LENGTH = 66 // '0x' + 32 bytes
 const STRATEGY_NAMES = ['apy-range', 'equalize-utilizations'] as const
 export type StrategyName = (typeof STRATEGY_NAMES)[number]
 
-const DEFAULT_MAX_FEE_GWEI = '300'
-// Reallocation cadence in wall-clock ms, gating the per-block tick.
+// Reallocation cadence in wall-clock ms: how often the whitelist is read.
 const DEFAULT_REALLOCATION_INTERVAL_MS = 600_000
+const MAX_REALLOCATION_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000
+
+/** A read holds two intervals: the next lands within one, so only a missed read expires it. */
+const READ_HOLDS_INTERVALS = 2
+/** Twice mainnet's longest gap between landed per-head reads, for an interval under a block. */
+const MIN_READ_VALID_MS = 60_000
+/** How long a vault read authorizes acts, at a read every `intervalMs`. */
+export const readValidMs = (intervalMs: number) =>
+  Math.max(READ_HOLDS_INTERVALS * intervalMs, MIN_READ_VALID_MS)
 // ApyRange fires only when some market's implied borrow-APY move exceeds this (bips).
 const DEFAULT_MIN_APY_DELTA_BIPS = 25
 // EqualizeUtilizations fires only when some market's utilization deviates from the vault-wide
@@ -31,8 +40,14 @@ const DEFAULT_MIN_UTILIZATION_DELTA_BIPS = 250
 
 type Env = Record<string, string | undefined>
 
+export type KernelStoreConfig = {
+  stateDirectory: string
+  enrollment: 'enrolling' | 'enrolled'
+}
+
 export type Config = {
   chainId: number
+  finality: Finality
   chain: Chain
   rpcUrl: string
   rpcUrlFallback: string | undefined
@@ -40,7 +55,7 @@ export type Config = {
   /** Vaults this bot manages; also the signer policy's allowed tx-target set. Never empty. */
   vaultWhitelist: Address[]
   strategy: StrategyName
-  /** Minimum wall-clock ms between reallocation passes (the per-block tick early-returns inside it). */
+  /** Minimum wall-clock ms between reads of the whitelist. */
   reallocationIntervalMs: number
   minApyDeltaBips: number
   minUtilizationDeltaBips: number
@@ -48,7 +63,9 @@ export type Config = {
   allowIdleReallocation: boolean
   /** Read, plan, and simulate as normal, but never submit — the operator ramp-up mode. */
   dryRun: boolean
-  maxFeeWei: bigint
+  /** Where the kernel keeps the account's ledger, and whether that ledger must already exist. */
+  kernel: KernelStoreConfig
+  maxFeePerGasWei: bigint
   logLevel: LogLevel
 }
 
@@ -100,7 +117,7 @@ const boolEnv = (env: Env, name: string, def: boolean): boolean => {
 
 // Parses a required comma-separated list of addresses into deduplicated, checksummed `Address`es.
 // Fails loud on any malformed element and on an empty result — an empty whitelist would silently
-// no-op every tick.
+// no-op every read.
 const addressListEnv = (env: Env, name: string): Address[] => {
   const parts = required(env, name)
     .split(',')
@@ -118,6 +135,21 @@ const addressListEnv = (env: Env, name: string): Address[] => {
   // Checksumming first makes case-variant spellings of one address collapse here rather than
   // processing the same vault twice per pass.
   return [...new Set(addresses)]
+}
+
+/**
+ * `KERNEL_STATE_DIR` holds the kernel's ledger and must survive a restart. `KERNEL_ENROLLMENT` is
+ * `enrolling` for the first start of a fresh account and `enrolled` for every later one.
+ */
+const kernelConfig = (env: Env): KernelStoreConfig => {
+  const stateDirectory = required(env, 'KERNEL_STATE_DIR')
+  const enrollment = required(env, 'KERNEL_ENROLLMENT')
+  if (enrollment !== 'enrolling' && enrollment !== 'enrolled') {
+    throw new InvalidConfigError(
+      `KERNEL_ENROLLMENT must be "enrolling" or "enrolled", got: ${env.KERNEL_ENROLLMENT}`
+    )
+  }
+  return { stateDirectory, enrollment }
 }
 
 const isLogLevel = (value: string): value is LogLevel =>
@@ -146,6 +178,13 @@ export const loadConfig = (env: Env = process.env): Config => {
       `Unsupported CHAIN_ID ${chainId}; supported chain ids: ${Object.keys(CHAIN_MAP).join(', ')}`
     )
   }
+  const finalityName = `FINALITY_${chainId}`
+  const finality = parseFinality(required(env, finalityName).trim())
+  if (finality === undefined) {
+    throw new InvalidConfigError(
+      `${finalityName} must be safe, finalized, or a positive block depth, got: ${env[finalityName]}`
+    )
+  }
 
   const rpcUrl = required(env, 'RPC_URL')
 
@@ -171,13 +210,14 @@ export const loadConfig = (env: Env = process.env): Config => {
     )
   }
 
-  const maxFeeGwei = env.MAX_FEE_GWEI?.trim() || DEFAULT_MAX_FEE_GWEI
+  const maxFeeGwei = required(env, 'MAX_FEE_GWEI')
   if (!/^\d+(\.\d+)?$/.test(maxFeeGwei) || Number(maxFeeGwei) <= 0) {
     throw new InvalidConfigError(`MAX_FEE_GWEI must be a positive number, got: ${env.MAX_FEE_GWEI}`)
   }
 
   return {
     chainId,
+    finality,
     chain,
     rpcUrl,
     rpcUrlFallback: env.RPC_URL_FALLBACK?.trim() || undefined,
@@ -188,7 +228,7 @@ export const loadConfig = (env: Env = process.env): Config => {
       env,
       'REALLOCATION_INTERVAL_MS',
       DEFAULT_REALLOCATION_INTERVAL_MS,
-      { min: 1 }
+      { min: 1, max: MAX_REALLOCATION_INTERVAL_MS }
     ),
     minApyDeltaBips: intEnv(env, 'MIN_APY_DELTA_BIPS', DEFAULT_MIN_APY_DELTA_BIPS, { min: 0 }),
     minUtilizationDeltaBips: intEnv(
@@ -199,7 +239,8 @@ export const loadConfig = (env: Env = process.env): Config => {
     ),
     allowIdleReallocation: boolEnv(env, 'ALLOW_IDLE_REALLOCATION', true),
     dryRun: boolEnv(env, 'DRY_RUN', false),
-    maxFeeWei: parseGwei(maxFeeGwei),
+    kernel: kernelConfig(env),
+    maxFeePerGasWei: parseGwei(maxFeeGwei),
     logLevel
   }
 }

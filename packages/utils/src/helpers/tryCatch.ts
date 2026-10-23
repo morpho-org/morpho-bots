@@ -3,7 +3,7 @@
 
 import type { Result } from '../types/index'
 
-import { ensureError } from './errors'
+import { ensureError } from './error.utils'
 
 // Main wrapper function
 export function tryCatch<T, E extends Error = Error>(fn: () => T): Result<T, E>

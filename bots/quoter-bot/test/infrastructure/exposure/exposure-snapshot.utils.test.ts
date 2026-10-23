@@ -12,13 +12,13 @@ import type { OwnedLadderPublication } from '../../../src/infrastructure/ladder/
 import type { MakerOfferGroup } from '../../../src/infrastructure/provider/offer-groups.utils'
 
 import { MAX_LOSS_FACTOR } from '../../../src/domain/loss-factor'
+import { LadderAdapterError } from '../../../src/errors'
 import {
   createExposureSnapshotReader,
   durableBuyReservations,
   readExposureSnapshot,
   waitForMinimumBlock
 } from '../../../src/infrastructure/exposure/exposure-snapshot.utils'
-import { LadderAdapterError } from '../../../src/infrastructure/ladder/ladder-adapter.error'
 
 const maker: Address = '0x1111111111111111111111111111111111111111'
 const marketId: Hex = `0x${'11'.repeat(32)}`

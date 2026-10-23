@@ -3,7 +3,7 @@
 # (packages/*) resolve — docker-compose.yml sets `context: ../..` and the Railway deploy runs
 # `railway up` from the repo root. Borrower discovery polls the Morpho GraphQL API, so there is no
 # indexer/database sidecar to build. Node only: pnpm installs, esbuild bundles, node runs.
-FROM node:24.18.1-slim
+FROM node:24.22.1-slim
 ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
 
 # The container's environment holds a funded liquidator EOA key, so nothing here may run as root —

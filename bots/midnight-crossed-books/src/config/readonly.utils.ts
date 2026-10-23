@@ -1,4 +1,4 @@
-import { InvalidConfigurationError } from './invalid-configuration.error'
+import { InvalidConfigurationError } from '../errors'
 
 /**
  * Parses the fail-closed readonly mode switch.

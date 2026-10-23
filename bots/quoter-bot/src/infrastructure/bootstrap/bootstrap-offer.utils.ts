@@ -10,7 +10,7 @@ import {
   isEmptyTickWindow,
   rateTickWindow
 } from '../../domain/tick-window'
-import { BootstrapAdapterError } from './bootstrap-adapter.error'
+import { BootstrapAdapterError } from '../../errors'
 
 type BootstrapOfferMarket = {
   params: IMarketParams

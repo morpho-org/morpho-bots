@@ -4,7 +4,7 @@ import { sol } from 'soltag'
 // at the vendored math — its whole value is being an independent oracle for
 // `reallocation-accrual.fork.test.ts`, which diffs the production lens against it at a pinned block.
 // It calls the state-changing `Morpho.accrueInterest`, so Blue itself does the accrual; that is
-// precisely what production no longer does.
+// precisely what production does not do.
 //
 // It stays readable on viem-dlc 0.0.19: it is `nonpayable`, so it can never travel through the
 // paginated-lens envelope (which STATICCALLs each element), but an unmarked deployless `eth_call`

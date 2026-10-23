@@ -4,7 +4,7 @@ import type { RateLimitedClient } from '../http-client'
 import type { PriceParameters, PriceQuote, QuoteParameters, Swap } from '../types'
 
 import { ZEROX_ALLOWANCE_HOLDER, ZEROX_BASE_URL } from '../constants'
-import { QuoteError } from '../types'
+import { QuoteError } from '../errors'
 
 /** The 0x arm of the per-collateral swap config. */
 type ZeroxEntry = { baseUrl?: string }

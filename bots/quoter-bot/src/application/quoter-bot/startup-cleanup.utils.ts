@@ -4,10 +4,12 @@ import type { BootstrapMakeResult } from '../bootstrap/position-bootstrap-verbos
 import type { LadderMakeResult } from '../ladder/ladder-verbose'
 
 import { isBytes32, normalizeBytes32 } from '../../domain/bytes32'
-import { BootstrapHardHaltError } from '../../infrastructure/bootstrap/bootstrap-hard-halt.error'
-import { LadderHardHaltError } from '../../infrastructure/ladder/ladder-hard-halt.error'
+import {
+  BootstrapHardHaltError,
+  LadderHardHaltError,
+  StartupCleanupFailedError
+} from '../../errors'
 import { adapterOperationField, operatorErrorName } from '../monitoring/operator-error-name.utils'
-import { StartupCleanupFailedError } from './startup-cleanup-failed.error'
 
 type StrategyCleanup = () => Promise<{ cleanup(): Promise<BootstrapMakeResult | LadderMakeResult> }>
 

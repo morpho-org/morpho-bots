@@ -13,7 +13,7 @@ import type {
 import type { RouterApiClient } from './client'
 import type { components, paths } from './generated/router-api.types'
 
-import { RouterApiError } from '../openapi/error'
+import { RouterApiError } from '../../errors'
 import { unwrapOpenApiResult, withOpenApiErrorBoundary } from '../openapi/result'
 
 const TAKEABLE_OFFERS_ENDPOINT =

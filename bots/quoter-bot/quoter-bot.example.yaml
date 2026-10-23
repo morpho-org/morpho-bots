@@ -47,6 +47,7 @@ markets:
     '0x5555555555555555555555555555555555555555555555555555555555555555': '0'
 
 setup:
+  # Ignored in AWS write mode, where the maker sends no transactions.
   nativeReserveWei: '10000000000000000'
   # Required only for AWS write mode.
   signerNativeReserveWei: ''

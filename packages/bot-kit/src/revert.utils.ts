@@ -2,7 +2,7 @@ import type { Abi, Hex } from 'viem'
 
 import { BaseError, decodeErrorResult, ExecutionRevertedError, size, slice } from 'viem'
 
-import { TxSendError } from './tx-send.error'
+import { TxSendError } from './errors'
 
 const SELECTOR_BYTES = 4
 

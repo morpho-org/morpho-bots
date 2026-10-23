@@ -7,7 +7,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { transformSolTemplates } from 'soltag/unplugin'
 
-import { BundleFailedError } from './bundle-failed.error'
+import { BundleFailedError } from './errors'
 
 // Bundles the bot entrypoint (and the soltag-dependent operator script) to `dist/` with the
 // `sol``` templates compiled to literal ABIs/bytecode, so production runs a plain `node` with no

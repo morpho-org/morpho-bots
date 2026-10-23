@@ -3,27 +3,29 @@ import { createCliLogger } from '@repo/logging'
 import type { MonitoringEvent } from '../../application/monitoring/monitoring-event'
 import type { CliRuntimeOptions } from './cli'
 
-import { PositionBootstrapHaltedError } from '../../application/bootstrap/position-bootstrap-halted.error'
-import { PositionBootstrapMonitorHaltedError } from '../../application/bootstrap/position-bootstrap-monitor-halted.error'
-import { OfferInvalidationFailedError } from '../../application/invalidation/offer-invalidation-failed.error'
-import { LadderCycleHaltedError } from '../../application/ladder/ladder-cycle-halted.error'
-import { LadderMonitorHaltedError } from '../../application/ladder/ladder-monitor-halted.error'
 import { isShippableRecord } from '../../application/monitoring/monitoring-event'
 import { operatorErrorName } from '../../application/monitoring/operator-error-name.utils'
 import { terminalMonitoringEvents } from '../../application/monitoring/terminal-monitoring.utils'
-import { QuoterBotMonitorHaltedError } from '../../application/quoter-bot/quoter-bot-monitor-halted.error'
-import { StartupCleanupFailedError } from '../../application/quoter-bot/startup-cleanup-failed.error'
-import { SafeProviderError } from '../../application/setup/safe-provider.error'
-import { SetupFailedError } from '../../application/setup/setup-failed.error'
-import { SetupMonitorHaltedError } from '../../application/setup/setup-monitor-halted.error'
-import { ConfigFileError } from '../../config/config-file.error'
-import { ConfigValidationError } from '../../config/config-validation.error'
-import { BootstrapConfigurationError } from '../../domain/bootstrap-configuration.error'
-import { LadderConfigurationError } from '../../domain/ladder-configuration.error'
-import { StrategyStateVersionError } from '../strategy-state/strategy-state-version.error'
-import { QuoterTransactionError } from '../transaction/quoter-transaction.error'
-import { SignerAccountError } from '../transaction/signer-account.error'
-import { CliUsageError } from './cli-usage.error'
+import {
+  BootstrapConfigurationError,
+  CliUsageError,
+  ConfigFileError,
+  ConfigValidationError,
+  LadderConfigurationError,
+  LadderCycleHaltedError,
+  LadderMonitorHaltedError,
+  OfferInvalidationFailedError,
+  PositionBootstrapHaltedError,
+  PositionBootstrapMonitorHaltedError,
+  QuoterBotMonitorHaltedError,
+  QuoterTransactionError,
+  SafeProviderError,
+  SetupFailedError,
+  SetupMonitorHaltedError,
+  SignerAccountError,
+  StartupCleanupFailedError,
+  StrategyStateVersionError
+} from '../../errors'
 
 type QuoterBotApplication = {
   run(argv: readonly string[], runtime?: CliRuntimeOptions): Promise<unknown>

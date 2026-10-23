@@ -5,20 +5,22 @@ import type { MaturityPremiumConfig } from '../domain/maturity-premium'
 import type { BootstrapConfig, ValidBootstrapConfig } from '../domain/position-bootstrap'
 import type { TargetRateConfigured, TargetRateStrategyConfig } from '../domain/target-rate'
 
-import { BootstrapConfigurationError } from '../domain/bootstrap-configuration.error'
 import { isBytes32, normalizeBytes32 } from '../domain/bytes32'
 import {
   assertLadderShapeAtReference,
   MAX_MONITOR_INTERVAL_SECONDS,
   validateLadderConfig
 } from '../domain/ladder'
-import { LadderConfigurationError } from '../domain/ladder-configuration.error'
 import {
   hasAttainableMaturityPremiumBps,
   highestReachableMaturityPremiumBps
 } from '../domain/maturity-premium'
 import { validateBootstrapConfig } from '../domain/position-bootstrap'
-import { ConfigValidationError } from './config-validation.error'
+import {
+  BootstrapConfigurationError,
+  ConfigValidationError,
+  LadderConfigurationError
+} from '../errors'
 
 /** Minimal string environment shape used by pure market-id parsing. */
 export type MarketCollectionEnvironment = Record<string, string | undefined>

@@ -1,9 +1,9 @@
-import type { Logger } from '@repo/bot-kit'
+import type { Logger } from '@repo/kit'
 import type { Address } from 'viem'
 
 import { tryCatch } from '@repo/utils'
 
-import { InvalidVaultError } from './invalid-vault.error'
+import { InvalidVaultError } from './errors'
 
 export type VaultCheckReads = {
   /** Fatal liveness gate; throws when the address holds no code on this chain. */
@@ -18,8 +18,8 @@ export type VaultCheckReads = {
  * Startup validation of the whitelist: each vault must hold code and answer the Vault V1
  * surface — the signing policy authorizes every whitelisted address as a tx target, so a
  * non-Vault V1 entry throws {@link InvalidVaultError}. The allocator role is only probed and
- * warned about (`allocator.missing_role`): a pending grant must not crash-loop the bot, and the tick
- * re-checks and resumes on its own.
+ * warned about (`allocator.missing_role`): a pending grant must not crash-loop the bot, and each
+ * read re-checks and resumes on its own.
  */
 export const checkVaults = async (
   vaults: readonly Address[],

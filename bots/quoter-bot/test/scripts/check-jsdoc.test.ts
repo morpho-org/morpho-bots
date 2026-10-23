@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'vitest'
 
 import { inspectJSDocSource } from '../../scripts/check-jsdoc'
-import { JSDocValidationError } from '../../scripts/js-doc-validation.error'
+import { JSDocValidationError } from '../../scripts/errors'
 
 const inspect = (source: string) => inspectJSDocSource('fixture.ts', source)
 

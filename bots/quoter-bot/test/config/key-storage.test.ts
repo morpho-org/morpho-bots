@@ -4,8 +4,8 @@ import { join } from 'node:path'
 import { inspect } from 'node:util'
 import { afterEach, describe, expect, test, vi } from 'vitest'
 
-import { ConfigValidationError } from '../../src/config/config-validation.error'
 import { ConfigService } from '../../src/config/config.service'
+import { ConfigValidationError } from '../../src/errors'
 
 const privateKey = `0x${'11'.repeat(32)}`
 const setterRatifier = '0x800B5F12A61B8198a5a6EfD794Cac6699B294d63'
@@ -138,6 +138,18 @@ describe('signer key storage configuration', () => {
       region: 'eu-west-1'
     })
     expect(config.privateKey).toBeUndefined()
+    expect(config.setup.nativeReserve).toBeUndefined()
+  })
+
+  test.each([undefined, '1.5'])('ignores NATIVE_RESERVE_WEI=%s in AWS signing', value => {
+    const config = ConfigService.from({
+      ...baseEnvironment,
+      KEY_STORAGE_METHOD: 'aws',
+      AWS_KMS_KEY_ID: 'alias/quoter',
+      AWS_REGION: 'eu-west-1',
+      NATIVE_RESERVE_WEI: value
+    })
+    expect(config.setup.nativeReserve).toBeUndefined()
   })
 
   test('rejects AWS signing without its gas floor or with the Setter ratifier', () => {
@@ -326,6 +338,42 @@ describe('signer key storage configuration', () => {
       expect(config.identity).toMatchObject(expectedIdentity)
     }
   )
+
+  test.each([
+    [
+      'loads AWS',
+      `  makerAddress: ${baseEnvironment.MAKER_ADDRESS}\n  keyStorageMethod: aws\n  awsKmsKeyId: alias/yaml-maker\n  awsRegion: eu-west-1`,
+      undefined
+    ],
+    [
+      'rejects private-key',
+      `  makerAddress: ${baseEnvironment.MAKER_ADDRESS}\n  keyStorageMethod: private-key\n  makerPrivateKey: ${privateKey}`,
+      'NATIVE_RESERVE_WEI'
+    ]
+  ])('a blank YAML nativeReserveWei %s as unset', async (_name, identity, missingField) => {
+    const directory = await mkdtemp(join(tmpdir(), 'quoter-bot-key-storage-blank-reserve-'))
+    directories.push(directory)
+    const path = join(directory, 'operator.yaml')
+    await writeFile(
+      path,
+      configurationYaml(identity).replace('nativeReserveWei: 10\n', "nativeReserveWei: ''\n")
+    )
+
+    const load = ConfigService.load({}, { configPath: path })
+
+    if (missingField === undefined) {
+      expect((await load).setup.nativeReserve).toBeUndefined()
+    } else {
+      await expect(load).rejects.toMatchObject({ field: missingField, reason: 'missing' })
+    }
+  })
+
+  test('loads the shipped example configuration', async () => {
+    const path = new URL('../../quoter-bot.example.yaml', import.meta.url).pathname
+    await expect(ConfigService.load({}, { configPath: path })).resolves.toBeInstanceOf(
+      ConfigService
+    )
+  })
 
   test('a whitespace-only environment password overrides the YAML password byte-for-byte', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'quoter-bot-key-storage-password-env-'))

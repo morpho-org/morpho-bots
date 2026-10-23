@@ -6,20 +6,22 @@ import {
   operatorErrorDetails,
   operatorErrorName
 } from '../../../src/application/monitoring/operator-error-name.utils'
-import { QuoterBotMonitorHaltedError } from '../../../src/application/quoter-bot/quoter-bot-monitor-halted.error'
-import { SetupMonitorConfigurationError } from '../../../src/application/setup/setup-monitor-configuration.error'
-import { SetupMonitorHaltedError } from '../../../src/application/setup/setup-monitor-halted.error'
-import { BootstrapConfigurationError } from '../../../src/domain/bootstrap-configuration.error'
-import { LadderConfigurationError } from '../../../src/domain/ladder-configuration.error'
-import { BootstrapAdapterError } from '../../../src/infrastructure/bootstrap/bootstrap-adapter.error'
-import { BootstrapHardHaltError } from '../../../src/infrastructure/bootstrap/bootstrap-hard-halt.error'
-import { BootstrapMempoolValidationError } from '../../../src/infrastructure/bootstrap/bootstrap-mempool-validation.error'
-import { OfferInvalidationAdapterError } from '../../../src/infrastructure/invalidation/offer-invalidation-adapter.error'
-import { LadderAdapterError } from '../../../src/infrastructure/ladder/ladder-adapter.error'
-import { LadderHardHaltError } from '../../../src/infrastructure/ladder/ladder-hard-halt.error'
-import { ReferenceAdapterError } from '../../../src/infrastructure/reference/reference-adapter.error'
-import { QuoterTransactionError } from '../../../src/infrastructure/transaction/quoter-transaction.error'
-import { SignerAccountError } from '../../../src/infrastructure/transaction/signer-account.error'
+import {
+  BootstrapAdapterError,
+  BootstrapConfigurationError,
+  BootstrapHardHaltError,
+  BootstrapMempoolValidationError,
+  LadderAdapterError,
+  LadderConfigurationError,
+  LadderHardHaltError,
+  OfferInvalidationAdapterError,
+  QuoterBotMonitorHaltedError,
+  QuoterTransactionError,
+  ReferenceAdapterError,
+  SetupMonitorConfigurationError,
+  SetupMonitorHaltedError,
+  SignerAccountError
+} from '../../../src/errors'
 
 describe('operatorErrorName', () => {
   test('keeps a fixed known domain classification', () => {

@@ -3,12 +3,13 @@ import type { Address } from 'viem'
 import { tryCatch } from '@repo/utils'
 import { getAddress, isAddress, isAddressEqual, isHex, zeroAddress } from 'viem'
 
-import { InvalidConfigurationError } from '../src/config/invalid-configuration.error'
-import { InvalidSimulationCallerAddressError } from '../src/config/invalid-simulation-caller-address.error'
 import { parseReadonly } from '../src/config/readonly.utils'
-import { ResolverPrivateKeyRequiredError } from '../src/config/resolver-private-key-required.error'
-import { RailwayAccessTokenRequiredError } from './railway-access-token-required.error'
-import { RailwayVariableOperationError } from './railway-variable-operation.error'
+import {
+  InvalidConfigurationError,
+  InvalidSimulationCallerAddressError,
+  ResolverPrivateKeyRequiredError
+} from '../src/errors'
+import { RailwayAccessTokenRequiredError, RailwayVariableOperationError } from './errors'
 
 type RailwayService = { name: string }
 type Env = Record<string, string | undefined>

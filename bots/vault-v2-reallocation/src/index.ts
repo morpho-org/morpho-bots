@@ -1,36 +1,71 @@
-import { vaultV2Abi } from '@morpho-org/blue-sdk-viem'
+import type { ReportCommand } from '@repo/kernel'
+import type { Logger } from '@repo/kit'
+import type { Address } from 'viem'
+
+import { runIdAt } from '@repo/controller'
+import { GraphFailedError } from '@repo/engine'
 import {
+  buildIdentityFromEnv,
   assertContractDeployed,
   createBalanceMonitor,
   createDeploylessClient,
   createHeartbeatMonitor,
+  createJournalFileSink,
   createLogger,
-  createPendingQueue,
-  createRunner,
-  withLogging,
-  createSigner,
-  DEFAULT_MAX_DATA_BYTES,
-  DEFAULT_MAX_GAS_LIMIT,
-  initialFees,
+  TRANSACTION_KERNEL_RESERVATIONS,
   railwayContext,
-  simulateCall
-} from '@repo/bot-kit'
-import { getAbiItem, toFunctionSelector } from 'viem'
-import { privateKeyToAccount } from 'viem/accounts'
-import { getBlockNumber } from 'viem/actions'
+  simulateCall,
+  withLogging
+} from '@repo/kit'
+import { tryCatch } from '@repo/utils'
+import { join } from 'node:path'
+import { getBalance, getBlockNumber } from 'viem/actions'
 
 import { loadConfig } from './config'
 import { encodeReallocation } from './encode'
-import { createIntervalGate } from './interval-gate'
+import { InvalidVaultError } from './errors'
+import { reallocatorAccount, reallocatorKernel } from './kernel'
 import { revertReason } from './revert.utils'
-import { runTick } from './runner/tick'
+import { startReallocator } from './run'
 import { createStrategy } from './strategies'
 import { checkVaults } from './vault-checks'
 import { fetchVaults } from './vault-data'
 
-// Blocks a vault stays in the queue's backpressure set AFTER its tx settles, suppressing an
-// immediate re-plan from a read RPC that lags the send RPC's confirmation.
-const SETTLED_COOLDOWN_BLOCKS = 20n
+/** How long a prepared reallocation may wait for a reservation before it is simulated again. */
+const PREPARE_VALID_MS = 30_000
+/** A failed or refused reallocation waits this many blocks, doubling, before it is prepared again. */
+const BACKOFF = { baseBlocks: 20, maxBlocks: 600 }
+
+const JOURNAL_CAPACITY_BYTES = 16 * 1024 * 1024
+const STOP_SIGNALS = ['SIGINT', 'SIGTERM'] as const
+
+async function superviseKernelBot(
+  running: Readonly<{ stop: () => void; stopped: Promise<ReportCommand | undefined> }>,
+  logger: Logger,
+  describe: (error: unknown) => string
+): Promise<0 | 1> {
+  const shutdown = (signal: NodeJS.Signals) => {
+    logger.info('shutdown', { signal })
+    running.stop()
+  }
+  for (const signal of STOP_SIGNALS) process.on(signal, shutdown)
+  const stopped = await tryCatch(running.stopped)
+  for (const signal of STOP_SIGNALS) process.off(signal, shutdown)
+  if (stopped.error) {
+    const failed = stopped.error instanceof GraphFailedError ? stopped.error : undefined
+    const report = failed?.stop as ReportCommand | undefined
+    logger.error('runner.failed', {
+      error: describe(failed ? failed.cause : stopped.error),
+      ...(failed && { origin: failed.origin }),
+      ...(report && { outcome: report.outcome, reason: report.reason, open: report.open })
+    })
+    return 1
+  }
+  if (!stopped.data) return 0
+  const { outcome, reason, open } = stopped.data
+  logger.info('kernel.stopped', { outcome, reason, open })
+  return outcome === 'clean' ? 0 : 1
+}
 
 async function main() {
   const config = loadConfig()
@@ -38,17 +73,16 @@ async function main() {
     context: { bot: 'vault-v2-reallocation', chainId: config.chainId, ...railwayContext() }
   })
 
-  // Every per-pass read goes through the deployless lens (one eth_call per vault), so the HTTP
-  // transport has nothing to batch.
+  // Every read goes through the deployless lens (one eth_call per pass), so the HTTP transport has
+  // nothing to batch.
   const client = createDeploylessClient({
     chain: config.chain,
     rpcUrl: config.rpcUrl,
     rpcUrlFallback: config.rpcUrlFallback
   })
 
-  // The signer's policy needs the vault → adapter map the startup checks resolve, so the EOA is
-  // derived from the key directly here.
-  const eoa = privateKeyToAccount(config.reallocatorPrivateKey).address
+  const account = reallocatorAccount(config)
+  const eoa = account.address
   const startupBlock = await getBlockNumber(client)
 
   const adapterByVault = await checkVaults(
@@ -58,47 +92,17 @@ async function main() {
       fetchVault: async vault => {
         const rows = await fetchVaults(client, [vault], {
           chainId: config.chainId,
-          blockNumber: startupBlock,
+          at: { blockNumber: startupBlock },
           eoa
         })
         const result = rows.get(vault.toLowerCase())
-        if (!result) throw new Error(`lens returned no row for ${vault}`)
+        if (!result) throw new InvalidVaultError(`lens returned no row for ${vault}`)
         if (result.error) throw result.error
         return result.data
       }
     },
     logger
   )
-
-  // Default-deny pre-broadcast guard: only value-0 multicall(bytes[]) calls to whitelisted vaults
-  // whose every inner leg is allocate/deallocate to that vault's own adapter, under the
-  // fee/gas/size ceilings, are ever signed (see @repo/bot-kit `evaluatePolicy`).
-  const signer = createSigner({
-    chain: config.chain,
-    rpcUrl: config.rpcUrl,
-    rpcUrlFallback: config.rpcUrlFallback,
-    privateKey: config.reallocatorPrivateKey,
-    policy: {
-      chainId: config.chainId,
-      targets: config.vaultWhitelist,
-      maxFeePerGasWei: config.maxFeeWei,
-      maxGasLimit: DEFAULT_MAX_GAS_LIMIT,
-      // What a transaction can actually cost. Asserting the product of the two ceilings above
-      // changes nothing this bot could already do — it just states the bound instead of leaving it
-      // implied, and gives a single number to tighten once there is production gas data.
-      maxSpendWei: config.maxFeeWei * DEFAULT_MAX_GAS_LIMIT,
-      maxDataBytes: DEFAULT_MAX_DATA_BYTES,
-      selector: toFunctionSelector(getAbiItem({ abi: vaultV2Abi, name: 'multicall' })),
-      multicall: {
-        innerSelectors: [
-          toFunctionSelector(getAbiItem({ abi: vaultV2Abi, name: 'allocate' })),
-          toFunctionSelector(getAbiItem({ abi: vaultV2Abi, name: 'deallocate' }))
-        ],
-        innerTargetsByOuter: adapterByVault
-      }
-    },
-    logger
-  })
 
   logger.info('startup', {
     reallocator: eoa,
@@ -109,94 +113,55 @@ async function main() {
     dryRun: config.dryRun
   })
 
-  const queue = createPendingQueue({
-    send: signer.send,
-    getReceipt: signer.getReceipt,
-    getBaseFee: signer.getBaseFee,
-    getConsumedNonce: signer.consumedNonce,
-    syncNonce: signer.syncNonce,
-    maxFeeWei: config.maxFeeWei,
-    maxSpendWei: config.maxFeeWei * DEFAULT_MAX_GAS_LIMIT,
-    logger,
-    settledCooldownBlocks: SETTLED_COOLDOWN_BLOCKS,
-    revertReason
+  const balanceMonitor = createBalanceMonitor({
+    address: eoa,
+    read: () => getBalance(client, { address: eoa }),
+    logger
   })
-
-  const balanceMonitor = createBalanceMonitor({ address: eoa, read: signer.balance, logger })
-  const heartbeatMonitor = createHeartbeatMonitor({
+  using heartbeatMonitor = createHeartbeatMonitor({
     url: process.env.BETTERSTACK_HEARTBEAT_URL,
     logger
   })
   void heartbeatMonitor.start()
-
-  const strategy = createStrategy(config)
-
-  // The block watcher drives one tick per new block; the time gate throttles actual reallocation
-  // passes to the configured cadence (queue maintenance still runs every block via `maintain`). A
-  // plan is built, simulated, and submitted within a single tick — no unsent plan survives it.
-  const intervalGate = createIntervalGate(config.reallocationIntervalMs)
-  const tick = async (chainHead: bigint) => {
-    if (!intervalGate()) return
-    await runTick({
-      vaults: config.vaultWhitelist,
-      chainHead,
-      expectedAdapter: vault => adapterByVault[vault]?.[0],
-      fetchVaults: (vaults, blockNumber) =>
-        withLogging(
-          () => fetchVaults(client, vaults, { chainId: config.chainId, blockNumber, eoa }),
-          {
-            logger: logger.layer,
-            lens: 'vault-v2-reallocation'
-          }
-        ),
-      strategy,
-      encodeReallocation: (vaultData, reallocation) =>
-        encodeReallocation(vaultData.adapterAddress, reallocation),
-      // Byte-for-byte what gets broadcast. A revert here — role revoked, cap exceeded, insufficient
-      // idle, market no longer enabled — means do not send; the tick gates on `ok` only.
-      simulate: (vault, data) => simulateCall(client, { eoa, to: vault, data }),
-      submit: async ({ vault, data }) => {
-        const fees = initialFees(await signer.getBaseFee(), config.maxFeeWei)
-        return queue.submit({
-          request: { to: vault, data },
-          label: vault,
-          maxFeePerGas: fees.maxFeePerGas,
-          maxPriorityFeePerGas: fees.maxPriorityFeePerGas
-        })
-      },
-      dryRun: config.dryRun,
-      inflightLabels: () => queue.inflightLabels(),
-      revertReason,
-      logger
-    })
-  }
-
-  // Per-block maintenance, run by the runner BEFORE the tick and independently of it: pending-queue
-  // upkeep (confirmations / stuck-detection / fee-bumps / nonce reconciliation) plus the periodic
-  // EOA-balance metric — a sustained read outage can't starve broadcast txs of receipt checks.
-  const maintain = async (blockNumber: bigint) => {
-    await queue.onBlock(blockNumber)
-    await balanceMonitor.maybeLog(blockNumber)
-  }
-
-  const runner = createRunner({
-    getBlockNumber: () => getBlockNumber(client),
-    tick,
-    maintain,
-    logger,
-    revertReason
+  const kernel = reallocatorKernel({ config, account, adapters: adapterByVault, logger })
+  const journal = await createJournalFileSink({
+    directory: join(config.kernel.stateDirectory, 'journal'),
+    graph: 'vault-v2-reallocation',
+    build: buildIdentityFromEnv(process.env),
+    capacityBytes: JOURNAL_CAPACITY_BYTES
   })
-  runner.start()
+  const running = await startReallocator({
+    journal: journal.journal,
+    kernel: kernel.live,
+    world: {
+      vaults: config.vaultWhitelist,
+      fetchVaults: (vaults: readonly Address[], blockHash) =>
+        withLogging(
+          () => fetchVaults(client, vaults, { chainId: config.chainId, at: { blockHash }, eoa }),
+          { logger: logger.layer, lens: 'vault-v2-reallocation' }
+        )
+    },
+    strategy: createStrategy(config),
+    adapters: adapterByVault,
+    prepare: {
+      encode: encodeReallocation,
+      // A revert here (role revoked, cap exceeded, insufficient idle, market no longer enabled)
+      // means do not send; the kernel simulates the same bytes again at its own head before signing.
+      simulate: (vault, data) => simulateCall(client, { eoa, to: vault, data }),
+      dryRun: config.dryRun,
+      validForMs: PREPARE_VALID_MS,
+      now: Date.now
+    },
+    intervalMs: config.reallocationIntervalMs,
+    backoff: BACKOFF,
+    runId: runIdAt(Date.now()),
+    maxReservations: TRANSACTION_KERNEL_RESERVATIONS,
+    onHead: head => void balanceMonitor.maybeLog(BigInt(head.number)),
+    feesOf: kernel.feesOf,
+    logger
+  })
 
-  // Graceful shutdown: stop the watcher and log the pending set. Sends are fire-and-forget and
-  // chain truth wins on restart, so there is nothing to persist or await-drain.
-  const shutdown = (signal: string) => {
-    heartbeatMonitor.stop()
-    logger.info('shutdown', { signal, pending: queue.snapshot() })
-    void runner.stop().finally(() => process.exit(0))
-  }
-  process.on('SIGINT', () => shutdown('SIGINT'))
-  process.on('SIGTERM', () => shutdown('SIGTERM'))
+  process.exitCode = await superviseKernelBot(running, logger, error => revertReason(error))
 }
 
 main().catch(error => {

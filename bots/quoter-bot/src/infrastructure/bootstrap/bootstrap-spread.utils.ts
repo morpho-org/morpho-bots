@@ -2,7 +2,7 @@ import type { Hex } from 'viem'
 
 import type { BootstrapActiveGroup } from './bootstrap-position.service'
 
-import { BootstrapAdapterError } from './bootstrap-adapter.error'
+import { BootstrapAdapterError } from '../../errors'
 
 /**
  * Resolves the strategy group IDs that may be reconciled for one market.

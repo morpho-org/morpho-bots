@@ -12,7 +12,7 @@ import {
   PENDLE_BASE_URL,
   PENDLE_MARKETS_STALE_MS
 } from '../constants'
-import { QuoteError } from '../types'
+import { QuoteError } from '../errors'
 
 /** One usable market from Pendle's list: everything PT detection + conversion needs. */
 type PendleMarket = {

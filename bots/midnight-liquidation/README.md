@@ -48,8 +48,8 @@ This package is operational code, but it is still intentionally narrow:
 
 ## Prerequisites
 
-- Node.js `24.18.1` (`nvm use` from the repo root).
-- pnpm `11.11.0` (via corepack), Node `24.18.1`.
+- Node.js `24.22.1` (`nvm use` from the repo root).
+- pnpm `11.11.0` (via corepack), Node `24.22.1`.
 - A Base RPC URL.
 - A funded liquidator EOA private key.
 - A deployed permissionless Executor contract. If `EXECUTOOOR_ADDRESS` is unset, the bot uses the

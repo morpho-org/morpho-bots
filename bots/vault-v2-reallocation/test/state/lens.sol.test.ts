@@ -96,7 +96,8 @@ describe('VaultV2ReallocationLens', () => {
           vaultAssets: parseUnits('250000', 6),
           rateAtTargetStored: 951293759n,
           utilizationBefore: parseUnits('0.5', 18),
-          elapsed: 3600n
+          elapsed: 3600n,
+          vaultShares: 0n
         }
       ]
     }

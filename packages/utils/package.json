@@ -19,18 +19,13 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@internationalized/date": "catalog:",
     "@morpho-org/blue-sdk": "catalog:",
-    "@morpho-org/morpho-ts": "catalog:",
     "@morpho-org/viem-dlc": "catalog:",
-    "date-fns": "catalog:",
-    "lodash-es": "catalog:",
     "viem": "catalog:",
     "zod": "catalog:"
   },
   "devDependencies": {
     "@repo/typescript-config": "workspace:*",
-    "@types/lodash-es": "catalog:",
     "@types/node": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:"

@@ -6,6 +6,7 @@ import { keccak256, stringToHex } from 'viem'
 
 import type { BootstrapOffer } from '../../domain/position-bootstrap'
 
+import { BootstrapAdapterError } from '../../errors'
 import {
   canonicalBytes32,
   canonicalUnsignedDecimal,
@@ -14,7 +15,6 @@ import {
   strategyStateDirectory,
   writeStrategyStateFile
 } from '../strategy-state/strategy-state-file.utils'
-import { BootstrapAdapterError } from './bootstrap-adapter.error'
 
 type BootstrapGroupOwnershipConfig = {
   chainId: number

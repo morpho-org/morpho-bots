@@ -2,12 +2,11 @@ import type { Hex } from 'viem'
 
 import { afterEach, describe, expect, test, vi } from 'vitest'
 
-import { BootstrapAdapterError } from '../../../src/infrastructure/bootstrap/bootstrap-adapter.error'
+import { BootstrapAdapterError, LadderAdapterError } from '../../../src/errors'
 import {
   BlueBootstrapReferenceRateService,
   StrategyBootstrapReferenceRateService
 } from '../../../src/infrastructure/bootstrap/bootstrap-reference-rate.service'
-import { LadderAdapterError } from '../../../src/infrastructure/ladder/ladder-adapter.error'
 
 const marketId = `0x${'11'.repeat(32)}` as const
 const secondMarketId = `0x${'22'.repeat(32)}` as const

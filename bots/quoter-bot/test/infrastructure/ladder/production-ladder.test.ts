@@ -8,7 +8,7 @@ import type { LadderQuoteSet } from '../../../src/domain/ladder'
 import type { LadderOfferTransport } from '../../../src/infrastructure/ladder/ladder-make.service'
 
 import { ConfigService } from '../../../src/config/config.service'
-import { LadderAdapterError } from '../../../src/infrastructure/ladder/ladder-adapter.error'
+import { LadderAdapterError } from '../../../src/errors'
 import { MidnightLadderMakeService } from '../../../src/infrastructure/ladder/ladder-make.service'
 import {
   cleanupRemovedLadderGroups,

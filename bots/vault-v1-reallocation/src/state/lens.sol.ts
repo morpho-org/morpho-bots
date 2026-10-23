@@ -1,6 +1,7 @@
 import type { InputMarketParams } from '@morpho-org/blue-sdk'
 import type { Address, Client, Hex, Transport } from 'viem'
 
+import { blockTagAt } from '@repo/kit'
 import { type BatchLensTransportType, readDeploylessBatchLens } from '@repo/utils'
 import { sol, solFile } from 'soltag'
 
@@ -204,9 +205,12 @@ type LensVaultOut = {
   markets: readonly LensMarketOut[]
 }
 
+/** The block a read is pinned to: by hash, so it can never answer from another fork, or by number. */
+export type ReadAt = Readonly<{ blockHash: Hex }> | Readonly<{ blockNumber: bigint }>
+
 /**
- * Reads the reallocation lens for every vault in one deployless `eth_call`, pinned to `blockNumber`
- * so the whole snapshot is coherent across markets and reproducible. Returns a map keyed by the
+ * Reads the reallocation lens for every vault in one deployless `eth_call`, pinned to `at` so the
+ * whole snapshot is coherent across markets and reproducible. Returns a map keyed by the
  * lower-cased vault address.
  *
  * Throws whatever the lens reverted with — the caller (one vault per call, see `fetchVaultData`)
@@ -217,7 +221,7 @@ export const readVaultV1Lens = async (
   client: Client<Transport<BatchLensTransportType>>,
   addresses: { morpho: Address; adaptiveCurveIrm: Address },
   vaults: readonly LensInput[],
-  blockNumber: bigint
+  at: ReadAt
 ): Promise<Map<string, LensVaultOut>> => {
   const compiled = VaultV1ReallocationLens.with(addresses.morpho, addresses.adaptiveCurveIrm)
   // No `batch.gas`: the old polynomial fit does not carry over (the new model's `fixed` excludes the
@@ -231,7 +235,7 @@ export const readVaultV1Lens = async (
       ...compiled,
       functionName: 'lens',
       args: vaults,
-      blockNumber
+      ...('blockHash' in at ? { blockTag: blockTagAt(at.blockHash) } : at)
     },
     key: ({ vault }) => vault.toLowerCase(),
     value: (_input, out): LensVaultOut => out

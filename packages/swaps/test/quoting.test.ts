@@ -10,8 +10,8 @@ import type { Unwrapper } from '../src/unwrappers/resolve'
 
 import { ONEINCH_ROUTER, ZEROX_ALLOWANCE_HOLDER } from '../src/constants'
 import { routeCostBps } from '../src/cost-bps.utils'
+import { QuoteError } from '../src/errors'
 import { clearsFloor, composeMultiVenueQuoting, passesRouteQuality } from '../src/quoting'
-import { QuoteError } from '../src/types'
 
 const ROUTER = getAddress('0x5555555555555555555555555555555555555555')
 const LOAN = getAddress('0x6666666666666666666666666666666666666666')

@@ -11,9 +11,9 @@ import { describe, expect, test } from 'vitest'
 
 import type { LadderQuoteSet } from '../../../src/domain/ladder'
 
+import { StrategyStateVersionError } from '../../../src/errors'
 import { createLadderGroupOwnership } from '../../../src/infrastructure/ladder/ladder-group-ownership.utils'
 import { STRATEGY_STATE_VERSION } from '../../../src/infrastructure/strategy-state/strategy-state-file.utils'
-import { StrategyStateVersionError } from '../../../src/infrastructure/strategy-state/strategy-state-version.error'
 
 const jsonFiles = (directory: string) =>
   readdirSync(directory).filter(name => name.endsWith('.json'))

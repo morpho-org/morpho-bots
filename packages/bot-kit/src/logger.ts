@@ -34,9 +34,7 @@ export type CreateLoggerOptions = {
 // serialization — the stderr line AND the BetterStack transport's own JSON.stringify — throws on a
 // raw bigint. Round-trip through JSON with a bigint→decimal-string replacer BEFORE anything reaches
 // loglayer: this yields a plain, JSON-safe object (bigints flattened to bare strings at any depth,
-// exactly as the old logger emitted) that both sinks can serialize losslessly. (Intentionally NOT
-// @repo/utils' `bigintReplacer`, which tags values as `{ __bigint__: "7" }` for round-trip parsing —
-// log aggregators want the bare string, not a tagged object.)
+// exactly as the old logger emitted) that both sinks can serialize losslessly.
 function toJsonSafe(fields: Record<string, unknown>): Record<string, unknown> {
   return JSON.parse(
     JSON.stringify(fields, (_key, value) => (typeof value === 'bigint' ? value.toString() : value))

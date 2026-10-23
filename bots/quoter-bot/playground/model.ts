@@ -24,11 +24,13 @@ import {
   resolveMaturityPremiumBps
 } from '../src/domain/maturity-premium'
 import { violatedRateBound } from '../src/domain/rate-range'
-import { CollectionImportError } from './collection-import.error'
-import { CollectionValidationError } from './collection-validation.error'
-import { FragmentCodecError } from './fragment-codec.error'
+import {
+  CollectionImportError,
+  CollectionValidationError,
+  FragmentCodecError,
+  StrictJsonError
+} from './errors'
 import { bootstrapReferenceBand, ladderReferenceBand } from './reference-response.utils'
-import { StrictJsonError } from './strict-json.error'
 
 export type TargetRateInput =
   | { strategy: 'variable_rate_avg' }

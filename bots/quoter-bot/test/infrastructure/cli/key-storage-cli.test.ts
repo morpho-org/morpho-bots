@@ -4,8 +4,8 @@ import { fileURLToPath } from 'node:url'
 import { describe, expect, test } from 'vitest'
 
 import { VersionService } from '../../../src/application/quoter-bot/version.service'
+import { CliUsageError } from '../../../src/errors'
 import { Cli } from '../../../src/infrastructure/cli/cli'
-import { CliUsageError } from '../../../src/infrastructure/cli/cli-usage.error'
 
 const createCli = () =>
   new Cli(

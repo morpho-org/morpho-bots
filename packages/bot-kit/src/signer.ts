@@ -23,7 +23,8 @@ import type {
   TxRequest
 } from './queue/pending-queue'
 
-import { evaluatePolicy, PolicyViolationError } from './policy'
+import { PolicyViolationError } from './errors'
+import { evaluatePolicy } from './policy'
 import { createHttpTransport } from './transport'
 
 const TRANSACTION_ALREADY_KNOWN = /already known|transaction already imported/i

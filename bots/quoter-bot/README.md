@@ -236,7 +236,7 @@ can cap several offers, one cancellation invalidates every offer in that group. 
 0x-prefixed bytes32 argument, `invalidate <group-id>` directly invalidates only that group without
 depending on API indexing. Before a live cancellation it still verifies the connected chain,
 deployed configured Midnight contract, signer identity and nonce, signer authorization, and the
-maker and signer gas reserves. Maker-wide invalidation submits one zero-value native Midnight
+signer gas reserve. Maker-wide invalidation submits one zero-value native Midnight
 `multicall(bytes[])`; each
 ordered inner call is exactly `setConsumed(groupId, MAX_OFFER_CAP, MAKER_ADDRESS)`. Midnight executes
 the inner calls with `delegatecall`, so the authorized signer that submits the outer transaction
@@ -462,7 +462,7 @@ unit; for six-decimal USDC, `101000000` is 101 USDC. No value is inferred from a
 | `REFERENCE_MARKET_ID`               | `markets.referenceMarketId`           | Required when the selected command has an active `variable_rate_avg` target. Must be a 0x-prefixed bytes32 Morpho Blue Market ID.                                                                                                                                                                                                                                                                                      |
 | `REFERENCE_LOOKBACK_SECONDS`        | `markets.referenceLookbackSeconds`    | Optional window, in seconds, that the `variable_rate_avg` target averages the reference market over; defaults to `259200` (three days) and accepts `3600` through `2592000`. Widening it trades responsiveness for immunity to transient spikes that can walk the ladder into the resting book. The archive endpoint must retain state for the whole window.                                                           |
 | `V0_OFFER_GROUP_IDS`                | `markets.v0OfferGroupIds`             | Optional comma-separated list of unique, explicitly strategy-owned bytes32 offer-group IDs; defaults to empty. Use it to adopt known pre-existing groups safely.                                                                                                                                                                                                                                                       |
-| `NATIVE_RESERVE_WEI`                | `setup.nativeReserveWei`              | Required unsigned integer. Minimum maker native-token balance, in wei, required by readiness for transaction fees.                                                                                                                                                                                                                                                                                                     |
+| `NATIVE_RESERVE_WEI`                | `setup.nativeReserveWei`              | Required unsigned integer in read-only mode, and positive in private-key or keystore write mode. Minimum maker native-token balance, in wei, required by readiness for transaction fees. Ignored in AWS write mode, where the maker sends no transactions.                                                                                                                                                             |
 | `SIGNER_NATIVE_RESERVE_WEI`         | `setup.signerNativeReserveWei`        | Required positive integer in AWS write mode. Minimum signer native-token balance in wei.                                                                                                                                                                                                                                                                                                                               |
 | `MAX_FEE_GWEI`                      | `setup.maxFeeGwei`                    | Required positive decimal gwei in write mode. Maximum EIP-1559 fee per gas. Keep it well above twice the chain's base fee: once it clamps a first send, the first bump drops.                                                                                                                                                                                                                                          |
 | `PRIORITY_FEE_GWEI`                 | `setup.priorityFeeGwei`               | Required positive decimal gwei in write mode. Initial priority fee, with replacement headroom below `MAX_FEE_GWEI`.                                                                                                                                                                                                                                                                                                    |
@@ -744,7 +744,8 @@ after outer environment whitespace is trimmed.
 Setup verifies all of the following from the typed configuration:
 
 - Configured chain identity and configured Midnight bytecode.
-- The maker emergency-gas reserve, loan-token allowance, and ratifier authorization.
+- The maker emergency-gas reserve (not in AWS write mode), loan-token allowance, and ratifier
+  authorization.
   Startup fails when the maker has no allowance to Midnight while any buy is configured, and warns without blocking when the
   allowance is below one full deployment of the configured buy exposure. Each ladder market
   contributes `min(higherRateBudgetAssets, targetMarketExposureAssets)` — only the higher-rate side

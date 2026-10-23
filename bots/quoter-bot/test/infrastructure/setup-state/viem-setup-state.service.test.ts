@@ -10,13 +10,15 @@ import { bytesToHex, hexToBytes, keccak256, zeroHash } from 'viem'
 import { base } from 'viem/chains'
 import { describe, expect, test } from 'vitest'
 
-import { SafeProviderError } from '../../../src/application/setup/safe-provider.error'
 import { MAX_LOSS_FACTOR } from '../../../src/domain/loss-factor'
+import {
+  ProviderPaginationError,
+  ProviderReadError,
+  ProviderResponseError,
+  SafeProviderError
+} from '../../../src/errors'
 import { requestJson } from '../../../src/infrastructure/provider/http-json.utils'
-import { ProviderPaginationError } from '../../../src/infrastructure/provider/provider-pagination.error'
-import { ProviderReadError } from '../../../src/infrastructure/provider/provider-read.error'
 import { executeProviderRead } from '../../../src/infrastructure/provider/provider-read.utils'
-import { ProviderResponseError } from '../../../src/infrastructure/provider/provider-response.error'
 import { ViemSetupStateService } from '../../../src/infrastructure/setup-state/viem-setup-state.service'
 
 // bun's `Bun.serve` accepted a Web-standard fetch handler and exposed `.port`/`.stop()`. These tests

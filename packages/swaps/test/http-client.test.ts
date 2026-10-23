@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
+import { QuoteError } from '../src/errors'
 import { createRateLimitedClient } from '../src/http-client'
-import { QuoteError } from '../src/types'
 
 const fastClient = (
   fetchImpl: (url: string, init?: RequestInit) => Promise<Response>,

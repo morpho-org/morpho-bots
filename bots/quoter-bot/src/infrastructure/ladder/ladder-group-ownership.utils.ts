@@ -6,6 +6,7 @@ import { keccak256, stringToHex } from 'viem'
 
 import type { LadderQuoteSet, LadderRung } from '../../domain/ladder'
 
+import { LadderAdapterError } from '../../errors'
 import {
   canonicalBytes32,
   canonicalUnsignedDecimal,
@@ -14,7 +15,6 @@ import {
   strategyStateDirectory,
   writeStrategyStateFile
 } from '../strategy-state/strategy-state-file.utils'
-import { LadderAdapterError } from './ladder-adapter.error'
 
 /** Relationship between one protocol group, the quote-set rungs it caps, and its signed offers. */
 export type LadderGroupReference = {

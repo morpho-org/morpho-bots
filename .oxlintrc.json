@@ -41,11 +41,12 @@
       }
     ],
     "repo/comment-hygiene": "error",
-    "repo/error-class-file": "error",
+    "repo/errors-file": "error",
     "repo/no-as-address": "error",
     "repo/no-hex-template": "error",
     "repo/no-local-math-constant": "error",
     "repo/no-pow10-bigint": "error",
+    "repo/no-replay-in-src": "error",
     "repo/require-checksum-address": "error",
     "repo/test-under-test-dir": "error",
     "repo/utils-apart-from-classes": "error",
@@ -83,7 +84,7 @@
         "typescript/only-throw-error": "off",
         "typescript/prefer-promise-reject-errors": "off",
         "repo/no-as-address": "off",
-        "repo/error-class-file": "off",
+        "repo/errors-file": "off",
         "typescript/no-explicit-any": "off",
         "repo/no-local-math-constant": "off",
         "repo/require-checksum-address": "off"

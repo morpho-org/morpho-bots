@@ -3,7 +3,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { bytesToHex, hexToBytes, isHex, size } from 'viem'
 
-import { StrategyStateVersionError } from './strategy-state-version.error'
+import { StrategyStateVersionError } from '../../errors'
 
 /** The only strategy state version this binary reads or writes, for both strategies. */
 export const STRATEGY_STATE_VERSION = 7

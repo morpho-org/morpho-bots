@@ -20,7 +20,7 @@ import { base, mainnet } from 'viem/chains'
 import { describe, expect, test } from 'vitest'
 
 import { ConfigService } from '../../../src/config/config.service'
-import { BootstrapAdapterError } from '../../../src/infrastructure/bootstrap/bootstrap-adapter.error'
+import { BootstrapAdapterError, StrategyStateVersionError } from '../../../src/errors'
 import { bootstrapExposureMarketIds } from '../../../src/infrastructure/bootstrap/bootstrap-exposure.utils'
 import { createBootstrapGroupOwnership } from '../../../src/infrastructure/bootstrap/bootstrap-group-ownership.utils'
 import {
@@ -45,7 +45,6 @@ import {
 } from '../../../src/infrastructure/bootstrap/production-bootstrap'
 import { readMakerOfferGroups } from '../../../src/infrastructure/provider/offer-groups.utils'
 import { STRATEGY_STATE_VERSION } from '../../../src/infrastructure/strategy-state/strategy-state-file.utils'
-import { StrategyStateVersionError } from '../../../src/infrastructure/strategy-state/strategy-state-version.error'
 import { assertBootstrapTransaction } from '../../../src/infrastructure/transaction/bootstrap-transaction.utils'
 
 const BPS_WAD = 10n ** 14n

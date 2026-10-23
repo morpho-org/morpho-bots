@@ -2,8 +2,8 @@ import { Market, MarketParams } from '@morpho-org/morpho-sdk/entities'
 import { beforeEach, describe, expect, test, vi } from 'vitest'
 
 import { BASE_CHAIN_ID } from '../../../src/config/supported-chains.utils'
+import { ReferenceAdapterError } from '../../../src/errors'
 import { createBlueReferenceReader } from '../../../src/infrastructure/reference/blue-reference-reader.utils'
-import { ReferenceAdapterError } from '../../../src/infrastructure/reference/reference-adapter.error'
 
 const fetchMarket = vi.hoisted(() => vi.fn())
 

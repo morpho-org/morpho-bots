@@ -4,9 +4,8 @@ import { describe, expect, test, vi } from 'vitest'
 
 import type { OfferInvalidationPort } from '../../../src/application/invalidation/offer-invalidation.service'
 
-import { OfferInvalidationFailedError } from '../../../src/application/invalidation/offer-invalidation-failed.error'
 import { OfferInvalidationService } from '../../../src/application/invalidation/offer-invalidation.service'
-import { OfferInvalidationAdapterError } from '../../../src/infrastructure/invalidation/offer-invalidation-adapter.error'
+import { OfferInvalidationAdapterError, OfferInvalidationFailedError } from '../../../src/errors'
 
 const groupA: Hex = `0x${'11'.repeat(32)}`
 const groupB: Hex = `0x${'22'.repeat(32)}`

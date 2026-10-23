@@ -2,7 +2,7 @@ import type { Address, Hex } from 'viem'
 
 import { isAddress, isAddressEqual } from 'viem'
 
-import type { SafeProviderFailure } from './safe-provider.error'
+import type { SafeProviderFailure } from '../../errors'
 import type {
   BookSetup,
   SetupCheck,
@@ -13,7 +13,7 @@ import type {
 
 import { isSupportedChainId } from '../../config/supported-chains.utils'
 import { acceptedLossFactorOf, lendHalt } from '../../domain/loss-factor'
-import { SafeProviderError } from './safe-provider.error'
+import { SafeProviderError } from '../../errors'
 
 const SAFE_ERROR_NAMES = new Set([
   'Error',

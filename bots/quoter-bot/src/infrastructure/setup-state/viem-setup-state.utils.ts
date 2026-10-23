@@ -4,9 +4,8 @@ import { bytesToHex, getAddress, hexToBytes, isAddress, isHex, size } from 'viem
 
 import type { OwnedOverlapBookOffer } from '../../domain/intentional-overlap'
 
-import { SafeProviderError } from '../../application/setup/safe-provider.error'
 import { hasInvalidOwnedBootstrapLadderSpread } from '../../domain/intentional-overlap'
-import { ProviderResponseError } from '../provider/provider-response.error'
+import { ProviderResponseError, SafeProviderError } from '../../errors'
 
 export const PAGE_SIZE = 100
 export const MAX_OFFER_PAGES = 100

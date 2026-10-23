@@ -13,12 +13,14 @@ import type {
 import type { ExposureSnapshotReader } from '../../../src/infrastructure/exposure/exposure-snapshot.utils'
 import type { LadderOfferTransport } from '../../../src/infrastructure/ladder/ladder-make.service'
 
-import { LadderOwnershipCleanupError } from '../../../src/application/ladder/ladder-ownership-cleanup.error'
 import { validateLadderConfig } from '../../../src/domain/ladder'
+import {
+  LadderAdapterError,
+  LadderHardHaltError,
+  LadderOwnershipCleanupError
+} from '../../../src/errors'
 import { admitExposureCandidate } from '../../../src/infrastructure/exposure/exposure-admission.utils'
 import { readExposureSnapshot } from '../../../src/infrastructure/exposure/exposure-snapshot.utils'
-import { LadderAdapterError } from '../../../src/infrastructure/ladder/ladder-adapter.error'
-import { LadderHardHaltError } from '../../../src/infrastructure/ladder/ladder-hard-halt.error'
 import { MidnightLadderMakeService } from '../../../src/infrastructure/ladder/ladder-make.service'
 
 const marketId: Hex = `0x${'11'.repeat(32)}`

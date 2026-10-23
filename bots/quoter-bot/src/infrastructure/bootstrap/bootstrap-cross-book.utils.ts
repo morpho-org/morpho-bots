@@ -7,7 +7,7 @@ import type { BootstrapOffer } from '../../domain/position-bootstrap'
 
 import { clampRateBps, CROSS_BOOK_CLEARANCE_BPS } from '../../domain/cross-book'
 import { isAprWadInRange } from '../../domain/tick-window'
-import { BootstrapAdapterError } from './bootstrap-adapter.error'
+import { BootstrapAdapterError } from '../../errors'
 
 /** Book projection of one live, pending, or prospective offer used for bootstrap crossing checks. */
 export type BootstrapCrossBookOffer = BookOffer & {

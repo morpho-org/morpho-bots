@@ -6,11 +6,11 @@ import {
   type ValidateMempoolPayloadParams
 } from '@morpho-org/midnight-sdk/api'
 
-import { BootstrapAdapterError } from './bootstrap-adapter.error'
 import {
+  BootstrapAdapterError,
   BootstrapMempoolValidationError,
   type BootstrapMempoolValidationIssue
-} from './bootstrap-mempool-validation.error'
+} from '../../errors'
 
 const knownRules = new Set<string>(Object.values(MempoolPayloadValidationRule))
 

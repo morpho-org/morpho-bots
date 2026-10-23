@@ -2,8 +2,7 @@ import type { Hex } from 'viem'
 
 import { afterEach, describe, expect, test, vi } from 'vitest'
 
-import { BootstrapAdapterError } from '../../../src/infrastructure/bootstrap/bootstrap-adapter.error'
-import { LadderAdapterError } from '../../../src/infrastructure/ladder/ladder-adapter.error'
+import { BootstrapAdapterError, LadderAdapterError } from '../../../src/errors'
 import { maturityReadsByMarket } from '../../../src/infrastructure/provider/maturity-read.utils'
 
 const marketId: Hex = `0x${'55'.repeat(32)}`

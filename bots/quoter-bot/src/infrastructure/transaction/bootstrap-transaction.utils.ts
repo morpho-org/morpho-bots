@@ -12,7 +12,7 @@ import {
 } from '@morpho-org/midnight-sdk'
 import { decodeFunctionData, isAddressEqual, isHex, size } from 'viem'
 
-import { BootstrapAdapterError } from '../bootstrap/bootstrap-adapter.error'
+import { BootstrapAdapterError } from '../../errors'
 
 type BootstrapTransaction = { to: Address; data: Hex; value: bigint }
 type BootstrapTransactionPolicy =

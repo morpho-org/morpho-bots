@@ -84,16 +84,14 @@ describe('createApyRangeStrategy', () => {
 
       const result = strategy(makeVaultData([hotMarket, coldMarket]))
 
-      expect(result).toBeDefined()
       expect(result!.allocations.length).toBe(1)
       expect(result!.deallocations.length).toBe(1)
       const allocation = result!.allocations[0]!
       const deallocation = result!.deallocations[0]!
       expect(allocation.marketParams).toEqual(hotMarket.params)
       expect(deallocation.marketParams).toEqual(coldMarket.params)
-      expect(allocation.assets).toBeGreaterThan(0n)
-      expect(deallocation.assets).toBeGreaterThan(0n)
-      expect(deallocation.assets).toBeLessThanOrEqual(coldMarket.vaultAssets)
+      expect(allocation.assets).toBe(4_248_142_294n)
+      expect(deallocation.assets).toBe(coldMarket.vaultAssets)
     })
 
     it('does not include in-range markets', () => {

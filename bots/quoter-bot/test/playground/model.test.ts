@@ -1,9 +1,12 @@
 import { readFile } from 'node:fs/promises'
 import { describe, expect, test } from 'vitest'
 
-import { CollectionImportError } from '../../playground/collection-import.error'
-import { CollectionValidationError } from '../../playground/collection-validation.error'
-import { FragmentCodecError } from '../../playground/fragment-codec.error'
+import {
+  CollectionImportError,
+  CollectionValidationError,
+  FragmentCodecError,
+  StrictJsonError
+} from '../../playground/errors'
 import {
   COLLECTION_FRAGMENT_VERSION,
   clampPlotPercent,
@@ -24,7 +27,6 @@ import {
   validateLadderCollection,
   validatePlaygroundState
 } from '../../playground/model'
-import { StrictJsonError } from '../../playground/strict-json.error'
 import { ConfigService } from '../../src/config/config.service'
 
 const runtimeEnvironment = (marketId: string) => ({

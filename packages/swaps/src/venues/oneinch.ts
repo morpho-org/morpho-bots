@@ -4,7 +4,7 @@ import type { RateLimitedClient } from '../http-client'
 import type { PriceParameters, PriceQuote, QuoteParameters, Swap } from '../types'
 
 import { ONEINCH_BASE_URL, ONEINCH_ROUTER } from '../constants'
-import { QuoteError } from '../types'
+import { QuoteError } from '../errors'
 
 /** The 1inch arm of the per-collateral swap config. */
 type OneInchEntry = { baseUrl?: string }

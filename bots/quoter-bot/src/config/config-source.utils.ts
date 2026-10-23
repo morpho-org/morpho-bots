@@ -5,8 +5,7 @@ import { isAlias, isMap, isScalar, isSeq, parseDocument, visit } from 'yaml'
 
 import type { Environment } from './config.utils'
 
-import { ConfigFileError } from './config-file.error'
-import { ConfigValidationError } from './config-validation.error'
+import { ConfigFileError, ConfigValidationError } from '../errors'
 
 /** Combined raw configuration values and parsed bootstrap entries from YAML and environment input. */
 export type ConfigurationSource = {
@@ -274,6 +273,7 @@ const yamlSource = (input: unknown, readOnly: boolean): ConfigurationSource => {
     for (const [yamlName, environmentName] of Object.entries(mapping)) {
       if (group[yamlName] === undefined) continue
       const value = scalar(group[yamlName], yamlName)
+      if (value === '') continue
       if (yamlDecimalEnvironmentKeys.has(environmentName) && !/^\d+(\.\d{1,9})?$/.test(value)) {
         throw new ConfigValidationError(
           yamlName,

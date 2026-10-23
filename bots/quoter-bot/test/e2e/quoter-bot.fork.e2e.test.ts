@@ -25,9 +25,9 @@ import type { RouterApiHandle } from './router-api'
 
 import { PositionBootstrapService } from '../../src/application/bootstrap/position-bootstrap.service'
 import { LadderQuoterService } from '../../src/application/ladder/ladder-quoter.service'
-import { StartupCleanupFailedError } from '../../src/application/quoter-bot/startup-cleanup-failed.error'
 import { createApplication } from '../../src/bootstrap'
 import { ConfigService } from '../../src/config/config.service'
+import { StartupCleanupFailedError } from '../../src/errors'
 import { createProductionBootstrapAdapters } from '../../src/infrastructure/bootstrap/production-bootstrap'
 import { createProductionOfferInvalidationPort } from '../../src/infrastructure/invalidation/production-offer-invalidation'
 import { createProductionLadderAdapters } from '../../src/infrastructure/ladder/production-ladder'
@@ -594,6 +594,23 @@ describe('quoter-bot workflow on a pinned Base fork', () => {
         DELEGATED_SIGNER,
         executor
       )
+      await anvil.client.setBalance({ address: ANVIL_DEFAULT_ACCOUNT.address, value: 0n })
+      const localInvalidation = await createProductionOfferInvalidationPort(
+        ConfigService.from(environment(anvil.rpcUrl, api.baseUrl)),
+        ANVIL_DEFAULT_ACCOUNT
+      )
+      await expect(localInvalidation.preflight()).rejects.toMatchObject({
+        operation: 'preflight'
+      })
+      await anvil.client.setBalance({
+        address: DELEGATED_SIGNER.address,
+        value: NATIVE_RESERVE - 1n
+      })
+      await expect(invalidation.preflight()).rejects.toMatchObject({ operation: 'preflight' })
+      await anvil.client.setBalance({
+        address: DELEGATED_SIGNER.address,
+        value: 2n * NATIVE_RESERVE
+      })
       await invalidation.preflight()
       await expect(invalidation.invalidate(offer.group)).resolves.toBeDefined()
       expect(await api.activeOffers()).toHaveLength(0)

@@ -30,6 +30,7 @@ import { supportedChain } from '../../config/supported-chains.utils'
 import { acceptedLossFactorOf } from '../../domain/loss-factor'
 import { remainingBuyAssets, remainingCap } from '../../domain/offer-cap'
 import { isAprWadInRange } from '../../domain/tick-window'
+import { BootstrapAdapterError, OfferInvalidationAdapterError } from '../../errors'
 import { admitExposureCandidate } from '../exposure/exposure-admission.utils'
 import {
   createExposureSnapshotReader,
@@ -37,7 +38,6 @@ import {
   readExposureSnapshot
 } from '../exposure/exposure-snapshot.utils'
 import { invalidateOffersBatch } from '../invalidation/batch-offer-invalidation.utils'
-import { OfferInvalidationAdapterError } from '../invalidation/offer-invalidation-adapter.error'
 import { ownedLadderBookOffers } from '../ladder/ladder-active-publication.utils'
 import { readLadderBookOffers } from '../ladder/ladder-book.utils'
 import { createLadderGroupOwnership } from '../ladder/ladder-group-ownership.utils'
@@ -51,7 +51,6 @@ import {
   type QuoterTransactionExecutor
 } from '../transaction/quoter-transaction-executor'
 import { createSignerAccount } from '../transaction/signer-account.utils'
-import { BootstrapAdapterError } from './bootstrap-adapter.error'
 import { resolveBootstrapProspectiveOffer } from './bootstrap-cross-book.utils'
 import { bootstrapExposureMarketIds } from './bootstrap-exposure.utils'
 import { createBootstrapGroupOwnership } from './bootstrap-group-ownership.utils'

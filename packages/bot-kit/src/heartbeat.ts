@@ -44,7 +44,7 @@ export function createHeartbeatMonitor(deps: {
     } else if (!response.data.ok) {
       // `http_status`, not `status`: viem-dlc's wide events put their own string `status`
       // ("ok"/"error") at the top level of every record, and a source cannot hold one field as both
-      // a string and an HTTP integer. Log field names are a public interface — see AGENTS.md.
+      // a string and an HTTP integer.
       deps.logger.warn('heartbeat.failed', { http_status: response.data.status })
     }
   }

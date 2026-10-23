@@ -1,9 +1,11 @@
 import { describe, expect, test } from 'vitest'
 
 import { ConfigService } from '../../src/config/config.service'
-import { InvalidConfigurationError } from '../../src/config/invalid-configuration.error'
-import { InvalidSimulationCallerAddressError } from '../../src/config/invalid-simulation-caller-address.error'
-import { ResolverPrivateKeyRequiredError } from '../../src/config/resolver-private-key-required.error'
+import {
+  InvalidConfigurationError,
+  InvalidSimulationCallerAddressError,
+  ResolverPrivateKeyRequiredError
+} from '../../src/errors'
 
 const KEY = `0x${'11'.repeat(32)}`
 const REQUIRED = {

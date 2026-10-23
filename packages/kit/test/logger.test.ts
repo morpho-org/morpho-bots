@@ -1,0 +1,267 @@
+import { afterEach, describe, expect, it, vi } from 'vitest'
+
+import type { Logger } from '../src/logger'
+
+import { createLogger, railwayContext } from '../src/logger'
+
+/** `07-21 16:42:35` — the UTC stamp every stderr line must carry. */
+const TIME_SHAPE = /^\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/
+
+/** Parses a captured stderr line, asserts its `time` stamp, and returns the rest for `toEqual`. */
+function parseLine(raw: unknown) {
+  const { time, ...rest } = JSON.parse(String(raw)) as Record<string, unknown>
+  expect(time).toMatch(TIME_SHAPE)
+  return rest
+}
+
+describe('createLogger', () => {
+  // Restore console spies even when an assertion throws first, so a failure in one test
+  // cannot leak its captured calls into the next.
+  afterEach(() => vi.restoreAllMocks())
+
+  it('drops lines below the configured minimum level', () => {
+    const logger: Logger = createLogger('warn')
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined)
+    const err = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+
+    logger.debug('rindexer.lag')
+    logger.info('block.new')
+    logger.warn('rindexer.lag')
+    logger.error('tick.error')
+
+    expect(err).toHaveBeenCalledTimes(2) // warn + error → stderr
+    expect(log).not.toHaveBeenCalled() // stdout stays reserved for program output
+  })
+
+  it('routes every level to stderr', () => {
+    const logger = createLogger('debug')
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined)
+    const err = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+
+    logger.debug('a')
+    logger.info('b')
+    logger.warn('c')
+    logger.error('d')
+
+    expect(err).toHaveBeenCalledTimes(4)
+    expect(log).not.toHaveBeenCalled()
+  })
+
+  it('stamps the current utc time onto every line', () => {
+    const logger = createLogger('debug')
+    const err = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+
+    const fmt = (date: Date) =>
+      `${date.toISOString().slice(5, 10)} ${date.toISOString().slice(11, 19)}`
+    const before = new Date()
+    logger.info('block.new')
+    const after = new Date()
+
+    const { time } = JSON.parse(String(err.mock.calls[0]?.[0])) as Record<string, unknown>
+    // Second-resolution stamp taken between the fences — it must equal one of them.
+    expect([fmt(before), fmt(after)]).toContain(String(time))
+  })
+
+  it('serializes bigint fields as decimal strings', () => {
+    const logger = createLogger('debug')
+    const err = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+
+    logger.info('tx.sent', { nonce: 7n, maxFeePerGasWei: 300_000_000_000n })
+
+    expect(parseLine(err.mock.calls[0]?.[0])).toEqual({
+      level: 'info',
+      event: 'tx.sent',
+      nonce: '7',
+      maxFeePerGasWei: '300000000000'
+    })
+  })
+
+  it('recurses into nested bigint fields', () => {
+    const logger = createLogger('debug')
+    const err = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+
+    logger.info('tx.bumped', { tx: { nonce: 7n }, attempts: [1n, 2n] })
+
+    expect(parseLine(err.mock.calls[0]?.[0])).toEqual({
+      level: 'info',
+      event: 'tx.bumped',
+      tx: { nonce: '7' },
+      attempts: ['1', '2']
+    })
+  })
+
+  it('stamps bound context onto every line', () => {
+    const logger = createLogger('debug', { context: { bot: 'blue-liquidation', chainId: 8453 } })
+    const err = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+
+    logger.info('block.new', { height: 42n })
+    logger.warn('state.reset')
+
+    const first = parseLine(err.mock.calls[0]?.[0])
+    const second = parseLine(err.mock.calls[1]?.[0])
+    expect(first).toEqual({
+      level: 'info',
+      event: 'block.new',
+      bot: 'blue-liquidation',
+      chainId: 8453,
+      height: '42'
+    })
+    // Context is present even when the call passes no fields of its own.
+    expect(second).toEqual({
+      level: 'warn',
+      event: 'state.reset',
+      bot: 'blue-liquidation',
+      chainId: 8453
+    })
+  })
+})
+
+describe('createLogger BetterStack opt-in contract', () => {
+  afterEach(() => vi.restoreAllMocks())
+
+  it('stays fully silent when BOTH env vars are unset', () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    createLogger('info', { env: {} })
+    // Both unset is the opt-out: no warning line at construction.
+    expect(err).not.toHaveBeenCalled()
+  })
+
+  it('token-only fails loud (names the missing host)', () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    createLogger('info', { env: { BETTERSTACK_SOURCE_TOKEN: 'tok' } })
+
+    expect(err).toHaveBeenCalledTimes(1)
+    const line = JSON.parse(String(err.mock.calls[0]?.[0])) as Record<string, unknown>
+    expect(line.level).toBe('error')
+    expect(line.event).toBe('logship.misconfigured')
+    expect(line.detail).toContain('BETTERSTACK_INGESTING_HOST')
+  })
+
+  it('host-only fails loud (names the missing token)', () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    createLogger('info', { env: { BETTERSTACK_INGESTING_HOST: 's1.betterstackdata.com' } })
+
+    expect(err).toHaveBeenCalledTimes(1)
+    const line = JSON.parse(String(err.mock.calls[0]?.[0])) as Record<string, unknown>
+    expect(line.event).toBe('logship.misconfigured')
+    expect(line.detail).toContain('BETTERSTACK_SOURCE_TOKEN')
+  })
+
+  it('treats blank/whitespace as unset — a blank token with a host still fails loud', () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    // Blank/whitespace does not count as set: this is token-unset + host-set → partial config.
+    createLogger('info', {
+      env: { BETTERSTACK_SOURCE_TOKEN: '  ', BETTERSTACK_INGESTING_HOST: 'h' }
+    })
+    expect(err).toHaveBeenCalledTimes(1)
+    const line = JSON.parse(String(err.mock.calls[0]?.[0])) as Record<string, unknown>
+    expect(line.detail).toContain('BETTERSTACK_SOURCE_TOKEN')
+  })
+
+  it('accepts a nonblank malformed paired host without synchronous validation', () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+
+    expect(() =>
+      createLogger('info', {
+        env: {
+          BETTERSTACK_SOURCE_TOKEN: 'tok',
+          BETTERSTACK_INGESTING_HOST: 'not a valid host'
+        }
+      })
+    ).not.toThrow()
+    expect(
+      err.mock.calls
+        .map(call => JSON.parse(String(call[0])) as Record<string, unknown>)
+        .some(line => line.event === 'logship.misconfigured')
+    ).toBe(false)
+  })
+})
+
+describe('createLogger BetterStack path', () => {
+  afterEach(() => vi.restoreAllMocks())
+
+  it('performs zero network activity when the env vars are unset', () => {
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockImplementation((() =>
+        Promise.reject(new Error('network must not be touched'))) as unknown as typeof fetch)
+    vi.spyOn(console, 'error').mockImplementation(() => undefined)
+
+    const logger = createLogger('debug', { env: {} })
+    logger.info('tx.sent', { nonce: 1n })
+
+    expect(fetchSpy).not.toHaveBeenCalled()
+  })
+
+  it('warns and performs zero network activity under partial (token-only) config', () => {
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockImplementation((() =>
+        Promise.reject(new Error('network must not be touched'))) as unknown as typeof fetch)
+    const err = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+
+    const logger = createLogger('debug', { env: { BETTERSTACK_SOURCE_TOKEN: 'tok' } })
+    logger.info('tx.sent', { nonce: 1n })
+
+    // The misconfiguration line was emitted at construction, but no transport attached → no network.
+    const lines = err.mock.calls.map(call => JSON.parse(String(call[0])) as Record<string, unknown>)
+    expect(lines.some(line => line.event === 'logship.misconfigured')).toBe(true)
+    expect(fetchSpy).not.toHaveBeenCalled()
+  })
+
+  it('serializes nested bigints without throwing when BetterStack is enabled (HTTP mocked)', () => {
+    // Mock the HTTP layer so no real request can escape even if a batch were to flush.
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockImplementation((() =>
+        Promise.resolve(new Response(null, { status: 202 }))) as unknown as typeof fetch)
+    const err = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+
+    const logger = createLogger('debug', {
+      env: {
+        BETTERSTACK_SOURCE_TOKEN: 'tok',
+        BETTERSTACK_INGESTING_HOST: 's1.betterstackdata.com'
+      }
+    })
+
+    // The BetterStack transport builds its payload via JSON.stringify synchronously inside
+    // shipToLogger — a raw bigint there throws and is routed to onError as a `logship.error` line.
+    // With flattening in place this must not happen.
+    expect(() => logger.info('tx.bumped', { tx: { nonce: 7n }, attempts: [1n, 2n] })).not.toThrow()
+
+    const lines = err.mock.calls.map(call => JSON.parse(String(call[0])) as Record<string, unknown>)
+    // No serialization failure reached the BetterStack transport's onError.
+    expect(lines.some(line => line.event === 'logship.error')).toBe(false)
+    // The one structured line carries the bigints as decimal strings (correct string form).
+    const { time, ...structured } = lines.find(line => line.event === 'tx.bumped') ?? {}
+    expect(time).toMatch(TIME_SHAPE)
+    expect(structured).toEqual({
+      level: 'info',
+      event: 'tx.bumped',
+      tx: { nonce: '7' },
+      attempts: ['1', '2']
+    })
+    fetchSpy.mockClear()
+  })
+})
+
+describe('railwayContext', () => {
+  it('names each present Railway identity under its log field, trimmed, and omits the rest', () => {
+    expect(
+      railwayContext({
+        RAILWAY_SERVICE_NAME: ' bot ',
+        RAILWAY_DEPLOYMENT_ID: 'dep-1',
+        RAILWAY_ENVIRONMENT_NAME: 'production',
+        RAILWAY_REPLICA_ID: 'replica-1'
+      })
+    ).toStrictEqual({
+      railway_service: 'bot',
+      railway_deployment: 'dep-1',
+      railway_environment: 'production',
+      railway_replica: 'replica-1'
+    })
+    expect(railwayContext({ RAILWAY_SERVICE_NAME: '  ', RAILWAY_REPLICA_ID: 'r' })).toStrictEqual({
+      railway_replica: 'r'
+    })
+  })
+})

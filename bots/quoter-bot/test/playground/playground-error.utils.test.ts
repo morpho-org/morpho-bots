@@ -1,12 +1,14 @@
 import { describe, expect, test } from 'vitest'
 
-import { CollectionImportError } from '../../playground/collection-import.error'
-import { CollectionValidationError } from '../../playground/collection-validation.error'
-import { FragmentCodecError } from '../../playground/fragment-codec.error'
+import {
+  CollectionImportError,
+  CollectionValidationError,
+  FragmentCodecError,
+  PreviewGenerationError,
+  StrictJsonError
+} from '../../playground/errors'
 import { playgroundErrorMessage } from '../../playground/playground-error.utils'
-import { PreviewGenerationError } from '../../playground/preview-generation.error'
-import { StrictJsonError } from '../../playground/strict-json.error'
-import { ConfigValidationError } from '../../src/config/config-validation.error'
+import { ConfigValidationError } from '../../src/errors'
 
 describe('playground expected error presentation', () => {
   test('renders only allowlisted expected failures and rethrows unexpected errors for the boundary', () => {

@@ -14,14 +14,16 @@ import type { QuoterConfirmedTransaction } from '../transaction/quoter-transacti
 import type { BootstrapCrossBookOffer } from './bootstrap-cross-book.utils'
 import type { BootstrapActiveGroup } from './bootstrap-position.service'
 
-import { BootstrapOwnershipCleanupError } from '../../application/bootstrap/bootstrap-ownership-cleanup.error'
 import { operatorErrorName } from '../../application/monitoring/operator-error-name.utils'
 import { isAprWadInRange } from '../../domain/tick-window'
+import {
+  BootstrapAdapterError,
+  BootstrapHardHaltError,
+  BootstrapOwnershipCleanupError
+} from '../../errors'
 import { snapshotUnavailable, withheldByAdmission } from '../exposure/exposure-admission.utils'
 import { minimumBlockAfter } from '../exposure/exposure-snapshot.utils'
-import { BootstrapAdapterError } from './bootstrap-adapter.error'
 import { resolveBootstrapProspectiveOffer } from './bootstrap-cross-book.utils'
-import { BootstrapHardHaltError } from './bootstrap-hard-halt.error'
 import { bootstrapMarketGroupIds } from './bootstrap-spread.utils'
 
 type BootstrapBookOffer = BootstrapCrossBookOffer

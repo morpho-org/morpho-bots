@@ -29,30 +29,23 @@ describe('playground browser module graph', () => {
     expect(local.toSorted()).toEqual([
       'playground/app.tsx',
       'playground/asset-format.utils.ts',
-      'playground/collection-import.error.ts',
-      'playground/collection-validation.error.ts',
+      'playground/errors.ts',
       'playground/field-visibility.utils.ts',
-      'playground/fragment-codec.error.ts',
       'playground/model.ts',
       'playground/playground-error.utils.ts',
-      'playground/playground-initialization.error.ts',
-      'playground/preview-generation.error.ts',
       'playground/reference-rate.utils.ts',
       'playground/reference-response.utils.ts',
       'playground/rung-rendering.utils.tsx',
-      'playground/strict-json.error.ts',
-      'src/config/config-validation.error.ts',
       'src/config/market-collections.ts',
-      'src/domain/bootstrap-configuration.error.ts',
       'src/domain/bytes32.ts',
       'src/domain/cross-book.ts',
       'src/domain/frozen-copy.ts',
-      'src/domain/ladder-configuration.error.ts',
       'src/domain/ladder.ts',
       'src/domain/loss-factor.ts',
       'src/domain/maturity-premium.ts',
       'src/domain/position-bootstrap.ts',
-      'src/domain/rate-range.ts'
+      'src/domain/rate-range.ts',
+      'src/errors.ts'
     ])
     for (const forbidden of [
       'config.utils',

@@ -180,15 +180,3 @@ export type QuoteOutcome = (
    */
   firmCalls?: number
 }
-
-/** Thrown by adapters/HTTP client to carry a classified {@link QuoteFailureReason}. */
-// oxlint-disable-next-line repo/error-class-file
-export class QuoteError extends Error {
-  readonly reason: QuoteFailureReason
-
-  constructor(reason: QuoteFailureReason, message: string) {
-    super(message)
-    this.name = 'QuoteError'
-    this.reason = reason
-  }
-}

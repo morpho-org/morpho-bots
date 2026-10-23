@@ -4,8 +4,8 @@ import { describe, expect, test } from 'vitest'
 
 import type { QuoterTransactionExecutor } from '../../../src/infrastructure/transaction/quoter-transaction-executor'
 
+import { QuoterTransactionError } from '../../../src/errors'
 import { executeLadderTransaction } from '../../../src/infrastructure/transaction/ladder-transaction-executor.utils'
-import { QuoterTransactionError } from '../../../src/infrastructure/transaction/quoter-transaction.error'
 
 const transactionHash: Hex = `0x${'11'.repeat(32)}`
 const transaction = {

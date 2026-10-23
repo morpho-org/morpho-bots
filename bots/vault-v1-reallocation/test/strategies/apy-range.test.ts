@@ -168,14 +168,13 @@ describe('createApyRangeStrategy', () => {
 
       const result = strategy(makeVaultData([depositMarket, withdrawalMarket]))
 
-      expect(result).toBeDefined()
       expect(result!.length).toBe(2)
       const withdrawal = result![0]!
       const deposit = result![1]!
       expect(withdrawal.marketParams).toEqual(withdrawalMarket.params)
       expect(deposit.marketParams).toEqual(depositMarket.params)
-      expect(withdrawal.assets).toBeLessThan(withdrawalMarket.vaultAssets)
-      expect(deposit.assets === maxUint256 || deposit.assets > depositMarket.vaultAssets).toBe(true)
+      expect(withdrawal.assets).toBe(15_751_857_706n)
+      expect(deposit.assets).toBe(maxUint256)
     })
 
     it('does not include in-range markets in the reallocation', () => {

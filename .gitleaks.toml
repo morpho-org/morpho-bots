@@ -1,5 +1,5 @@
 # Scans staged changes in .husky/pre-commit and the public snapshot before it is pushed
-# (packages/ci-scripts/src/public-mirror). The default generic-api-key rule fires on any long hex
+# (tools/ci-scripts/src/public-mirror). The default generic-api-key rule fires on any long hex
 # literal, so the two shapes this repo legitimately commits are allowlisted: 20-byte EVM addresses
 # (public by definition) and Anvil's ten published developer keys, which the fork tests fund on a
 # local chain. Any other 32-byte hex literal still fails the scan.

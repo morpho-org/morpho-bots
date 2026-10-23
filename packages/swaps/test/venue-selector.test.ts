@@ -7,7 +7,7 @@ import type { QuoteLogger } from '../src/quoting'
 import type { PriceParameters, Venue } from '../src/types'
 import type { VenueCostEstimate, VenuePair } from '../src/venue-selector'
 
-import { QuoteError } from '../src/types'
+import { QuoteError } from '../src/errors'
 import {
   createVenueSelector,
   curveIsTrusted,

@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest'
 
-import { NpmPackFailedError } from '../../scripts/npm-pack-failed.error'
+import { NpmPackFailedError } from '../../scripts/errors'
 import {
   assertBinBundle,
   assertPublishableVersion,

@@ -14,8 +14,8 @@ import type { Environment } from './config.utils'
 import type { SignerIdentity } from './signer-identity.utils'
 
 import { calculateRequiredAllowance } from '../application/setup/required-allowance.utils'
+import { ConfigValidationError } from '../errors'
 import { configurationFromEnvironment, loadConfigurationSources } from './config-source.utils'
-import { ConfigValidationError } from './config-validation.error'
 import {
   acceptedLossFactorValue,
   addressValue,
@@ -176,7 +176,9 @@ export class ConfigService {
         midnight: addressValue(environment, 'MIDNIGHT_ADDRESS'),
         nativeReserve: identity.readOnly
           ? unsignedBigIntValue(environment, 'NATIVE_RESERVE_WEI')
-          : positiveBigIntValue(environment, 'NATIVE_RESERVE_WEI'),
+          : identity.method === 'aws'
+            ? undefined
+            : positiveBigIntValue(environment, 'NATIVE_RESERVE_WEI'),
         signerNativeReserve:
           !identity.readOnly && identity.method === 'aws'
             ? positiveBigIntValue(environment, 'SIGNER_NATIVE_RESERVE_WEI')

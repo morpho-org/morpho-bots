@@ -21,7 +21,7 @@ import type { VenueCostEstimate, VenuePair } from './venue-selector'
 
 import { BPS } from './constants'
 import { routeCostBps } from './cost-bps.utils'
-import { QuoteError } from './types'
+import { QuoteError } from './errors'
 import { resolveUnwraps } from './unwrappers/resolve'
 import { curveIsTrusted, MAX_COST_LEVEL_AGE_MS } from './venue-selector'
 import { priceLifi, quoteLifi } from './venues/lifi'

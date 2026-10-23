@@ -1,13 +1,11 @@
 import { enhanceVerboseArgv } from '@repo/observability'
 import { describe, expect, test, vi } from 'vitest'
 
-import { StartupCleanupFailedError } from '../../../src/application/quoter-bot/startup-cleanup-failed.error'
-import { ConfigFileError } from '../../../src/config/config-file.error'
+import { ConfigFileError, SignerAccountError, StartupCleanupFailedError } from '../../../src/errors'
 import {
   QUOTER_BOT_VERBOSE_COMMANDS,
   runQuoterBotEntrypoint
 } from '../../../src/infrastructure/cli/quoter-bot-entrypoint'
-import { SignerAccountError } from '../../../src/infrastructure/transaction/signer-account.error'
 
 describe('runQuoterBotEntrypoint observability', () => {
   test('ships only allowlisted monitoring records, not every named one', async () => {

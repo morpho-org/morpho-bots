@@ -2,8 +2,8 @@ import type { Address, Hex } from 'viem'
 
 import { describe, expect, test } from 'vitest'
 
-import { ConfigValidationError } from '../../src/config/config-validation.error'
 import { ConfigService } from '../../src/config/config.service'
+import { ConfigValidationError } from '../../src/errors'
 
 const environment = {
   CHAIN_ID: '8453',

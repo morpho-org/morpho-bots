@@ -10,7 +10,7 @@ import {
 
 import type { Venue } from './types'
 
-import { QuoteError } from './types'
+import { QuoteError } from './errors'
 
 /**
  * The hosts this client rate-limits and authenticates: the swap venues plus Pendle's hosted SDK
@@ -59,7 +59,7 @@ type FetchLike = (url: string, init?: RequestInit) => Promise<Response>
 /**
  * A rate-limited JSON HTTP client shared across venues. Each venue gets its own token bucket (their
  * limits differ — 1inch's free tier is 1 RPS). Retries 429/5xx/network up to `maxRetries`, honoring
- * `Retry-After`; per-request deadline is `timeoutMs`. Calls `fetch` directly (not `fetchJsonResponse`)
+ * `Retry-After`; per-request deadline is `timeoutMs`. Calls `fetch` directly
  * because it needs the raw `Response` to read `status` + the `Retry-After` header for backoff. Throws
  * a {@link QuoteError} carrying a classified reason on exhaustion.
  */

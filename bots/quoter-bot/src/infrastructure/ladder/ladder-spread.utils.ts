@@ -5,7 +5,7 @@ import { isAddressEqual } from 'viem'
 import type { OwnedOverlapBookOffer } from '../../domain/intentional-overlap'
 
 import { hasInvalidOwnedBootstrapLadderSpread } from '../../domain/intentional-overlap'
-import { LadderAdapterError } from './ladder-adapter.error'
+import { LadderAdapterError } from '../../errors'
 
 /**
  * Rejects a prospective ladder that crosses itself or an opposing retained offer the maker owns.

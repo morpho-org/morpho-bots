@@ -3,13 +3,13 @@ import type { Hex } from 'viem'
 import { BaseError, encodeErrorResult, ExecutionRevertedError } from 'viem'
 import { describe, expect, it } from 'vitest'
 
+import { TxSendError } from '../src/errors'
 import {
   abiRevertDecoder,
   isExecutionRevert,
   revertReason,
   revertSelector
 } from '../src/revert.utils'
-import { TxSendError } from '../src/tx-send.error'
 
 const SOLIDITY_ERRORS = [
   { type: 'error', name: 'Error', inputs: [{ type: 'string' }] },

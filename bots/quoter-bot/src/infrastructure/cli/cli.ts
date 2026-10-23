@@ -23,15 +23,17 @@ import type {
   SetupCheckReport
 } from '../../application/setup/setup-check.service'
 
-import { PositionBootstrapHaltedError } from '../../application/bootstrap/position-bootstrap-halted.error'
-import { PositionBootstrapMonitorHaltedError } from '../../application/bootstrap/position-bootstrap-monitor-halted.error'
-import { LadderCycleHaltedError } from '../../application/ladder/ladder-cycle-halted.error'
-import { LadderMonitorHaltedError } from '../../application/ladder/ladder-monitor-halted.error'
 import { createMonitoringProjection } from '../../application/monitoring/monitoring-projection.utils'
 import { operatorErrorName } from '../../application/monitoring/operator-error-name.utils'
-import { QuoterBotMonitorHaltedError } from '../../application/quoter-bot/quoter-bot-monitor-halted.error'
-import { SetupMonitorHaltedError } from '../../application/setup/setup-monitor-halted.error'
-import { CliUsageError } from './cli-usage.error'
+import {
+  CliUsageError,
+  LadderCycleHaltedError,
+  LadderMonitorHaltedError,
+  PositionBootstrapHaltedError,
+  PositionBootstrapMonitorHaltedError,
+  QuoterBotMonitorHaltedError,
+  SetupMonitorHaltedError
+} from '../../errors'
 import { offerInvalidationGroup } from './offer-invalidation-argument.utils'
 
 interface SetupReadinessService {

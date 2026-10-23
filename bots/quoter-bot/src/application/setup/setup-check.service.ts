@@ -5,8 +5,12 @@ import { withActiveSpan } from '@repo/telemetry'
 
 import type { SupportedChainId } from '../../config/supported-chains.utils'
 
+import {
+  SetupCheckAbortedError,
+  SetupFailedError,
+  SetupMonitorConfigurationError
+} from '../../errors'
 import { operatorErrorName } from '../monitoring/operator-error-name.utils'
-import { SetupCheckAbortedError } from './setup-check-aborted.error'
 import {
   booksCheck,
   capture,
@@ -21,8 +25,6 @@ import {
   setupResult,
   unsafeOffersStatus
 } from './setup-check.utils'
-import { SetupFailedError } from './setup-failed.error'
-import { SetupMonitorConfigurationError } from './setup-monitor-configuration.error'
 
 const SETUP_CHECK_MONITOR_INTERVAL_MS = 60_000
 const SETUP_CHECK_TRANSIENT_ATTEMPTS = 3
@@ -127,8 +129,8 @@ export type SetupCheckConfig = {
   signerMode: 'read-only' | 'private-key' | 'keystore' | 'aws'
   /** Expected Midnight singleton address. */
   midnight: Address
-  /** Minimum native-token balance retained for transaction fees. */
-  nativeReserve: bigint
+  /** Maker's native-token floor for transaction fees. Omitted in AWS write mode, where the maker sends no transactions. */
+  nativeReserve?: bigint
   /** Allowance funding one full deployment of the configured buy exposure; startup warns below it. */
   requiredAllowance: bigint
   /** AWS signer's operating-gas floor. Omitted when signer and maker are the same account. */
@@ -386,7 +388,9 @@ export class SetupCheckService {
       referenceChainIdRead,
       capture(() => this.state.getCode(this.config.midnight)),
       derivedSignerRead,
-      capture(() => this.state.getNativeBalance(this.config.maker)),
+      this.config.signerMode === 'aws'
+        ? Promise.resolve(undefined)
+        : capture(() => this.state.getNativeBalance(this.config.maker)),
       capture(() => this.state.getLoanAllowance(this.config.maker, this.config.loanAsset)),
       capture(() => this.state.getRatifier(this.config.maker, this.config.ratifier)),
       Promise.all(bookReads.map(async book => ({ ...book, response: await book.response }))),
@@ -480,7 +484,8 @@ export class SetupCheckService {
               )
             : setupResult(
                 'signer-native-balance',
-                signerNative.value >= (this.config.signerNativeReserve ?? 0n),
+                this.config.signerNativeReserve !== undefined &&
+                  signerNative.value >= this.config.signerNativeReserve,
                 signerNative.value,
                 this.config.signerNativeReserve,
                 `fund the AWS signer with native token to at least ${this.config.signerNativeReserve}`
@@ -531,15 +536,25 @@ export class SetupCheckService {
                 'latest equals pending',
                 'wait for or replace the pending signer transaction before restarting'
               )
-    const nativeCheck = !nativeBalance.ok
-      ? providerFailure('native-balance', nativeBalance.error, this.config.nativeReserve)
-      : setupResult(
-          'native-balance',
-          nativeBalance.value >= this.config.nativeReserve,
-          nativeBalance.value,
-          this.config.nativeReserve,
-          `fund the configured maker with native token to at least ${this.config.nativeReserve}`
-        )
+    const nativeCheck =
+      nativeBalance === undefined
+        ? {
+            name: 'native-balance' as const,
+            status: 'not-required' as const,
+            observed: { reason: 'the maker sends no transactions' },
+            required: 'not in AWS write mode'
+          }
+        : this.config.nativeReserve === undefined
+          ? setupResult('native-balance', false, { configured: false }, 'a configured reserve')
+          : !nativeBalance.ok
+            ? providerFailure('native-balance', nativeBalance.error, this.config.nativeReserve)
+            : setupResult(
+                'native-balance',
+                nativeBalance.value >= this.config.nativeReserve,
+                nativeBalance.value,
+                this.config.nativeReserve,
+                `fund the configured maker with native token to at least ${this.config.nativeReserve}`
+              )
     const allowanceCheck = !allowance.ok
       ? providerFailure('loan-allowance', allowance.error, { spender: this.config.midnight })
       : loanAllowanceCheck(allowance.value, this.config, startup)

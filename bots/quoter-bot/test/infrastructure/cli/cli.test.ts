@@ -7,16 +7,18 @@ import { describe, expect, test, vi } from 'vitest'
 
 import type { LadderTransactionSubmittedEvent } from '../../../src/application/ladder/ladder-verbose'
 
-import { PositionBootstrapHaltedError } from '../../../src/application/bootstrap/position-bootstrap-halted.error'
-import { PositionBootstrapMonitorHaltedError } from '../../../src/application/bootstrap/position-bootstrap-monitor-halted.error'
-import { OfferInvalidationFailedError } from '../../../src/application/invalidation/offer-invalidation-failed.error'
-import { LadderCycleHaltedError } from '../../../src/application/ladder/ladder-cycle-halted.error'
-import { LadderMonitorHaltedError } from '../../../src/application/ladder/ladder-monitor-halted.error'
-import { QuoterBotMonitorHaltedError } from '../../../src/application/quoter-bot/quoter-bot-monitor-halted.error'
 import { VersionService } from '../../../src/application/quoter-bot/version.service'
-import { SetupMonitorHaltedError } from '../../../src/application/setup/setup-monitor-halted.error'
+import {
+  CliUsageError,
+  LadderCycleHaltedError,
+  LadderMonitorHaltedError,
+  OfferInvalidationFailedError,
+  PositionBootstrapHaltedError,
+  PositionBootstrapMonitorHaltedError,
+  QuoterBotMonitorHaltedError,
+  SetupMonitorHaltedError
+} from '../../../src/errors'
 import { Cli } from '../../../src/infrastructure/cli/cli'
-import { CliUsageError } from '../../../src/infrastructure/cli/cli-usage.error'
 import { runQuoterBotEntrypoint } from '../../../src/infrastructure/cli/quoter-bot-entrypoint'
 
 const readyReport = {

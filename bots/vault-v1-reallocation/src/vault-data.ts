@@ -6,7 +6,7 @@ import { getChainAddresses } from '@morpho-org/blue-sdk'
 import { advanceRateAtTarget } from '@repo/utils'
 import { isAddressEqual, zeroAddress } from 'viem'
 
-import { readVaultV1Lens } from './state/lens.sol'
+import { type ReadAt, readVaultV1Lens } from './state/lens.sol'
 
 export type MarketState = {
   totalSupplyAssets: bigint
@@ -49,7 +49,7 @@ export type VaultData = {
   marketsData: VaultMarketData[]
   /**
    * Ids of the non-idle markets excluded from `apy-range` for running a foreign IRM. Precomputed
-   * here rather than in the tick — the mapping above already walks every market.
+   * here rather than per read — the mapping above already walks every market.
    */
   nonAdaptiveCurveMarketIds: Hex[]
 }
@@ -66,26 +66,26 @@ const isAdaptiveCurveMarket = (irm: Address, rateAtTarget: bigint, chainId: numb
 
 /**
  * Reads EVERY given vault's full reallocation input — roles, withdraw queue, and per-market Blue
- * state, cap, position, and `rateAtTarget` — in ONE deployless `eth_call` pinned to `blockNumber`,
+ * state, cap, position, and `rateAtTarget` — in ONE deployless `eth_call` pinned to `at`,
  * so the snapshot is coherent across vaults and markets alike. The lens projects each market's
  * accrual read-only inside that call; only the IRM's `rateAtTarget` is finished off here, by
  * {@link advanceRateAtTarget} from `@repo/utils`.
  *
  * Keyed by lower-cased vault address. A vault the lens declined is absent rather than throwing —
  * the reader's `declined: 'throw'` default means that can only happen if the envelope itself could
- * not serve it, which the tick reports per vault.
+ * not serve it, which the read reports as that vault failing.
  */
 export const fetchVaults = async (
   client: Client<Transport<BatchLensTransportType>>,
   vaults: readonly Address[],
-  { chainId, blockNumber, eoa }: { chainId: number; blockNumber: bigint; eoa: Address }
+  { chainId, at, eoa }: { chainId: number; at: ReadAt; eoa: Address }
 ): Promise<Map<string, VaultData>> => {
   const { morpho, adaptiveCurveIrm } = getChainAddresses(chainId)
   const rows = await readVaultV1Lens(
     client,
     { morpho, adaptiveCurveIrm },
     vaults.map(vault => ({ vault, eoa })),
-    blockNumber
+    at
   )
   return new Map(
     vaults

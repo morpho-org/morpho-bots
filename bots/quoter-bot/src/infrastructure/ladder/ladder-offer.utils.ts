@@ -18,7 +18,7 @@ import {
   LOWEST_TICK,
   rateTickWindow
 } from '../../domain/tick-window'
-import { LadderAdapterError } from './ladder-adapter.error'
+import { LadderAdapterError } from '../../errors'
 
 const bigintMin = (left: bigint, right: bigint) => (left < right ? left : right)
 const bigintMax = (left: bigint, right: bigint) => (left > right ? left : right)

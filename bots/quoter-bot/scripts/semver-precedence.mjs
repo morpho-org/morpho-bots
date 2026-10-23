@@ -1,8 +1,8 @@
 import { pathToFileURL } from 'node:url'
 
-// The error class lives in its conventional *.error.ts file; Node 24 type-strips the TypeScript
+// The error class lives in the scripts' errors.ts; Node 24 type-strips the TypeScript
 // import natively, so the CLI still runs through plain `node` with no dependencies installed.
-import { SemverPrecedenceError } from './semver-precedence.error.ts'
+import { SemverPrecedenceError } from './errors.ts'
 
 // SemVer §11 precedence for the publish workflow's dist-tag gates. GNU `sort -V` natural-sorts
 // nonnumeric prerelease identifiers (`alpha10` > `alpha2`) where SemVer compares them lexically

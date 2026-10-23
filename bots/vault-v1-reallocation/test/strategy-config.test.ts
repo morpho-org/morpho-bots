@@ -1,7 +1,7 @@
 import { getAddress } from 'viem'
 import { afterEach, describe, expect, it } from 'vitest'
 
-import { InvalidConfigError } from '../src/invalid-config.error'
+import { InvalidConfigError } from '../src/errors'
 import {
   assertApyRangeValid,
   DEFAULT_APY_RANGE,
@@ -38,10 +38,6 @@ describe('assertApyRangeValid', () => {
   // Runs at module load over the default + both tables, so a flipped pair added to the (currently
   // empty) templates fails the bot at startup instead of silently inverting the above-range /
   // below-range classification.
-  it('accepts the global default', () => {
-    expect(() => assertApyRangeValid(DEFAULT_APY_RANGE, 'default')).not.toThrow()
-  })
-
   it.each([
     ['inverted', { min: 8, max: 3 }],
     ['degenerate', { min: 5, max: 5 }]

@@ -2,7 +2,7 @@ import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { NpmPackFailedError } from './npm-pack-failed.error'
+import { NpmPackFailedError } from './errors'
 import {
   assertBinBundle,
   assertPublishableVersion,

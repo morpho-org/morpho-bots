@@ -5,7 +5,7 @@ import { setTimeout as sleep } from 'node:timers/promises'
 import { createTestClient, http, publicActions } from 'viem'
 import { base } from 'viem/chains'
 
-import { AnvilStartupError } from './anvil-startup.error'
+import { AnvilStartupError } from './errors'
 
 const BASE_FORK_BLOCK = 48_900_000n
 // 8546 is this suite's slot in the repo-wide anvil port registry (see the liquidation bots'

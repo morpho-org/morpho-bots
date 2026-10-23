@@ -8,7 +8,7 @@ import { tryCatch } from '@repo/utils'
 import { getAddress, isAddress, isHex, parseEther, parseGwei } from 'viem'
 import { base, mainnet } from 'viem/chains'
 
-import { InvalidConfigError } from './invalid-config.error'
+import { InvalidConfigError } from './errors'
 
 // Swap venues are no longer a per-collateral config file: markets come from the Midnight Markets API
 // (the whitelist), and the enabled venues are inferred from which venue API keys are present in env.

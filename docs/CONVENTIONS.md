@@ -5,15 +5,18 @@ rest.
 
 ## File structure patterns
 
-### Type colocation
+- **Prefer flat directories.** Nest a folder only when it has its own entry point or would
+  otherwise crowd its parent.
 
-- **Colocate types with functions**: Define types inline in the function (or directly above it)
-  unless they're explicitly meant to be reused
-- **Shared types at the top**: If a type or symbol is used by multiple functions in the same file,
-  place it at the top of the file
-- **Avoid standalone type files**: Only use a `.types.ts` file for pure type definitions that have
-  no accompanying code (e.g., shared API response shapes, domain models referenced across many
-  files). If a type has a related function or class, keep the type in that file instead.
+### Types and errors
+
+Types and error classes follow the same rule.
+
+- **Inline first**: Define one beside the code that uses it, or at the top of the file when several
+  functions there share it.
+- **Then the package's `types.ts` or `errors.ts`**: Move it there once inline definitions make
+  imports messy or cyclic, or once it is exported for use outside the package. Each file declares
+  only its kind; an `errors.ts` holds error classes and their types (`repo/errors-file`).
 
 ## Code style and best practices
 
@@ -41,6 +44,15 @@ prose as much as to code.
   missing". Git blame and the PR carry provenance. Likewise no "when adding X, do Y" checklists in
   code; that belongs in the PR description or docs.
 
+### Prose
+
+Docs, skills, PR bodies, and operator-facing messages follow the
+[Microsoft Writing Style Guide](https://learn.microsoft.com/en-us/style-guide/welcome/), written as
+plainly and tightly as Brian Kernighan writes. An agent's native style is optimized for the way it
+thinks. Nothing is wrong with that as such, but some readers bounce off text simply because it
+sounds like AI. Kernighan and the Microsoft guide give clear, concise, technical patterns to follow
+instead.
+
 ### Function and method organization
 
 - **Parameter Count**: Functions with more than 3 parameters should be refactored to accept ≤3
@@ -61,9 +73,9 @@ prose as much as to code.
 
 ### Error handling
 
-- **Typed Error Isolation**: Every expected domain, application, infrastructure, configuration, CLI,
-  provider, or tooling failure uses a named exported `Error` subclass, never plain `Error`. A
-  boundary wrapper may retain an unexpected third-party error as `cause`, but operator-visible
+- **Named error classes**: Every expected domain, application, infrastructure, configuration, CLI,
+  provider, or tooling failure uses a named `Error` subclass, never plain `Error`, placed per
+  [Types and errors](#types-and-errors). A boundary wrapper may retain an unexpected third-party error as `cause`, but operator-visible
   fields and messages must exclude credentials, URLs, response bodies, and other untrusted data.
 - **Logging**: Structured logs carry enough context (bot name, operation, relevant inputs) that an
   operator can answer "what did the bot do and why?" a day later.
@@ -77,6 +89,10 @@ prose as much as to code.
   package that emits it. A key that is also **behavioral** (a map key, a dedupe set) keeps whatever
   name that role gave it — `PendingQueue`'s `SubmitArgs.label` is logged as `id` but stays `label` in
   the API, because its value is compared, not just displayed. Never re-derive the key at a call site.
+- **Log shapes are not a contract.** No test pins a log line's event name, fields or shape: no
+  snapshots of log output, no exact field sets. A BetterStack dashboard or query that parses a field
+  never blocks a rename or a simplification. Change the log, and say in the PR which dashboards to
+  update.
 - **Promises**: Use `tryCatch` from `@repo/utils` to handle promise throws.
 
 ### Environment variables
@@ -107,7 +123,9 @@ prose as much as to code.
 
 ### Test organization
 
-- **Mirror `src/`**: The `test/` tree mirrors `src/`, and shared test helpers live in it too.
+- **Mirror owning modules**: Unit tests mirror their owning modules; scenario, package-contract and
+  adversarial trace suites may be organized by behavior under `test/`. Shared helpers live under
+  `test/`, except those provided via a package's `./testing` entry point.
 - **One file per module**: If a test file already exists for the module, add to it rather than
   creating a new one.
 
@@ -137,6 +155,8 @@ Avoid these patterns that produce tests that pass but verify nothing useful:
   without matching the real API's shape, edge cases, or error modes
 - **No meaningful assertion**: A test that only checks `toBeDefined()` or `not.toThrow()` verifies
   nothing about the output
+- **Pinning log output**: Logs are observations of behavior, not its contract (Error handling, "Log
+  shapes are not a contract"). Assert what the code did, and let its log lines change freely
 
 ## Import patterns
 

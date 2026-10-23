@@ -8,7 +8,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { Logger } from '../src/logger'
 import type { Policy } from '../src/policy'
 
-import { EXECUTOR_SELECTOR, PolicyViolationError } from '../src/policy'
+import { PolicyViolationError } from '../src/errors'
+import { EXECUTOR_SELECTOR } from '../src/policy'
 import { createAccountSigner, createSigner } from '../src/signer'
 
 // The `eth_estimateGas` these tests mock (0x5208). The signer returns it so the queue can price its

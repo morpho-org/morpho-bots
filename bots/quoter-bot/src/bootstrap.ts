@@ -28,13 +28,16 @@ import { serializeQuoterBotWrites } from './application/quoter-bot/quoter-bot-mu
 import { QuoterBotService } from './application/quoter-bot/quoter-bot.service'
 import { cancelOwnedOffersOnStartupFailure } from './application/quoter-bot/startup-cleanup.utils'
 import { VersionService } from './application/quoter-bot/version.service'
-import { SetupCheckAbortedError } from './application/setup/setup-check-aborted.error'
 import { SetupCheckService } from './application/setup/setup-check.service'
-import { ConfigValidationError } from './config/config-validation.error'
 import { ConfigService as RuntimeConfigService } from './config/config.service'
-import { BootstrapConfigurationError } from './domain/bootstrap-configuration.error'
-import { LadderConfigurationError } from './domain/ladder-configuration.error'
 import { requiresVariableRateReference } from './domain/target-rate'
+import {
+  BootstrapConfigurationError,
+  ConfigValidationError,
+  LadderConfigurationError,
+  QuoterTransactionError,
+  SetupCheckAbortedError
+} from './errors'
 import { createBootstrapGroupOwnership } from './infrastructure/bootstrap/bootstrap-group-ownership.utils'
 import { ReadOnlyBootstrapMakeService } from './infrastructure/bootstrap/bootstrap-make.read-only'
 import { createProductionBootstrapAdapters } from './infrastructure/bootstrap/production-bootstrap'
@@ -50,7 +53,6 @@ import { ViemSetupStateService } from './infrastructure/setup-state/viem-setup-s
 import { assertCurrentStrategyStates } from './infrastructure/strategy-state/strategy-state-file.utils'
 import { createQuoterTransactionExecutor } from './infrastructure/transaction/quoter-transaction-executor'
 import { createQuoterTransactionLogger } from './infrastructure/transaction/quoter-transaction-logger.utils'
-import { QuoterTransactionError } from './infrastructure/transaction/quoter-transaction.error'
 import { createSignerAccount } from './infrastructure/transaction/signer-account.utils'
 
 type Environment = Record<string, string | undefined>

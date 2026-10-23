@@ -3,7 +3,7 @@ import type { Hex } from 'viem'
 import type { LendHalt, LossFactorObservation } from './loss-factor'
 import type { MaturityPremiumConfig } from './maturity-premium'
 
-import { BootstrapConfigurationError } from './bootstrap-configuration.error'
+import { BootstrapConfigurationError } from '../errors'
 import { isBytes32 } from './bytes32'
 import { frozenCopy } from './frozen-copy'
 import { lendHalt } from './loss-factor'

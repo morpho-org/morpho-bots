@@ -15,7 +15,7 @@ position (none exist while the market is healthy), `RPC_URL_8453`, and
 
 ## Prerequisites
 
-- **pnpm** `11.11.0` (via corepack) and **Node** `24.18.1` (`.nvmrc`).
+- **pnpm** `11.11.0` (via corepack) and **Node** `24.22.1` (`.nvmrc`).
 - A chain RPC that both reads and _relays_ transactions — **not** `rpc.morpho.dev/realtime`, which
   acknowledges sends but never broadcasts them.
 - A **funded EOA** (native gas) — the liquidator and the recipient of the end-of-exec token sweeps.

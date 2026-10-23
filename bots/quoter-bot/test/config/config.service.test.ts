@@ -3,8 +3,8 @@ import type { Address, Hex } from 'viem'
 import { bytesToHex, hexToBytes } from 'viem'
 import { describe, expect, test } from 'vitest'
 
-import { ConfigValidationError } from '../../src/config/config-validation.error'
 import { ConfigService } from '../../src/config/config.service'
+import { ConfigValidationError } from '../../src/errors'
 
 const maker: Address = '0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A'
 const midnight: Address = '0x2222222222222222222222222222222222222222'

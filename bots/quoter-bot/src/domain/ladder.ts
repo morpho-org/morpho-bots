@@ -3,10 +3,10 @@ import type { Hex } from 'viem'
 import type { MaturityPremiumConfig } from './maturity-premium'
 import type { RateRange } from './rate-range'
 
+import { LadderConfigurationError } from '../errors'
 import { isBytes32 } from './bytes32'
 import { CROSS_BOOK_CLEARANCE_BPS } from './cross-book'
 import { frozenCopy } from './frozen-copy'
-import { LadderConfigurationError } from './ladder-configuration.error'
 import {
   hasAttainableMaturityPremiumBps,
   highestReachableMaturityPremiumBps,

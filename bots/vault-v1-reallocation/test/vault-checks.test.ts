@@ -1,4 +1,4 @@
-import type { Logger } from '@repo/bot-kit'
+import type { Logger } from '@repo/kit'
 import type { Address } from 'viem'
 
 import { getAddress } from 'viem'
@@ -6,7 +6,7 @@ import { describe, expect, it, vi } from 'vitest'
 
 import type { VaultCheckReads } from '../src/vault-checks'
 
-import { InvalidVaultError } from '../src/invalid-vault.error'
+import { InvalidVaultError } from '../src/errors'
 import { checkVaults } from '../src/vault-checks'
 
 const VAULT_A: Address = getAddress(`0x${'aa'.repeat(20)}`)

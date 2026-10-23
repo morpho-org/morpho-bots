@@ -4,7 +4,7 @@ import { MAX_OFFER_CAP } from '@morpho-org/midnight-sdk'
 import { base } from 'viem/chains'
 import { describe, expect, test } from 'vitest'
 
-import { LadderAdapterError } from '../../../src/infrastructure/ladder/ladder-adapter.error'
+import { LadderAdapterError } from '../../../src/errors'
 import { readMakerOfferGroups } from '../../../src/infrastructure/provider/offer-groups.utils'
 
 const maker: Address = '0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A'

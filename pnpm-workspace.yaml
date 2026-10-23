@@ -1,6 +1,8 @@
 packages:
   - bots/*
   - packages/*
+  - framework/*
+  - tools/*
 
 engineStrict: true
 saveExact: true
@@ -36,7 +38,6 @@ catalog:
   # Shared by @repo/telemetry (SDK setup) and quoter-bot (metric derivation): one copy keeps the
   # global tracer/meter provider registration coherent across packages.
   '@opentelemetry/api': 1.9.1
-  '@internationalized/date': 3.12.1
   '@tanstack/react-form': 1.20.0
   '@tanstack/react-table': 8.21.3
   '@loglayer/transport-betterstack': 2.2.0
@@ -51,7 +52,6 @@ catalog:
   '@types/node': 24.7.0
   '@types/react': 19.2.18
   '@types/react-dom': 19.2.4
-  date-fns: 4.1.0
   esbuild: 0.28.1
   execa: 9.6.0
   executooor-viem: ^1.3.3
@@ -83,7 +83,7 @@ catalog:
   # declares an optional peer on zod, so a workspace package holding a DIFFERENT zod major gets its
   # own peer-variation copy of viem — two `BaseError` classes, and every cross-package `instanceof`
   # against a viem error silently returns false. `test/viem-dedupe.test.ts` guards the invariant.
-  zod: 4.5.0
+  zod: 4.6.6
 
 patchedDependencies:
   soltag@0.0.17: patches/soltag@0.0.17.patch
@@ -94,11 +94,15 @@ overrides:
   # Drop this once solc is bumped past a release that ships a fixed tmp.
   solc>tmp: 0.2.7
   # ws 8.18.3 (pinned exactly by viem 2.47.17) has GHSA-96hv-2xvq-fx4p and GHSA-58qx-3vcg-4xpx.
-  # Mirrors viem's own move to ws 8.21.0 (https://github.com/wevm/viem/pull/4788, viem 2.54.2); drop
-  # this once the catalog's viem pins ws >= 8.21.0.
-  viem>ws: 8.21.0
+  # Mirrors viem's own move to ws 8.21.0 (https://github.com/wevm/viem/pull/4788, viem 2.54.2), raised to
+  # 8.21.1 for AIKIDO-2026-138234; drop this once the catalog's viem pins ws >= 8.21.1.
+  viem>ws: 8.21.1
   # AIKIDO-2026-26118, AIKIDO-2026-963596: @ethereumjs/util 10.1.2 (via @ethereumjs/wallet) resolves
   # @noble/curves/@noble/hashes 2.2.0. curves 2.3.0 pins hashes 2.3.0, below the hashes fix, so both
   # go to 2.4.0. Drop this once @ethereumjs/util resolves @noble/curves >= 2.4.0 on its own.
   '@ethereumjs/util>@noble/curves': 2.4.0
   '@ethereumjs/util>@noble/hashes': 2.4.0
+  # GHSA-5gmw-xhrv-c9v3, GHSA-85c8-ppgw-ccpr: oxfmt 0.36.0 (catalog) pins tinypool 2.1.0 exactly;
+  # 2.1.2 is the lowest release fixing both. Drop this once oxfmt is bumped to a release pinning
+  # tinypool >= 2.1.2.
+  oxfmt>tinypool: 2.1.2

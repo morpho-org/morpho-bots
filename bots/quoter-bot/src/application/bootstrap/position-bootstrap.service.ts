@@ -15,7 +15,7 @@ import type {
   PositionBootstrapDecision,
   ValidBootstrapConfig
 } from '../../domain/position-bootstrap'
-import type { BootstrapMempoolValidationError } from '../../infrastructure/bootstrap/bootstrap-mempool-validation.error'
+import type { BootstrapMempoolValidationError } from '../../errors'
 import type { OperatorAdapterOperation } from '../monitoring/operator-error-name.utils'
 import type {
   BootstrapMakeResult,
@@ -27,7 +27,6 @@ import type {
   BootstrapVerboseState
 } from './position-bootstrap-verbose'
 
-import { BootstrapConfigurationError } from '../../domain/bootstrap-configuration.error'
 import {
   MARKET_FAILURE_BUDGET_CYCLES,
   createMarketFailureBudget
@@ -38,7 +37,11 @@ import {
   decidePositionBootstrapWithDiagnostics,
   effectiveBootstrapPremiumBps
 } from '../../domain/position-bootstrap'
-import { BootstrapAdapterError } from '../../infrastructure/bootstrap/bootstrap-adapter.error'
+import {
+  BootstrapAdapterError,
+  BootstrapConfigurationError,
+  BootstrapOwnershipCleanupError
+} from '../../errors'
 import { isBelowMinimumOfferRejection } from '../../infrastructure/bootstrap/bootstrap-mempool-validation.utils'
 import { isRateWindowEmpty } from '../../infrastructure/bootstrap/bootstrap-offer.utils'
 import { snapshotErrorOperationField } from '../../infrastructure/exposure/exposure-admission.utils'
@@ -47,7 +50,6 @@ import {
   operatorErrorDetails,
   operatorErrorName
 } from '../monitoring/operator-error-name.utils'
-import { BootstrapOwnershipCleanupError } from './bootstrap-ownership-cleanup.error'
 
 const confirmedCancellation = (transactions: readonly BootstrapSubmittedTransaction[]) =>
   transactions.some(transaction => transaction.operation === 'cancel')

@@ -1,7 +1,7 @@
 import type { Abi, Address, Hex } from 'viem'
 
 import { getChainAddresses } from '@morpho-org/blue-sdk'
-import { createDeploylessClient } from '@repo/bot-kit'
+import { createDeploylessClient } from '@repo/kit'
 import { advanceRateAtTarget } from '@repo/utils'
 import {
   decodeFunctionResult,
@@ -19,8 +19,8 @@ import { describe, expect, it } from 'vitest'
 import { VaultV2ReallocationLens } from '../../src/state/lens.sol'
 import { VaultV2AccrualReferenceLens } from './reference-lens.sol'
 
-// THE funds-at-risk gate for the read-only accrual rewrite, mirroring the v1 suite. The production
-// lens no longer calls `Morpho.accrueInterest`; it projects the same arithmetic read-only so the
+// THE funds-at-risk gate for the read-only accrual projection, mirroring the v1 suite. The production
+// lens does not call `Morpho.accrueInterest`; it projects the same arithmetic read-only so the
 // deployless envelope's STATICCALL dispatch can reach it. This asserts the projection is EXACT by
 // running both lenses at one pinned block and diffing every field reallocation sizing consumes.
 //

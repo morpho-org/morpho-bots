@@ -9,6 +9,7 @@ import { $ } from 'execa'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { RailwayVariableOperationError } from './errors'
 import {
   deleteRailwayVariable,
   isRailwayVariableMissingError,
@@ -20,7 +21,6 @@ import {
   resolveProvisioningConfiguration,
   synchronizeModeVariables
 } from './railway'
-import { RailwayVariableOperationError } from './railway-variable-operation.error'
 
 const PROJECT_ID = required(process.env, 'RAILWAY_PROJECT_ID')
 const ENVIRONMENT = process.env.RAILWAY_ENVIRONMENT?.trim() || 'production'

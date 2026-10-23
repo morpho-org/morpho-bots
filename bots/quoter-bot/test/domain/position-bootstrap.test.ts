@@ -4,7 +4,6 @@ import { describe, expect, expectTypeOf, test } from 'vitest'
 
 import type { BootstrapConfig, ValidBootstrapConfig } from '../../src/domain/position-bootstrap'
 
-import { BootstrapConfigurationError } from '../../src/domain/bootstrap-configuration.error'
 import { MATURITY_PREMIUM_YEAR_SECONDS } from '../../src/domain/maturity-premium'
 import {
   decidePositionBootstrap,
@@ -13,6 +12,7 @@ import {
   effectiveBootstrapPremiumBps,
   validateBootstrapConfig
 } from '../../src/domain/position-bootstrap'
+import { BootstrapConfigurationError } from '../../src/errors'
 
 const marketId: Hex = `0x${'11'.repeat(32)}`
 

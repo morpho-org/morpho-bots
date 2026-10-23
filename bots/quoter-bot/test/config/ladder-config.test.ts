@@ -5,8 +5,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, test } from 'vitest'
 
-import { ConfigValidationError } from '../../src/config/config-validation.error'
 import { ConfigService } from '../../src/config/config.service'
+import { ConfigValidationError } from '../../src/errors'
 
 const marketId: Hex = `0x${'55'.repeat(32)}`
 const secondMarketId: Hex = `0x${'66'.repeat(32)}`

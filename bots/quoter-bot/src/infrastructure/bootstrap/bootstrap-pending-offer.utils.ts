@@ -6,7 +6,7 @@ import { tryCatch } from '@repo/utils'
 import type { BootstrapOffer } from '../../domain/position-bootstrap'
 import type { MakerOfferGroup } from '../provider/offer-groups.utils'
 
-import { BootstrapAdapterError } from './bootstrap-adapter.error'
+import { BootstrapAdapterError } from '../../errors'
 type OwnedBootstrapOffer = BootstrapOffer & {
   groupId: Hex
   tick?: bigint

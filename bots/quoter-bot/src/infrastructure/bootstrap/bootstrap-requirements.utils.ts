@@ -2,8 +2,8 @@ import type { Address, Hex } from 'viem'
 
 import { isAddressEqual } from 'viem'
 
+import { BootstrapAdapterError } from '../../errors'
 import { assertBootstrapTransaction } from '../transaction/bootstrap-transaction.utils'
-import { BootstrapAdapterError } from './bootstrap-adapter.error'
 
 type RootSignatureRequirement = {
   action: {

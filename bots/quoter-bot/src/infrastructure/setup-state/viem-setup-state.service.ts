@@ -14,10 +14,9 @@ import type { offerFromApi } from './viem-setup-state.utils'
 
 import { ratifierRuntimeHash, supportedChain } from '../../config/supported-chains.utils'
 import { MAX_LOSS_FACTOR } from '../../domain/loss-factor'
+import { ProviderPaginationError, ProviderResponseError } from '../../errors'
 import { findBlockAtOrBefore } from '../provider/historical-block.utils'
-import { ProviderPaginationError } from '../provider/provider-pagination.error'
 import { executeProviderRead } from '../provider/provider-read.utils'
-import { ProviderResponseError } from '../provider/provider-response.error'
 import {
   addressValue,
   apiMarkets,

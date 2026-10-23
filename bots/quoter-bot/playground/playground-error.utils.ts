@@ -1,9 +1,11 @@
-import { ConfigValidationError } from '../src/config/config-validation.error'
-import { CollectionImportError } from './collection-import.error'
-import { CollectionValidationError } from './collection-validation.error'
-import { FragmentCodecError } from './fragment-codec.error'
-import { PreviewGenerationError } from './preview-generation.error'
-import { StrictJsonError } from './strict-json.error'
+import { ConfigValidationError } from '../src/errors'
+import {
+  CollectionImportError,
+  CollectionValidationError,
+  FragmentCodecError,
+  PreviewGenerationError,
+  StrictJsonError
+} from './errors'
 
 /**
  * Returns the sanitized message of an allowlisted playground failure.

@@ -5,7 +5,8 @@ ruleTester.run('utils-apart-from-classes', utilsApartFromClasses, {
   valid: [
     'export class Queue {}\nexport type QueueItem = { id: string }\nconst helper = () => 1',
     'export const helper = () => 1\nexport function other() {}',
-    'export class Queue {}\nexport const LIMIT = 3'
+    'export class Queue {}\nexport const LIMIT = 3',
+    'class ShortError extends Error {}\nexport const ensureError = () => new ShortError()'
   ],
   invalid: [
     { code: 'export class Queue {}\nexport const helper = () => 1', errors: 1 },

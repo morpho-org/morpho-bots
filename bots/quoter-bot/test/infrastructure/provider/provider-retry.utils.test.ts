@@ -1,9 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 
-import type { SafeProviderFailure } from '../../../src/application/setup/safe-provider.error'
+import type { SafeProviderFailure } from '../../../src/errors'
 
-import { SafeProviderError } from '../../../src/application/setup/safe-provider.error'
-import { ProviderReadError } from '../../../src/infrastructure/provider/provider-read.error'
+import { ProviderReadError, SafeProviderError } from '../../../src/errors'
 import { retryTransientProviderRead } from '../../../src/infrastructure/provider/provider-retry.utils'
 
 const providerError = (failure: Omit<SafeProviderFailure, 'kind' | 'provider'>) =>

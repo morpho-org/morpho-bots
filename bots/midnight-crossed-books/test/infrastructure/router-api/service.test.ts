@@ -1,6 +1,6 @@
 import { describe, expect, test, vi } from 'vitest'
 
-import { RouterApiError } from '../../../src/infrastructure/openapi/error'
+import { RouterApiError } from '../../../src/errors'
 import { RouterApiService } from '../../../src/infrastructure/router-api/service'
 import { MARKET_ID, OTHER_MARKET_ID } from '../../fixtures/offers'
 

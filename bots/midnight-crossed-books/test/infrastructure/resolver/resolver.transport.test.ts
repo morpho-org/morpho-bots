@@ -2,7 +2,7 @@ import { createPublicClient, custom } from 'viem'
 import { base } from 'viem/chains'
 import { describe, expect, test, vi } from 'vitest'
 
-import { ReadonlyMutationError } from '../../../src/infrastructure/resolver/readonly-mutation.error'
+import { ReadonlyMutationError } from '../../../src/errors'
 import { ViemResolverTransport } from '../../../src/infrastructure/resolver/resolver.transport'
 import { MARKET_ID } from '../../fixtures/offers'
 

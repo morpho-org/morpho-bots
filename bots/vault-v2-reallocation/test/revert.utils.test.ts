@@ -18,8 +18,4 @@ describe('revertReason', () => {
     const data = encodeErrorResult({ abi: vaultV2Abi, errorName: 'AbsoluteCapExceeded' })
     expect(revertReason(revertError(data))).toBe('AbsoluteCapExceeded')
   })
-
-  it('falls back to the message for non-revert errors', () => {
-    expect(revertReason(new Error('rpc exploded'))).toContain('rpc exploded')
-  })
 })

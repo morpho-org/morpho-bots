@@ -4,7 +4,7 @@ import { MAX_OFFER_CAP, midnightAbi } from '@morpho-org/midnight-sdk'
 import { encodeFunctionData } from 'viem'
 import { describe, expect, test } from 'vitest'
 
-import { OfferInvalidationAdapterError } from '../../../src/infrastructure/invalidation/offer-invalidation-adapter.error'
+import { OfferInvalidationAdapterError } from '../../../src/errors'
 import { assertOfferInvalidationTransaction } from '../../../src/infrastructure/transaction/offer-invalidation-transaction.utils'
 
 const target: Address = '0x2222222222222222222222222222222222222222'

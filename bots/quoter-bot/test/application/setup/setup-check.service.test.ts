@@ -4,18 +4,20 @@ import { maxUint256 } from 'viem'
 import { describe, expect, test } from 'vitest'
 
 import { setupMonitoringEvents } from '../../../src/application/monitoring/setup-monitoring.utils'
-import { SafeProviderError } from '../../../src/application/setup/safe-provider.error'
 import {
   SetupCheckService,
   type SetupCheckConfig,
   type SetupCheckReport,
   type SetupStateService
 } from '../../../src/application/setup/setup-check.service'
-import { SetupFailedError } from '../../../src/application/setup/setup-failed.error'
-import { SetupMonitorConfigurationError } from '../../../src/application/setup/setup-monitor-configuration.error'
-import { ProviderReadError } from '../../../src/infrastructure/provider/provider-read.error'
-import { ProviderResponseError } from '../../../src/infrastructure/provider/provider-response.error'
-import { SignerAccountError } from '../../../src/infrastructure/transaction/signer-account.error'
+import {
+  ProviderReadError,
+  ProviderResponseError,
+  SafeProviderError,
+  SetupFailedError,
+  SetupMonitorConfigurationError,
+  SignerAccountError
+} from '../../../src/errors'
 
 const maker = '0x1111111111111111111111111111111111111111'
 const midnight = '0x2222222222222222222222222222222222222222'
@@ -636,29 +638,50 @@ describe('SetupCheckService', () => {
 
   test('checks delegated AWS authorization, gas reserve, and nonce independently', async () => {
     const state = readyState()
+    const balanceReads: string[] = []
     state.getDerivedSigner = async () => delegatedSigner
-    state.getNativeBalance = async address => (address === delegatedSigner ? 20n : 10n)
+    state.getNativeBalance = async address => {
+      balanceReads.push(address)
+      return address === delegatedSigner ? 20n : 0n
+    }
     const report = await new SetupCheckService(state, {
       ...config,
+      nativeReserve: undefined,
       signerMode: 'aws',
       signerNativeReserve: 20n
     }).check()
 
     expect(report.ready).toBe(true)
+    expect(balanceReads).toEqual([delegatedSigner])
     expect(
       report.checks
         .filter(check =>
-          ['signer', 'signer-native-balance', 'signer-authorization', 'signer-nonce'].includes(
-            check.name
-          )
+          [
+            'signer',
+            'native-balance',
+            'signer-native-balance',
+            'signer-authorization',
+            'signer-nonce'
+          ].includes(check.name)
         )
         .map(check => [check.name, check.status])
     ).toEqual([
       ['signer', 'passed'],
+      ['native-balance', 'not-required'],
       ['signer-native-balance', 'passed'],
       ['signer-authorization', 'passed'],
       ['signer-nonce', 'passed']
     ])
+  })
+
+  test('fails readiness when a maker-signing config has no maker reserve', async () => {
+    const report = await new SetupCheckService(readyState(), {
+      ...config,
+      nativeReserve: undefined
+    }).check()
+
+    expect(report.ready).toBe(false)
+    expect(report.checks.find(check => check.name === 'native-balance')?.status).toBe('failed')
   })
 
   test.each([
