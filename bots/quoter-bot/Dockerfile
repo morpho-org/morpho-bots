@@ -30,7 +30,7 @@ RUN corepack install
 COPY --chown=node:node packages ./packages
 COPY --chown=node:node bots ./bots
 RUN pnpm install --frozen-lockfile
-RUN pnpm -r --if-present run build
+RUN pnpm --filter '@morpho-org/quoter-bot...' --if-present run build
 
 # Runtime stage. dist/src/index.js is a self-contained esbuild bundle (scripts/build.ts,
 # bundle: true), so no node_modules ships; the bot's package.json rides along only so node treats
