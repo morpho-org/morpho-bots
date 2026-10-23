@@ -1,0 +1,57 @@
+{{- if not (has (int .Values.replicas) (list 0 1)) }}{{ fail (printf "midnight-liquidation: replicas must be 0 or 1, got %v: every pod signs with the same key and keeps its own nonce cursor" .Values.replicas) }}{{- end }}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "midnight-liquidation.fullname" . | quote }}
+  labels:
+    {{- include "midnight-liquidation.labels" . | nindent 4 }}
+  annotations:
+    secret.reloader.stakater.com/reload: {{ include "midnight-liquidation.runtimeSecretName" . | quote }}
+spec:
+  replicas: {{ .Values.replicas }}
+  serviceName: {{ include "midnight-liquidation.fullname" . | quote }}
+  podManagementPolicy: OrderedReady
+  updateStrategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      {{- include "midnight-liquidation.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "midnight-liquidation.selectorLabels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "midnight-liquidation.serviceAccountName" . | quote }}
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: {{ .Chart.Name }}
+          image: {{ include "midnight-liquidation.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- with .Values.env }}
+          env:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          envFrom:
+            - secretRef:
+                name: {{ include "midnight-liquidation.runtimeSecretName" . | quote }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}

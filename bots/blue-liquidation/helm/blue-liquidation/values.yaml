@@ -1,0 +1,28 @@
+replicas: 1
+
+image:
+  repository: ''
+  # Accepts an immutable tag or a tag@sha256 digest reference.
+  tag: ''
+  pullPolicy: IfNotPresent
+
+serviceAccount:
+  name: ''
+  roleArn: ''
+
+runtimeSecret:
+  key: ''
+  refreshInterval: 5m
+
+# Non-secret settings such as CHAIN_ID, LOG_LEVEL, ENABLE_LIFI, and
+# ALLOW_DETECTION_ONLY. Set CHAIN_ID for each chain-specific release.
+env: []
+
+terminationGracePeriodSeconds: 30
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    memory: 512Mi

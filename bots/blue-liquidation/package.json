@@ -10,6 +10,7 @@
     "prestart": "pnpm --filter \"{.}...\" --if-present run build",
     "probe:lens": "pnpm --filter \"{.}...\" --if-present run build && node --env-file-if-exists=.env dist/scripts/probe-live-lens.js",
     "start": "node --env-file-if-exists=.env dist/src/index.js",
+    "test": "vitest run",
     "typecheck": "soltag && tsc --noEmit"
   },
   "dependencies": {
