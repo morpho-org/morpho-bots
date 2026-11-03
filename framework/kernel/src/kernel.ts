@@ -665,10 +665,9 @@ export const createKernel = (config: KernelConfig) => {
     Object.values(s.entries).some(e => e.intentId === intentId && UNRETIRED.has(e.state)) ||
     Object.values(s.nonces).some(r => r.candidates.some(c => c.intentId === intentId))
 
-  const enterRecovering = (s: KernelState, out: Command[], reason: string) => {
+  const beginRecovering = (s: KernelState, out: Command[], reason: string) => {
     if (s.lifecycle.kind !== 'running' && s.lifecycle.kind !== 'starting') return
-    s.lifecycle = { kind: 'recovering', reason, since: s.now }
-    alarm(s, reason)
+    s.lifecycle = { kind: 'recovering', reason, since: s.now, alarmed: false }
     for (const id of s.planOrder) {
       const plan = s.plans[id]!
       if (plan.status !== 'executing' || !biddingUncommitted(plan) || lifecycleAllows(s, plan))
@@ -677,6 +676,13 @@ export const createKernel = (config: KernelConfig) => {
       if (occupiesNonce(s, plan)) cancel(s, out, plan, why)
       else failPlan(s, out, plan, why)
     }
+  }
+
+  const enterRecovering = (s: KernelState, out: Command[], reason: string) => {
+    beginRecovering(s, out, reason)
+    if (s.lifecycle.kind !== 'recovering' || s.lifecycle.alarmed) return
+    s.lifecycle.alarmed = true
+    alarm(s, reason)
   }
 
   const stop = (
@@ -2357,9 +2363,9 @@ export const createKernel = (config: KernelConfig) => {
     }
     s.slot = undefined
     if (event.reason === 'fenced') return stop(s, out, 'unsafe', 'another process holds the ledger')
-    if (s.lifecycle.kind === 'recovering')
-      return stop(s, out, 'unsafe', `flush failed: ${event.reason}`)
+    const recovering = s.lifecycle.kind === 'recovering'
     enterRecovering(s, out, `flush failed: ${event.reason}`)
+    if (recovering) stop(s, out, 'unsafe', `flush failed: ${event.reason}`)
   }
 
   const broadcasted: Handler<'Broadcasted'> = (s, out, event) => {
@@ -2594,7 +2600,7 @@ export const createKernel = (config: KernelConfig) => {
       s.capacity[event.resource] = { amount, block, blockHash }
     },
     Tick: tick,
-    Stop: (s, out) => enterRecovering(s, out, 'stop requested'),
+    Stop: (s, out) => beginRecovering(s, out, 'stop requested'),
     Halt: (s, out, event) => enterRecovering(s, out, event.reason),
     Alarm: (s, _out, event) => alarm(s, event.reason),
     Refuse: (s, out, event) => {

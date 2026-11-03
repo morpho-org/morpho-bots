@@ -44,35 +44,36 @@ liquidation. Around them:
 
 Env vars (fail-loud on a missing required var, an unknown chain, or a malformed value):
 
-| Var                                                                 | Required | Default         | Purpose                                                                                                                                                   |
-| ------------------------------------------------------------------- | -------- | --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `CHAIN_ID`                                                          | yes      | —               | Must be in the chain map (`8453`, `4663`)                                                                                                                 |
-| `RPC_URL`                                                           | yes      | —               | Primary RPC (reads, simulation, sends)                                                                                                                    |
-| `RPC_URL_FALLBACK`                                                  | no       | —               | Optional viem-dlc `failover` endpoint; each branch states its own `eth_call` gas cap                                                                      |
-| `MAX_DEPLOYLESS_BATCH_SIZE`                                         | no       | —               | Caps one chunk's `eth_call` data in bytes. Only set it when an endpoint rejects large requests                                                            |
-| `LIQUIDATOR_PRIVATE_KEY`                                            | yes      | —               | EOA hex key (`0x` + 32-byte hex)                                                                                                                          |
-| `KERNEL_STATE_DIR`                                                  | yes      | —               | Directory holding the signing kernel's ledger (`kernel-<chainId>-<account>.json`). Must survive restarts; the chart mounts a volume there.                |
-| `KERNEL_ENROLLMENT`                                                 | yes      | —               | `enrolling` for the first start of a fresh account, `enrolled` for every later one; a missing ledger under `enrolled` refuses to start.                   |
-| `FINALITY_<CHAIN_ID>`                                               | yes      | —               | `safe`, `finalized`, or a positive block depth: the block the kernel treats as final, under its 5-minute window: `FINALITY_8453=safe`, `FINALITY_4663=50` |
-| `BUILD_REVISION` / `BUILD_IMAGE_TAG`                                | yes      | —               | The source revision and image the journal names; the Dockerfile bakes them in from build args                                                             |
-| `EXECUTOOOR_ADDRESS`                                                | no       | derived         | Override; default is the derived CREATE2 address                                                                                                          |
-| `MORPHO_API_KEY`                                                    | yes      | —               | Morpho partner API key, sent as `x-api-key` on borrower discovery. Request one from Morpho                                                                |
-| `LIQUIDATION_CANDIDATES_API_URL`                                    | no       | partner API     | Borrower-discovery endpoint override                                                                                                                      |
-| `HEALTH_FACTOR_LTE`                                                 | no       | `1.02`          | Discovery health-factor cutoff (min `1.0` — throws below)                                                                                                 |
-| `ZEROX_API_KEY` / `ONEINCH_API_KEY` / `LIFI_API_KEY`                | no       | —               | Each key **enables** its venue; LiFi also via `ENABLE_LIFI` (keyless)                                                                                     |
-| `ENABLE_LIFI`                                                       | no       | `false`         | Enable LiFi without a key                                                                                                                                 |
-| `ALLOW_DETECTION_ONLY`                                              | no       | `false`         | Opt-in: boot with zero venues (discover + log only, skip every liquidation). Without it, zero venues is a startup error                                   |
-| `EXCLUDE_COLLATERALS`                                               | no       | —               | Comma-separated collateral deny-list (skipped with `config.no_swap_path`)                                                                                 |
-| `ZEROX_BASE_URL` / `ONEINCH_BASE_URL` / `LIFI_BASE_URL`             | no       | —               | Optional per-venue API host overrides                                                                                                                     |
-| `PROBE_STALE_MS` / `PROBE_HTTP_RPS` / `PROBE_LADDER`                | no       | see `config.ts` | Venue-probe cache staleness, isolated probe rate, and ladder sizes (whole collateral tokens — this bot wires no USD price source)                         |
-| `MAX_FEE_GWEI`                                                      | yes      | —               | Hard ceiling for fee bumps; at it the bot waits, live, for fees to fall                                                                                   |
-| `MAX_ROUTE_IMPACT_BPS`                                              | no       | `500`           | Reject aggregator routes this far below the oracle ref                                                                                                    |
-| `PENDLE_SLIPPAGE_BPS`                                               | no       | `50`            | Slippage for the Pendle PT → underlying unwrap hop (before the downstream venue sells)                                                                    |
-| `QUOTE_TIMEOUT_MS` / `HTTP_RPS` / `HTTP_BURST` / `HTTP_MAX_RETRIES` | no       | see `config.ts` | Aggregator HTTP tunables                                                                                                                                  |
-| `BACKOFF_BASE_BLOCKS` / `BACKOFF_MAX_BLOCKS`                        | no       | `2` / `64`      | Per-position failure backoff                                                                                                                              |
-| `BETTERSTACK_SOURCE_TOKEN` / `BETTERSTACK_INGESTING_HOST`           | no       | —               | Opt-in log shipping; when both are set the bot's in-process loglayer transport ships structured logs to BetterStack (inert otherwise)                     |
-| `BETTERSTACK_HEARTBEAT_URL`                                         | no       | —               | Optional Better Stack Uptime heartbeat URL, pinged every minute; failures only log a warning and never interrupt liquidations                             |
-| `LOG_LEVEL`                                                         | no       | `info`          | `debug` \| `info` \| `warn` \| `error`                                                                                                                    |
+| Var                                                                 | Required | Default         | Purpose                                                                                                                                                                           |
+| ------------------------------------------------------------------- | -------- | --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `CHAIN_ID`                                                          | yes      | —               | Must be in the chain map (`8453`, `4663`)                                                                                                                                         |
+| `RPC_URL`                                                           | yes      | —               | Primary RPC (reads, simulation, sends)                                                                                                                                            |
+| `RPC_URL_FALLBACK`                                                  | no       | —               | Optional viem-dlc `failover` endpoint; each branch states its own `eth_call` gas cap                                                                                              |
+| `MAX_DEPLOYLESS_BATCH_SIZE`                                         | no       | —               | Caps one chunk's `eth_call` data in bytes. Only set it when an endpoint rejects large requests                                                                                    |
+| `LIQUIDATOR_PRIVATE_KEY`                                            | yes      | —               | EOA hex key (`0x` + 32-byte hex)                                                                                                                                                  |
+| `KERNEL_STATE_DIR`                                                  | yes      | —               | Directory holding the signing kernel's ledger (`kernel-<chainId>-<account>.json`). Must survive restarts; the chart mounts a volume there.                                        |
+| `JOURNAL_RUN_CAP_BYTES`                                             | yes      | —               | The size, in bytes and at least 64 MiB, at which a run's journal file stops the bot cleanly; the next start begins a new file. The chart sets it from `state.journalRunCapBytes`. |
+| `KERNEL_ENROLLMENT`                                                 | yes      | —               | `enrolling` for the first start of a fresh account, `enrolled` for every later one; a missing ledger under `enrolled` refuses to start.                                           |
+| `FINALITY_<CHAIN_ID>`                                               | yes      | —               | `safe`, `finalized`, or a positive block depth: the block the kernel treats as final, under its 5-minute window: `FINALITY_8453=safe`, `FINALITY_4663=50`                         |
+| `BUILD_REVISION` / `BUILD_IMAGE_TAG`                                | yes      | —               | The source revision and image the journal names and every log line carries as `revision` and `imageTag`; the Dockerfile bakes them in from build args                             |
+| `EXECUTOOOR_ADDRESS`                                                | no       | derived         | Override; default is the derived CREATE2 address                                                                                                                                  |
+| `MORPHO_API_KEY`                                                    | yes      | —               | Morpho partner API key, sent as `x-api-key` on borrower discovery. Request one from Morpho                                                                                        |
+| `LIQUIDATION_CANDIDATES_API_URL`                                    | no       | partner API     | Borrower-discovery endpoint override                                                                                                                                              |
+| `HEALTH_FACTOR_LTE`                                                 | no       | `1.02`          | Discovery health-factor cutoff (min `1.0` — throws below)                                                                                                                         |
+| `ZEROX_API_KEY` / `ONEINCH_API_KEY` / `LIFI_API_KEY`                | no       | —               | Each key **enables** its venue; LiFi also via `ENABLE_LIFI` (keyless)                                                                                                             |
+| `ENABLE_LIFI`                                                       | no       | `false`         | Enable LiFi without a key                                                                                                                                                         |
+| `ALLOW_DETECTION_ONLY`                                              | no       | `false`         | Opt-in: boot with zero venues (discover + log only, skip every liquidation). Without it, zero venues is a startup error                                                           |
+| `EXCLUDE_COLLATERALS`                                               | no       | —               | Comma-separated collateral deny-list (skipped with `config.no_swap_path`)                                                                                                         |
+| `ZEROX_BASE_URL` / `ONEINCH_BASE_URL` / `LIFI_BASE_URL`             | no       | —               | Optional per-venue API host overrides                                                                                                                                             |
+| `PROBE_STALE_MS` / `PROBE_HTTP_RPS` / `PROBE_LADDER`                | no       | see `config.ts` | Venue-probe cache staleness, isolated probe rate, and ladder sizes (whole collateral tokens — this bot wires no USD price source)                                                 |
+| `MAX_FEE_GWEI`                                                      | yes      | —               | Hard ceiling for fee bumps; at it the bot waits, live, for fees to fall                                                                                                           |
+| `MAX_ROUTE_IMPACT_BPS`                                              | no       | `500`           | Reject aggregator routes this far below the oracle ref                                                                                                                            |
+| `PENDLE_SLIPPAGE_BPS`                                               | no       | `50`            | Slippage for the Pendle PT → underlying unwrap hop (before the downstream venue sells)                                                                                            |
+| `QUOTE_TIMEOUT_MS` / `HTTP_RPS` / `HTTP_BURST` / `HTTP_MAX_RETRIES` | no       | see `config.ts` | Aggregator HTTP tunables                                                                                                                                                          |
+| `BACKOFF_BASE_BLOCKS` / `BACKOFF_MAX_BLOCKS`                        | no       | `2` / `64`      | Per-position failure backoff                                                                                                                                                      |
+| `BETTERSTACK_SOURCE_TOKEN` / `BETTERSTACK_INGESTING_HOST`           | no       | —               | Opt-in log shipping; when both are set the bot's in-process loglayer transport ships structured logs to BetterStack (inert otherwise)                                             |
+| `BETTERSTACK_HEARTBEAT_URL`                                         | no       | —               | Optional Better Stack Uptime heartbeat URL, pinged every minute; failures only log a warning and never interrupt liquidations                                                     |
+| `LOG_LEVEL`                                                         | no       | `info`          | `debug` \| `info` \| `warn` \| `error`                                                                                                                                            |
 
 For Compose, operator-facing RPC env vars are chain-id suffixed: `RPC_URL_8453`,
 `RPC_URL_4663`, and optional distinct `BETTERSTACK_HEARTBEAT_URL_<chainId>` values. Inside each bot
@@ -107,6 +108,7 @@ export LIQUIDATOR_PRIVATE_KEY=0x…
 export ZEROX_API_KEY=…            # or ENABLE_LIFI=true, or ALLOW_DETECTION_ONLY=true
 export MAX_FEE_GWEI=… FINALITY_8453=safe
 export KERNEL_STATE_DIR=./state KERNEL_ENROLLMENT=enrolling   # `enrolled` once ./state holds the ledger
+export JOURNAL_RUN_CAP_BYTES=1073741824
 export BUILD_REVISION=$(git rev-parse HEAD) BUILD_IMAGE_TAG=local
 pnpm --filter @morpho-org/blue-liquidation run start
 ```
@@ -169,8 +171,10 @@ refuses to start without any one of them:
 
 Other non-secret settings from [Configuration](#configuration), such as `ALLOW_DETECTION_ONLY` or
 `LOG_LEVEL`, also go in `env`. The chart sets `KERNEL_STATE_DIR=/repo/state`, where it mounts the
-state volume, and refuses a release whose `env` sets it. `state.storageClass` (`tools-gp3`) and
-`state.size` (`10Gi`) shape that volume; the render fails if either is empty.
+state volume, and `JOURNAL_RUN_CAP_BYTES` from `state.journalRunCapBytes` (1 GiB), and refuses a
+release whose `env` sets either. `state.storageClass` (`tools-gp3`) and `state.size` (`10Gi`) shape
+that volume; the render fails if either is empty, or if `state.journalRunCapBytes` is not a quoted
+byte count.
 
 ### Runtime secret
 
@@ -197,15 +201,20 @@ ledger, `kernel-<chainId>-<account>.json`, and the journal. It is an EBS volume 
 zone, so the pod schedules there. Neither `helm uninstall`, deleting the Argo CD application, nor an
 Argo CD prune deletes it.
 
-The ledger stays small, but the journal does not yet rotate: each start writes a new file and none
-is deleted. It grows about 100–160 MB a day while idle, and up to about 1.3 GB a day when world
-reads fall back to carried coverage, so `10Gi` lasts weeks, not months. No disk-usage metric is
-emitted. The journal syncs every entry, so it usually hits a full volume first: the bot logs
-`runner.failed` with `origin: journal` and exits, then every restart fails to open a journal file
-and logs `startup.error`. A ledger write that lands first shows as `kernel.error` instead. To buy
-time, raise `state.size` in the release's values: `tools-gp3` allows volume expansion, and Argo CD
-grows the claim in place. Freeing space means deleting old journal files, which needs cluster access
-(Platform).
+The ledger stays small. The journal grows about 100–160 MB a day while idle, and up to about 1.3 GB
+a day when world reads fall back to carried coverage. No disk-usage metric is emitted.
+
+Each start deletes old journal files under `journal/` before it creates its own. Newest first, it
+keeps whole run files while they total at most three times `JOURNAL_RUN_CAP_BYTES`, and deletes the
+rest. A crash loop's many small files therefore keep the journal of the run that crashed first. It
+also deletes any file over twice the cap, even the newest, which only a run under no cap or a larger
+one leaves. It logs `journal.pruned` with the `files` and `bytes` it deleted and how many it `kept`.
+Deleting needs no free space, so a volume that has filled frees itself on the next start. When the
+live file reaches `JOURNAL_RUN_CAP_BYTES`, the bot logs `journal.capped` and makes the same clean
+stop as SIGTERM: `kernel.stopped`, exit 0, and Kubernetes starts it again on a new file. Kept files
+total at most three caps and the live file overshoots its cap only by the entries its stop drains,
+so the journal holds at most about four caps: 4 GiB at the chart's 1 GiB, inside `10Gi`. The ledger
+is never pruned.
 
 `KERNEL_ENROLLMENT` is `enrolling` for the first start of an account with no ledger and `enrolled`
 for every start after it. The kernel refuses an enrollment over an existing ledger and an enrolled

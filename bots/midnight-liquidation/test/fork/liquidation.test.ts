@@ -68,6 +68,7 @@ const MAX_GAS_LIMIT = '15000000'
 const FINALITY_DEPTH = '2'
 const BLOCK_MS = 1_000
 const JOURNAL_CAPACITY_BYTES = 16 * 1024 * 1024
+const JOURNAL_RUN_CAP_BYTES = 1024 * 1024 * 1024
 const LANDED_WITHIN_MS = 120_000
 const SEED_TIMEOUT_MS = 600_000
 const RUN_TIMEOUT_MS = 240_000
@@ -219,7 +220,8 @@ describe.skipIf(!FORK_URL)('fork: end-to-end liquidation of seeded Base Midnight
       directory: join(stateDirectory, 'journal'),
       graph: 'midnight-liquidation',
       build: { revision: 'f0f0f0', imageTag: 'fork-test' },
-      capacityBytes: JOURNAL_CAPACITY_BYTES
+      capacityBytes: JOURNAL_CAPACITY_BYTES,
+      runCapBytes: JOURNAL_RUN_CAP_BYTES
     })
     const loanBefore = await balanceOf(USDC, eoa)
     const bot = await startLiquidator({

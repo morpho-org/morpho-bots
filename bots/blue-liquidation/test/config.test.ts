@@ -1,3 +1,4 @@
+import { tryCatch } from '@repo/utils'
 import { getAddress } from 'viem'
 import { base } from 'viem/chains'
 import { describe, expect, it } from 'vitest'
@@ -166,8 +167,20 @@ describe('loadConfig', () => {
     const config = loadConfig(baseEnv({ LIFI_API_KEY: 'k', LIFI_BASE_URL: 'https://li.example' }))
     expect(config.venues.lifiBaseUrl).toBe('https://li.example')
     expect(() => loadConfig(baseEnv({ ZEROX_BASE_URL: 'not a url' }))).toThrow(
-      /ZEROX_BASE_URL is not a valid URL/
+      'ZEROX_BASE_URL is not a valid http(s) URL'
     )
+  })
+
+  it.each([
+    'ZEROX_BASE_URL',
+    'ONEINCH_BASE_URL',
+    'LIFI_BASE_URL',
+    'LIQUIDATION_CANDIDATES_API_URL'
+  ])('never echoes a credentialed %s without a scheme', name => {
+    for (const value of ['user:s3cret@rpc.example/v2', 's3cret@rpc.example/v2/k3y']) {
+      const { error } = tryCatch(() => loadConfig(baseEnv({ [name]: value })))
+      expect(String(error)).toBe(`Error: ${name} is not a valid http(s) URL`)
+    }
   })
 
   it('parses probe knobs with defaults, and PROBE_LADDER fails loud on a malformed element', () => {
@@ -194,7 +207,7 @@ describe('loadConfig', () => {
         .discovery.apiUrl
     ).toBe('https://api.example/candidates')
     expect(() => loadConfig(baseEnv({ LIQUIDATION_CANDIDATES_API_URL: 'not a url' }))).toThrow(
-      'LIQUIDATION_CANDIDATES_API_URL is not a valid URL'
+      'LIQUIDATION_CANDIDATES_API_URL is not a valid http(s) URL'
     )
     expect(() =>
       loadConfig(baseEnv({ LIQUIDATION_CANDIDATES_API_URL: 'http://api.example/candidates' }))

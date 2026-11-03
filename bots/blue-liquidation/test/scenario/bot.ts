@@ -1,5 +1,5 @@
 import type { BackoffPolicy } from '@repo/controller'
-import type { Budget } from '@repo/engine'
+import type { Budget, RunnerOptions } from '@repo/engine'
 import type { KernelConfig, TxPayload } from '@repo/kernel'
 import type { Logger } from '@repo/kit'
 import type { SwapPlan } from '@repo/swaps'
@@ -136,6 +136,7 @@ export const startBot = async (
     now?: () => number
     worldValidMs?: number
     backoff?: BackoffPolicy
+    journal?: NonNullable<RunnerOptions['journal']>
     /** Firm quotes the venue starts per window, when it is rate limited. */
     venueBudget?: Budget
     /** The kernel's block windows, when not the default small ones. */
@@ -189,7 +190,7 @@ export const startBot = async (
     return 'success'
   }
   const bot = await startLiquidator({
-    journal: discardingJournal,
+    journal: parameters.journal ?? discardingJournal,
     kernel: {
       config: {
         ...kernelConfig(reservations),

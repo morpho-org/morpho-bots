@@ -1,5 +1,6 @@
 {{- if not (has (int .Values.replicas) (list 0 1)) }}{{ fail (printf "blue-liquidation: replicas must be 0 or 1, got %v: every pod signs with the same key and keeps its own nonce cursor" .Values.replicas) }}{{- end }}
 {{- range .Values.env }}{{- if eq .name "KERNEL_STATE_DIR" }}{{ fail "blue-liquidation: env must not set KERNEL_STATE_DIR: the chart points it at the state volume" }}{{- end }}{{- end }}
+{{- range .Values.env }}{{- if eq .name "JOURNAL_RUN_CAP_BYTES" }}{{ fail "blue-liquidation: env must not set JOURNAL_RUN_CAP_BYTES: the chart sets it from state.journalRunCapBytes" }}{{- end }}{{- end }}
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -43,6 +44,8 @@ spec:
             {{- end }}
             - name: KERNEL_STATE_DIR
               value: {{ include "blue-liquidation.stateDirectory" . | quote }}
+            - name: JOURNAL_RUN_CAP_BYTES
+              value: {{ include "blue-liquidation.journalRunCapBytes" . | quote }}
           envFrom:
             - secretRef:
                 name: {{ include "blue-liquidation.runtimeSecretName" . | quote }}

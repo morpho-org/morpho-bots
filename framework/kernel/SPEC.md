@@ -1002,7 +1002,14 @@ refuses to start rather than assuming no history").
 - **`running`** is the normal state (review).
 - **`recovering(reason)`** is entered on `Stop`, `Halt`, latch bound, flush failure, stuck
   compensation, finality violation, an external or unrecorded nonce, or a chain nonce ahead of the
-  ledger while running. Plans still bidding uncommitted that the lifecycle no longer allows end at
+  ledger while running. Recovery raises one `alarm`, at its first hazard. A requested stop is not
+  one: it needs no operator, and its `report` still names every entry and nonce it leaves open. A
+  hazard that arrives during a requested stop raises the alarm then ("raises no alarm for a
+  requested stop, even one that ends unsafe with an entry open", "alarms when recovery is entered
+  for any reason but a requested stop", "alarms on a foreign nonce use that arrives during a
+  requested stop", "alarms once on a finality violation that arrives during a requested stop",
+  "alarms on a flush failure that ends a requested stop").
+  Plans still bidding uncommitted that the lifecycle no longer allows end at
   once, cancelled if they occupy a nonce (§4.3) and failed otherwise; plans in `include`, `commit`
   or `expose` are left to settle. Recovering is terminal-bound: it only ends in `stopped`. A second
   halt is ignored, because recovery runs once ("a halt from anywhere in the bot is a stop: one

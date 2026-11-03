@@ -380,7 +380,8 @@ export type Lifecycle =
   | { kind: 'idle' }
   | { kind: 'starting'; since: number; startHead?: number; nonceChecked: boolean }
   | { kind: 'running' }
-  | { kind: 'recovering'; reason: string; since: number }
+  /** `alarmed` is false only while recovery is a requested stop no hazard has joined yet. */
+  | { kind: 'recovering'; reason: string; since: number; alarmed: boolean }
   | { kind: 'stopped'; outcome: 'clean' | 'unsafe' | 'refused'; reason: string }
 
 export type Outstanding = {

@@ -11,7 +11,7 @@ import { declareLiquidator } from './graph'
 /**
  * Runs the liquidator until its kernel stops.
  * @param now - The one clock the kernel and the runner share.
- * @param journal - The run's journal; it is finalized if the runner cannot be created.
+ * @param journal - The run's journal; it is finalized if the graph or the runner cannot be created.
  */
 export const startLiquidator = async (
   options: LiquidatorOptions & {
@@ -21,9 +21,14 @@ export const startLiquidator = async (
 ) => {
   const now = options.now ?? Date.now
   const { journal } = options
-  const { graph, ...nodes } = declareLiquidator({ ...options, kernel: { ...options.kernel, now } })
   let runner: Runner
+  let nodes: Omit<ReturnType<typeof declareLiquidator>, 'graph'>
   try {
+    const { graph, ...declared } = declareLiquidator({
+      ...options,
+      kernel: { ...options.kernel, now }
+    })
+    nodes = declared
     runner = createRunner(graph, { now, journal })
   } catch (error) {
     const finalized = await tryCatch(
@@ -35,7 +40,7 @@ export const startLiquidator = async (
     throw finalized.error
       ? new AggregateError(
           [error, finalized.error],
-          'the runner was not created and its journal did not finalize'
+          'the graph or runner was not created and its journal did not finalize'
         )
       : error
   }

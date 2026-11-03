@@ -93,6 +93,9 @@ instead.
   snapshots of log output, no exact field sets. A BetterStack dashboard or query that parses a field
   never blocks a rename or a simplification. Change the log, and say in the PR which dashboards to
   update.
+- **`tx.included` and `tx.confirmed` are one signal.** Kernel bots log a successful receipt as
+  `tx.included` (`@repo/kit`'s tx reporter); bots on `@repo/bot-kit` log it as `tx.confirmed` (its
+  pending queue). Neither means final: a reorg can still undo the inclusion.
 - **Promises**: Use `tryCatch` from `@repo/utils` to handle promise throws.
 
 ### Environment variables

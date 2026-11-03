@@ -163,7 +163,6 @@ describe('activity', () => {
     h.mine(h.candidate('0xsetConsumed').hash)
     h.finalize(h.block)
     expect(shape(h.activity)).toEqual([
-      'alarm stop requested',
       'entry live>revoking',
       expect.stringMatching(/^sent recovery:neutralizer:\S+#0 neutralizer accepted$/),
       expect.stringMatching(/^included recovery:neutralizer:/),
@@ -171,6 +170,89 @@ describe('activity', () => {
       'final 1',
       'entry revoking>retired'
     ])
+  })
+
+  it('raises no alarm for a requested stop, even one that ends unsafe with an entry open', () => {
+    const h = new Harness().start()
+    const t = tree(offer('g1', 300n))
+    h.send({ type: 'Submit', plan: ecrecoverPlan('q', t) })
+    h.sign()
+    h.materialize(signatures => publish(t, signatures[0]), t)
+    h.drive()
+    h.head()
+    h.mine(h.candidate('0xpublish').hash)
+    const [open] = Object.keys(h.state.entries)
+    h.activity.length = 0
+    h.send({ type: 'Stop' })
+    h.drive('timeout')
+    h.tick(60_000)
+    expect(shape(h.activity).filter(a => a.startsWith('alarm'))).toEqual([])
+    expect(h.reports().at(-1)).toMatchObject({
+      outcome: 'unsafe',
+      reason: 'recovery bound exceeded',
+      open: { entries: [open] }
+    })
+  })
+
+  it('alarms on a foreign nonce use that arrives during a requested stop', () => {
+    const h = new Harness().start()
+    h.send({ type: 'Submit', plan: liquidationPlan('liq') })
+    h.drive()
+    h.head()
+    h.nonceAt(1)
+    h.send({ type: 'Stop' })
+    h.activity.length = 0
+    h.send({
+      type: 'NonceTx',
+      nonce: 0,
+      hash: '0xforeign',
+      block: h.block,
+      blockHash: h.hash(h.block),
+      status: 'success',
+      logs: []
+    })
+    expect(shape(h.activity).filter(a => a.startsWith('alarm'))).toEqual([
+      'alarm nonce 0 consumed by a transaction the kernel never signed'
+    ])
+  })
+
+  it('alarms once on a finality violation that arrives during a requested stop', () => {
+    const h = new Harness().start()
+    h.finalizedLag = 5
+    const t = tree(offer('g1', 300n))
+    h.send({ type: 'Submit', plan: ecrecoverPlan('q', t) })
+    h.sign()
+    h.materialize(signatures => publish(t, signatures[0]), t)
+    h.drive()
+    h.head()
+    h.mine(h.candidate('0xpublish').hash)
+    h.finalize(h.block)
+    h.send({ type: 'Stop' })
+    h.activity.length = 0
+    h.reorg(h.state.finalized.number - 1)
+    h.reorg(h.state.finalized.number - 1)
+    expect(shape(h.activity).filter(a => a.startsWith('alarm'))).toEqual([
+      'alarm finality violated'
+    ])
+  })
+
+  it('alarms on a flush failure that ends a requested stop', () => {
+    const h = new Harness().start()
+    h.send({ type: 'Submit', plan: liquidationPlan('liq') })
+    h.simulate()
+    h.sign()
+    h.send({ type: 'Stop' })
+    h.activity.length = 0
+    h.send({ type: 'FlushFailed', seq: h.commands('flush').at(-1)!.seq, reason: 'io' })
+    expect(shape(h.activity).filter(a => a.startsWith('alarm'))).toEqual(['alarm flush failed: io'])
+    expect(h.reports().at(-1)).toMatchObject({ outcome: 'unsafe', reason: 'flush failed: io' })
+  })
+
+  it('alarms when recovery is entered for any reason but a requested stop', () => {
+    const h = new Harness().start()
+    h.activity.length = 0
+    h.send({ type: 'Halt', reason: 'readiness: allowance' })
+    expect(shape(h.activity)).toEqual(['alarm readiness: allowance'])
   })
 
   it('names a send whose nonce record the same transition prunes', () => {

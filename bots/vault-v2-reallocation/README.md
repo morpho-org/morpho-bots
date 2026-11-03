@@ -148,6 +148,7 @@ docker-compose):
 | `DRY_RUN`                                                 | no       | `false`                 | plan + simulate + log, never submit                                                                                           |
 | `MAX_FEE_GWEI`                                            | yes      | —                       | signer policy and kernel fee ceiling                                                                                          |
 | `KERNEL_STATE_DIR`                                        | yes      | —                       | kernel ledger directory; must survive a restart                                                                               |
+| `JOURNAL_RUN_CAP_BYTES`                                   | yes      | —                       | bytes, at least 64 MiB: a run's journal file at this size stops the bot cleanly                                               |
 | `KERNEL_ENROLLMENT`                                       | yes      | —                       | `enrolling` on first start, then `enrolled`                                                                                   |
 | `FINALITY_<CHAIN_ID>`                                     | yes      | —                       | `safe`, `finalized`, or a positive block depth: the block the kernel treats as final on that chain, e.g. `FINALITY_8453=safe` |
 | `BUILD_REVISION` / `BUILD_IMAGE_TAG`                      | yes      | —                       | the source revision and image the journal names; the Dockerfile bakes them in from build args                                 |
@@ -171,7 +172,7 @@ both `equalize-utilizations`.
 pnpm --filter @morpho-org/vault-v2-reallocation run build
 CHAIN_ID=1 RPC_URL=… REALLOCATOR_PRIVATE_KEY=0x… VAULT_WHITELIST=0x… MAX_FEE_GWEI=… \
   FINALITY_1=safe KERNEL_STATE_DIR=./state KERNEL_ENROLLMENT=enrolling \
-  BUILD_REVISION=$(git rev-parse HEAD) BUILD_IMAGE_TAG=local \
+  JOURNAL_RUN_CAP_BYTES=1073741824 BUILD_REVISION=$(git rev-parse HEAD) BUILD_IMAGE_TAG=local \
   pnpm --filter @morpho-org/vault-v2-reallocation run start
 ```
 

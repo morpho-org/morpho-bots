@@ -1,10 +1,8 @@
-import type { KernelHead, ReportCommand } from '@repo/kernel'
-import type { Logger } from '@repo/kit'
+import type { KernelHead } from '@repo/kernel'
 import type { SwapPlan, Venue } from '@repo/swaps'
 import type { Address, Hex } from 'viem'
 
 import { runIdAt } from '@repo/controller'
-import { GraphFailedError } from '@repo/engine'
 import {
   assertContractDeployed,
   buildIdentityFromEnv,
@@ -13,6 +11,7 @@ import {
   createHeartbeatMonitor,
   createJournalFileSink,
   createLogger,
+  parseJournalRunCapBytes,
   simulateLiquidationExec,
   withLogging
 } from '@repo/kit'
@@ -24,7 +23,7 @@ import {
   PENDLE_CHAIN_IDS,
   priceByVenue
 } from '@repo/swaps'
-import { ensureError, tryCatch } from '@repo/utils'
+import { tryCatch } from '@repo/utils'
 import { join } from 'node:path'
 import { erc20Abi } from 'viem'
 import { getBalance, readContract } from 'viem/actions'
@@ -37,10 +36,12 @@ import { CandidatesApiRefusedError } from './errors'
 import { encodeLiquidationExec } from './execution/encode-call'
 import { liquidatorAccount, liquidatorKernel } from './kernel'
 import { composeQuoting } from './quotes'
+import { revertReason } from './revert.utils'
 import { startLiquidator } from './run'
 import { readBlueLiquidationLens } from './state/lens.sol'
 import { createMarketParamsResolver, multicallIdToMarketParams } from './state/market-params'
 import { createTickStats } from './stats'
+import { superviseKernelBot } from './supervise'
 
 /** How long a route authorizes liquidations before its position is quoted again. */
 const QUOTE_VALID_MS = 30_000
@@ -49,39 +50,12 @@ const QUOTE_RETRY_MS = 10_000
 /** How many positions are worked at once, preparing or in flight; swap venues are rate limited. */
 const POSITIONS_AT_ONCE = 3
 const JOURNAL_CAPACITY_BYTES = 16 * 1024 * 1024
-const STOP_SIGNALS = ['SIGINT', 'SIGTERM'] as const
-
-async function superviseKernelBot(
-  running: Readonly<{ stop: () => void; stopped: Promise<ReportCommand> }>,
-  logger: Logger,
-  shutdownFields: () => Record<string, unknown>
-): Promise<0 | 1> {
-  const shutdown = (signal: NodeJS.Signals) => {
-    logger.info('shutdown', { signal, ...shutdownFields() })
-    running.stop()
-  }
-  for (const signal of STOP_SIGNALS) process.on(signal, shutdown)
-  const stopped = await tryCatch(running.stopped)
-  for (const signal of STOP_SIGNALS) process.off(signal, shutdown)
-  if (stopped.error) {
-    const failed = stopped.error instanceof GraphFailedError ? stopped.error : undefined
-    const report = failed?.stop as ReportCommand | undefined
-    logger.error('runner.failed', {
-      error: ensureError(failed ? failed.cause : stopped.error).message,
-      ...(failed && { origin: failed.origin }),
-      ...(report && { outcome: report.outcome, reason: report.reason, open: report.open })
-    })
-    return 1
-  }
-  const { outcome, reason, open } = stopped.data
-  logger.info('kernel.stopped', { outcome, reason, open })
-  return outcome === 'clean' ? 0 : 1
-}
-
 async function main() {
   const config = loadConfig()
+  const build = buildIdentityFromEnv(process.env)
+  const runCapBytes = parseJournalRunCapBytes(process.env.JOURNAL_RUN_CAP_BYTES)
   const logger = createLogger(config.logLevel, {
-    context: { bot: 'blue-liquidation', chainId: config.chainId }
+    context: { bot: 'blue-liquidation', chainId: config.chainId, ...build }
   })
 
   const account = liquidatorAccount(config)
@@ -224,7 +198,7 @@ async function main() {
     const probe = await tryCatch(discover())
     if (probe.error instanceof CandidatesApiRefusedError) throw probe.error
     if (probe.error) {
-      logger.warn('discovery.startup_error', { detail: ensureError(probe.error).message })
+      logger.warn('discovery.startup_error', { detail: revertReason(probe.error) })
     } else {
       logger.info('discovery.startup', {
         chainId: config.chainId,
@@ -256,9 +230,11 @@ async function main() {
   const journal = await createJournalFileSink({
     directory: join(config.kernel.stateDirectory, 'journal'),
     graph: 'blue-liquidation',
-    build: buildIdentityFromEnv(process.env),
-    capacityBytes: JOURNAL_CAPACITY_BYTES
+    build,
+    capacityBytes: JOURNAL_CAPACITY_BYTES,
+    runCapBytes
   })
+  logger.info('journal.pruned', journal.pruned)
   const running = await startLiquidator({
     journal: journal.journal,
     kernel: kernel.live,
@@ -290,7 +266,7 @@ async function main() {
     logger
   })
 
-  process.exitCode = await superviseKernelBot(running, logger, () => ({
+  process.exitCode = await superviseKernelBot(running, journal.runCapReached, logger, () => ({
     venues: venueSelector.snapshot()
   }))
 }
@@ -298,7 +274,7 @@ async function main() {
 main().catch(error => {
   // Config/client never came up, so we cannot honor LOG_LEVEL — emit the failure directly, exit non-zero.
   console.error(
-    JSON.stringify({ level: 'error', event: 'startup.error', error: ensureError(error).message })
+    JSON.stringify({ level: 'error', event: 'startup.error', error: revertReason(error) })
   )
   process.exitCode = 1
 })

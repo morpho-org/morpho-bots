@@ -1,5 +1,5 @@
 import type { ReportCommand } from '@repo/kernel'
-import type { Logger } from '@repo/kit'
+import type { JournalRunCap, Logger } from '@repo/kit'
 import type { Address } from 'viem'
 
 import { runIdAt } from '@repo/controller'
@@ -12,6 +12,7 @@ import {
   createHeartbeatMonitor,
   createJournalFileSink,
   createLogger,
+  parseJournalRunCapBytes,
   TRANSACTION_KERNEL_RESERVATIONS,
   simulateCall,
   withLogging
@@ -38,6 +39,7 @@ const STOP_SIGNALS = ['SIGINT', 'SIGTERM'] as const
 
 async function superviseKernelBot(
   running: Readonly<{ stop: () => void; stopped: Promise<ReportCommand | undefined> }>,
+  runCapReached: Promise<JournalRunCap>,
   logger: Logger,
   describe: (error: unknown) => string
 ): Promise<0 | 1> {
@@ -45,8 +47,15 @@ async function superviseKernelBot(
     logger.info('shutdown', { signal })
     running.stop()
   }
+  let settled = false
   for (const signal of STOP_SIGNALS) process.on(signal, shutdown)
+  void runCapReached.then(cap => {
+    if (settled) return
+    logger.info('journal.capped', cap)
+    running.stop()
+  })
   const stopped = await tryCatch(running.stopped)
+  settled = true
   for (const signal of STOP_SIGNALS) process.off(signal, shutdown)
   if (stopped.error) {
     const failed = stopped.error instanceof GraphFailedError ? stopped.error : undefined
@@ -125,8 +134,10 @@ async function main() {
     directory: join(config.kernel.stateDirectory, 'journal'),
     graph: 'vault-v2-reallocation',
     build: buildIdentityFromEnv(process.env),
-    capacityBytes: JOURNAL_CAPACITY_BYTES
+    capacityBytes: JOURNAL_CAPACITY_BYTES,
+    runCapBytes: parseJournalRunCapBytes(process.env.JOURNAL_RUN_CAP_BYTES)
   })
+  logger.info('journal.pruned', journal.pruned)
   const running = await startReallocator({
     journal: journal.journal,
     kernel: kernel.live,
@@ -155,7 +166,9 @@ async function main() {
     logger
   })
 
-  process.exitCode = await superviseKernelBot(running, logger, error => revertReason(error))
+  process.exitCode = await superviseKernelBot(running, journal.runCapReached, logger, error =>
+    revertReason(error)
+  )
 }
 
 main().catch(error => {

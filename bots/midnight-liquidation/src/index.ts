@@ -1,10 +1,8 @@
-import type { KernelHead, ReportCommand } from '@repo/kernel'
-import type { Logger } from '@repo/kit'
+import type { KernelHead } from '@repo/kernel'
 import type { SwapPlan, Venue } from '@repo/swaps'
 import type { Address, Hex } from 'viem'
 
 import { runIdAt } from '@repo/controller'
-import { GraphFailedError } from '@repo/engine'
 import {
   assertContractDeployed,
   buildIdentityFromEnv,
@@ -13,6 +11,7 @@ import {
   createHeartbeatMonitor,
   createJournalFileSink,
   createLogger,
+  parseJournalRunCapBytes,
   TRANSACTION_KERNEL_RESERVATIONS,
   simulateLiquidationExec,
   withLogging
@@ -51,44 +50,18 @@ import { startLiquidator } from './run'
 import { createPlanSkipLog } from './runner/plan-skip-log'
 import { readMidnightLiquidationLens } from './state/lens.sol'
 import { createTickStats } from './stats'
+import { superviseKernelBot } from './supervise'
 
 /** How many positions quote and simulate at once. */
 const PREPARE_CONCURRENCY = 4
 
 const JOURNAL_CAPACITY_BYTES = 16 * 1024 * 1024
-const STOP_SIGNALS = ['SIGINT', 'SIGTERM'] as const
-
-async function superviseKernelBot(
-  running: Readonly<{ stop: () => void; stopped: Promise<ReportCommand> }>,
-  logger: Logger,
-  shutdownFields: () => Record<string, unknown>
-): Promise<0 | 1> {
-  const shutdown = (signal: NodeJS.Signals) => {
-    logger.info('shutdown', { signal, ...shutdownFields() })
-    running.stop()
-  }
-  for (const signal of STOP_SIGNALS) process.on(signal, shutdown)
-  const stopped = await tryCatch(running.stopped)
-  for (const signal of STOP_SIGNALS) process.off(signal, shutdown)
-  if (stopped.error) {
-    const failed = stopped.error instanceof GraphFailedError ? stopped.error : undefined
-    const report = failed?.stop as ReportCommand | undefined
-    logger.error('runner.failed', {
-      error: revertReason(failed ? failed.cause : stopped.error),
-      ...(failed && { origin: failed.origin }),
-      ...(report && { outcome: report.outcome, reason: report.reason, open: report.open })
-    })
-    return 1
-  }
-  const { outcome, reason, open } = stopped.data
-  logger.info('kernel.stopped', { outcome, reason, open })
-  return outcome === 'clean' ? 0 : 1
-}
-
 async function main() {
   const config = loadConfig()
+  const build = buildIdentityFromEnv(process.env)
+  const runCapBytes = parseJournalRunCapBytes(process.env.JOURNAL_RUN_CAP_BYTES)
   const logger = createLogger(config.logLevel, {
-    context: { bot: 'midnight-liquidation', chainId: config.chainId }
+    context: { bot: 'midnight-liquidation', chainId: config.chainId, ...build }
   })
 
   const account = liquidatorAccount(config)
@@ -291,9 +264,11 @@ async function main() {
   const journal = await createJournalFileSink({
     directory: join(config.kernel.stateDirectory, 'journal'),
     graph: 'midnight-liquidation',
-    build: buildIdentityFromEnv(process.env),
-    capacityBytes: JOURNAL_CAPACITY_BYTES
+    build,
+    capacityBytes: JOURNAL_CAPACITY_BYTES,
+    runCapBytes
   })
+  logger.info('journal.pruned', journal.pruned)
   const running = await startLiquidator({
     journal: journal.journal,
     kernel: kernel.live,
@@ -360,7 +335,7 @@ async function main() {
     logger
   })
 
-  process.exitCode = await superviseKernelBot(running, logger, () => ({
+  process.exitCode = await superviseKernelBot(running, journal.runCapReached, logger, () => ({
     venues: venueSelector.snapshot(),
     listedMarkets: listedMarkets.snapshot(),
     tokenPrices: tokenPrices.snapshot()

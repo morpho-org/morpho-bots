@@ -21,6 +21,9 @@ env: []
 state:
   storageClass: tools-gp3
   size: 10Gi
+  # The size at which a run's journal file stops the bot cleanly, as a quoted byte count. Earlier
+  # runs are kept up to three of these, so the journal holds at most about four.
+  journalRunCapBytes: '1073741824'
 
 # A stop lets the kernel settle what it has in flight; the default 30s can kill a clean stop.
 terminationGracePeriodSeconds: 120

@@ -125,7 +125,8 @@ Environment variables:
 | `PENDLE_SLIPPAGE_BPS`                                     | no       | `50`                                  | Slippage for the Pendle PT → underlying unwrap hop (before the downstream venue sells).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | `BACKOFF_BASE_BLOCKS` / `BACKOFF_MAX_BLOCKS`              | no       | chain-dependent                       | Exponential per-position backoff (in blocks) after a failed quote or simulation, or a liquidation the kernel refused or ended unsettled, bounding API + RPC usage under a backlog. An economic refusal (`floor_unmet`, an unprofitable quote) never arms it — see [Kernel and backoff](#kernel-and-backoff).                                                                                                                                                                                                                                                                                                                   |
 | `KERNEL_STATE_DIR`                                        | yes      | —                                     | Directory holding the signing kernel's ledger (`kernel-<chainId>-<account>.json`) and journal. Must survive restarts; the chart mounts a volume there.                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| `BUILD_REVISION` / `BUILD_IMAGE_TAG`                      | yes      | —                                     | The source revision and image the journal names; the Dockerfile bakes them in from build args.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `JOURNAL_RUN_CAP_BYTES`                                   | yes      | —                                     | The size, in bytes and at least 64 MiB, at which a run's journal file stops the bot cleanly; the next start begins a new file. The chart sets it from `state.journalRunCapBytes`.                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| `BUILD_REVISION` / `BUILD_IMAGE_TAG`                      | yes      | —                                     | The source revision and image the journal names and every log line carries as `revision` and `imageTag`; the Dockerfile bakes them in from build args.                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | `KERNEL_ENROLLMENT`                                       | yes      | —                                     | `enrolling` for the first start of a fresh account, `enrolled` for every later one; a missing ledger under `enrolled` refuses to start. `POSITION_LIQUIDATION_COOLDOWN_MS` is no longer supported, and the bot refuses to start while it is set.                                                                                                                                                                                                                                                                                                                                                                               |
 | `FINALITY_<CHAIN_ID>`                                     | yes      | —                                     | `safe`, `finalized`, or a positive block depth: the block the kernel treats as final on that chain, e.g. `FINALITY_8453=safe`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | `BETTERSTACK_SOURCE_TOKEN` / `BETTERSTACK_INGESTING_HOST` | no       | —                                     | Opt-in log shipping; when both are set the bot's in-process loglayer transport ships structured logs to BetterStack (inert otherwise).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
@@ -142,6 +143,7 @@ RPC_URL=https://base-mainnet.example
 RPC_URL_FALLBACK=https://base-mainnet-fallback.example
 LIQUIDATOR_PRIVATE_KEY=0x...
 KERNEL_STATE_DIR=./.kernel
+JOURNAL_RUN_CAP_BYTES=1073741824
 KERNEL_ENROLLMENT=enrolling   # first start of a fresh account only; `enrolled` afterwards
 FINALITY_8453=safe
 BUILD_REVISION=...            # required: the commit, `git rev-parse HEAD`
@@ -454,9 +456,10 @@ bot also reads `MAX_FEE_GWEI`, so set these values in the same change that pins 
 set ahead of it, they retune the old bot. Other non-secret settings from
 [Configuration](#configuration), such as `LOG_LEVEL` or `ALLOW_BAD_DEBT_ONLY`, also go in `env`.
 
-The chart sets `KERNEL_STATE_DIR=/repo/state`, where it mounts the state volume, and refuses a
-release whose `env` sets it. `state.storageClass` (`tools-gp3`) and `state.size` (`10Gi`) shape that
-volume; the render fails if either is empty.
+The chart sets `KERNEL_STATE_DIR=/repo/state`, where it mounts the state volume, and
+`JOURNAL_RUN_CAP_BYTES` from `state.journalRunCapBytes` (1 GiB), and refuses a release whose `env`
+sets either. `state.storageClass` (`tools-gp3`) and `state.size` (`10Gi`) shape that volume; the
+render fails if either is empty, or if `state.journalRunCapBytes` is not a quoted byte count.
 
 ### Runtime secret
 
@@ -482,9 +485,24 @@ The ExternalSecret refreshes it every five minutes, and a change restarts the po
 The claim `<statefulset>-state` (for example `prd-8453-midnight-liquidation-state`) holds the
 kernel's ledger, `kernel-<chainId>-<account>.json`, and the journal. It is an EBS volume in one
 availability zone, so the pod schedules there. Neither `helm uninstall`, deleting the Argo CD
-application, nor an Argo CD prune deletes it. The journal does not yet rotate, and this bot writes
-more per head than blue (prices, routes and curves), so measure its growth on dev before trusting
-`10Gi` in production.
+application, nor an Argo CD prune deletes it.
+
+The journal costs a few KB per head while no position is liquidatable, and about 1.5 KB more per
+head for each position that stays liquidatable without being liquidated, since each world read
+writes its whole reading again. Dev filled `10Gi` in about 37 hours with 128 such positions, about
+200 KB per head, at which rate a 1 GiB run lasts about 3 hours.
+
+Each start deletes old journal files under `journal/` before it creates its own. Newest first, it
+keeps whole run files while they total at most three times `JOURNAL_RUN_CAP_BYTES`, and deletes the
+rest. A crash loop's many small files therefore keep the journal of the run that crashed first. It
+also deletes any file over twice the cap, even the newest, which only a run under no cap or a larger
+one leaves. It logs `journal.pruned` with the `files` and `bytes` it deleted and how many it `kept`.
+Deleting needs no free space, so a volume that has filled frees itself on the next start. When the
+live file reaches `JOURNAL_RUN_CAP_BYTES`, the bot logs `journal.capped` and makes the same clean
+stop as SIGTERM: `kernel.stopped`, exit 0, and Kubernetes starts it again on a new file. Kept files
+total at most three caps and the live file overshoots its cap only by the entries its stop drains,
+so the journal holds at most about four caps: 4 GiB at the chart's 1 GiB, inside `10Gi`. The ledger
+is never pruned.
 
 `KERNEL_ENROLLMENT` is `enrolling` for the first start of an account with no ledger and `enrolled`
 for every start after it. The kernel refuses an enrollment over an existing ledger and an enrolled
@@ -510,7 +528,7 @@ To start an account on the kernel:
   `safe`, that is far past the 120s grace, so a stop soon after a send ends in SIGKILL. That is
   crash-equivalent: the ledger is durable and a restart adopts it, but the journal ends unclean. Flip
   enrollment and roll images only when `tick.end.oldestPendingMs` is 0 and no send is within
-  finality. A requested stop raises `kernel.alarm`, which can page.
+  finality. A requested stop raises no `kernel.alarm`; `kernel.stopped` names what it left open.
 - **Finality stall.** Finality must lag the head by less than the kernel's reorg window: 150 blocks
   on Base and 128 on mainnet. A restart during an L1 finality stall of about 26 minutes or more is
   refused; wait for finality to resume before restarting mainnet.

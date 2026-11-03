@@ -84,3 +84,11 @@ export class MissingBuildIdentityError extends Error {
     this.name = 'MissingBuildIdentityError'
   }
 }
+
+/** `JOURNAL_RUN_CAP_BYTES` is missing or not a byte count the journal can be capped at. */
+export class InvalidJournalRunCapError extends Error {
+  constructor(minimum: number) {
+    super(`JOURNAL_RUN_CAP_BYTES must be set to a whole number of bytes, at least ${minimum}`)
+    this.name = 'InvalidJournalRunCapError'
+  }
+}

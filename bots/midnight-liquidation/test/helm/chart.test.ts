@@ -41,6 +41,28 @@ const claimNameOf = async (release: string) => {
   return /^ {2}name: "(.+)"$/m.exec(stdout)?.[1]
 }
 
+const renderStatefulSet = async (...extra: string[]) => {
+  const { stdout } = await promisify(execFile)('helm', [
+    'template',
+    'bot-8453',
+    chartPath,
+    '--show-only',
+    'templates/statefulset.yaml',
+    '--set',
+    'image.repository=example/midnight-liquidation',
+    '--set',
+    'image.tag=deadbeef',
+    '--set',
+    'serviceAccount.name=midnight-liquidation',
+    '--set',
+    'serviceAccount.roleArn=arn:aws:iam::000000000000:role/midnight-liquidation',
+    '--set',
+    'runtimeSecret.key=midnight-liquidation/dev/8453/runtime',
+    ...extra
+  ])
+  return stdout
+}
+
 describe('midnight-liquidation Helm chart', () => {
   it('bounds the state claim name to 63 characters without merging long releases', async () => {
     const long = 'a'.repeat(50)
@@ -144,4 +166,30 @@ describe('midnight-liquidation Helm chart', () => {
       '        runAsGroup: 1000\n        fsGroup: 1000\n        fsGroupChangePolicy: OnRootMismatch\n'
     )
   })
+
+  it('sets the journal run cap from the state values, and refuses one set in env', async () => {
+    const [rendered, raised] = await Promise.all([
+      renderStatefulSet(),
+      renderStatefulSet('--set-string', 'state.journalRunCapBytes=2147483648')
+    ])
+
+    expect(rendered).toContain(
+      '            - name: JOURNAL_RUN_CAP_BYTES\n              value: "1073741824"\n'
+    )
+    expect(raised).toContain('value: "2147483648"')
+    await expect(
+      renderStatefulSet('--set', 'env[0].name=JOURNAL_RUN_CAP_BYTES', '--set', 'env[0].value=1')
+    ).rejects.toThrow('env must not set JOURNAL_RUN_CAP_BYTES')
+    await expect(renderStatefulSet('--set', 'state.journalRunCapBytes=null')).rejects.toThrow(
+      'state.journalRunCapBytes is required'
+    )
+    for (const invalid of [
+      '--set-json=state.journalRunCapBytes=67108864.5',
+      '--set=state.journalRunCapBytes=1073741824',
+      '--set-string=state.journalRunCapBytes=1Gi'
+    ])
+      await expect(renderStatefulSet(invalid)).rejects.toThrow(
+        'state.journalRunCapBytes must be a quoted whole number of bytes'
+      )
+  }, 30_000)
 })

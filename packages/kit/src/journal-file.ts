@@ -14,10 +14,20 @@ import { randomUUID } from 'node:crypto'
 import * as fileSystem from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 
-import { JournalFileError, MissingBuildIdentityError } from './errors'
+import { InvalidJournalRunCapError, JournalFileError, MissingBuildIdentityError } from './errors'
 
 export const JOURNAL_FILE_FORMAT = 1
 export const JOURNAL_FILE_SUFFIX = '.journal.jsonl'
+/** Earlier runs' files survive a new run's creation, newest first, while they total at most this many run caps. */
+export const KEPT_JOURNAL_RUN_CAPS = 3
+/**
+ * A run file over this many run caps is deleted even among the newest runs, so a file written under
+ * no cap or a larger one cannot pin the volume full; a capped run overshoots only by its stop's drain.
+ */
+export const KEPT_RUN_MAX_CAPS = 2
+/** The smallest `JOURNAL_RUN_CAP_BYTES` a bot accepts, so a mistyped cap cannot restart it every few heads. */
+export const MIN_JOURNAL_RUN_CAP_BYTES = 64 * 1024 * 1024
+const JOURNAL_FILE_NAME = /^(\d+)-[A-Za-z0-9][A-Za-z0-9_-]*\.journal\.jsonl$/
 
 export type JournalBuildIdentity = Readonly<{
   revision: string
@@ -68,6 +78,9 @@ export type JournalFileSystem = Readonly<{
     options: { signal?: AbortSignal }
   ) => Promise<void>
   readFile: (path: string) => Promise<Buffer>
+  readdir: (path: string) => Promise<string[]>
+  lstat: (path: string) => Promise<Readonly<{ size: number; isFile: () => boolean }>>
+  unlink: (path: string) => Promise<void>
 }>
 
 const defaultFileSystem: JournalFileSystem = {
@@ -126,6 +139,8 @@ export type JournalFileOptions = Readonly<{
   graph: string
   build: JournalBuildIdentity
   capacityBytes: number
+  /** The size at which this run's file resolves `runCapReached`; appends still land past it. */
+  runCapBytes: number
   runId?: string
   now?: () => number
   ioTimeoutMs?: number
@@ -157,6 +172,68 @@ export const buildIdentityFromEnv = (
   return build
 }
 
+/** `JOURNAL_RUN_CAP_BYTES`, required: a decimal byte count of at least {@link MIN_JOURNAL_RUN_CAP_BYTES}. */
+export const parseJournalRunCapBytes = (value: string | undefined) => {
+  const raw = value?.trim()
+  const bytes = raw !== undefined && /^[1-9]\d*$/.test(raw) ? Number(raw) : Number.NaN
+  if (!(Number.isSafeInteger(bytes) && bytes >= MIN_JOURNAL_RUN_CAP_BYTES))
+    throw new InvalidJournalRunCapError(MIN_JOURNAL_RUN_CAP_BYTES)
+  return bytes
+}
+
+type JournalPruned = Readonly<{ files: number; bytes: number; kept: number }>
+export type JournalRunCap = Readonly<{ bytes: number; runCapBytes: number }>
+
+const errorCode = (error: unknown) =>
+  typeof error === 'object' && error !== null && 'code' in error ? error.code : undefined
+
+const pruneOldRuns = async (
+  directory: string,
+  runCapBytes: number,
+  fs: JournalFileSystem,
+  files: CreationFiles,
+  signal: AbortSignal
+): Promise<JournalPruned> => {
+  let names: string[]
+  try {
+    names = await fs.readdir(directory)
+  } catch (error) {
+    if (errorCode(error) === 'ENOENT') return { files: 0, bytes: 0, kept: 0 }
+    throw error
+  }
+  const runs: { path: string; name: string; startedAt: number; size: number }[] = []
+  for (const name of names) {
+    const match = JOURNAL_FILE_NAME.exec(name)
+    if (!match) continue
+    const path = join(directory, name)
+    const info = await fs.lstat(path)
+    signal.throwIfAborted()
+    if (info.isFile()) runs.push({ path, name, startedAt: Number(match[1]), size: info.size })
+  }
+  runs.sort((a, b) => b.startedAt - a.startedAt || (a.name < b.name ? 1 : -1))
+  const kept: typeof runs = []
+  let budget = KEPT_JOURNAL_RUN_CAPS * runCapBytes
+  for (const run of runs) {
+    if (run.size > KEPT_RUN_MAX_CAPS * runCapBytes) continue
+    if (run.size > budget) break
+    kept.push(run)
+    budget -= run.size
+  }
+  const pruned = { files: 0, bytes: 0, kept: kept.length }
+  for (const run of runs.filter(run => !kept.includes(run))) {
+    try {
+      await fs.unlink(run.path)
+      pruned.files += 1
+      pruned.bytes += run.size
+    } catch (error) {
+      if (errorCode(error) !== 'ENOENT') throw error
+    }
+    signal.throwIfAborted()
+  }
+  if (pruned.files > 0) await syncCreationDirectory(directory, files)
+  return pruned
+}
+
 export const createJournalFileSink = async (
   options: JournalFileOptions,
   fs: JournalFileSystem = defaultFileSystem
@@ -166,9 +243,14 @@ export const createJournalFileSink = async (
     header: JournalHeader
     journal: NonNullable<RunnerOptions['journal']>
     finalize: () => Promise<void>
+    pruned: JournalPruned
+    runCapReached: Promise<JournalRunCap>
   }>
 > => {
   validateJournalLimits(options)
+  const { runCapBytes } = options
+  if (!(Number.isSafeInteger(runCapBytes) && runCapBytes > 0))
+    throw new JournalFileError('use its run cap', undefined)
   if (!buildIdentity(options.build)) throw new JournalFileError('use its build identity', undefined)
   const now = options.now ?? Date.now
   const run = options.runId ?? randomUUID()
@@ -211,6 +293,12 @@ export const createJournalFileSink = async (
   }
   const files = { open, close }
   const creating = (async () => {
+    let pruned: JournalPruned
+    try {
+      pruned = await pruneOldRuns(options.directory, runCapBytes, fs, files, controller.signal)
+    } catch (error) {
+      throw new JournalFileError('prune old runs', error)
+    }
     let file: JournalWritableFile
     try {
       const firstCreated = await fs.mkdir(options.directory, { recursive: true, mode: 0o700 })
@@ -242,7 +330,7 @@ export const createJournalFileSink = async (
       throw new JournalFileError('write its header durably', error)
     }
     opened.delete(file)
-    return file
+    return { file, pruned }
   })()
   let timer: ReturnType<typeof setTimeout> | undefined
   const timeout = new Promise<never>((_, reject) => {
@@ -258,13 +346,17 @@ export const createJournalFileSink = async (
       reject(error)
     }, timeoutMs)
   })
-  let file: JournalWritableFile
+  let created: Awaited<typeof creating>
   try {
-    file = await Promise.race([creating, timeout])
+    created = await Promise.race([creating, timeout])
   } finally {
     clearTimeout(timer)
   }
+  const { file, pruned } = created
 
+  let written = encodedHeader.length
+  const runCap = Promise.withResolvers<JournalRunCap>()
+  if (written >= runCapBytes) runCap.resolve({ bytes: written, runCapBytes })
   let finalized = false
   const writeFrame = (frame: Buffer, signal?: AbortSignal) =>
     fs.writeFile?.(file, frame, { signal }) ?? file.writeFile(frame)
@@ -273,13 +365,16 @@ export const createJournalFileSink = async (
       if (finalized) throw new JournalFileError('append after finalization', undefined)
       try {
         signal?.throwIfAborted()
-        await writeFrame(lineOf({ type: 'entry', entry }), signal)
+        const frame = lineOf({ type: 'entry', entry })
+        await writeFrame(frame, signal)
         signal?.throwIfAborted()
         await file.datasync()
         signal?.throwIfAborted()
+        written += frame.length
       } catch (error) {
         throw new JournalFileError('append durably', error)
       }
+      if (written >= runCapBytes) runCap.resolve({ bytes: written, runCapBytes })
     },
     finalize: async (signal, result) => {
       if (finalized) return
@@ -328,7 +423,7 @@ export const createJournalFileSink = async (
     ...(options.ioTimeoutMs !== undefined && { ioTimeoutMs: options.ioTimeoutMs }),
     ...(options.describe && { describe: options.describe })
   }
-  return { path, header, journal, finalize }
+  return { path, header, journal, finalize, pruned, runCapReached: runCap.promise }
 }
 
 const exactFields = (

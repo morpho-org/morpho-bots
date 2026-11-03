@@ -54,6 +54,7 @@ const MAX_FEE_GWEI = '10'
 const FINALITY_DEPTH = '2'
 const BLOCK_MS = 1_000
 const JOURNAL_CAPACITY_BYTES = 16 * 1024 * 1024
+const JOURNAL_RUN_CAP_BYTES = 1024 * 1024 * 1024
 const LANDED_WITHIN_MS = 90_000
 
 const until = async (done: () => Promise<boolean>, what: string) => {
@@ -116,7 +117,8 @@ describe.skipIf(!FORK_URL)(
         directory: join(stateDirectory, 'journal'),
         graph: 'blue-liquidation',
         build: { revision: 'f0f0f0', imageTag: 'fork-test' },
-        capacityBytes: JOURNAL_CAPACITY_BYTES
+        capacityBytes: JOURNAL_CAPACITY_BYTES,
+        runCapBytes: JOURNAL_RUN_CAP_BYTES
       })
       const balanceOf = (token: Address, holder: Address) =>
         test.readContract({

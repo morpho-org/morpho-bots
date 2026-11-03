@@ -293,6 +293,21 @@ function addressListEnv(env: Env, name: string): Address[] {
     })
 }
 
+const parseHttpUrl = (raw: string) => {
+  const parsed = tryCatch(() => new URL(raw))
+  return parsed.data?.protocol === 'http:' || parsed.data?.protocol === 'https:'
+    ? parsed.data
+    : undefined
+}
+
+// Endpoint errors name the variable but never echo its value, which may embed a credential.
+function urlEnv(env: Env, name: string): string | undefined {
+  const raw = env[name]?.trim()
+  if (!raw) return undefined
+  if (!parseHttpUrl(raw)) throw new Error(`${name} is not a valid http(s) URL`)
+  return raw
+}
+
 /**
  * `KERNEL_STATE_DIR` holds the kernel's ledger and must survive a restart. `KERNEL_ENROLLMENT` is
  * `enrolling` for the first start of a fresh account and `enrolled` for every later one.
@@ -399,23 +414,11 @@ export function loadConfig(
       `No venues enabled (set ENABLE_LIFI=true or ${LIFI_API_KEY_ENV} / ${ZEROX_API_KEY_ENV} / ${ONEINCH_API_KEY_ENV}). Set at least one, or set ALLOW_DETECTION_ONLY=true to run detection-only.`
     )
   }
-  const zeroxBaseUrl = env.ZEROX_BASE_URL?.trim() || undefined
-  if (zeroxBaseUrl && tryCatch(() => new URL(zeroxBaseUrl)).error) {
-    throw new Error(`ZEROX_BASE_URL is not a valid URL: ${zeroxBaseUrl}`)
-  }
-  const oneinchBaseUrl = env.ONEINCH_BASE_URL?.trim() || undefined
-  if (oneinchBaseUrl && tryCatch(() => new URL(oneinchBaseUrl)).error) {
-    throw new Error(`ONEINCH_BASE_URL is not a valid URL: ${oneinchBaseUrl}`)
-  }
-  const lifiBaseUrl = env.LIFI_BASE_URL?.trim() || undefined
-  if (lifiBaseUrl && tryCatch(() => new URL(lifiBaseUrl)).error) {
-    throw new Error(`LIFI_BASE_URL is not a valid URL: ${lifiBaseUrl}`)
-  }
   const venues: VenueConfig = {
     enabled: enabledVenues,
-    zeroxBaseUrl,
-    oneinchBaseUrl,
-    lifiBaseUrl,
+    zeroxBaseUrl: urlEnv(env, 'ZEROX_BASE_URL'),
+    oneinchBaseUrl: urlEnv(env, 'ONEINCH_BASE_URL'),
+    lifiBaseUrl: urlEnv(env, 'LIFI_BASE_URL'),
     excludeCollaterals: addressListEnv(env, 'EXCLUDE_COLLATERALS')
   }
 
@@ -442,13 +445,9 @@ export function loadConfig(
     backoffMaxBlocks: bigintEnv(env, 'BACKOFF_MAX_BLOCKS', DEFAULT_BACKOFF_MAX_BLOCKS)
   }
 
-  // Fail loud at startup rather than at the first tick's fetch. The value is left out of the error
-  // because the URL may embed credentials.
-  const apiUrl = env.LIQUIDATION_CANDIDATES_API_URL?.trim() || DEFAULT_CANDIDATES_API_URL
-  const parsedApiUrl = tryCatch(() => new URL(apiUrl))
-  if (parsedApiUrl.error) throw new Error('LIQUIDATION_CANDIDATES_API_URL is not a valid URL')
+  const apiUrl = urlEnv(env, 'LIQUIDATION_CANDIDATES_API_URL') ?? DEFAULT_CANDIDATES_API_URL
   // The request carries MORPHO_API_KEY, which must not cross the wire in plaintext.
-  if (parsedApiUrl.data.protocol !== 'https:') {
+  if (new URL(apiUrl).protocol !== 'https:') {
     throw new Error('LIQUIDATION_CANDIDATES_API_URL must use https')
   }
   const discovery: DiscoveryConfig = {

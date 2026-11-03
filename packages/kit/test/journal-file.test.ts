@@ -11,15 +11,33 @@ import {
   RunnerFinalizationError
 } from '@repo/engine'
 import { tryCatch } from '@repo/utils'
-import { chmod, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  stat,
+  symlink,
+  writeFile
+} from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { JournalFileSystem, JournalWritableFile } from '../src/journal-file'
 
-import { MissingBuildIdentityError } from '../src/errors'
-import { buildIdentityFromEnv, createJournalFileSink, readJournalFile } from '../src/journal-file'
+import { InvalidJournalRunCapError, MissingBuildIdentityError } from '../src/errors'
+import {
+  buildIdentityFromEnv,
+  createJournalFileSink,
+  KEPT_JOURNAL_RUN_CAPS,
+  KEPT_RUN_MAX_CAPS,
+  MIN_JOURNAL_RUN_CAP_BYTES,
+  parseJournalRunCapBytes,
+  readJournalFile
+} from '../src/journal-file'
 
 const temporary: string[] = []
 const directory = async () => {
@@ -35,6 +53,12 @@ afterEach(async () => {
 const note: JournalEntry = { kind: 'note', effect: 'guard', at: 2, note: { verdict: 'act' } }
 const build = { revision: 'abc123', imageTag: 'production' } as const
 const capacityBytes = 1_000_000
+const runCapBytes = 1_000_000_000
+const noRuns = {
+  readdir: async () => [],
+  lstat: async () => ({ size: 0, isFile: () => true }),
+  unlink: async () => {}
+} satisfies Pick<JournalFileSystem, 'readdir' | 'lstat' | 'unlink'>
 
 describe('a journal file', () => {
   it('acknowledges an append only after its frame is durable', async () => {
@@ -56,13 +80,22 @@ describe('a journal file', () => {
       close: async () => void calls.push('directory close')
     }
     const fs: JournalFileSystem = {
+      ...noRuns,
       mkdir: async () => undefined,
       chmod: async () => undefined,
       open: async (_path, flags) => (flags === 'r' ? folder : file),
       readFile: async () => Buffer.of()
     }
     const created = await createJournalFileSink(
-      { directory: '/journal', graph: 'bot', build, capacityBytes, runId: 'run', now: () => 1 },
+      {
+        directory: '/journal',
+        graph: 'bot',
+        build,
+        capacityBytes,
+        runCapBytes,
+        runId: 'run',
+        now: () => 1
+      },
       fs
     )
     let acknowledged = false
@@ -110,13 +143,22 @@ describe('a journal file', () => {
       datasync: async () => undefined
     }
     const fs: JournalFileSystem = {
+      ...noRuns,
       mkdir: async () => undefined,
       chmod: async () => undefined,
       open: async (_path, flags) => (flags === 'r' ? folder : file),
       readFile: async () => Buffer.concat(frames)
     }
     const created = await createJournalFileSink(
-      { directory: '/journal', graph: 'bot', build, capacityBytes, runId: 'run', now: () => 1 },
+      {
+        directory: '/journal',
+        graph: 'bot',
+        build,
+        capacityBytes,
+        runCapBytes,
+        runId: 'run',
+        now: () => 1
+      },
       fs
     )
     const graph = createGraph('bot')
@@ -142,6 +184,7 @@ describe('a journal file', () => {
       close: async () => undefined
     }
     const fs: JournalFileSystem = {
+      ...noRuns,
       mkdir: async () => '/root/new',
       chmod: async path => void restricted.push(path),
       open: async (path, flags) => {
@@ -156,6 +199,7 @@ describe('a journal file', () => {
         graph: 'bot',
         build,
         capacityBytes,
+        runCapBytes,
         runId: 'run',
         now: () => 1
       },
@@ -176,6 +220,7 @@ describe('a journal file', () => {
       graph: built.id,
       build,
       capacityBytes: 0,
+      runCapBytes,
       runId: 'overflow',
       now: () => 1
     })
@@ -189,6 +234,7 @@ describe('a journal file', () => {
 
   it('fails creation when the exclusive open exceeds the journal I/O deadline', async () => {
     const fs: JournalFileSystem = {
+      ...noRuns,
       mkdir: async () => undefined,
       chmod: async () => undefined,
       open: () => new Promise(() => {}),
@@ -197,7 +243,15 @@ describe('a journal file', () => {
 
     await expect(
       createJournalFileSink(
-        { directory: '/journal', graph: 'bot', build, capacityBytes, runId: 'run', ioTimeoutMs: 5 },
+        {
+          directory: '/journal',
+          graph: 'bot',
+          build,
+          capacityBytes,
+          runCapBytes,
+          runId: 'run',
+          ioTimeoutMs: 5
+        },
         fs
       )
     ).rejects.toStrictEqual(new JournalIoTimeoutError('create', 5))
@@ -212,6 +266,7 @@ describe('a journal file', () => {
       close
     }
     const fs: JournalFileSystem = {
+      ...noRuns,
       mkdir: async () => undefined,
       chmod: async () => undefined,
       open: async () => file,
@@ -220,7 +275,15 @@ describe('a journal file', () => {
 
     await expect(
       createJournalFileSink(
-        { directory: '/journal', graph: 'bot', build, capacityBytes, runId: 'run', ioTimeoutMs: 5 },
+        {
+          directory: '/journal',
+          graph: 'bot',
+          build,
+          capacityBytes,
+          runCapBytes,
+          runId: 'run',
+          ioTimeoutMs: 5
+        },
         fs
       )
     ).rejects.toStrictEqual(new JournalIoTimeoutError('create', 5))
@@ -236,6 +299,7 @@ describe('a journal file', () => {
       close
     }
     const fs: JournalFileSystem = {
+      ...noRuns,
       mkdir: async () => undefined,
       chmod: async () => undefined,
       open: async () => file,
@@ -244,7 +308,15 @@ describe('a journal file', () => {
 
     await expect(
       createJournalFileSink(
-        { directory: '/journal', graph: 'bot', build, capacityBytes, runId: 'run', ioTimeoutMs: 5 },
+        {
+          directory: '/journal',
+          graph: 'bot',
+          build,
+          capacityBytes,
+          runCapBytes,
+          runId: 'run',
+          ioTimeoutMs: 5
+        },
         fs
       )
     ).rejects.toStrictEqual(new JournalIoTimeoutError('create', 5))
@@ -266,6 +338,7 @@ describe('a journal file', () => {
       close: directoryClose
     }
     const fs: JournalFileSystem = {
+      ...noRuns,
       mkdir: async () => undefined,
       chmod: async () => undefined,
       open: async (_path, flags) => (flags === 'r' ? folder : file),
@@ -274,7 +347,15 @@ describe('a journal file', () => {
 
     await expect(
       createJournalFileSink(
-        { directory: '/journal', graph: 'bot', build, capacityBytes, runId: 'run', ioTimeoutMs: 5 },
+        {
+          directory: '/journal',
+          graph: 'bot',
+          build,
+          capacityBytes,
+          runCapBytes,
+          runId: 'run',
+          ioTimeoutMs: 5
+        },
         fs
       )
     ).rejects.toStrictEqual(new JournalIoTimeoutError('create', 5))
@@ -291,6 +372,7 @@ describe('a journal file', () => {
       close: async () => undefined
     }
     const fs: JournalFileSystem = {
+      ...noRuns,
       mkdir: async () => undefined,
       chmod: async () => undefined,
       open: async () => file,
@@ -302,6 +384,7 @@ describe('a journal file', () => {
         graph: 'bot',
         build,
         capacityBytes,
+        runCapBytes,
         runId: 'run',
         ioTimeoutMs: 5
       },
@@ -315,7 +398,13 @@ describe('a journal file', () => {
     const path = await directory()
 
     await expect(
-      createJournalFileSink({ directory: path, graph: 'bot', build, capacityBytes: -1 })
+      createJournalFileSink({
+        directory: path,
+        graph: 'bot',
+        build,
+        capacityBytes: -1,
+        runCapBytes
+      })
     ).rejects.toStrictEqual(
       new GraphDefinitionError('a journal needs a non-negative safe-integer byte capacity')
     )
@@ -337,6 +426,7 @@ describe('a journal file', () => {
       graph: graph.id,
       build,
       capacityBytes,
+      runCapBytes,
       runId: 'created',
       now: () => 7
     })
@@ -357,25 +447,6 @@ describe('a journal file', () => {
     await expect(readJournalFile(join(path, files[0]!))).resolves.toMatchObject({ status: 'clean' })
   })
 
-  it('leaves old run files untouched when opening a journal', async () => {
-    const path = await directory()
-    const old = join(path, 'old.journal.jsonl')
-    const bytes = Buffer.from('not-json\n')
-    await writeFile(old, bytes)
-
-    const created = await createJournalFileSink({
-      directory: path,
-      graph: 'bot',
-      build,
-      capacityBytes,
-      runId: 'live',
-      now: () => 7
-    })
-
-    expect(await readFile(old)).toStrictEqual(bytes)
-    await created.finalize()
-  })
-
   it('creates one exclusive 0600 file and restricts only the directories it creates', async () => {
     const path = await directory()
     await chmod(path, 0o755)
@@ -386,6 +457,7 @@ describe('a journal file', () => {
       graph: 'bot',
       build,
       capacityBytes,
+      runCapBytes,
       runId: 'run-1',
       now: () => 7
     } as const
@@ -442,6 +514,7 @@ describe('a journal file', () => {
           graph: 'bot',
           build: invalid as never,
           capacityBytes,
+          runCapBytes,
           runId: 'rejected',
           now: () => 1
         })
@@ -457,6 +530,7 @@ describe('a journal file', () => {
       graph: 'bot',
       build,
       capacityBytes,
+      runCapBytes,
       runId: 'truncated',
       now: () => 1
     })
@@ -506,6 +580,7 @@ describe('a journal file', () => {
       graph: 'bot',
       build,
       capacityBytes,
+      runCapBytes,
       runId: 'invalid-utf8',
       now: () => 1
     })
@@ -533,6 +608,7 @@ describe('a journal file', () => {
       graph: 'bot',
       build,
       capacityBytes,
+      runCapBytes,
       runId: 'failed-delta',
       now: () => 1
     })
@@ -580,6 +656,7 @@ describe('a journal file', () => {
       graph: 'bot',
       build,
       capacityBytes,
+      runCapBytes,
       runId: 'missing-baseline',
       now: () => 1
     })
@@ -649,6 +726,7 @@ describe('a journal file', () => {
       graph: 'bot',
       build,
       capacityBytes,
+      runCapBytes,
       runId: 'invalid-delta',
       now: () => 1
     })
@@ -706,5 +784,333 @@ describe('buildIdentityFromEnv', () => {
     ['an image tag naming a secret', { BUILD_REVISION: '0d58dd8e5', BUILD_IMAGE_TAG: 'rpc-key' }]
   ])('refuses %s', (_, env) => {
     expect(() => buildIdentityFromEnv(env)).toThrow(MissingBuildIdentityError)
+  })
+})
+
+describe('journal retention', () => {
+  const sinkIn = (path: string, now = 100, fs?: JournalFileSystem) =>
+    createJournalFileSink(
+      {
+        directory: path,
+        graph: 'bot',
+        build,
+        capacityBytes,
+        runCapBytes,
+        runId: 'live',
+        now: () => now
+      },
+      fs
+    )
+  const runFile = (startedAt: number, run = 'old') => `${startedAt}-${run}.journal.jsonl`
+
+  const capped = (path: string) =>
+    createJournalFileSink({
+      directory: path,
+      graph: 'bot',
+      build,
+      capacityBytes,
+      runCapBytes: 10,
+      runId: 'live',
+      now: () => 100
+    })
+  const budget = KEPT_JOURNAL_RUN_CAPS * 10
+
+  it('keeps a crash loop of tiny files and the earlier run it followed, while under budget', async () => {
+    const path = await directory()
+    await writeFile(join(path, runFile(1)), Buffer.alloc(budget - 20))
+    for (let startedAt = 2; startedAt < 12; startedAt++)
+      await writeFile(join(path, runFile(startedAt)), 'x')
+
+    const created = await capped(path)
+
+    expect(created.pruned).toStrictEqual({ files: 0, bytes: 0, kept: 11 })
+    expect(await readdir(path)).toHaveLength(12)
+    await created.finalize()
+  })
+
+  it('deletes the oldest runs once the newer ones fill the budget', async () => {
+    const path = await directory()
+    for (const startedAt of [5, 40, 9, 30, 20])
+      await writeFile(join(path, runFile(startedAt)), Buffer.alloc(budget / 3))
+
+    const created = await capped(path)
+
+    expect(created.pruned).toStrictEqual({ files: 2, bytes: (2 * budget) / 3, kept: 3 })
+    expect((await readdir(path)).toSorted()).toStrictEqual(
+      [runFile(100, 'live'), runFile(20), runFile(30), runFile(40)].toSorted()
+    )
+    await created.finalize()
+    await expect(readJournalFile(created.path)).resolves.toMatchObject({ status: 'clean' })
+  })
+
+  it('deletes everything older than the first run that overflows the budget', async () => {
+    const path = await directory()
+    await writeFile(join(path, runFile(1)), 'x')
+    await writeFile(join(path, runFile(2)), Buffer.alloc(20))
+    await writeFile(join(path, runFile(3)), Buffer.alloc(15))
+
+    const created = await capped(path)
+
+    expect(created.pruned).toStrictEqual({ files: 2, bytes: 21, kept: 1 })
+    expect((await readdir(path)).toSorted()).toStrictEqual(
+      [runFile(3), runFile(100, 'live')].toSorted()
+    )
+    await created.finalize()
+  })
+
+  it('deletes a run file too large for the cap even when it is the newest', async () => {
+    const path = await directory()
+    for (const startedAt of [1, 2, 3]) await writeFile(join(path, runFile(startedAt)), 'x')
+    await writeFile(join(path, runFile(4)), Buffer.alloc(KEPT_RUN_MAX_CAPS * 10 + 1))
+
+    const created = await capped(path)
+
+    expect(created.pruned).toStrictEqual({ files: 1, bytes: KEPT_RUN_MAX_CAPS * 10 + 1, kept: 3 })
+    expect((await readdir(path)).toSorted()).toStrictEqual(
+      [runFile(1), runFile(2), runFile(3), runFile(100, 'live')].toSorted()
+    )
+    await created.finalize()
+  })
+
+  it('never touches a file that is not a run journal, nor a link or directory named like one', async () => {
+    const path = await directory()
+    const outside = await directory()
+    const target = join(outside, 'kernel-8453-0xabc.json')
+    await writeFile(target, 'ledger')
+    const others = [
+      'kernel-8453-0xabc.json',
+      'old.journal.jsonl',
+      '1-run.journal.jsonl.tmp',
+      'notes.txt',
+      '-1-run.journal.jsonl'
+    ]
+    for (const name of others) await writeFile(join(path, name), 'keep')
+    await mkdir(join(path, runFile(1, 'directory')))
+    await symlink(target, join(path, runFile(2, 'link')))
+    for (const startedAt of [11, 12, 13]) await writeFile(join(path, runFile(startedAt)), 'x')
+    await writeFile(join(path, runFile(10)), Buffer.alloc(KEPT_RUN_MAX_CAPS * 10 + 1))
+
+    const created = await capped(path)
+
+    expect(created.pruned).toStrictEqual({ files: 1, bytes: KEPT_RUN_MAX_CAPS * 10 + 1, kept: 3 })
+    expect((await readdir(path)).toSorted()).toStrictEqual(
+      [
+        ...others,
+        runFile(1, 'directory'),
+        runFile(2, 'link'),
+        runFile(11),
+        runFile(12),
+        runFile(13),
+        runFile(100, 'live')
+      ].toSorted()
+    )
+    expect(await readFile(target, 'utf8')).toBe('ledger')
+    await created.finalize()
+  })
+
+  it.each([
+    ['is missing', false],
+    ['is empty', true]
+  ])('creates the first run when the directory %s', async (_, exists) => {
+    const parent = await directory()
+    const path = join(parent, 'journal')
+    if (exists) await mkdir(path)
+
+    const created = await sinkIn(path)
+
+    expect(created.pruned).toStrictEqual({ files: 0, bytes: 0, kept: 0 })
+    expect(await readdir(path)).toStrictEqual([runFile(100, 'live')])
+    await created.finalize()
+  })
+
+  it('prunes before it creates the new file, so a full volume frees space first', async () => {
+    const calls: string[] = []
+    let free = false
+    const file: JournalWritableFile = {
+      writeFile: async () => {
+        calls.push('write')
+        if (!free) throw Object.assign(new Error('no space left on device'), { code: 'ENOSPC' })
+      },
+      datasync: async () => undefined,
+      sync: async () => undefined,
+      close: async () => undefined
+    }
+    const fs: JournalFileSystem = {
+      readdir: async () => [runFile(1), runFile(2), runFile(3), runFile(4)],
+      lstat: async name => ({
+        size: name.endsWith(runFile(1)) ? 2 * runCapBytes + 1 : 10,
+        isFile: () => true
+      }),
+      unlink: async name => {
+        calls.push(`unlink ${name}`)
+        free = true
+      },
+      mkdir: async () => {
+        calls.push('mkdir')
+        return undefined
+      },
+      chmod: async () => undefined,
+      open: async (name, flags) => {
+        calls.push(`open ${flags} ${name}`)
+        return file
+      },
+      readFile: async () => Buffer.of()
+    }
+
+    const created = await sinkIn('/journal', 100, fs)
+
+    expect(created.pruned).toStrictEqual({ files: 1, bytes: 2 * runCapBytes + 1, kept: 3 })
+    expect(calls).toStrictEqual([
+      `unlink /journal/${runFile(1)}`,
+      'open r /journal',
+      'mkdir',
+      `open wx /journal/${runFile(100, 'live')}`,
+      'write',
+      'open r /journal'
+    ])
+  })
+
+  it('fails creation, opening nothing, when the directory cannot be listed', async () => {
+    const opened: string[] = []
+    const fs: JournalFileSystem = {
+      ...noRuns,
+      readdir: async () => {
+        throw Object.assign(new Error('permission denied'), { code: 'EACCES' })
+      },
+      mkdir: async () => undefined,
+      chmod: async () => undefined,
+      open: async name => {
+        opened.push(name)
+        throw new Error('unreachable')
+      },
+      readFile: async () => Buffer.of()
+    }
+
+    await expect(sinkIn('/journal', 100, fs)).rejects.toThrow(
+      'the journal file could not prune old runs'
+    )
+    expect(opened).toStrictEqual([])
+  })
+
+  it('fails creation when an old run cannot be deleted', async () => {
+    const path = await directory()
+    const fs: JournalFileSystem = {
+      ...noRuns,
+      readdir: async () => [runFile(1)],
+      lstat: async () => ({ size: 2 * runCapBytes + 1, isFile: () => true }),
+      unlink: async () => {
+        throw Object.assign(new Error('read-only file system'), { code: 'EROFS' })
+      },
+      mkdir: async () => undefined,
+      chmod: async () => undefined,
+      open: async () => {
+        throw new Error('unreachable')
+      },
+      readFile: async () => Buffer.of()
+    }
+
+    await expect(sinkIn(path, 100, fs)).rejects.toThrow('the journal file could not prune old runs')
+  })
+})
+
+describe('the journal run cap', () => {
+  it('signals once when the run file reaches its cap, and keeps appending past it', async () => {
+    const path = await directory()
+    const options = {
+      directory: path,
+      graph: 'bot',
+      build,
+      capacityBytes,
+      runId: 'run',
+      now: () => 7
+    }
+    const probe = await createJournalFileSink({ ...options, runCapBytes })
+    const header = Buffer.byteLength(`${encode(probe.header)}\n`)
+    const frame = Buffer.byteLength(`${encode({ type: 'entry', entry: note })}\n`)
+    await probe.finalize()
+    await rm(probe.path)
+    const capped = await createJournalFileSink({ ...options, runCapBytes: header + 2 * frame })
+    let reached: unknown
+    void capped.runCapReached.then(cap => {
+      reached = cap
+    })
+
+    await capped.journal.sink.append(note)
+    await Promise.resolve()
+    expect(reached).toBeUndefined()
+    await capped.journal.sink.append(note)
+    await Promise.resolve()
+    expect(reached).toStrictEqual({ bytes: header + 2 * frame, runCapBytes: header + 2 * frame })
+    await capped.journal.sink.append(note)
+    await capped.finalize()
+
+    expect((await stat(capped.path)).size).toBeGreaterThan(header + 2 * frame)
+    await expect(readJournalFile(capped.path)).resolves.toMatchObject({
+      status: 'clean',
+      entries: [note, note, note]
+    })
+  })
+
+  it('signals at creation when the header alone reaches the cap', async () => {
+    const path = await directory()
+    const created = await createJournalFileSink({
+      directory: path,
+      graph: 'bot',
+      build,
+      capacityBytes,
+      runCapBytes: 1,
+      runId: 'run',
+      now: () => 7
+    })
+
+    await expect(created.runCapReached).resolves.toStrictEqual({
+      bytes: (await stat(created.path)).size,
+      runCapBytes: 1
+    })
+    await created.finalize()
+  })
+
+  it.each([0, -1, 1.5, Number.NaN, Number.MAX_SAFE_INTEGER + 1, undefined])(
+    'refuses a run cap of %s before touching the directory',
+    async runCapBytes => {
+      const path = await directory()
+      await writeFile(join(path, '1-old.journal.jsonl'), 'x')
+      for (const startedAt of [2, 3, 4])
+        await writeFile(join(path, `${startedAt}-old.journal.jsonl`), 'x')
+
+      await expect(
+        createJournalFileSink({
+          directory: path,
+          graph: 'bot',
+          build,
+          capacityBytes,
+          runCapBytes: runCapBytes as number
+        })
+      ).rejects.toThrow('the journal file could not use its run cap')
+      expect(await readdir(path)).toHaveLength(4)
+    }
+  )
+})
+
+describe('parseJournalRunCapBytes', () => {
+  it('reads a byte count of at least the minimum', () => {
+    expect(parseJournalRunCapBytes(' 1073741824 ')).toBe(1073741824)
+    expect(parseJournalRunCapBytes(String(MIN_JOURNAL_RUN_CAP_BYTES))).toBe(
+      MIN_JOURNAL_RUN_CAP_BYTES
+    )
+  })
+
+  it.each([
+    ['unset', undefined],
+    ['empty', ''],
+    ['zero', '0'],
+    ['negative', '-1073741824'],
+    ['in exponent form', '1e9'],
+    ['fractional', '1073741824.5'],
+    ['with a unit', '1Gi'],
+    ['below the minimum', String(MIN_JOURNAL_RUN_CAP_BYTES - 1)],
+    ['beyond a safe integer', '9007199254740993']
+  ])('refuses a cap that is %s', (_, value) => {
+    expect(() => parseJournalRunCapBytes(value)).toThrow(InvalidJournalRunCapError)
   })
 })

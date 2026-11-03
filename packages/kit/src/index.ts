@@ -28,13 +28,15 @@ export type {
   JournalBuildIdentity,
   JournalFileOptions,
   JournalHeader,
-  JournalReadResult
+  JournalReadResult,
+  JournalRunCap
 } from './journal-file'
 export {
   buildIdentityFromEnv,
   createJournalFileSink,
   JOURNAL_FILE_FORMAT,
   JOURNAL_FILE_SUFFIX,
+  parseJournalRunCapBytes,
   readJournalFile
 } from './journal-file'
 export type { Policy, PolicyCheck, PolicyDecision, PolicyRule, PolicyTx } from './policy'

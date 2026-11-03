@@ -70,3 +70,11 @@ releases sharing a truncated prefix never share a claim.
 {{- printf "%s-state" $fullname }}
 {{- end }}
 {{- end }}
+
+{{- define "blue-liquidation.journalRunCapBytes" -}}
+{{- $cap := required "state.journalRunCapBytes is required" .Values.state.journalRunCapBytes }}
+{{- if not (and (kindIs "string" $cap) (regexMatch "^[1-9][0-9]*$" $cap)) }}
+{{- fail "state.journalRunCapBytes must be a quoted whole number of bytes, such as '1073741824'" }}
+{{- end }}
+{{- $cap }}
+{{- end }}
