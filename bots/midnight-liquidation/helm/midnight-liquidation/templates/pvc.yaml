@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "midnight-liquidation.stateClaimName" . | quote }}
+  labels:
+    {{- include "midnight-liquidation.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/resource-policy: keep
+    argocd.argoproj.io/sync-options: Delete=false,Prune=false
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: {{ required "state.storageClass is required" .Values.state.storageClass | quote }}
+  resources:
+    requests:
+      storage: {{ required "state.size is required" .Values.state.size | quote }}

@@ -32,11 +32,6 @@
       "coalesces": false
     },
     {
-      "id": "kernel.lookups",
-      "kind": "derived",
-      "coalesces": false
-    },
-    {
       "id": "kernel.merge",
       "kind": "derived",
       "coalesces": true
@@ -299,6 +294,11 @@
           "node": "liquidations.prepared"
         },
         {
+          "name": "submitted",
+          "mode": "every",
+          "node": "liquidations.events"
+        },
+        {
           "name": "activity",
           "mode": "every",
           "node": "kernel.activity"
@@ -491,7 +491,7 @@
       "kind": "fold",
       "id": "kernel.state",
       "output": "kernel.state",
-      "emits": ["kernel.commands", "kernel.lookups", "kernel.activity"],
+      "emits": ["kernel.commands", "kernel.activity"],
       "afterInputs": false,
       "reads": [
         {
@@ -544,10 +544,6 @@
         {
           "name": "tick",
           "node": "kernel.tick"
-        },
-        {
-          "name": "lookup",
-          "node": "kernel.lookups"
         }
       ],
       "samples": ["kernel.state"],

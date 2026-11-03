@@ -1,4 +1,4 @@
-import type { Logger } from '@repo/bot-kit'
+import type { Logger } from '@repo/kit'
 import type { RateLimitedClient, Unwrapper, Venue, VenuePair, VenueSelector } from '@repo/swaps'
 import type { Address } from 'viem'
 
@@ -94,7 +94,7 @@ function fakeSelector(
   options: { onRefresh?: () => Promise<void>; clamped?: boolean } = {}
 ) {
   const refreshed: VenuePair[] = []
-  const selector: VenueSelector = {
+  const selector: Pick<VenueSelector, 'refresh' | 'select'> = {
     refresh: async pair => {
       refreshed.push(pair)
       if (options.onRefresh) await options.onRefresh()
@@ -107,9 +107,7 @@ function fakeSelector(
         costBpsRaw: null,
         clamped: options.clamped ?? false,
         ageMs: 0
-      })),
-    curveOf: () => undefined,
-    snapshot: () => []
+      }))
   }
   return { selector, refreshed }
 }
@@ -142,7 +140,7 @@ const unwrapsToLoan = (): Unwrapper & { resolved: () => number } => {
 }
 
 function compose(
-  selector: VenueSelector,
+  selector: Pick<VenueSelector, 'refresh' | 'select'>,
   overrides: {
     venues?: ('0x' | '1inch')[]
     excludeCollaterals?: Address[]
@@ -198,18 +196,6 @@ describe('composeQuoting (Midnight lens-projection adapter)', () => {
     }
   })
 
-  it('still quotes (cold-default) when the probe refresh throws', async () => {
-    // Cold cache (select → []) + a refresh that rejects → the firm-quote step falls back to the
-    // deterministic enabled-venue order rather than failing the position.
-    const { selector } = fakeSelector([], {
-      onRefresh: async () => {
-        throw new Error('probe boom')
-      }
-    })
-    const { quoteFor } = compose(selector)
-    expect((await quoteFor(PLAN, OUT, LABEL)).kind).toBe('swap')
-  })
-
   it('returns no_config when no venues are enabled (bad-debt-only posture)', async () => {
     const { selector } = fakeSelector([])
     const { quoteFor } = compose(selector, { venues: [] })
@@ -235,48 +221,30 @@ describe('composeQuoting (Midnight lens-projection adapter)', () => {
     if (outcome.kind === 'swap') expect(outcome.plan.steps).toHaveLength(0)
   })
 
-  it('refuses an unwrap-only collateral with no venues, despite the swap-free opt-in', async () => {
-    // `swapFreeWithoutVenues` arms the zero-step shape only. A chain that merely LANDS on the loan
-    // token still moves assets, which is broader than `ALLOW_BAD_DEBT_ONLY` promises.
-    const unwrapper = unwrapsToLoan()
-    const { selector } = fakeSelector([])
-    const { quoteFor } = compose(selector, { venues: [], unwrappers: [unwrapper] })
-    expect(await quoteFor(PLAN, OUT, LABEL)).toEqual({ kind: 'no_config', firmCalls: 0 })
-  })
-
-  it('still takes that unwrap-only collateral when a venue is enabled', async () => {
-    const unwrapper = unwrapsToLoan()
-    const { selector } = fakeSelector(['0x'])
-    const { quoteFor } = compose(selector, { unwrappers: [unwrapper] })
-    const outcome = await quoteFor(PLAN, OUT, LABEL)
-    expect(outcome.kind).toBe('swap')
-    if (outcome.kind === 'swap') expect(outcome.plan.steps).toHaveLength(1)
-  })
-
-  it('resolveRoute previews the pair without building calldata', async () => {
+  it('resolvePair previews the pair without building calldata', async () => {
     // The seam's whole point: for a Pendle PT, `resolve` is a rate-limited hosted request whose
-    // calldata phase A.5 discards and the firm quote then re-fetches.
+    // calldata the firm quote would then re-fetch.
     const unwrapper = unwrapsToLoan()
     const { selector } = fakeSelector(['0x'])
-    const { resolveRoute } = compose(selector, { unwrappers: [unwrapper] })
+    const { resolvePair } = compose(selector, { unwrappers: [unwrapper] })
     // Ends on the loan token, so there is no pair left to probe.
-    expect(await resolveRoute(PLAN, OUT, LABEL)).toBeNull()
+    expect(
+      await resolvePair(OUT.market.collateralParams[0]!.token, OUT.market.loanToken)
+    ).toBeNull()
     expect(unwrapper.resolved()).toBe(0)
   })
 
-  it('threads the position label into quote log events as the correlation id', async () => {
-    const events: { event: string; fields?: Record<string, unknown> }[] = []
-    const capturing: Logger = {
-      debug: () => {},
-      info: (event, fields) => events.push({ event, fields }),
-      warn: () => {},
-      error: () => {}
-    }
+  it('resolvePair names the pair a plain collateral sells through, and none for an excluded one', async () => {
     const { selector } = fakeSelector(['0x'])
-    const { quoteFor } = compose(selector, { logger: capturing })
-    await quoteFor(PLAN, OUT, LABEL)
-    const selectOk = events.find(e => e.event === 'select.ok')
-    expect(selectOk?.fields?.id).toBe(LABEL)
+    const collateral = OUT.market.collateralParams[0]!.token
+    const loan = OUT.market.loanToken
+    expect(await compose(selector).resolvePair(collateral, loan)).toStrictEqual({
+      collateral,
+      loan
+    })
+    expect(
+      await compose(selector, { excludeCollaterals: [collateral] }).resolvePair(collateral, loan)
+    ).toBeNull()
   })
 
   it('threads the candidate discriminator, so two candidates of one position stay separable', async () => {

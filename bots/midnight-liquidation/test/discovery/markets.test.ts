@@ -1,12 +1,15 @@
-import type { LogLevel, Logger } from '@repo/bot-kit'
+import type { LogLevel, Logger } from '@repo/kit'
 import type { Hex } from 'viem'
 
 import { describe, expect, it } from 'vitest'
 
 import {
   createListedMarketFilter,
-  createUnionListedMarketFilter
+  createUnionListedMarketFilter,
+  listedAt
 } from '../../src/discovery/markets'
+
+const API_KEY = 'test-api-key'
 
 const API_URL = 'https://api.example/v0/midnight/markets'
 const LISTED: Hex = `0x${'a'.repeat(64)}`
@@ -63,6 +66,7 @@ const sourceFilter = (opts: {
 }) =>
   createListedMarketFilter({
     apiUrl: `https://${opts.host}/v0/midnight/markets`,
+    apiKey: API_KEY,
     chainId: 8453,
     logger: NOOP_LOGGER,
     fetchImpl: async () =>
@@ -75,6 +79,19 @@ const sourceFilter = (opts: {
 
 // Source labels carry the path, so `https://<host>/v0/midnight/markets` labels as `<host>/v0/...`.
 const label = (host: string) => `${host}/v0/midnight/markets`
+
+describe('createListedMarketFilter', () => {
+  it('refuses a plain-http endpoint, which would send MORPHO_API_KEY in the clear', () => {
+    expect(() =>
+      createListedMarketFilter({
+        apiUrl: 'http://api.example/v0/midnight/markets',
+        apiKey: API_KEY,
+        chainId: 8453,
+        logger: NOOP_LOGGER
+      })
+    ).toThrow(/must use https/)
+  })
+})
 
 describe('createListedMarketFilter pagination', () => {
   // A truncated whitelist is fail-closed under-inclusion: the dropped markets stop being liquidated
@@ -90,6 +107,7 @@ describe('createListedMarketFilter pagination', () => {
     }
     const filter = createListedMarketFilter({
       apiUrl: API_URL,
+      apiKey: API_KEY,
       chainId: 8453,
       logger: NOOP_LOGGER,
       fetchImpl,
@@ -106,12 +124,15 @@ describe('createListedMarketFilter pagination', () => {
 
   it('sends an explicit page limit rather than relying on the server default', async () => {
     let requested = ''
+    let requestedKey: string | null = null
     const filter = createListedMarketFilter({
       apiUrl: API_URL,
+      apiKey: API_KEY,
       chainId: 8453,
       logger: NOOP_LOGGER,
       fetchImpl: async request => {
         requested = request.url
+        requestedKey = request.headers.get('x-api-key')
         return jsonResponse({ cursor: null, data: [] })
       },
       sleep: async () => {}
@@ -119,12 +140,14 @@ describe('createListedMarketFilter pagination', () => {
     await filter.refresh()
 
     expect(new URL(requested).searchParams.get('limit')).toBe('100')
+    expect(requestedKey).toBe(API_KEY)
   })
 
   it('stops at the page cap and logs it loud rather than walking a runaway cursor', async () => {
     const logger = capturingLogger()
     const filter = createListedMarketFilter({
       apiUrl: API_URL,
+      apiKey: API_KEY,
       chainId: 8453,
       logger: logger.logger,
       // Never returns a null cursor — the runaway case the backstop exists for.
@@ -150,6 +173,7 @@ describe('createListedMarketFilter', () => {
     }
     const filter = createListedMarketFilter({
       apiUrl: API_URL,
+      apiKey: API_KEY,
       chainId: 8453,
       logger: NOOP_LOGGER,
       fetchImpl
@@ -168,6 +192,7 @@ describe('createListedMarketFilter', () => {
     const fetchImpl = async () => jsonResponse({ data: [market(LISTED)] })
     const filter = createListedMarketFilter({
       apiUrl: API_URL,
+      apiKey: API_KEY,
       chainId: 8453,
       logger: NOOP_LOGGER,
       fetchImpl
@@ -179,6 +204,7 @@ describe('createListedMarketFilter', () => {
   it('is fail-closed before the first successful fetch (empty whitelist)', () => {
     const filter = createListedMarketFilter({
       apiUrl: API_URL,
+      apiKey: API_KEY,
       chainId: 8453,
       logger: NOOP_LOGGER,
       fetchImpl: async () => jsonResponse({ data: [] })
@@ -196,6 +222,7 @@ describe('createListedMarketFilter', () => {
     }
     const filter = createListedMarketFilter({
       apiUrl: API_URL,
+      apiKey: API_KEY,
       chainId: 8453,
       logger: NOOP_LOGGER,
       fetchImpl,
@@ -212,6 +239,7 @@ describe('createListedMarketFilter', () => {
   it('surfaces updatedAt for the caller to gate whitelist staleness', async () => {
     const filter = createListedMarketFilter({
       apiUrl: API_URL,
+      apiKey: API_KEY,
       chainId: 8453,
       logger: NOOP_LOGGER,
       fetchImpl: async () => jsonResponse({ data: [market(LISTED)] }),
@@ -229,6 +257,7 @@ describe('createListedMarketFilter', () => {
   it('labels a source by host and path, excluding the query string', () => {
     const filter = createListedMarketFilter({
       apiUrl: 'https://api.example/staging/v0/midnight/markets?token=secret',
+      apiKey: API_KEY,
       chainId: 8453,
       logger: NOOP_LOGGER,
       fetchImpl: async () => jsonResponse({ data: [] })
@@ -243,6 +272,7 @@ describe('createListedMarketFilter', () => {
     let call = 0
     const filter = createListedMarketFilter({
       apiUrl: API_URL,
+      apiKey: API_KEY,
       chainId: 8453,
       logger: logs.logger,
       fetchImpl: async () => {
@@ -267,6 +297,7 @@ describe('createListedMarketFilter', () => {
     }
     const filter = createListedMarketFilter({
       apiUrl: API_URL,
+      apiKey: API_KEY,
       chainId: 8453,
       logger: NOOP_LOGGER,
       fetchImpl,
@@ -447,5 +478,27 @@ describe('createUnionListedMarketFilter', () => {
     expect(union.current().isListed(LISTED)).toBe(true)
     expect(union.current().fresh).toBe(1)
     expect(logs.find('markets.source_expired')?.fields.expired).toEqual([label('down.example')])
+  })
+})
+
+describe('listedAt', () => {
+  const sources = [
+    { source: 'a', ids: [LISTED, SHARED], updatedAt: 1_000 },
+    { source: 'b', ids: [SHARED], updatedAt: 2_000 },
+    { source: 'c', ids: [UNLISTED], updatedAt: null }
+  ]
+
+  it('lists the union of fresh sources, each market until the last source listing it ages out', () => {
+    const listed = listedAt(sources, 1_500, 600)
+    expect([LISTED, SHARED, UNLISTED].map(listed.isListed)).toStrictEqual([true, true, false])
+    expect(listed).toMatchObject({ fresh: 2, expiries: { [LISTED]: 1_600, [SHARED]: 2_600 } })
+  })
+
+  it('drops a source past its maximum age, and lists nothing once none is fresh', () => {
+    expect(listedAt(sources, 1_700, 600)).toMatchObject({ fresh: 1, expiries: { [SHARED]: 2_600 } })
+    const none = listedAt(sources, 9_000, 600)
+    expect(none.fresh).toBe(0)
+    expect(none.isListed(SHARED)).toBe(false)
+    expect(none.expiries).toStrictEqual({})
   })
 })

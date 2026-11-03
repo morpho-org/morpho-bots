@@ -568,6 +568,67 @@ describe('a source', () => {
         new GraphDefinitionError('world needs a positive safe integer validForMs')
       )
   })
+
+  it('hands read its own samples, each current when read calls it', async () => {
+    const chain = new FakeChain()
+    const held = Promise.withResolvers<void>()
+    const seen: unknown[] = []
+    const bot = defineBot('sampling', b => {
+      const kernel = b.kernel({ ...HOSTING, chain, effects: chain.effects })
+      const listing = b.raw(g => g.occurrences<string>('listing'))
+      b.source('world', {
+        level: 'blocks',
+        at: 'head',
+        queue: 8,
+        validForMs: READ_VALID_MS,
+        samples: { listing },
+        read: async (head, _now, samples) => {
+          if (head.number === 2) {
+            seen.push(Object.keys(samples), samples.listing())
+            await held.promise
+            seen.push(samples.listing())
+          }
+          return {
+            coverage: 'complete',
+            entries: { head: head.hash },
+            basis: { block: head.number, blockHash: head.hash }
+          }
+        }
+      })
+      return { kernel, listing }
+    })(undefined)
+    const runner = createRunner(bot.graph, { now: () => 0, journal: JOURNAL })
+    await bot.kernel.start(runner)
+    await until(() => runner.read(bot.kernel.nodes.state)?.lifecycle.kind === 'running', 'running')
+    runner.push(bot.listing, 'listed')
+    chain.mine()
+    await until(() => seen.length === 2, 'the read of 2 started')
+    runner.push(bot.listing, 'delisted')
+    held.resolve()
+    await until(() => seen.length === 3, 'the read of 2 resumed')
+    expect(seen).toStrictEqual([['listing'], 'listed', 'delisted'])
+    await runner.abandon()
+  })
+
+  it('refuses a sample named state, which it keeps for the kernel', () => {
+    const chain = new FakeChain()
+    expect(() =>
+      defineBot('clashing', b => {
+        b.kernel({ ...HOSTING, chain, effects: chain.effects })
+        const state = b.raw(g => g.occurrences<string>('listing'))
+        b.source('world', {
+          level: 'blocks',
+          at: 'head',
+          queue: 8,
+          validForMs: READ_VALID_MS,
+          samples: { state },
+          read: async head => ({ coverage: 'complete', entries: {}, basis: { block: head.number } })
+        })
+      })(undefined)
+    ).toThrow(
+      new GraphDefinitionError("world samples state, which it keeps for the kernel's state")
+    )
+  })
 })
 
 const keyed = (level: Keyed<string> | undefined) => {

@@ -74,14 +74,19 @@ type Requested<R extends Streams> = {
   [K in keyof R]: R[K] extends Stream<infer T> ? Every<T> : never
 }
 
-type SourceSpec<T> = Readonly<{
+type Sampled = Record<string, Node<unknown>>
+
+const KERNEL_STATE_SAMPLE = 'state'
+
+type SourceSpec<T, S extends Sampled> = Readonly<{
   level: string
   at: 'head' | Readonly<{ everyMs: number }>
   /** How many reads may wait behind the one in flight. */
   queue: number
   /** How long a read's keys hold, from when the read started: its write's expiry is no later. */
   validForMs: number
-  read: (head: KernelHead, now: () => number) => Promise<KeyedWrite<T>>
+  samples?: S
+  read: (head: KernelHead, now: () => number, samples: Samples<S>) => Promise<KeyedWrite<T>>
 }>
 
 /**
@@ -94,17 +99,14 @@ export type Bot = Readonly<{
   /** `requests` are the nodes besides the task family's that write the kernel. */
   kernel: (options: Omit<KernelHostOptions, 'facts'>) => KernelHandle
   /**
-   * The effect `id` on lane `id`, writing `${id}.reads` folded into `level`, each read expiring
-   * `validForMs` after it started; `everyMs` adds
-   * `${level}.interval` and `${level}.due`, `'head'` reads only the newest head waiting and skips
-   * one the kernel has passed or replaced. Reads run one at a time, so each lands in the order its
-   * head came and a newer head's read always lands last. `read` returns a failed write for its own failures: a throw fails the
-   * graph.
-   * @throws GraphDefinitionError - for a `validForMs` that is not a positive safe integer.
+   * The effect `id` on lane `id`, writing `${id}.reads` folded into `level`; `everyMs` adds
+   * `${level}.interval` and `${level}.due`. Reads run one at a time in head order, and a throw
+   * fails the graph. `samples` are not pinned to `head`: see `docs/framework/AUTHORING.md` §4.
+   * @throws GraphDefinitionError - for an invalid `validForMs` or a sample named `state`.
    */
-  source: <T>(
+  source: <T, S extends Sampled = Record<never, never>>(
     id: string,
-    spec: SourceSpec<T>
+    spec: SourceSpec<T, S>
   ) => Readonly<{ writes: Stream<KeyedWrite<T>>; level: State<Keyed<T>> }>
   /** `keyedMap(g, id, over, project, options)`, registered with the kernel as a fact. */
   fact: <I, O, W extends Record<string, Latest<unknown>> = Record<never, never>>(
@@ -210,10 +212,14 @@ export const defineBot =
           }
         }
       },
-      source: <T>(sourceId: string, spec: SourceSpec<T>) => {
+      source: <T, S extends Sampled>(sourceId: string, spec: SourceSpec<T, S>) => {
         if (!host) throw new GraphDefinitionError(`${id} declares ${sourceId} before its kernel`)
         if (!Number.isSafeInteger(spec.validForMs) || spec.validForMs <= 0)
           throw new GraphDefinitionError(`${sourceId} needs a positive safe integer validForMs`)
+        if (spec.samples && KERNEL_STATE_SAMPLE in spec.samples)
+          throw new GraphDefinitionError(
+            `${sourceId} samples ${KERNEL_STATE_SAMPLE}, which it keeps for the kernel's state`
+          )
         const { heads, state } = host.nodes
         const writes = g.node<KeyedWrite<T>>(`${sourceId}.reads`)
         const level = keyedLevel(g, spec.level, writes)
@@ -223,16 +229,23 @@ export const defineBot =
             : { due: every(dueEvery(g, spec.level, spec.at.everyMs, heads, writes)) }
         g.effect(sourceId, {
           requests,
-          samples: { state },
+          samples: { ...spec.samples, [KERNEL_STATE_SAMPLE]: state },
           results: writes,
           lane: lane(sourceId, { concurrency: 1, queue: spec.queue }),
           latestOnly: spec.at === 'head',
           handle: async ({ from, value: head }, context) => {
             const startedAt = context.now()
-            const current = context.samples.state().head
+            const current = context.samples[KERNEL_STATE_SAMPLE]().head
             if (from === 'head' && (current?.number !== head.number || current.hash !== head.hash))
               return
-            const write = await spec.read(from === 'head' ? head : (current ?? head), context.now)
+            const samples = Object.fromEntries(
+              Object.entries(context.samples).filter(([name]) => name !== KERNEL_STATE_SAMPLE)
+            ) as Samples<S>
+            const write = await spec.read(
+              from === 'head' ? head : (current ?? head),
+              context.now,
+              samples
+            )
             context.write(expiringBy(write, startedAt + spec.validForMs))
           }
         })

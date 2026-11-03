@@ -14,7 +14,6 @@ import {
   createJournalFileSink,
   createLogger,
   TRANSACTION_KERNEL_RESERVATIONS,
-  railwayContext,
   simulateCall,
   withLogging
 } from '@repo/kit'
@@ -68,7 +67,7 @@ async function superviseKernelBot(
 async function main() {
   const config = loadConfig()
   const logger = createLogger(config.logLevel, {
-    context: { bot: 'vault-v1-reallocation', chainId: config.chainId, ...railwayContext() }
+    context: { bot: 'vault-v1-reallocation', chainId: config.chainId }
   })
 
   const account = reallocatorAccount(config)

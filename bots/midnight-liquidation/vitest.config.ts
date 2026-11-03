@@ -14,10 +14,9 @@ export default defineConfig({
   plugins: [soltag({ solc: { optimizer: { enabled: true, runs: 200 } } })],
   test: {
     name: 'midnight-liquidation',
-    // bun auto-loaded .env files; vitest does not. The fork suite reads RPC_URL_8453 from
-    // .env.test.local and fails loud when it is unset. `loadEnv` with an empty prefix passes an
-    // already-exported value straight through (so CI's secret survives) and omits the key entirely
-    // when no file supplies it — it never substitutes an empty string, so CI cannot silently skip.
+    // vitest does not load .env files itself. The fork suite reads RPC_URL_8453 from
+    // .env.test.local and skips when it is unset. `loadEnv` with an empty prefix passes an
+    // already-exported value straight through, so CI's secret survives.
     env: loadEnv('test', BOT_DIR, '')
   }
 })

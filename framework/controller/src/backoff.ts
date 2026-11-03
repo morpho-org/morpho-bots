@@ -1,14 +1,14 @@
 import type { GraphBuilder, Stream } from '@repo/engine'
-import type { KernelActivity, KernelHead, RefusalCode } from '@repo/kernel'
+import type { EndCode, KernelActivity, KernelHead, RefusalCode } from '@repo/kernel'
 
 import { emitTo, every, GraphDefinitionError } from '@repo/engine'
 
 import type { LogSink } from './log'
 import type { ByTask } from './own'
-import type { PrepareResult } from './tasks'
+import type { PrepareResult, TaskEvent } from './tasks'
 
 import { parseIntentId } from './intent'
-import { entryOf, keptTaskEntries, taskEntryOf, withTaskEntry } from './own'
+import { entryOf, has, keptTaskEntries, ownRecord, taskEntryOf, withTaskEntry } from './own'
 
 /**
  * A failing key waits `baseBlocks`, doubling up to `maxBlocks`, so however long it keeps failing it
@@ -31,6 +31,12 @@ export type Backoff = Readonly<{
   /** Each key's backoff per task, so one task's failures never hold another's. */
   keys: ByTask<KeyBackoff>
 }>
+
+/** An end code an act may exempt from backoff; `cancelled` already is, for every act. */
+export type ExemptEnd = Exclude<EndCode, 'cancelled'>
+
+/** Per submitted act's intent id, the end codes it exempts, until a terminal notice ends it. */
+type BackoffState = Backoff & Readonly<{ exempt: Readonly<Record<string, readonly ExemptEnd[]>> }>
 
 /**
  * `backoff`: a failure set the key's wait, from `block` until `until`; `cleared`: a settlement
@@ -121,8 +127,42 @@ const failureOf = (activity: KernelActivity, runId: string) => {
   if (slot === undefined) return undefined
   if (ENDED_BY_RESTART.has(activity.notice) && slot.runId !== runId) return undefined
   if (isStaleRefusal(activity)) return undefined
-  return { key: slot.key, task: slot.task, reason: activity.notice }
+  return {
+    key: slot.key,
+    task: slot.task,
+    reason: activity.notice,
+    intentId: activity.intentId,
+    ...('code' in activity && activity.code !== undefined && { code: activity.code })
+  }
 }
+
+type Failure = Readonly<{
+  key: string
+  task: string
+  reason: string
+  intentId?: string
+  code?: string
+}>
+
+/** Every notice that ends an act, settled or not: after one, its exemption is spent. */
+const ENDS = new Set(['refused', 'settled', ...FAILED])
+
+/** `exempt` without the acts `activity` ended. */
+const spentBy = (exempt: BackoffState['exempt'], activity: readonly KernelActivity[]) => {
+  const ended = activity.filter(
+    a => a.type === 'notice' && ENDS.has(a.notice) && has(exempt, a.intentId)
+  )
+  if (ended.length === 0) return exempt
+  const kept = ownRecord(exempt)
+  for (const a of ended) if (a.type === 'notice') delete kept[a.intentId]
+  return kept
+}
+
+/** The wait an exempt end sets: until the next head, counting no failure. */
+const nextHead = (backoff: Backoff, key: string, task: string): KeyBackoff => ({
+  failures: taskEntryOf(backoff.keys, key, task)?.failures ?? 0,
+  until: backoff.block + 1
+})
 
 /** `task` as an event carries it: absent for an untasked act. */
 const taskField = (task: string) => (task === UNTASKED ? {} : { task })
@@ -130,8 +170,9 @@ const taskField = (task: string) => (task === UNTASKED ? {} : { task })
 /**
  * Per-key, per-task retry state: a failed preparation that asks for it, or an act the kernel
  * ended unsettled for a reason {@link failureOf} counts, doubles that task's wait from the current
- * head; a settlement clears it. Not persisted, so a restart retries every key at once. Its log
- * contract is {@link logBackoff}.
+ * head; a settlement clears it. An act submitted exempt from the end code it ended with waits only
+ * for the next head. Not persisted, so a restart retries every key at once. Its log contract
+ * is {@link logBackoff}.
  * @throws GraphDefinitionError - for a bound that is not a whole number of blocks from 1.
  */
 export const declareBackoff = (
@@ -141,6 +182,8 @@ export const declareBackoff = (
     /** The run whose acts these are: an act another run issued was adopted on restart. */
     runId: string
     prepared: Stream<PrepareResult>
+    /** The family's events, whose `submitted` ones name what each act's ends exempt. */
+    submitted: Stream<TaskEvent>
     activity: Stream<readonly KernelActivity[]>
     heads: Stream<KernelHead>
     policy: BackoffPolicy
@@ -153,17 +196,26 @@ export const declareBackoff = (
   const state = g.fold(id, {
     reads: {
       prepared: every(sources.prepared),
+      submitted: every(sources.submitted),
       activity: every(sources.activity),
       head: every(sources.heads)
     },
     emits: [events],
-    initial: { block: 0, keys: {} } as Backoff,
+    initial: { block: 0, keys: {}, exempt: ownRecord() } as BackoffState,
     applyInput: (backoff, input) => {
       if (input.from === 'head') {
         const next = { ...backoff, block: Math.max(backoff.block, input.value.number) }
         return { state: { ...next, keys: pruned(next, policy) } }
       }
-      const failures =
+      if (input.from === 'submitted') {
+        const event = input.value
+        if (event.type !== 'submitted' || event.exemptFromBackoff === undefined)
+          return { state: backoff }
+        const exempt = ownRecord(backoff.exempt)
+        exempt[event.intentId] = event.exemptFromBackoff
+        return { state: { ...backoff, exempt } }
+      }
+      const failures: readonly Failure[] =
         input.from === 'prepared'
           ? input.value.ok || !input.value.backoff
             ? []
@@ -180,11 +232,18 @@ export const declareBackoff = (
       let keys = backoff.keys
       const emit = []
       for (const { key, task } of settled) {
-        if (taskEntryOf(keys, key, task) === undefined) continue
+        const entry = taskEntryOf(keys, key, task)
+        if (entry === undefined) continue
         keys = withTaskEntry(keys, key, task, undefined)
-        emit.push(emitTo(events, { type: 'cleared', key, ...taskField(task) }))
+        if (entry.failures > 0)
+          emit.push(emitTo(events, { type: 'cleared', key, ...taskField(task) }))
       }
-      for (const { key, task, reason } of failures) {
+      const exempt = backoff.exempt
+      for (const { key, task, reason, intentId, code } of failures) {
+        if (intentId !== undefined && entryOf(exempt, intentId)?.some(end => end === code)) {
+          keys = withTaskEntry(keys, key, task, nextHead({ ...backoff, keys }, key, task))
+          continue
+        }
         const entry = widenedWait({ ...backoff, keys }, key, task, policy)
         keys = withTaskEntry(keys, key, task, entry)
         emit.push(
@@ -198,7 +257,8 @@ export const declareBackoff = (
           })
         )
       }
-      return { state: { ...backoff, keys }, emit }
+      const spent = input.from === 'activity' ? spentBy(exempt, input.value) : exempt
+      return { state: { ...backoff, keys, exempt: spent }, emit }
     }
   })
   return { state, events }

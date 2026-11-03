@@ -1,4 +1,4 @@
-import type { Logger } from '@repo/bot-kit'
+import type { Logger } from '@repo/kit'
 import type { Address } from 'viem'
 
 import { delay, fetchWithRetry, mulDivDown, tryCatch } from '@repo/utils'
@@ -7,7 +7,9 @@ import { getAddress, isAddress, parseUnits } from 'viem'
 
 import type { paths } from '../generated/markets-api'
 
+import { revertReason } from '../revert.utils'
 import { LIQUIDATION_CANDIDATES_PATH } from './borrowers'
+import { morphoApiClientOptions } from './morpho-api'
 
 /** The `fetch` shape `openapi-fetch` calls — a single `Request`. The global `fetch` satisfies it. */
 type FetchLike = (request: Request) => Promise<Response>
@@ -39,7 +41,22 @@ const gatewayPrefix = (url: URL): string =>
     : ''
 
 /** A token's price, normalized once at the API boundary so no float arithmetic survives it. */
-type PricedToken = { priceE8: bigint; decimals: number }
+export type PricedToken = Readonly<{ priceE8: bigint; decimals: number }>
+
+/** Every usable price in one snapshot, by checksummed token address. */
+export type PriceTable = Readonly<Record<Address, PricedToken>>
+
+/**
+ * USD value of `units` of `token` in `table`, scaled by `10 ** USD_PRICE_SCALE_DECIMALS`; `null` when
+ * the token is unpriced, which means unrankable, never worthless.
+ */
+export const usdValueIn = (table: PriceTable, token: Address, units: bigint): bigint | null =>
+  usdValueOf(table[getAddress(token)], units)
+
+/** USD value of `units` at `price`, scaled as {@link usdValueIn}; `null` without a price. */
+export const usdValueOf = (price: PricedToken | undefined, units: bigint): bigint | null =>
+  // oxlint-disable-next-line repo/no-pow10-bigint
+  price ? mulDivDown(units, price.priceE8, 10n ** BigInt(price.decimals)) : null
 
 type TokenPriceSource = {
   /**
@@ -49,8 +66,8 @@ type TokenPriceSource = {
    * adding latency.
    *
    * `null` means "unrankable", never "worthless": callers must order unpriced candidates last rather
-   * than treating them as zero-value. This is a RANKING input only — the price is the API's latest
-   * indexed value with no freshness guarantee, so it must not gate whether a liquidation is attempted.
+   * than treating them as zero-value. The price is the API's latest indexed value with no freshness
+   * guarantee, so beyond ranking it only bounds what a liquidation spends on gas (see `prepare.ts`).
    */
   usdValueOf: (token: Address, loanUnits: bigint) => bigint | null
   /**
@@ -69,6 +86,8 @@ type TokenPriceSource = {
    * discovery order rather than failing closed. Callers therefore never need to handle a rejection.
    */
   refresh: () => Promise<void>
+  /** The last snapshot, for {@link usdValueIn}. */
+  table: () => PriceTable
   snapshot: () => { source: string; tokens: number; updatedAt: number | null }
 }
 
@@ -93,9 +112,9 @@ const MAX_TOKEN_DECIMALS = 36
  * 429/5xx/network policy, a {@link REQUEST_TIMEOUT_MS} deadline, and injectable
  * `fetchImpl`/`sleep`/`now` for tests.
  *
- * Deliberately has **no max-age ceiling**, unlike the listed-markets whitelist. A stale whitelist is a
- * safety problem — it can keep a delisted market in scope — whereas a stale price only misorders work,
- * so this fails **open** and `snapshot().updatedAt` makes the age observable instead.
+ * Keeps its last table however old, unlike the listed-markets whitelist: a stale price only misorders
+ * work, so this fails **open**, and `snapshot().updatedAt` is what the graph bounds a table's use by
+ * (`TOKEN_PRICES_VALID_MS`), past which positions rank unpriced.
  *
  * Queried by `chain_ids` alone: not by `markets` (its 100-id cap is a truncation risk and it would
  * couple pricing to the whitelist) and not by `listed` (the whitelist already decides which markets
@@ -104,6 +123,7 @@ const MAX_TOKEN_DECIMALS = 36
 export const createTokenPriceSource = (deps: {
   /** The configured liquidation-candidates URL; only its base is used. */
   apiUrl: string
+  apiKey: string | undefined
   chainId: number
   logger: Logger
   fetchImpl?: FetchLike
@@ -115,13 +135,17 @@ export const createTokenPriceSource = (deps: {
   const url = new URL(deps.apiUrl)
   const prefix = gatewayPrefix(url)
   const baseUrl = `${url.origin}${prefix}`
-  const client = createClient<paths>({ baseUrl, fetch: deps.fetchImpl ?? fetch })
+  const client = createClient<paths>({
+    fetch: deps.fetchImpl ?? fetch,
+    ...morphoApiClientOptions(baseUrl, deps.apiKey)
+  })
   // Host + path only; the query string is excluded so nothing can ride along into a log line.
   const source = `${url.host}${prefix}${PATH}`
 
   // Last-known-good: replaced only by a fully-successful refresh. Keyed by checksummed address so a
   // lookup cannot miss on casing.
   let priced = new Map<Address, PricedToken>()
+  let table: PriceTable = {}
   let updatedAt: number | null = null
 
   const fetchTokens = async () => {
@@ -144,7 +168,7 @@ export const createTokenPriceSource = (deps: {
       deps.logger.warn('prices.refresh_failed', {
         chainId: deps.chainId,
         source,
-        detail: fetched.error.message
+        detail: revertReason(fetched.error)
       })
       return
     }
@@ -180,19 +204,16 @@ export const createTokenPriceSource = (deps: {
       })
     }
     priced = next
+    table = Object.fromEntries(next)
     updatedAt = now()
     deps.logger.info('prices.tokens', { chainId: deps.chainId, source, tokens: priced.size })
   }
 
   return {
-    usdValueOf: (token, loanUnits) => {
-      const entry = priced.get(getAddress(token))
-      if (!entry) return null
-      // oxlint-disable-next-line repo/no-pow10-bigint
-      return mulDivDown(loanUnits, entry.priceE8, 10n ** BigInt(entry.decimals))
-    },
+    usdValueOf: (token, loanUnits) => usdValueIn(table, token, loanUnits),
     usdPriceOf: token => priced.get(getAddress(token))?.priceE8 ?? null,
     refresh,
+    table: () => table,
     snapshot: () => ({ source, tokens: priced.size, updatedAt })
   }
 }

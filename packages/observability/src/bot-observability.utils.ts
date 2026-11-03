@@ -1,6 +1,6 @@
 import type { Logger } from '@repo/bot-kit'
 
-import { createLogger, railwayContext } from '@repo/bot-kit'
+import { createLogger } from '@repo/bot-kit'
 
 import type { Environment } from './shipping-config.utils'
 
@@ -41,7 +41,7 @@ export const createBotObservability = (options: {
     options.logger ??
     createLogger('info', {
       env,
-      context: { bot: options.bot, chainId: options.chainId, ...railwayContext(env) }
+      context: { bot: options.bot, chainId: options.chainId }
     })
   const emitRecord = (value: unknown) => {
     if (Array.isArray(value) && value.length > 0) {

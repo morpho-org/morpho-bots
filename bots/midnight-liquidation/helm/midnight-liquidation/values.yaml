@@ -14,11 +14,16 @@ runtimeSecret:
   key: ''
   refreshInterval: 5m
 
-# Non-secret settings such as CHAIN_ID, LOG_LEVEL, ENABLE_LIFI, and
-# ALLOW_BAD_DEBT_ONLY. Set CHAIN_ID for each chain-specific release.
+# Non-secret settings; the README's "Release values" lists the ones every release sets.
 env: []
 
-terminationGracePeriodSeconds: 30
+# Holds the kernel ledger and the journal. The claim survives uninstall.
+state:
+  storageClass: tools-gp3
+  size: 10Gi
+
+# A stop lets the kernel settle what it has in flight; the default 30s can kill a clean stop.
+terminationGracePeriodSeconds: 120
 
 resources:
   requests:

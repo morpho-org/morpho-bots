@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import type { KernelConfig, Validator } from '../src'
 
 import { latched } from '../src'
+import { unidentifiedNonces } from '../src/kernel'
 import { fnOf } from './codec'
 import {
   cancel,
@@ -369,7 +370,7 @@ describe('a restart resumes the recovery and bounds it stopped under', () => {
     h.nonceAt(1)
     expect(h.state.nonces[0]?.candidates.map(c => c.intentId)).toStrictEqual(['liq'])
     expect(h.state.nonces[0]?.resolution).toBeUndefined()
-    expect(h.commands('findNonceTx').at(-1)).toMatchObject({ nonce: 0 })
+    expect(unidentifiedNonces(h.state)).toEqual([0])
     h.send({
       type: 'NonceTx',
       nonce: 0,

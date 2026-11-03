@@ -3,19 +3,21 @@ import type { KernelActivity, KernelHead, Notice, RefusalCode } from '@repo/kern
 import { createGraph, createRunner } from '@repo/engine'
 import { describe, expect, it } from 'vitest'
 
-import type { BackoffPolicy } from '../src'
-import type { PrepareResult } from '../src/tasks'
+import type { BackoffPolicy, ExemptEnd } from '../src'
+import type { PrepareResult, TaskEvent } from '../src/tasks'
 
-import { declareBackoff, intentIdOf, isBackedOff } from '../src'
+import { declareBackoff, intentIdOf, isBackedOff, parseIntentId } from '../src'
 
 const backoff = (policy: BackoffPolicy) => {
   const g = createGraph('backoff')
   const prepared = g.occurrences<PrepareResult>('prepared')
   const activity = g.occurrences<readonly KernelActivity[]>('activity')
   const heads = g.occurrences<KernelHead>('heads')
+  const submitted = g.occurrences<TaskEvent>('submitted')
   const { state } = declareBackoff(g, 'backoff', {
     runId: 'run',
     prepared,
+    submitted,
     activity,
     heads,
     policy
@@ -37,8 +39,28 @@ const backoff = (policy: BackoffPolicy) => {
   const refused = (intentId: string, code: RefusalCode, reason: string) =>
     runner.push(activity, [{ type: 'notice', intentId, notice: 'refused', code, reason }])
   const settle = (intentId: string) => notice(intentId, 'settled')
+  const submit = (intentId: string, exempt?: readonly ExemptEnd[]) =>
+    runner.push(submitted, {
+      type: 'submitted',
+      key: parseIntentId(intentId)!.key,
+      intentId,
+      priority: 1n,
+      block: 1,
+      ...(exempt && { exemptFromBackoff: exempt })
+    })
+  const reverted = (intentId: string) =>
+    runner.push(activity, [
+      {
+        type: 'notice',
+        intentId,
+        notice: 'abandoned',
+        code: 'reverted',
+        reason: 'simulation failed',
+        included: []
+      }
+    ])
   const report = (one: KernelActivity) => runner.push(activity, [one])
-  return { runner, state, fail, head, settle, notice, refused, report }
+  return { runner, state, fail, head, settle, notice, refused, report, submit, reverted }
 }
 
 describe('per-key backoff', () => {
@@ -180,6 +202,62 @@ describe('per-key backoff', () => {
       false,
       true
     ])
+    await runner.abandon()
+  })
+})
+
+describe('an act exempt from backoff', () => {
+  const act = (key: string, seq: number, task = 'liquidate') => intentIdOf(key, 'run', seq, task)
+
+  it('holds an act submitted exempt from its end code only until the next head, counting no failure', async () => {
+    const { runner, state, head, fail, submit, reverted } = backoff({
+      baseBlocks: 4,
+      maxBlocks: 64
+    })
+    head(10)
+    fail('a', 'liquidate')
+    head(20)
+    submit(act('a', 0), ['reverted'])
+    reverted(act('a', 0))
+    expect(runner.read(state)!.keys.a!.liquidate).toStrictEqual({ failures: 1, until: 21 })
+    expect(isBackedOff(runner.read(state), 'a', 'liquidate')).toBe(true)
+    head(21)
+    expect(isBackedOff(runner.read(state), 'a', 'liquidate')).toBe(false)
+    await runner.abandon()
+  })
+
+  it('backs off the same end for an act submitted with no exemption', async () => {
+    const { runner, state, head, submit, reverted } = backoff({ baseBlocks: 4, maxBlocks: 64 })
+    head(10)
+    reverted(act('a', 0))
+    submit(act('b', 1))
+    reverted(act('b', 1))
+    for (const key of ['a', 'b'])
+      expect(runner.read(state)!.keys[key]!.liquidate).toStrictEqual({ failures: 1, until: 14 })
+    await runner.abandon()
+  })
+
+  it("exempts only its own act, and spends the exemption on that act's end", async () => {
+    const { runner, state, head, submit, reverted, notice, settle } = backoff({
+      baseBlocks: 4,
+      maxBlocks: 64
+    })
+    head(10)
+    submit(act('a', 0), ['reverted'])
+    reverted(act('a', 1))
+    submit(act('b', 2), ['reverted'])
+    notice(act('b', 2), 'failed')
+    reverted(act('b', 2))
+    submit(act('c', 3), ['reverted'])
+    reverted(act('c', 3))
+    expect(runner.read(state)!.keys).toStrictEqual({
+      a: { liquidate: { failures: 1, until: 14 } },
+      b: { liquidate: { failures: 2, until: 18 } },
+      c: { liquidate: { failures: 0, until: 11 } }
+    })
+    expect({ ...runner.read(state)!.exempt }).toStrictEqual({ [act('a', 0)]: ['reverted'] })
+    settle(act('c', 4))
+    expect(runner.read(state)!.keys).not.toHaveProperty('c')
     await runner.abandon()
   })
 })

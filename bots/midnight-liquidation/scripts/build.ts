@@ -11,7 +11,7 @@ import { BundleFailedError } from './errors'
 
 // Bundles the bot entrypoint (and the soltag-dependent operator script) to `dist/` with the
 // `sol``` templates compiled to literal ABIs/bytecode, so production runs a plain `node` with no
-// runtime transform. This replaces the bunfig `preload` that used to compile them at startup.
+// runtime transform.
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const DIST_DIR = join(ROOT, 'dist')

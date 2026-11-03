@@ -33,7 +33,6 @@ import { OBSERVING, observeActivity, observeNode, observeRequest } from './obser
 
 type StartEvent = Extract<KernelEvent, { type: 'Start' }>
 type TickEvent = Extract<KernelEvent, { type: 'Tick' }>
-type NonceLookup = Extract<Command, { type: 'findNonceTx' }>
 
 /**
  * Every kernel effect runs its work at once; its queue holds what one step admits and simulations
@@ -131,7 +130,6 @@ const declareNodes = (g: GraphBuilder, options: Hosting) => {
   const observed = g.node<KernelEvent>('kernel.observed')
   const input = g.node<KernelEvent>('kernel.in')
   const commands = g.node<Command>('kernel.commands')
-  const lookups = g.node<NonceLookup>('kernel.lookups')
   const activity = g.node<readonly KernelActivity[]>('kernel.activity')
   const heads = g.node<KernelHead>('kernel.heads')
 
@@ -144,7 +142,6 @@ const declareNodes = (g: GraphBuilder, options: Hosting) => {
     observed,
     input,
     commands,
-    lookups,
     activity,
     heads
   }
@@ -167,7 +164,7 @@ const declareFolds = (
   inputs: Pick<KernelHostOptions, 'requests' | 'facts'>,
   reserved: ReturnType<typeof reserveFolds>
 ) => {
-  const { start, requests, tick, chainEvents, results, observed, input, commands, lookups } = nodes
+  const { start, requests, tick, chainEvents, results, observed, input, commands } = nodes
   const { activity, heads } = nodes
   const facts = inputs.facts ?? []
   for (const node of facts) {
@@ -227,7 +224,7 @@ const declareFolds = (
 
   g.fold(reserved.state, {
     reads: { event: every(input) },
-    emits: [commands, lookups, activity],
+    emits: [commands, activity],
     initial: kernel.initialState(),
     applyInput: (previous, { value }) => {
       const next = kernel.reduce(previous, value)
@@ -235,9 +232,7 @@ const declareFolds = (
         state: next.state,
         emit: [
           ...(next.activity.length > 0 ? [emitTo(activity, next.activity)] : []),
-          ...next.commands.map(command =>
-            command.type === 'findNonceTx' ? emitTo(lookups, command) : emitTo(commands, command)
-          )
+          ...next.commands.map(command => emitTo(commands, command))
         ]
       }
     }
@@ -251,7 +246,7 @@ const declareEffects = (
   parts: Parts,
   options: Hosting
 ) => {
-  const { start, tick, chainEvents, results, commands, lookups, activity } = nodes
+  const { start, tick, chainEvents, results, commands, activity } = nodes
   const { executor, adapter, fail } = parts
   g.effect('kernel.listener', {
     requests: { activity: every(activity) },
@@ -286,12 +281,12 @@ const declareEffects = (
   })
 
   g.effect('kernel.chain', {
-    requests: { start: every(start), tick: every(tick), lookup: every(lookups) },
+    requests: { start: every(start), tick: every(tick) },
     samples: { state },
     results: chainEvents,
     lane: lane('kernel.chain', KERNEL_LANE),
-    handle: ({ value: request }, context) =>
-      adapter.handle(request.type === 'findNonceTx' ? request : { type: 'poll' }, {
+    handle: (_request, context) =>
+      adapter.poll({
         signal: context.signal,
         write: context.write,
         state: context.samples.state

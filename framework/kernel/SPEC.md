@@ -93,7 +93,6 @@ an event. The kernel never awaits anything (review).
 | `flush{seq, ledger}`                                                                     | `Flushed{seq}` after tmp → fsync → rename → fsync dir                                                                                         |
 | `broadcast{request, hash, raw}`                                                          | `Broadcasted{outcome}` or `TimedOut`                                                                                                          |
 | `release{request, payload}`                                                              | `Released{ok \| unknown}` or `TimedOut`                                                                                                       |
-| `findNonceTx{nonce}`                                                                     | `NonceTx`: the transaction the account sent at that nonce                                                                                     |
 | `notify{intentId, notice, reason}`                                                       | nothing; this is the engine's outcome feed                                                                                                    |
 | `report{outcome, reason, open}`                                                          | nothing; this is the terminal stop result                                                                                                     |
 
@@ -232,6 +231,13 @@ clears). The intermediate `compensating` notice carries no verdict ("says cancel
 notice when the fill wins, and on no notice before it", "when a neutralizer of its entry was
 committed before the cancel", "when a neutralizer of its entry is committed after the cancel", "a
 step recovery races with a fill is cancelled like any step that cannot bid again").
+
+`reverted` is the other reason code. An `abandoned` notice carries it when the plan's simulation
+answered `Simulated{ok: false}` before anything of the plan was exposed and no step of it was
+included: the simulation effect classified the failure as an execution revert. A simulation that
+failed or timed out as an effect carries no code, nor does a re-bid's simulation of an exposed plan
+or a step that reverted onchain ("says a plan abandoned on a reverted simulation reverted, and one
+whose simulation failed did not", "simulates afresh even while its last simulation is recent").
 
 A step that lands after its plan stopped reading its nonce is still named in the plan's `included`,
 so a cancelled step whose original wins is reported as executed, and each inclusion says whether its
@@ -582,7 +588,7 @@ transaction in an unsafe stop, however many restarts intervene (`restart.test.ts
 - from a `Receipt` for one of its candidates at a canonical block
   ("a restart resolves a transaction mined before it, once the block is vouched for"), or
 - from `NonceTx`, the positive identification of the transaction the account sent at that nonce (the
-  runtime bisects `getTransactionCount` by block hash and reads that block's body). `winner = null`
+  runtime searches `getTransactionCount` back from the head and reads that block's body). `winner = null`
   means a transaction the kernel never signed: a foreign signer or a rolled-back ledger. The kernel
   enters recovery and raises an alarm, and keeps the record, flagged foreign: that transaction may
   have created exposure the kernel cannot read, so the stop that follows is never clean ("a nonce identified as consumed by a transaction the kernel never signed halts and keeps its record, so no stop is clean").
@@ -590,7 +596,9 @@ transaction in an unsafe stop, however many restarts intervene (`restart.test.ts
   promised (a `SetIsRootRatified(root, true)` log). §5 says how an unconfirmed success is read
   ("a success without its expected log never proves the commitment absent").
 
-`NonceAt{latest}` beyond an unresolved record emits `findNonceTx`. If identification never arrives,
+A record below the chain's `NonceAt{latest}` that no receipt resolved is looked up for its
+`NonceTx`, after the poll's receipts ("looks up no nonce a receipt of its own already resolved"). If
+identification never arrives,
 the record stays unresolved, its fee stays reserved, the clean predicate stays false, and the bound
 turns the stop unsafe (trace: "a nonce consumed by a transaction the kernel cannot identify"). Its
 candidates' `consumes` stay reserved by the nonce-record rule of §7.
@@ -697,8 +705,10 @@ replacement to outbid the highest fees recorded at its nonce", "asks for the hig
 field by field over every candidate at the nonce, across a restart", "refuses a ledger whose
 candidate records a malformed bid").
 
-`@repo/kit`'s kernel effects are the ruleset. A first bid prices from the base fee, tipping a
-quarter of its cap and at most 1 gwei so it can be re-bid; a replacement bumps the recorded fees by
+`@repo/kit`'s kernel effects are the ruleset. A first bid prices from the base fee, tipping the
+median of the last 20 blocks' 90th-percentile tips, at least 1 wei and at most a quarter of its cap
+and 1 gwei so it can be re-bid (a node that serves no fee history leaves the quarter, with one
+warning); a replacement bumps the recorded fees by
 the 12.5% EIP-1559 requires, with a 1 wei floor. Every bid stays under
 the fill ceiling `C = min(maxFeePerGasWei, feeReserve / 100_000)`, the most a nonce fill's gas
 bound lets the recovery spend fund per gas, and a step's under its **step cap**, the largest fee one
@@ -1224,7 +1234,7 @@ authority").
 | validator contract incl. versions                                          | §9.1                                                                                                                                                                                                                                                                                                              |
 | staged vs whole-plan reservation                                           | whole-plan **envelope** verified from readings; dependent steps must fit (§4.1–4.2). Ordinary pending transactions are reserved through nonce records (§7)                                                                                                                                                        |
 | fee capacity, exclusive candidates, debited balances                       | §7                                                                                                                                                                                                                                                                                                                |
-| nonce recovery with no commitment                                          | §6 fills and `findNonceTx`; §9.3                                                                                                                                                                                                                                                                                  |
+| nonce recovery with no commitment                                          | §6 fills and `NonceTx` lookups; §9.3                                                                                                                                                                                                                                                                              |
 | durability, fencing, migrations                                            | §11                                                                                                                                                                                                                                                                                                               |
 | policy changes during recovery                                             | a stored neutralizer is **re-authorized, never replayed blindly**: the current validator must read it as retiring the entry, under the current recovery policy. A config that cannot do so refuses to start (trace) rather than failing mid-recovery. Market config is not an input to neutralizer authorization. |
 | block-hash pinning, canonicality, provider disagreement, finality reversal | §8                                                                                                                                                                                                                                                                                                                |

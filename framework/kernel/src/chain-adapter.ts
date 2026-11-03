@@ -1,7 +1,7 @@
 import type { KernelHostOptions } from './host'
 import type { Hash, Id, KernelEvent, KernelState, Log } from './types'
 
-import { pollSet } from './kernel'
+import { pollSet, unidentifiedNonces } from './kernel'
 
 /** Nonce lookups bisect history, so each poll runs only this many, after every other read. */
 const LOOKUPS_PER_POLL = 4
@@ -41,9 +41,6 @@ export type KernelChain = {
   capacity(resource: string, at: Block): Promise<bigint>
 }
 
-/** What the adapter is asked to do: poll the chain, or identify the transaction at a nonce. */
-type ChainRequest = { type: 'poll' } | { type: 'findNonceTx'; nonce: number }
-
 /** How the adapter reaches the kernel: it writes chain events and reads the kernel's current state. */
 type ChainPort = { signal: AbortSignal; write(event: KernelEvent): void; state(): KernelState }
 
@@ -72,8 +69,6 @@ export const createChainAdapter = (options: ChainAdapterOptions) => {
   let tip: Block | undefined
   /** Bumped by every evidence reset; a read that began under an older one delivers nothing. */
   let generation = 0
-  /** Nonces the kernel asked to identify; looked up inside the poll so no chain read runs beside another. */
-  const lookups = new Set<number>()
   /** The last finalized block seen; a change to it is a finality violation the kernel cannot see once its header is pruned. */
   let anchor: Block | undefined
   /** Whether finality is held below the retained window, so its alarm is raised once. */
@@ -321,16 +316,18 @@ export const createChainAdapter = (options: ChainAdapterOptions) => {
     return true
   }
 
+  /** Each poll starts one nonce further on, so a lookup that keeps failing never starves the rest. */
+  let lookupTurn = 0
+  /** Read after the poll's receipts, so a nonce one of them resolved is never looked up. */
   const readLookups = async (current: Current) => {
-    for (const lookup of [...lookups].slice(0, LOOKUPS_PER_POLL)) {
-      lookups.delete(lookup)
-      const found = await attempt('nonceTx', () => chain.nonceTx(lookup))
+    const nonces = unidentifiedNonces(state())
+    const first = lookupTurn++ % Math.max(nonces.length, 1)
+    const turn = [...nonces.slice(first), ...nonces.slice(0, first)]
+    for (const nonce of turn.slice(0, LOOKUPS_PER_POLL)) {
+      const found = await attempt('nonceTx', () => chain.nonceTx(nonce))
       if (!current()) return
-      if (found === undefined) lookups.add(lookup)
       if (!found) continue
-      if (
-        !(await deliverVouched(found.block, current, { type: 'NonceTx', nonce: lookup, ...found }))
-      )
+      if (!(await deliverVouched(found.block, current, { type: 'NonceTx', nonce, ...found })))
         return
     }
   }
@@ -386,7 +383,7 @@ export const createChainAdapter = (options: ChainAdapterOptions) => {
   }
 
   let polling = false
-  const poll = async () => {
+  const run = async () => {
     if (polling) return
     polling = true
     try {
@@ -402,10 +399,9 @@ export const createChainAdapter = (options: ChainAdapterOptions) => {
   return {
     accountCode: () => timed(() => chain.accountCode()),
     /** A poll runs beside the request that started it, so a slow chain never holds the effect's lane. */
-    handle: (request: ChainRequest, through: ChainPort) => {
+    poll: (through: ChainPort) => {
       port = through
-      if (request.type === 'findNonceTx') lookups.add(request.nonce)
-      else void poll()
+      void run()
     }
   }
 }

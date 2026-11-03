@@ -1,4 +1,4 @@
-import type { Logger } from '@repo/bot-kit'
+import type { Logger } from '@repo/kit'
 import type { Hex } from 'viem'
 
 import { getAddress } from 'viem'
@@ -7,6 +7,8 @@ import { describe, expect, it } from 'vitest'
 import type { CandidatePage, FetchCandidatePage } from '../../src/discovery/borrowers'
 
 import { createApiCandidateSource, discoverBorrowers } from '../../src/discovery/borrowers'
+
+const API_KEY = 'test-api-key'
 
 const MARKET: Hex = `0x${'a'.repeat(64)}`
 const MARKET_2: Hex = `0x${'b'.repeat(64)}`
@@ -48,14 +50,17 @@ describe('discoverBorrowers', () => {
       if (cursor === null) return { cursor: 'c1', data: [row(MARKET, BORROWER)] }
       return { cursor: null, data: [row(MARKET_2, BORROWER_2)] }
     }
-    expect(await discoverBorrowers(fetchPage, { logger })).toEqual([
-      { marketId: MARKET, borrower: getAddress(BORROWER) },
-      { marketId: MARKET_2, borrower: getAddress(BORROWER_2) }
-    ])
+    expect(await discoverBorrowers(fetchPage, { logger })).toEqual({
+      candidates: [
+        { marketId: MARKET, borrower: getAddress(BORROWER) },
+        { marketId: MARKET_2, borrower: getAddress(BORROWER_2) }
+      ],
+      complete: true
+    })
     expect(calls).toBe(2)
   })
 
-  it('skips rows with a malformed market id or borrower address', async () => {
+  it('skips rows with a malformed market id or borrower address, and is then not complete', async () => {
     const { logger } = spyLogger()
     const fetchPage: FetchCandidatePage = async () => ({
       cursor: null,
@@ -67,9 +72,10 @@ describe('discoverBorrowers', () => {
         'not-an-object' // wrong shape
       ]
     })
-    expect(await discoverBorrowers(fetchPage, { logger })).toEqual([
-      { marketId: MARKET, borrower: getAddress(BORROWER) }
-    ])
+    expect(await discoverBorrowers(fetchPage, { logger })).toEqual({
+      candidates: [{ marketId: MARKET, borrower: getAddress(BORROWER) }],
+      complete: false
+    })
   })
 
   it('de-duplicates a (market, borrower) pair seen across pages', async () => {
@@ -78,9 +84,10 @@ describe('discoverBorrowers', () => {
       cursor === null
         ? { cursor: 'c1', data: [row(MARKET, BORROWER)] }
         : { cursor: null, data: [row(MARKET, BORROWER)] } // same pair again
-    expect(await discoverBorrowers(fetchPage, { logger })).toEqual([
-      { marketId: MARKET, borrower: getAddress(BORROWER) }
-    ])
+    expect(await discoverBorrowers(fetchPage, { logger })).toEqual({
+      candidates: [{ marketId: MARKET, borrower: getAddress(BORROWER) }],
+      complete: true
+    })
   })
 
   it('stops and warns discover.max_pages when the page cap is hit (never truncates silently)', async () => {
@@ -91,7 +98,8 @@ describe('discoverBorrowers', () => {
       calls += 1
       return { cursor: 'next', data: [row(MARKET, BORROWER)] }
     }
-    await discoverBorrowers(fetchPage, { logger, maxPages: 3 })
+    const { complete } = await discoverBorrowers(fetchPage, { logger, maxPages: 3 })
+    expect(complete).toBe(false)
     expect(calls).toBe(3)
     expect(events.some(e => e.level === 'warn' && e.event === 'discover.max_pages')).toBe(true)
   })
@@ -106,12 +114,17 @@ describe('createApiCandidateSource', () => {
 
   it('sends chain_ids, health_factor_lte, include_matured, and the default limit; omits cursor on page 1', async () => {
     let requestedUrl = ''
+    let requestedKey: string | null = null
+    let requestedRedirect = ''
     const fetchImpl = async (request: Request) => {
       requestedUrl = request.url
+      requestedKey = request.headers.get('x-api-key')
+      requestedRedirect = request.redirect
       return jsonResponse({ cursor: 'next', data: [row(MARKET, BORROWER)] })
     }
     const source = createApiCandidateSource({
       url: BASE_URL,
+      apiKey: API_KEY,
       chainId: 8453,
       healthFactorLte: 1.02,
       fetchImpl
@@ -124,8 +137,26 @@ describe('createApiCandidateSource', () => {
     expect(params.get('include_matured')).toBe('true')
     expect(params.get('limit')).toBe('100')
     expect(params.has('cursor')).toBe(false)
+    expect(requestedKey).toBe(API_KEY)
+    expect(requestedRedirect).toBe('manual')
     expect(page.cursor).toBe('next')
     expect(page.data).toHaveLength(1)
+  })
+
+  it('sends no x-api-key when no key is configured', async () => {
+    let sent = true
+    const source = createApiCandidateSource({
+      url: BASE_URL,
+      apiKey: undefined,
+      chainId: 8453,
+      healthFactorLte: 1.02,
+      fetchImpl: async (request: Request) => {
+        sent = request.headers.has('x-api-key')
+        return jsonResponse({ cursor: null, data: [] })
+      }
+    })
+    await source(null)
+    expect(sent).toBe(false)
   })
 
   it('passes the cursor through on subsequent pages', async () => {
@@ -136,6 +167,7 @@ describe('createApiCandidateSource', () => {
     }
     const source = createApiCandidateSource({
       url: BASE_URL,
+      apiKey: API_KEY,
       chainId: 8453,
       healthFactorLte: 1.02,
       fetchImpl
@@ -154,6 +186,7 @@ describe('createApiCandidateSource', () => {
     }
     const source = createApiCandidateSource({
       url: BASE_URL,
+      apiKey: API_KEY,
       chainId: 8453,
       healthFactorLte: 1.02,
       fetchImpl,
@@ -181,6 +214,7 @@ describe('createApiCandidateSource', () => {
     }
     const source = createApiCandidateSource({
       url: BASE_URL,
+      apiKey: API_KEY,
       chainId: 8453,
       healthFactorLte: 1.02,
       fetchImpl,
@@ -194,21 +228,39 @@ describe('createApiCandidateSource', () => {
     expect(page.data).toHaveLength(1)
   })
 
-  it('coerces a null cursor and missing data to a safe empty page', async () => {
-    const fetchImpl = async () => jsonResponse({ cursor: null })
+  it('reads a well-formed empty page as the end of a complete walk', async () => {
     const source = createApiCandidateSource({
       url: BASE_URL,
+      apiKey: API_KEY,
       chainId: 8453,
       healthFactorLte: 1.02,
-      fetchImpl
+      fetchImpl: async () => jsonResponse({ cursor: null, data: [] })
     })
     expect(await source(null)).toEqual({ cursor: null, data: [] })
+    const { logger } = spyLogger()
+    expect(await discoverBorrowers(source, { logger })).toEqual({ candidates: [], complete: true })
+  })
+
+  it('fails a page with no data array rather than reading it as empty', async () => {
+    const source = createApiCandidateSource({
+      url: BASE_URL,
+      apiKey: API_KEY,
+      chainId: 8453,
+      healthFactorLte: 1.02,
+      fetchImpl: async () => jsonResponse({ cursor: null })
+    })
+    await expect(source(null)).rejects.toThrow(
+      'liquidation-candidates returned a page without a data array'
+    )
+    const { logger } = spyLogger()
+    await expect(discoverBorrowers(source, { logger })).rejects.toThrow('without a data array')
   })
 
   it('throws on a non-retryable 4xx so the tick can log and move on', async () => {
     const fetchImpl = async () => jsonResponse({ error: { code: 'INVALID_CURSOR' } }, 400)
     const source = createApiCandidateSource({
       url: BASE_URL,
+      apiKey: API_KEY,
       chainId: 8453,
       healthFactorLte: 1.02,
       fetchImpl

@@ -1,4 +1,4 @@
-import type { Logger } from '@repo/bot-kit'
+import type { Logger } from '@repo/kit'
 import type { FetchPage } from '@repo/utils'
 import type { Address, Hex } from 'viem'
 
@@ -9,6 +9,8 @@ import { isAddress, isHex } from 'viem'
 import type { components, paths } from '../generated/midnight-api'
 
 import { InvalidConfigError } from '../errors'
+import { revertReason } from '../revert.utils'
+import { morphoApiClientOptions } from './morpho-api'
 
 // Response shapes from `GET /v0/midnight/markets` (the seed script imports these too). The spec types
 // ids/addresses as plain strings; we brand the fields the codebase consumes as viem `Hex`/`Address`
@@ -81,6 +83,7 @@ const PATH = '/v0/midnight/markets'
  */
 export function createListedMarketFilter(deps: {
   apiUrl: string
+  apiKey: string | undefined
   chainId: number
   logger: Logger
   fetchImpl?: FetchLike
@@ -91,10 +94,13 @@ export function createListedMarketFilter(deps: {
   const now = deps.now ?? (() => Date.now())
   const url = new URL(deps.apiUrl)
   const baseUrl = deps.apiUrl.endsWith(PATH) ? deps.apiUrl.slice(0, -PATH.length) : url.origin
-  const client = createClient<paths>({ baseUrl, fetch: deps.fetchImpl ?? fetch })
+  const client = createClient<paths>({
+    fetch: deps.fetchImpl ?? fetch,
+    ...morphoApiClientOptions(baseUrl, deps.apiKey)
+  })
   // Log/snapshot label for this source. Host + path, so two sources sharing a host but differing by
   // path prefix stay distinguishable in `markets.refresh_failed` / `markets.source_expired`; the query
-  // string is excluded so no credential can ride along (these endpoints are public either way).
+  // string is excluded so no credential can ride along.
   const source = `${url.host}${url.pathname}`
 
   // Last-known-good: only replaced by a fully-successful refresh, so a transient failure keeps serving
@@ -164,6 +170,33 @@ export function createListedMarketFilter(deps: {
   }
 }
 
+/** One markets source as last refreshed: the ids it lists, lowercased, and when it last landed. */
+export type WhitelistSource = Readonly<{
+  source: string
+  ids: readonly string[]
+  updatedAt: number | null
+}>
+
+/**
+ * The whitelist at `now`: the union over sources no older than `maxAgeMs`, how many sources that is,
+ * and, for each listed market, when the last fresh source listing it ages out, past which that market
+ * is no longer listed. With no fresh source nothing is listed.
+ */
+export const listedAt = (sources: readonly WhitelistSource[], now: number, maxAgeMs: number) => {
+  const fresh = sources.filter(
+    source => source.updatedAt !== null && now - source.updatedAt <= maxAgeMs
+  )
+  const expiries: Record<string, number> = {}
+  for (const source of fresh)
+    for (const id of source.ids)
+      expiries[id] = Math.max(expiries[id] ?? 0, source.updatedAt! + maxAgeMs)
+  return {
+    isListed: (marketId: Hex) => Object.hasOwn(expiries, marketId.toLowerCase()),
+    expiries,
+    fresh: fresh.length
+  }
+}
+
 /** One source's contribution to the union, as reported by {@link UnionListedMarketFilter.snapshot}. */
 type UnionSourceSnapshot = {
   /** Host + path label of the endpoint this source reads (see the single-source `source` label). */
@@ -185,7 +218,9 @@ type UnionListedMarketFilter = {
    * judged against ONE staleness reading. Re-deriving freshness per candidate would let a source cross
    * the max-age boundary mid-pass, splitting a single pass across two different whitelists.
    */
-  current: () => { isListed: (marketId: Hex) => boolean; fresh: number }
+  current: () => ReturnType<typeof listedAt>
+  /** Every source as last refreshed, for {@link listedAt} to judge at a later time. */
+  sources: () => WhitelistSource[]
   refresh: () => Promise<void>
   snapshot: () => { sources: UnionSourceSnapshot[]; fresh: number }
 }
@@ -248,6 +283,11 @@ export function createUnionListedMarketFilter(deps: {
   // Size of the combined whitelist. Derived from the id sets rather than the per-source counts, which
   // overlap — summing them double-counts a market both sources list, and taking the max understates a
   // union of two partially-overlapping sets.
+  const sources = () =>
+    deps.filters.map(filter => {
+      const { source, updatedAt } = filter.snapshot()
+      return { source, ids: [...filter.ids()].toSorted(), updatedAt }
+    })
   const unionSize = () => new Set(freshFilters().flatMap(filter => [...filter.ids()])).size
   const warnExpiry = () => {
     const { sources, fresh } = snapshot()
@@ -264,13 +304,8 @@ export function createUnionListedMarketFilter(deps: {
   }
 
   return {
-    current: () => {
-      const fresh = freshFilters()
-      return {
-        isListed: marketId => fresh.some(filter => filter.isListed(marketId)),
-        fresh: fresh.length
-      }
-    },
+    current: () => listedAt(sources(), now(), deps.maxAgeMs),
+    sources,
     refresh: async () => {
       await Promise.all(
         deps.filters.map(async filter => {
@@ -279,7 +314,7 @@ export function createUnionListedMarketFilter(deps: {
             deps.logger.warn('markets.refresh_failed', {
               chainId: deps.chainId,
               source: filter.snapshot().source,
-              detail: error.message
+              detail: revertReason(error)
             })
           }
         })

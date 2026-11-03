@@ -5,7 +5,7 @@ import { emitTo, every, GraphDefinitionError, keyRecord, reachable, watch } from
 import { isChainFact } from '@repo/kernel'
 
 import type { FactNode, FactReading } from './act'
-import type { BackoffPolicy, Backoff } from './backoff'
+import type { BackoffPolicy, Backoff, ExemptEnd } from './backoff'
 import type { Bot, KernelHandle } from './bot'
 import type { LogSink } from './log'
 import type { ByTask } from './own'
@@ -37,10 +37,18 @@ export type PrepareRequest<I = unknown> = Readonly<{
 /**
  * A preparation's answer: the steps of an act, or why there is none and whether that failure backs
  * the key's task off. The act holds while every fact it rests on does; `validUntil` only shortens
- * that, for a preparation that read something no fact carries.
+ * that, for a preparation that read something no fact carries. An act the kernel ends with a code in
+ * `exemptFromBackoff` is held only to the next head, not backed off ({@link declareBackoff}).
  */
 export type PrepareOutcome =
-  | Readonly<{ ok: true; steps: readonly StepSpec[]; validUntil?: number }>
+  | Readonly<{
+      ok: true
+      steps: readonly StepSpec[]
+      validUntil?: number
+      exemptFromBackoff?: readonly ExemptEnd[]
+      /** The most the act's own transactions may spend on fees; it only lowers the kernel's ceiling. */
+      maxSpendWei?: bigint
+    }>
   | Readonly<{ ok: false; reason: string; backoff: boolean }>
 
 /** What a preparation's handler receives beside its request. */
@@ -140,7 +148,14 @@ type DropReason =
 
 /** `submitted` rests on its key's fact read at `block`; `fact_unbounded` names the fact. */
 export type TaskEvent =
-  | Readonly<{ type: 'submitted'; key: string; intentId: string; priority: bigint; block: number }>
+  | Readonly<{
+      type: 'submitted'
+      key: string
+      intentId: string
+      priority: bigint
+      block: number
+      exemptFromBackoff?: readonly ExemptEnd[]
+    }>
   | Readonly<{ type: 'dropped'; key: string; task: string; reason: DropReason; fact?: string }>
   | Readonly<{ type: 'rejected'; key: string; reason: Rejection }>
   | Readonly<{
@@ -518,15 +533,16 @@ const each = <C, I>(b: Bot, id: string, options: TaskFamilyOptions<C, I>) => {
   const factReads = factNodes.map((_, i) => (i === 0 ? 'facts' : `facts${i}`))
   return b.raw(g =>
     g.scope(id, s => {
+      const events = s.node<TaskEvent>('events')
       const backoff = declareBackoff(s, 'backoff', {
         runId: options.runId,
         prepared,
+        submitted: events,
         activity: kernel.activity,
         heads: kernel.heads,
         policy: options.backoff
       })
       const prepare = s.node<PrepareRequest<I>>('prepare')
-      const events = s.node<TaskEvent>('events')
 
       type Draft = {
         family: Family
@@ -566,6 +582,7 @@ const each = <C, I>(b: Bot, id: string, options: TaskFamilyOptions<C, I>) => {
         const reason = submitDrop(ready, readingsOf(draft.family, key), now)
         if (reason) return drop(draft, key, reason)
         const want = entryOf(draft.wanted, key) as Task
+        const { exemptFromBackoff, maxSpendWei } = ready.answer
         const intentId = intentIdOf(key, options.runId, draft.issued++, ready.task)
         const plan = act(domain, {
           intentId,
@@ -573,7 +590,8 @@ const each = <C, I>(b: Bot, id: string, options: TaskFamilyOptions<C, I>) => {
           restsOn: ready.readings,
           ...(ready.answer.validUntil !== undefined && { validUntil: ready.answer.validUntil }),
           conflicts: ready.conflicts,
-          decision: { key, priority: String(want.priority), prepared: ready.id }
+          decision: { key, priority: String(want.priority), prepared: ready.id },
+          ...(maxSpendWei !== undefined && { maxSpendWei })
         })
         delete draft.ready[key]
         draft.submitted[key] = { intentId, task: ready.task, readings: ready.readings }
@@ -586,7 +604,9 @@ const each = <C, I>(b: Bot, id: string, options: TaskFamilyOptions<C, I>) => {
             key,
             intentId,
             priority: want.priority,
-            block: plan.basisBlock
+            block: plan.basisBlock,
+            ...(exemptFromBackoff !== undefined &&
+              exemptFromBackoff.length > 0 && { exemptFromBackoff })
           })
         )
       }

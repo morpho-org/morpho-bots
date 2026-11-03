@@ -13,6 +13,7 @@ import { blocksFor } from './fee-policy'
 import { createKernelChain } from './kernel-chain'
 import { createKernelEffects } from './kernel-effects'
 import { DEFAULT_MAX_DATA_BYTES } from './policy'
+import { redactUrls } from './revert.utils'
 import { createAccountSigner } from './signer'
 
 /**
@@ -35,14 +36,13 @@ const MAX_RECOVERY_ATTEMPTS = 3
 const MAX_DISPATCH_LAG_MS = 10_000
 /** Nothing a transaction-only bot signs creates a commitment, so nothing is ever stale-revoked. */
 const REVOKE_AFTER_STALE_MS = 60 * 60_000
-const URL = /\b[a-z][a-z\d+.-]*:\/\/\S+/giu
 
 /** A kernel log reason that cannot copy an arbitrary error message or credentialed URL. */
 const kernelErrorReason = (error: unknown): string =>
   error instanceof FeeLimitError
     ? error.message
     : error instanceof BaseError
-      ? error.shortMessage.replace(URL, '[redacted URL]')
+      ? redactUrls(error.shortMessage)
       : error instanceof Error
         ? error.name
         : 'UnknownError'
@@ -162,7 +162,8 @@ export const transactionKernelSpec = (parameters: {
       signer,
       maxFeePerGasWei: limits.maxFeePerGasWei,
       maxGasLimit: limits.maxGasLimit,
-      materialize: () => Promise.reject(new NoCommitmentsError([]))
+      materialize: () => Promise.reject(new NoCommitmentsError([])),
+      logger
     }),
     enrollment: parameters.enrollment,
     pollMs: POLL_MS,

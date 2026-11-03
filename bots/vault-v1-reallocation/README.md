@@ -182,7 +182,7 @@ submits. Review a few passes' plans, then flip `DRY_RUN=false`.
 
 ## Observability
 
-Structured JSON-lines on stderr, one event per line, with `bot`/`chainId` (and Railway identity)
+Structured JSON-lines on stderr, one event per line, with `bot`/`chainId`
 stamped on every line. Key events: `startup`, `allocator.missing_role`, `vault.inflight` (debug),
 `market.non_adaptive_curve` (debug), `reallocation.found`, `reallocation.sim_revert`,
 `reallocation.dry_run`, `reallocation.not_broadcast` (an act that ended without a send), `vault.error`,

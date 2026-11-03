@@ -54,7 +54,13 @@ function mockRpc(estimateGas: bigint = GAS) {
     eth_chainId: `0x${base.id.toString(16)}`,
     eth_estimateGas: `0x${estimateGas.toString(16)}`,
     // A base fee high enough that a first bid is the whole per-gas ceiling.
-    eth_getBlockByNumber: { baseFeePerGas: '0x3e8' }
+    eth_getBlockByNumber: { baseFeePerGas: '0x3e8' },
+    eth_feeHistory: {
+      oldestBlock: '0x1',
+      baseFeePerGas: ['0x3e8', '0x3e8'],
+      gasUsedRatio: [0.5],
+      reward: [['0x5']]
+    }
   }
   vi.spyOn(globalThis, 'fetch').mockImplementation((async (
     _url: unknown,

@@ -1,4 +1,4 @@
-import type { KernelActivity, Notice } from '@repo/kernel'
+import type { EndCode, KernelActivity, Notice } from '@repo/kernel'
 
 import { parseIntentId } from '@repo/controller'
 
@@ -10,6 +10,8 @@ export type NotSent = Readonly<{
   intentId: string
   notice: Notice
   reason: string | null
+  /** The kernel's {@link EndCode}, when the notice carries one. */
+  code?: EndCode
 }>
 
 /**
@@ -104,9 +106,16 @@ export const createTxReporter = (
     if (notice.notice === 'settled' || (notice.included ?? []).length > 0) return
     const [first] = hashes ?? []
     const reason = notice.reason ?? null
+    const code = notice.notice !== 'refused' && 'code' in notice ? notice.code : undefined
     if (!first)
-      return deps.reportNotSent({ id, intentId: notice.intentId, notice: notice.notice, reason })
-    const cancelled = 'code' in notice && notice.code === 'cancelled'
+      return deps.reportNotSent({
+        id,
+        intentId: notice.intentId,
+        notice: notice.notice,
+        reason,
+        ...(code && { code })
+      })
+    const cancelled = code === 'cancelled'
     logger.warn(cancelled ? 'tx.cancelled' : 'tx.dropped', {
       id,
       intentId: notice.intentId,

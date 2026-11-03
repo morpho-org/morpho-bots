@@ -26,9 +26,9 @@
  */
 import type { Hex, PublicClient, WalletClient } from 'viem'
 
-import { createDeploylessClient, createLogger } from '@repo/bot-kit'
 import { Executor } from '@repo/contracts'
 import { MidnightAbi } from '@repo/contracts'
+import { createDeploylessClient, createLogger } from '@repo/kit'
 import { delay as sleep, lensKey } from '@repo/utils'
 import { parseArgs } from 'node:util'
 import {
@@ -247,6 +247,7 @@ async function main() {
 
   const whitelist = createListedMarketFilter({
     apiUrl: args.marketsApi,
+    apiKey: process.env.MORPHO_API_KEY?.trim() || undefined,
     chainId: CHAIN_ID,
     logger
   })

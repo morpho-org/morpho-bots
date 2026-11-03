@@ -1,4 +1,5 @@
 {{- if not (has (int .Values.replicas) (list 0 1)) }}{{ fail (printf "midnight-liquidation: replicas must be 0 or 1, got %v: every pod signs with the same key and keeps its own nonce cursor" .Values.replicas) }}{{- end }}
+{{- range .Values.env }}{{- if eq .name "KERNEL_STATE_DIR" }}{{ fail "midnight-liquidation: env must not set KERNEL_STATE_DIR: the chart points it at the state volume" }}{{- end }}{{- end }}
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -28,16 +29,20 @@ spec:
         runAsNonRoot: true
         runAsUser: 1000
         runAsGroup: 1000
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
         seccompProfile:
           type: RuntimeDefault
       containers:
         - name: {{ .Chart.Name }}
           image: {{ include "midnight-liquidation.image" . | quote }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
-          {{- with .Values.env }}
           env:
+            {{- with .Values.env }}
             {{- toYaml . | nindent 12 }}
-          {{- end }}
+            {{- end }}
+            - name: KERNEL_STATE_DIR
+              value: {{ include "midnight-liquidation.stateDirectory" . | quote }}
           envFrom:
             - secretRef:
                 name: {{ include "midnight-liquidation.runtimeSecretName" . | quote }}
@@ -50,8 +55,13 @@ spec:
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           volumeMounts:
+            - name: state
+              mountPath: {{ include "midnight-liquidation.stateDirectory" . | quote }}
             - name: tmp
               mountPath: /tmp
       volumes:
+        - name: state
+          persistentVolumeClaim:
+            claimName: {{ include "midnight-liquidation.stateClaimName" . | quote }}
         - name: tmp
           emptyDir: {}

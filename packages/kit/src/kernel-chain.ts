@@ -159,6 +159,13 @@ export const createKernelChain = (options: {
       let high = await getBlockNumber(client, { cacheTime: 0 })
       if ((await countAt(high)) <= nonce) return null
       let low = 0n
+      for (let step = 1n; high >= step; step *= 2n) {
+        if ((await countAt(high - step)) <= nonce) {
+          low = high - step + 1n
+          break
+        }
+        high -= step
+      }
       while (low < high) {
         const middle = (low + high) / 2n
         if ((await countAt(middle)) > nonce) high = middle

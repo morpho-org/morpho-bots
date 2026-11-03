@@ -12,11 +12,12 @@ import {
   RpcError,
   serializeTransaction
 } from 'viem'
+import { base } from 'viem/chains'
 import { describe, expect, it, vi } from 'vitest'
 
 import type { Signer } from '../src/signer'
 
-import { createKernelEffects } from '../src/kernel-effects'
+import { createKernelEffects, firstBid, gasLimitFor } from '../src/kernel-effects'
 import { NONCE_FILL_MAX_GAS } from '../src/policy'
 
 const raw: Hex = serializeTransaction(
@@ -130,9 +131,24 @@ describe('kernel transaction signing', () => {
     maxFeePerGasWei = 1_000n,
     estimatedGas = GAS,
     maxGasLimit = 1_000n,
-    baseFees: readonly bigint[] = [10n]
+    baseFees: readonly bigint[] = [10n],
+    rewards?: readonly bigint[] | 'fails' | 'stalls'
   ) => {
     let baseFeeIndex = 0
+    const warnings: string[] = []
+    let historyReads = 0
+    const feeHistory = () => {
+      historyReads += 1
+      if (rewards === 'stalls') return new Promise(() => {})
+      if (rewards === undefined || rewards === 'fails')
+        return Promise.reject(new Error('eth_feeHistory unavailable'))
+      return Promise.resolve({
+        oldestBlock: '0x1',
+        baseFeePerGas: [...rewards, 0n].map(() => '0xa'),
+        gasUsedRatio: rewards.map(() => 0.5),
+        reward: rewards.map(tip => [`0x${tip.toString(16)}`])
+      })
+    }
     const sign = vi.fn<Signer['sign']>(async request => {
       const signedRaw = serializeTransaction(
         {
@@ -158,11 +174,14 @@ describe('kernel transaction signing', () => {
     const broadcastRaw = vi.fn(() => Promise.resolve({}))
     const effects = createKernelEffects({
       client: createPublicClient({
+        chain: base,
         transport: custom({
           request: ({ method }) =>
             method === 'eth_estimateGas'
               ? Promise.resolve(`0x${estimatedGas.toString(16)}`)
-              : Promise.reject(new Error(`unexpected ${method}`))
+              : method === 'eth_feeHistory'
+                ? feeHistory()
+                : Promise.reject(new Error(`unexpected ${method}`))
         })
       }),
       signer: {
@@ -173,9 +192,15 @@ describe('kernel transaction signing', () => {
       } as unknown as Signer,
       maxFeePerGasWei,
       maxGasLimit,
-      materialize: () => Promise.reject(new Error('none'))
+      materialize: () => Promise.reject(new Error('none')),
+      logger: {
+        debug: () => {},
+        info: () => {},
+        warn: event => warnings.push(event),
+        error: () => {}
+      }
     })
-    return { effects, sign, broadcastRaw }
+    return { effects, sign, broadcastRaw, warnings, historyReads: () => historyReads }
   }
 
   const payload = { kind: 'tx' as const, to: TO, data: '0x', value: 0n }
@@ -299,6 +324,88 @@ describe('kernel transaction signing', () => {
     const { effects, sign } = signing()
     await effects.signTx(payload, bid({ fee: 2_300n }), guard)
     expect(sign).toHaveBeenCalledWith(expect.objectContaining({ gas: 100n, maxFeePerGas: 23n }))
+  })
+
+  it('signs the first bid firstBid prices, so a gate on its gas holds at the signer', async () => {
+    const estimatedGas = 100_000n
+    for (const { fee, maxGasLimit, gas } of [
+      { fee: 2_520_000n, maxGasLimit: 1_000_000n, gas: 120_000n },
+      { fee: 1_285_714n, maxGasLimit: 1_000_000n, gas: 107_142n },
+      { fee: 2_310_000n, maxGasLimit: 110_000n, gas: 110_000n }
+    ]) {
+      const expected = firstBid({
+        fee,
+        estimatedGas,
+        baseFee: 7n,
+        maxFeePerGas: 1_000n,
+        gasLimit: gasLimitFor(estimatedGas, maxGasLimit)
+      })
+      expect(expected.gas).toBe(gas)
+      const { effects } = signing(1_000n, estimatedGas, maxGasLimit, [7n])
+      expect(await effects.signTx(payload, bid({ fee }), guard)).toMatchObject({ bid: expected })
+    }
+  })
+
+  describe('the first tip', () => {
+    const tipOf = async (rewards?: readonly bigint[] | 'fails') => {
+      const harness = signing(1_000n, GAS, 1_000n, [10n], rewards)
+      const signed = await harness.effects.signTx(payload, bid(), guard)
+      if (typeof signed === 'string') throw new Error(signed)
+      return { tip: signed.bid.maxPriorityFeePerGas, ...harness }
+    }
+
+    it("is the median of recent blocks' high-percentile tips, under the quarter of its cap", async () => {
+      expect((await tipOf([9n, 3n, 300n, 5n, 7n])).tip).toBe(7n)
+      expect((await tipOf([1_000n, 900n, 800n])).tip).toBe(125n)
+      expect((await tipOf([0n, 0n, 20n, 20n])).tip).toBe(10n)
+    })
+
+    it('is at least 1 wei when recent blocks tipped nothing', async () => {
+      expect((await tipOf([0n, 0n, 0n])).tip).toBe(1n)
+    })
+
+    it('falls back to a quarter of its cap, warning once, when the node serves no tips', async () => {
+      for (const rewards of ['fails', []] as const) {
+        vi.spyOn(Date, 'now').mockReturnValue(0)
+        const { tip, effects, warnings, historyReads } = await tipOf(rewards)
+        expect(tip).toBe(125n)
+        const firstReads = historyReads()
+        vi.spyOn(Date, 'now').mockReturnValue(base.blockTime)
+        await effects.signTx(payload, bid({ nonce: 8 }), guard)
+        expect(historyReads()).toBeGreaterThan(firstReads)
+        expect(warnings).toHaveLength(1)
+        vi.restoreAllMocks()
+      }
+    })
+
+    it('falls back to a quarter of its cap well before a bid deadline when fee history stalls', async () => {
+      vi.useFakeTimers()
+      const { effects } = signing(1_000n, GAS, 1_000n, [10n], 'stalls')
+      const signed = effects.signTx(payload, bid(), guard)
+      await vi.advanceTimersByTimeAsync(2_000)
+      expect(await signed).toMatchObject({ bid: { maxPriorityFeePerGas: 125n } })
+      vi.useRealTimers()
+    })
+
+    it('shares one read among first bids that wait on it together', async () => {
+      let clock = 0
+      vi.spyOn(Date, 'now').mockImplementation(() => (clock += base.blockTime))
+      const { effects, historyReads } = signing(1_000n, GAS, 1_000n, [10n], [5n])
+      await Promise.all([7, 8, 9].map(nonce => effects.signTx(payload, bid({ nonce }), guard)))
+      expect(historyReads()).toBe(1)
+      vi.restoreAllMocks()
+    })
+
+    it('reads fee history at most once per block time', async () => {
+      vi.spyOn(Date, 'now').mockReturnValue(0)
+      const { effects, historyReads } = await tipOf([5n])
+      await effects.signTx(payload, bid({ nonce: 8 }), guard)
+      expect(historyReads()).toBe(1)
+      vi.spyOn(Date, 'now').mockReturnValue(base.blockTime)
+      await effects.signTx(payload, bid({ nonce: 9 }), guard)
+      expect(historyReads()).toBe(2)
+      vi.restoreAllMocks()
+    })
   })
 
   it('re-bids a stuck first step under a 0.5 gwei ceiling', async () => {

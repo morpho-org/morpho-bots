@@ -1,4 +1,4 @@
-import type { Logger } from '@repo/bot-kit'
+import type { Logger } from '@repo/kit'
 import type { CursorPage, FetchPage } from '@repo/utils'
 import type { Address, Hex } from 'viem'
 
@@ -7,6 +7,9 @@ import createClient from 'openapi-fetch'
 import { getAddress, isAddress, isHex } from 'viem'
 
 import type { paths } from '../generated/markets-api'
+
+import { MalformedPageError } from '../errors'
+import { morphoApiClientOptions } from './morpho-api'
 
 /** A candidate position to evaluate: a (market, borrower) pair the API flagged as at-risk. */
 export type BorrowerCandidate = { marketId: Hex; borrower: Address }
@@ -37,7 +40,7 @@ const PAGE_LIMIT = 100
  * set is *under-inclusion* — a liquidatable position we would then never see (over-inclusion is
  * harmless; the onchain lens filters non-liquidatable pairs).
  */
-export const MAX_DISCOVERY_PAGES = 100
+const MAX_DISCOVERY_PAGES = 100
 
 /**
  * The candidates operation path — a literal key of the generated {@link paths}, so `client.GET(LIQUIDATION_CANDIDATES_PATH)`
@@ -74,12 +77,13 @@ function parseCandidate(row: unknown): BorrowerCandidate | null {
  * Malformed rows are skipped and (market, borrower) pairs are de-duplicated across pages. Over-
  * inclusion is harmless — the onchain lens drops non-liquidatable pairs — but a truncated page walk
  * would be under-inclusion, so the {@link MAX_DISCOVERY_PAGES} backstop logs loud rather than
- * silently stopping.
+ * silently stopping. `complete` is false when the walk was cut short or a row could not be read, so
+ * nothing it did not reach reads as gone.
  */
 export async function discoverBorrowers(
   fetchPage: FetchCandidatePage,
   deps: { logger: Logger; maxPages?: number }
-): Promise<BorrowerCandidate[]> {
+): Promise<{ candidates: BorrowerCandidate[]; complete: boolean }> {
   const maxPages = deps.maxPages ?? MAX_DISCOVERY_PAGES
   const { rows, pages, truncated } = await collectPages(fetchPage, { maxPages })
   if (truncated) {
@@ -88,16 +92,20 @@ export async function discoverBorrowers(
 
   const seen = new Set<string>()
   const candidates: BorrowerCandidate[] = []
+  let malformed = 0
   for (const row of rows) {
     const candidate = parseCandidate(row)
-    if (!candidate) continue
+    if (!candidate) {
+      malformed += 1
+      continue
+    }
     const key = `${candidate.marketId}:${candidate.borrower}`
     if (seen.has(key)) continue
     seen.add(key)
     candidates.push(candidate)
   }
 
-  return candidates
+  return { candidates, complete: !truncated && malformed === 0 }
 }
 
 /** The `fetch` shape `openapi-fetch` calls — a single `Request`. The global `fetch` satisfies it. */
@@ -110,8 +118,8 @@ type FetchLike = (request: Request) => Promise<Response>
  * retry policy it does NOT provide via {@link fetchWithRetry} (429/5xx/network, honoring
  * `Retry-After`), with a per-request {@link REQUEST_TIMEOUT_MS} deadline. `client.GET` resolves on
  * 4xx/5xx (it only throws on network/abort), so `response.status`/`Retry-After` stay reachable. A
- * non-retryable failure throws; the caller catches it (logs `discover.error`) and proceeds so the
- * pending queue is still driven that block. `fetchImpl`/`sleep` are injectable for tests.
+ * non-retryable failure throws; the caller catches it (logs `discover.error`) and writes the read as
+ * failed, so no position becomes absent. `fetchImpl`/`sleep` are injectable for tests.
  *
  * `deps.url` is the fully-qualified endpoint URL from config; the client base URL is it minus the
  * fixed {@link LIQUIDATION_CANDIDATES_PATH} suffix (falling back to the origin). An operator override of
@@ -120,6 +128,7 @@ type FetchLike = (request: Request) => Promise<Response>
  */
 export function createApiCandidateSource(deps: {
   url: string
+  apiKey: string | undefined
   chainId: number
   healthFactorLte: number
   limit?: number
@@ -130,7 +139,10 @@ export function createApiCandidateSource(deps: {
   const baseUrl = deps.url.endsWith(LIQUIDATION_CANDIDATES_PATH)
     ? deps.url.slice(0, -LIQUIDATION_CANDIDATES_PATH.length)
     : new URL(deps.url).origin
-  const client = createClient<paths>({ baseUrl, fetch: deps.fetchImpl ?? fetch })
+  const client = createClient<paths>({
+    fetch: deps.fetchImpl ?? fetch,
+    ...morphoApiClientOptions(baseUrl, deps.apiKey)
+  })
 
   return async cursor => {
     const body = await fetchWithRetry(
@@ -155,7 +167,7 @@ export function createApiCandidateSource(deps: {
 
     const nextCursor =
       typeof body.cursor === 'string' && body.cursor.length > 0 ? body.cursor : null
-    const rows = Array.isArray(body.data) ? body.data : []
-    return { cursor: nextCursor, data: rows }
+    if (!Array.isArray(body.data)) throw new MalformedPageError('liquidation-candidates')
+    return { cursor: nextCursor, data: body.data }
   }
 }

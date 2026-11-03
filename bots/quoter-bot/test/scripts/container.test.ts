@@ -10,7 +10,6 @@ describe('container runtime', () => {
     expect(dockerfile).toContain('ENV XDG_STATE_HOME=/state')
     expect(dockerfile).toContain('USER node')
     expect(dockerfile).toContain('CMD ["node", "dist/src/index.js", "start", "--verbose"]')
-    expect(dockerfile).not.toMatch(/railway/i)
   })
 
   test('allows Compose deployments to omit inactive reference configuration', () => {

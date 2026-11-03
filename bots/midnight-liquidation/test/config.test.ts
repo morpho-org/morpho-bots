@@ -1,25 +1,23 @@
 import type { Address } from 'viem'
 
+import { Executor } from '@repo/contracts'
 import {
   BALANCE_EVERY_BLOCKS,
-  BLOCK_POLL_MS,
+  blocksFor,
   bumpFees,
+  feeCeiling,
   initialFees,
-  MAX_BUMP_ATTEMPTS,
-  RECONCILE_EVERY_BLOCKS,
-  STUCK_BLOCKS
-} from '@repo/bot-kit'
-import { Executor } from '@repo/contracts'
+  stepCap
+} from '@repo/kit'
+import { tryCatch } from '@repo/utils'
 import { getAddress, parseEther, parseGwei } from 'viem'
 import { base, mainnet, optimism } from 'viem/chains'
 import { describe, expect, it } from 'vitest'
 
 import type { ChainConfig, Config, TuningConfig } from '../src/config'
 
-import { BLOCK_POLL_MS as LOCAL_BLOCK_POLL_MS, loadConfig } from '../src/config'
-
-// EIP-1559 raises the basefee by at most 12.5% per block, when every block is completely full.
-const bumped12Point5 = (baseFee: bigint) => (baseFee * 1125n) / 1000n
+import { loadConfig, STUCK_MS } from '../src/config'
+import { InvalidConfigError } from '../src/errors'
 
 const MIDNIGHT = '0x1111111111111111111111111111111111111111' as Address
 const EXECUTOOOR = '0x3333333333333333333333333333333333333333'
@@ -31,21 +29,18 @@ const PRIVATE_KEY = `0x${'a'.repeat(64)}`
 // defaults" assertion below silently assert that chain's production tuning row instead — the real
 // rows are covered by their own tests further down.
 const FIXTURE_TUNING: TuningConfig = {
-  settledCooldownBlocks: 20n,
-  stuckBlocks: 4n,
-  reconcileEveryBlocks: 3,
-  balanceEveryBlocks: 30n,
-  maxBumpAttempts: 3
+  balanceEveryBlocks: 30n
 }
 
 const CHAIN_MAP: Record<number, ChainConfig> = {
   [optimism.id]: {
     chain: optimism,
     midnight: MIDNIGHT,
+    wrappedNative: getAddress('0x4200000000000000000000000000000000000006'),
+    worldValidMs: 30_000,
+    rebids: 3,
     tuning: FIXTURE_TUNING,
     defaults: {
-      priorityFeeGwei: '0.1',
-      maxGasLimit: 15_000_000n,
       seizeCapMarginBps: 30,
       backoffBaseBlocks: 2n,
       backoffMaxBlocks: 64n
@@ -55,18 +50,14 @@ const CHAIN_MAP: Record<number, ChainConfig> = {
 
 const deps = { chainMap: CHAIN_MAP }
 
-// The values every shipped chain row must resolve to, end to end. Base's are exactly what the bot ran
-// with before it was multichain; mainnet's block counts are the same wall-clock intents at ~6x the
-// block time. `maxFeeWei` is identical on both — it is the bump ladder's headroom, and bounds the
-// price of a gas unit rather than the cost of a transaction, which is `maxSpendWei`.
+// The values every shipped chain row must resolve to, end to end. Mainnet's block counts are Base's
+// wall-clock intents at ~6x the block time. The fee ceiling is no row's: `MAX_FEE_GWEI` is required.
 const SHIPPED_ROWS: Record<
   number,
   {
     midnight: Address
+    sendLifeMs: number
     tuning: TuningConfig
-    maxGasLimit: bigint
-    maxFeeWei: bigint
-    priorityFeeWei: bigint
     seizeCapMarginBps: number
     backoffBaseBlocks: bigint
     backoffMaxBlocks: bigint
@@ -74,16 +65,10 @@ const SHIPPED_ROWS: Record<
 > = {
   [base.id]: {
     midnight: getAddress('0xAdedD8ab6dE832766Fedf0FaC4992E5C4D3EA18A'),
+    sendLifeMs: 40_000,
     tuning: {
-      settledCooldownBlocks: 20n,
-      stuckBlocks: 4n,
-      reconcileEveryBlocks: 3,
-      balanceEveryBlocks: 30n,
-      maxBumpAttempts: 3
+      balanceEveryBlocks: 30n
     },
-    maxGasLimit: 15_000_000n,
-    maxFeeWei: parseGwei('300'),
-    priorityFeeWei: parseGwei('0.1'),
     seizeCapMarginBps: 30,
     backoffBaseBlocks: 2n,
     backoffMaxBlocks: 64n
@@ -91,16 +76,10 @@ const SHIPPED_ROWS: Record<
   [mainnet.id]: {
     // A DIFFERENT address than Base's, so this must not be shared.
     midnight: getAddress('0x471686c42792F93528B000beF54bC10E3aa2045f'),
+    sendLifeMs: 168_000,
     tuning: {
-      settledCooldownBlocks: 3n,
-      stuckBlocks: 1n,
-      reconcileEveryBlocks: 1,
-      balanceEveryBlocks: 5n,
-      maxBumpAttempts: 6
+      balanceEveryBlocks: 5n
     },
-    maxGasLimit: 3_000_000n,
-    maxFeeWei: parseGwei('300'),
-    priorityFeeWei: parseGwei('2'),
     seizeCapMarginBps: 60,
     backoffBaseBlocks: 1n,
     backoffMaxBlocks: 11n
@@ -111,10 +90,19 @@ const SHIPPED_ROWS: Record<
 function baseEnv(overrides: Record<string, string | undefined> = {}) {
   return {
     CHAIN_ID: String(optimism.id),
+    FINALITY_1: 'safe',
+    FINALITY_10: 'safe',
+    FINALITY_8453: 'safe',
     RPC_URL: 'https://rpc.example',
     LIQUIDATOR_PRIVATE_KEY: PRIVATE_KEY,
     EXECUTOOOR_ADDRESS: EXECUTOOOR,
+    KERNEL_STATE_DIR: '/var/lib/kernel',
+    KERNEL_ENROLLMENT: 'enrolled',
+    MAX_FEE_GWEI: '250',
+    MAX_SPEND_ETH: '0.4',
+    MAX_GAS_LIMIT: '12000000',
     ZEROX_API_KEY: 'zerox-key',
+    MORPHO_API_KEY: 'morpho-key',
     ...overrides
   }
 }
@@ -133,8 +121,9 @@ describe('loadConfig', () => {
       'https://api.morpho.org/markets/midnight/liquidation-candidates'
     )
     expect(config.discovery.healthFactorLte).toBe(1.02)
-    expect(config.maxFeeWei).toBe(parseGwei('300'))
-    expect(config.priorityFeeWei).toBe(parseGwei('0.1'))
+    expect(config.maxFeePerGasWei).toBe(parseGwei('250'))
+    expect(config.maxSpendWei).toBe(parseEther('0.4'))
+    expect(config.maxGasLimit).toBe(12_000_000n)
     expect(config.logLevel).toBe('info')
 
     // Venue enablement is inferred from the present API key; global routing knobs take their defaults.
@@ -164,6 +153,8 @@ describe('loadConfig', () => {
     expect(config.quoting.maxRouteImpactBps).toBe(500)
     expect(config.quoting.pendleSlippageBps).toBe(50)
     expect(config.quoting.seizeCapMarginBps).toBe(30)
+    expect(config.quoting.minSurplusBps).toBe(0)
+    expect(config.quoting.headroomFloorBps).toBe(3)
     expect(config.quoting.backoffBaseBlocks).toBe(2n)
   })
 
@@ -172,15 +163,13 @@ describe('loadConfig', () => {
       baseEnv({
         RPC_URL_FALLBACK: 'https://rpc.fallback',
         MAX_FEE_GWEI: '42',
-        PRIORITY_FEE_GWEI: '0.005',
         LOG_LEVEL: 'debug'
       }),
       deps
     )
 
     expect(config.rpcUrlFallback).toBe('https://rpc.fallback')
-    expect(config.maxFeeWei).toBe(parseGwei('42'))
-    expect(config.priorityFeeWei).toBe(parseGwei('0.005'))
+    expect(config.maxFeePerGasWei).toBe(parseGwei('42'))
     expect(config.logLevel).toBe('debug')
   })
 
@@ -196,84 +185,46 @@ describe('loadConfig', () => {
       expect(config.chainId).toBe(Number(chainId))
       expect(config.chain.id).toBe(Number(chainId))
       expect(config.midnight).toBe(expected.midnight)
+      expect(config.sendLifeMs).toBe(expected.sendLifeMs)
       expect(config.tuning).toStrictEqual(expected.tuning)
-      expect(config.maxGasLimit).toBe(expected.maxGasLimit)
-      expect(config.maxFeeWei).toBe(expected.maxFeeWei)
-      expect(config.priorityFeeWei).toBe(expected.priorityFeeWei)
       expect(config.quoting.seizeCapMarginBps).toBe(expected.seizeCapMarginBps)
       expect(config.quoting.backoffBaseBlocks).toBe(expected.backoffBaseBlocks)
       expect(config.quoting.backoffMaxBlocks).toBe(expected.backoffMaxBlocks)
     }
   )
 
-  // Passing these explicitly decouples the bot from bot-kit's own defaults, so a change there would
-  // otherwise silently apply to blue-liquidation and not to this bot. Base is the chain those
-  // defaults were written for, so it is where the two must agree.
-  it("matches bot-kit's own defaults on the chain they were calibrated for", () => {
+  // Base is the chain bot-kit's default was calibrated for, so it is where the two must agree.
+  it("matches bot-kit's balance cadence on the chain it was calibrated for", () => {
     const { tuning } = loadConfig(baseEnv({ CHAIN_ID: '8453' }))
 
-    expect(tuning.stuckBlocks).toBe(STUCK_BLOCKS)
-    expect(tuning.maxBumpAttempts).toBe(MAX_BUMP_ATTEMPTS)
-    expect(tuning.reconcileEveryBlocks).toBe(RECONCILE_EVERY_BLOCKS)
     expect(tuning.balanceEveryBlocks).toBe(BALANCE_EVERY_BLOCKS)
-    // Chain-independent, so it is asserted against the module constant `index.ts` actually passes.
-    expect(LOCAL_BLOCK_POLL_MS).toBe(BLOCK_POLL_MS)
   })
 
-  // Replays the ladder that actually runs, through bot-kit's own fee functions rather than a
-  // restatement of them, and returns how many bumps land before the queue drops the tx.
-  const ladderBumps = (config: Config, startBaseFee: bigint, risingPerBlock: boolean): number => {
-    // A tx is replaced once it has sat MORE than `stuckBlocks` blocks, so one extra block of basefee
-    // growth compounds between bumps.
-    const blocksBetweenBumps = Number(config.tuning.stuckBlocks) + 1
-    let baseFee = startBaseFee
-    let fees = initialFees(baseFee, config.maxFeeWei, config.priorityFeeWei)
-
-    for (let bumps = 0; ; bumps += 1) {
-      if (risingPerBlock) {
-        for (let block = 0; block < blocksBetweenBumps; block += 1)
-          baseFee = bumped12Point5(baseFee)
-      }
-      const next = bumpFees({ ...fees, baseFee, maxFeeWei: config.maxFeeWei })
-      if (next.kind === 'drop') return bumps
-      fees = next.fees
-    }
-  }
-
-  // `bumpFees` reads the LIVE basefee — a replacement's max is `max(prev * 1.125, 2*baseFee + tip)` —
-  // so how deep the ladder gets depends on what the basefee does while the tx sits, not only on
-  // `maxBumpAttempts`. Exceeding `maxFeeWei` DROPS the tx and latches a nonce hole, so a row whose
-  // ladder truncates early stops sending entirely. Two regimes bound it:
-  //
-  //   flat      the basefee holds and the `prev * 1.125` term binds
-  //   max-rise  every block is full (+12.5%/block, the EIP-1559 ceiling) and `2*baseFee` binds
-  //
-  // Base is the tighter row under a rise despite its shallower ladder, because it waits 5 blocks
-  // between bumps to mainnet's 2: the basefee compounds ~1.80x per bump against mainnet's ~1.27x.
-  // Neither bound is near either chain's real basefee; they are pinned exactly so that retuning a fee
-  // knob, `stuckBlocks`, or `maxBumpAttempts` has to restate the ladder rather than quietly shorten it.
   it.each([
-    [base.id, 105n, 25n],
-    [mainnet.id, 72n, 36n]
-  ])(
-    'chain %i completes its ladder to %i gwei flat and %i gwei rising',
-    (chainId, flat, rising) => {
-      const config = loadConfig(baseEnv({ CHAIN_ID: String(chainId) }))
-      const attempts = config.tuning.maxBumpAttempts
+    [{ KERNEL_STATE_DIR: undefined }, 'Missing required env var: KERNEL_STATE_DIR'],
+    [{ KERNEL_ENROLLMENT: undefined }, 'Missing required env var: KERNEL_ENROLLMENT'],
+    [{ KERNEL_ENROLLMENT: 'yes' }, 'KERNEL_ENROLLMENT must be "enrolling" or "enrolled"'],
+    [
+      { POSITION_LIQUIDATION_COOLDOWN_MS: '0' },
+      'POSITION_LIQUIDATION_COOLDOWN_MS is no longer supported'
+    ],
+    [{ PRIORITY_FEE_GWEI: '0.2' }, 'PRIORITY_FEE_GWEI is no longer supported']
+  ])('refuses kernel settings %o', (overrides, message) => {
+    expect(() => loadConfig(baseEnv(overrides), deps)).toThrow(message)
+  })
 
-      for (const [limit, isRising] of [
-        [flat, false],
-        [rising, true]
-      ] as const) {
-        expect(ladderBumps(config, parseGwei(String(limit)), isRising)).toBeGreaterThanOrEqual(
-          attempts
-        )
-        // One gwei higher truncates the ladder — which is what makes the bound exact rather than a
-        // value that merely happens to pass.
-        expect(ladderBumps(config, parseGwei(String(limit + 1n)), isRising)).toBeLessThan(attempts)
-      }
-    }
-  )
+  it('refuses a chain whose finality is missing or malformed', () => {
+    expect(() => loadConfig(baseEnv({ FINALITY_10: undefined }), deps)).toThrow(/FINALITY_10/)
+    expect(() => loadConfig(baseEnv({ FINALITY_10: '0' }), deps)).toThrow(/FINALITY_10/)
+    expect(loadConfig(baseEnv({ FINALITY_10: '64' }), deps).finality).toStrictEqual({ depth: 64 })
+  })
+
+  it('reads where the kernel keeps its ledger', () => {
+    expect(loadConfig(baseEnv(), deps).kernel).toStrictEqual({
+      stateDirectory: '/var/lib/kernel',
+      enrollment: 'enrolled'
+    })
+  })
 
   // `SHIPPED_ROWS` is iterated, so on its own it cannot notice a chain added to CHAIN_MAP without an
   // expectation here. Pin the supported set against the error `loadConfig` raises for an unknown id.
@@ -284,10 +235,7 @@ describe('loadConfig', () => {
   })
 
   it('lets an env var override the chain default', () => {
-    const config = loadConfig(
-      baseEnv({ CHAIN_ID: '1', MAX_GAS_LIMIT: '123456', BACKOFF_MAX_BLOCKS: '7' })
-    )
-    expect(config.maxGasLimit).toBe(123_456n)
+    const config = loadConfig(baseEnv({ CHAIN_ID: '1', BACKOFF_MAX_BLOCKS: '7' }))
     expect(config.quoting.backoffMaxBlocks).toBe(7n)
     // Unset knobs still come from the chain row.
     expect(config.quoting.seizeCapMarginBps).toBe(60)
@@ -306,9 +254,7 @@ describe('loadConfig', () => {
   })
 
   // The bound an operator actually cares about is the product; assert it is derived and enforced.
-  it('resolves MAX_SPEND_ETH to wei and defaults it chain-independently', () => {
-    expect(loadConfig(baseEnv({ CHAIN_ID: '8453' })).maxSpendWei).toBe(parseEther('0.5'))
-    expect(loadConfig(baseEnv({ CHAIN_ID: '1' })).maxSpendWei).toBe(parseEther('0.5'))
+  it('resolves MAX_SPEND_ETH to wei', () => {
     expect(loadConfig(baseEnv({ MAX_SPEND_ETH: '0.05' }), deps).maxSpendWei).toBe(
       parseEther('0.05')
     )
@@ -320,12 +266,12 @@ describe('loadConfig', () => {
     )
   })
 
-  // A budget too small to pay for the cheapest possible transaction denies every send, the same
-  // silent do-nothing failure MIN_GAS_LIMIT guards from the other side.
-  it('rejects a MAX_SPEND_ETH that cannot cover minimum gas at the configured tip', () => {
-    expect(() => loadConfig(baseEnv({ CHAIN_ID: '1', MAX_SPEND_ETH: '0.00000000001' }))).toThrow(
-      /cannot pay for 21000 gas/
-    )
+  it.each([
+    { MAX_SPEND_ETH: '0.000000000000021' },
+    { MAX_FEE_GWEI: '0.000000001' },
+    { MAX_FEE_GWEI: '0.0000000001' }
+  ])('refuses fee bounds that cannot fund a fill and a step below it: %o', overrides => {
+    expect(() => loadConfig(baseEnv(overrides), deps)).toThrow(/cannot fund a nonce fill/)
   })
 
   it('throws when a required var is missing', () => {
@@ -383,44 +329,19 @@ describe('loadConfig', () => {
     )
   })
 
+  it.each(
+    ['MAX_FEE_GWEI', 'MAX_SPEND_ETH', 'MAX_GAS_LIMIT'].flatMap(name =>
+      [undefined, '', '  '].map(value => [name, value] as const)
+    )
+  )('refuses to start without %s (%j)', (name, value) => {
+    expect(() => loadConfig(baseEnv({ [name]: value }), deps)).toThrow(
+      `Missing required env var: ${name}`
+    )
+  })
+
   it('throws on a non-numeric MAX_FEE_GWEI', () => {
     expect(() => loadConfig(baseEnv({ MAX_FEE_GWEI: 'abc' }), deps)).toThrow(
       /MAX_FEE_GWEI must be a positive number/
-    )
-  })
-
-  it('throws on a non-numeric or zero PRIORITY_FEE_GWEI', () => {
-    expect(() => loadConfig(baseEnv({ PRIORITY_FEE_GWEI: 'abc' }), deps)).toThrow(
-      /PRIORITY_FEE_GWEI must be a positive number/
-    )
-    expect(() => loadConfig(baseEnv({ PRIORITY_FEE_GWEI: '0' }), deps)).toThrow(
-      /PRIORITY_FEE_GWEI must be a positive number/
-    )
-  })
-
-  // A valid decimal under 1 wei: parseGwei rounds it to 0, which would send an untipped tx.
-  it('throws on a PRIORITY_FEE_GWEI that rounds to zero wei', () => {
-    expect(() => loadConfig(baseEnv({ PRIORITY_FEE_GWEI: '0.0000000001' }), deps)).toThrow(
-      /PRIORITY_FEE_GWEI must be at least 1 wei/
-    )
-  })
-
-  // Within one bump of the ceiling, the first replacement exceeds it and drops, wedging the nonce.
-  it('throws when PRIORITY_FEE_GWEI leaves no bump headroom under MAX_FEE_GWEI', () => {
-    expect(() => loadConfig(baseEnv({ MAX_FEE_GWEI: '1', PRIORITY_FEE_GWEI: '2' }), deps)).toThrow(
-      /PRIORITY_FEE_GWEI \(2, from env\) leaves no room to bump under MAX_FEE_GWEI \(1, from env\)/
-    )
-    expect(() => loadConfig(baseEnv({ MAX_FEE_GWEI: '1', PRIORITY_FEE_GWEI: '1' }), deps)).toThrow(
-      /PRIORITY_FEE_GWEI \(1, from env\) leaves no room to bump under MAX_FEE_GWEI \(1, from env\)/
-    )
-  })
-
-  // The pair is resolved from two independent fallbacks, so an operator who set only one of them
-  // would otherwise see an error quoting a value they never configured anywhere.
-  it('names which side came from env and which from the chain default', () => {
-    // Only the ceiling is set, and set below the chain's own tip → the tip side is a chain default.
-    expect(() => loadConfig(baseEnv({ CHAIN_ID: '1', MAX_FEE_GWEI: '1' }))).toThrow(
-      /PRIORITY_FEE_GWEI \(2, from chain 1 default\) leaves no room to bump under MAX_FEE_GWEI \(1, from env\)/
     )
   })
 
@@ -480,7 +401,7 @@ describe('loadConfig', () => {
   it('ignores a stale SLIPPAGE_BPS rather than failing loud on it', () => {
     // The knob was removed when the min-out floor became break-even-derived. A deployment that still
     // sets it must keep starting — an unknown env var is not a misconfiguration.
-    expect(() => loadConfig(baseEnv({ SLIPPAGE_BPS: '250' }), deps)).not.toThrow()
+    expect(loadConfig(baseEnv({ SLIPPAGE_BPS: '250' }), deps)).toEqual(loadConfig(baseEnv(), deps))
   })
 
   it('parses EXCLUDE_COLLATERALS into checksummed addresses and rejects a malformed entry', () => {
@@ -493,7 +414,7 @@ describe('loadConfig', () => {
 
   it('rejects a malformed ZEROX_BASE_URL', () => {
     expect(() => loadConfig(baseEnv({ ZEROX_BASE_URL: 'not a url' }), deps)).toThrow(
-      /ZEROX_BASE_URL is not a valid URL/
+      /ZEROX_BASE_URL is not a valid http\(s\) URL/
     )
   })
 
@@ -548,7 +469,7 @@ describe('loadConfig', () => {
 
   it('throws on a malformed MARKETS_API_URL', () => {
     expect(() => loadConfig(baseEnv({ MARKETS_API_URL: 'not a url' }), deps)).toThrow(
-      /MARKETS_API_URL is not a valid URL/
+      /MARKETS_API_URL entry 1 is not a valid http\(s\) URL/
     )
   })
 
@@ -557,7 +478,7 @@ describe('loadConfig', () => {
   it('throws when any entry of a MARKETS_API_URL list is malformed', () => {
     expect(() =>
       loadConfig(baseEnv({ MARKETS_API_URL: 'https://a.example/markets,not a url' }), deps)
-    ).toThrow(/MARKETS_API_URL is not a valid URL: not a url/)
+    ).toThrow(/MARKETS_API_URL entry 2 is not a valid http\(s\) URL/)
   })
 
   it('throws when MARKETS_API_URL holds only separators', () => {
@@ -585,13 +506,29 @@ describe('loadConfig', () => {
 
   it('parses quoting tunables from env, overriding defaults', () => {
     const config = loadConfig(
-      baseEnv({ HTTP_RPS: '1', MAX_ROUTE_IMPACT_BPS: '250', SEIZE_CAP_MARGIN_BPS: '75' }),
+      baseEnv({
+        HTTP_RPS: '1',
+        MAX_ROUTE_IMPACT_BPS: '250',
+        SEIZE_CAP_MARGIN_BPS: '75',
+        MIN_SURPLUS_BPS: '25',
+        HEADROOM_FLOOR_BPS: '7'
+      }),
       deps
     )
     expect(config.quoting.httpRps).toBe(1)
     expect(config.quoting.maxRouteImpactBps).toBe(250)
     expect(config.quoting.seizeCapMarginBps).toBe(75)
+    expect(config.quoting.minSurplusBps).toBe(25)
+    expect(config.quoting.headroomFloorBps).toBe(7)
   })
+
+  it.each(['MIN_SURPLUS_BPS', 'HEADROOM_FLOOR_BPS', 'SEIZE_CAP_MARGIN_BPS'])(
+    'throws on an out-of-range %s',
+    name => {
+      expect(() => loadConfig(baseEnv({ [name]: '10001' }), deps)).toThrow(name)
+      expect(() => loadConfig(baseEnv({ [name]: '-1' }), deps)).toThrow(name)
+    }
+  )
 
   it('throws on an out-of-range MAX_ROUTE_IMPACT_BPS', () => {
     expect(() => loadConfig(baseEnv({ MAX_ROUTE_IMPACT_BPS: '20000' }), deps)).toThrow(
@@ -611,10 +548,38 @@ describe('loadConfig', () => {
     expect(config.discovery.healthFactorLte).toBe(1.1)
   })
 
+  it('reads MORPHO_API_KEY, and leaves it unset when blank', () => {
+    expect(loadConfig(baseEnv(), deps).morphoApiKey).toBe('morpho-key')
+    expect(loadConfig(baseEnv({ MORPHO_API_KEY: ' ' }), deps).morphoApiKey).toBeUndefined()
+  })
+
+  it.each(['LIQUIDATION_CANDIDATES_API_URL', 'MARKETS_API_URL'])(
+    'refuses a plain-http %s, which would send MORPHO_API_KEY in the clear',
+    name => {
+      expect(() => loadConfig(baseEnv({ [name]: 'http://api.example/x' }), deps)).toThrow(
+        new RegExp(`${name} must use https`)
+      )
+    }
+  )
+
   it('throws on a malformed LIQUIDATION_CANDIDATES_API_URL (fail loud at startup)', () => {
     expect(() =>
       loadConfig(baseEnv({ LIQUIDATION_CANDIDATES_API_URL: 'not a url' }), deps)
-    ).toThrow(/LIQUIDATION_CANDIDATES_API_URL is not a valid URL/)
+    ).toThrow(/LIQUIDATION_CANDIDATES_API_URL is not a valid http\(s\) URL/)
+  })
+
+  it.each([
+    'ZEROX_BASE_URL',
+    'ONEINCH_BASE_URL',
+    'LIFI_BASE_URL',
+    'MARKETS_API_URL',
+    'LIQUIDATION_CANDIDATES_API_URL'
+  ])('never echoes a credentialed %s without a scheme', name => {
+    for (const value of ['user:s3cret@rpc.example/v2', 's3cret@rpc.example/v2/k3y']) {
+      const { error } = tryCatch(() => loadConfig(baseEnv({ [name]: value }), deps))
+      expect(error).toBeInstanceOf(InvalidConfigError)
+      expect(String(error)).not.toContain('s3cret')
+    }
   })
 
   it('throws on a HEALTH_FACTOR_LTE below the 1.0 floor', () => {
@@ -622,4 +587,36 @@ describe('loadConfig', () => {
       /HEALTH_FACTOR_LTE must be >= 1/
     )
   })
+})
+
+/** The re-bids a send life spans, each a stuck threshold apart, at a flat `baseFee`, before one drops. */
+const rebidsUnder = (config: Config, baseFee: bigint) => {
+  const cap = stepCap(feeCeiling(config.maxFeePerGasWei, config.maxSpendWei))
+  const rebids = config.sendLifeMs / (blocksFor(STUCK_MS, config.chain) * config.chain.blockTime!)
+  let fees = initialFees(baseFee, cap)
+  for (let bid = 0; bid < rebids; bid++) {
+    const next = bumpFees({ ...fees, baseFee, maxFeePerGasWei: cap })
+    if (next.kind === 'drop') return { first: initialFees(baseFee, cap), rebids, bumped: bid }
+    fees = next.fees
+  }
+  return { first: initialFees(baseFee, cap), rebids, bumped: rebids }
+}
+
+describe('the release fee values', () => {
+  it.each([
+    { chainId: '8453', maxFeeGwei: '0.5', tip: 111_111_112n, edgeGwei: '0.0677', over: '0.0678' },
+    { chainId: '1', maxFeeGwei: '50', tip: parseGwei('1'), edgeGwei: '3.772', over: '3.773' }
+  ])(
+    'tips and re-bids a whole send life for chain $chainId up to a $edgeGwei gwei base fee',
+    ({ chainId, maxFeeGwei, tip, edgeGwei, over }) => {
+      const config = loadConfig(
+        baseEnv({ CHAIN_ID: chainId, MAX_FEE_GWEI: maxFeeGwei, MAX_SPEND_ETH: '0.5' })
+      )
+      const atEdge = rebidsUnder(config, parseGwei(edgeGwei))
+      expect(atEdge.first.maxPriorityFeePerGas).toBe(tip)
+      expect(atEdge.bumped).toBe(atEdge.rebids)
+      const past = rebidsUnder(config, parseGwei(over))
+      expect(past.bumped).toBe(past.rebids - 1)
+    }
+  )
 })

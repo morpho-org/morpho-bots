@@ -1,6 +1,7 @@
 import type { BatchLensTransportType } from '@repo/utils'
 import type { Address, Client, Hex, Transport } from 'viem'
 
+import { blockTagAt } from '@repo/kit'
 import { lensKey, readDeploylessBatchLens } from '@repo/utils'
 import { sol } from 'soltag'
 
@@ -225,14 +226,15 @@ export type LensOut = {
 
 /**
  * Reads the liquidation lens for every pair in one deployless, chunked `eth_call` (no signer, no
- * cache — decisions need fresh state). The lens fetches each Market onchain from its `id`. Returns
- * a map keyed by {@link lensKey}. The `client` must use viem-dlc's deployless transport (built in
- * `client.ts`).
+ * cache — decisions need fresh state), pinned to `blockHash` when given. The lens fetches each
+ * Market onchain from its `id`. Returns a map keyed by {@link lensKey}. The `client` must use
+ * viem-dlc's deployless transport (built in `client.ts`).
  */
 export async function readMidnightLiquidationLens(
   client: Client<Transport<BatchLensTransportType>>,
   midnight: Address,
-  pairs: readonly LensInput[]
+  pairs: readonly LensInput[],
+  blockHash?: Hex
 ): Promise<Map<string, LensOut>> {
   // No `batch.gas`: see the note in blue-liquidation's fetcher. Populate from the wide event's
   // `fixed_gas` / `item_gas_avg` / `item_gas_stddev` once real traffic has been observed.
@@ -241,7 +243,8 @@ export async function readMidnightLiquidationLens(
     parameters: {
       ...MidnightLiquidationLens.with(midnight),
       functionName: 'computeOne',
-      args: pairs
+      args: pairs,
+      ...(blockHash === undefined ? {} : { blockTag: blockTagAt(blockHash) })
     },
     key: ({ id, borrower }) => lensKey(id, borrower),
     value: (_input, out): LensOut => out

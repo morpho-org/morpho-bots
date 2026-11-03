@@ -78,45 +78,13 @@ The signer policy pins chain, resolver, `resolve` selector, zero ETH value, call
 
 ## Deploy
 
-The bot is moving to the `tools` EKS cluster. Chart
-`helm/midnight-crossed-books`; ArgoCD apps `morpho-org/morpho-infra`
-`gitops/tools`. ECR `bots/midnight-crossed-books` images published by
-`.github/workflows/publish-liquidation-ecr.yml`. ExternalSecret reads `RPC_URL`,
-optional `RPC_URL_FALLBACK`, and `RESOLVER_PRIVATE_KEY` from Secrets Manager
-`midnight-crossed-books/<env>/8453/runtime`. Railway remains live until cutover.
-
-The first deployment provisions the Railway service and writes the runtime secrets directly to
-Railway:
-
-```sh
-RAILWAY_PROJECT_ID=… RAILWAY_ENVIRONMENT=staging \
-RPC_URL=https://… RESOLVER_PRIVATE_KEY=0x… \
-pnpm --filter @morpho-org/midnight-crossed-books run deploy:railway
-```
-
-For keyless readonly Railway provisioning, replace the private key with the public caller address:
-
-```sh
-RAILWAY_PROJECT_ID=… RAILWAY_ENVIRONMENT=staging \
-RPC_URL=https://… READONLY=true SIMULATION_CALLER_ADDRESS=0x… \
-pnpm --filter @morpho-org/midnight-crossed-books run deploy:railway
-```
-
-The deploy script validates and propagates `READONLY` and `SIMULATION_CALLER_ADDRESS`; it does not
-require or install `RESOLVER_PRIVATE_KEY` in readonly mode. It also removes a stale private key when
-switching to readonly and removes a stale simulation caller when switching to write mode, aborting
-before the mode change if deletion fails. Deletion uses `RAILWAY_TOKEN` (or `RAILWAY_API_TOKEN`) with
-Railway's key-only variable metadata and an explicitly project/environment/service/name-scoped
-mutation; it never runs `railway variable list` or retrieves variable values. Write mode still
-requires a valid key.
-
-CI subsequently runs the same command with `DEPLOY_ONLY=true`, so GitHub holds only a
-project/environment-scoped Railway token. Pushes to `main` deploy staging through the
-`crossed-books-staging` GitHub Environment. Production deploys when a merged PR's description says
-`Releases crossed-books` and a reviewer approved it after that line was added, through the
-`crossed-books-prod` GitHub Environment.
-Each GitHub Environment defines `RAILWAY_PROJECT_ID` as a variable and `RAILWAY_TOKEN` as a secret;
-bot runtime secrets remain on Railway.
+The bot is not deployed yet. It will run on the AWS `tools` EKS cluster, deployed by Argo CD from
+the chart at [`helm/midnight-crossed-books`](./helm/midnight-crossed-books); the Argo CD
+applications live in `morpho-org/morpho-infra` under `gitops/tools`. ECR `bots/midnight-crossed-books` images are
+published by `.github/workflows/publish-liquidation-ecr.yml`, and a merged PR whose description
+says `Releases crossed-books` adds its release tag to that image. The ExternalSecret reads
+`RPC_URL`, optional `RPC_URL_FALLBACK`, and `RESOLVER_PRIVATE_KEY` from Secrets Manager
+`midnight-crossed-books/<env>/8453/runtime`.
 
 ## Observability
 

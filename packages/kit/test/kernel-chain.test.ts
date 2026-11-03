@@ -18,12 +18,18 @@ type Chain = {
   pendingHead?: boolean
   /** How the node answers the `safe` tag, when it does not serve it as a block. */
   safe?: 'rejects the tag' | 'has no block' | 'is down'
+  head?: number
+  minedIn?: number
+  /** Every height the account's nonce is read at. */
+  countedAt?: number[]
 }
 
 const chainOf = (fake: Chain = {}) => {
+  const head = fake.head ?? HEAD
+  const minedIn = fake.minedIn ?? MINED_IN
   const transactions =
     fake.blockTransactions ??
-    ((n: number) => (n === MINED_IN ? [{ hash: TX_HASH, from: ACCOUNT, nonce: '0x0' as Hex }] : []))
+    ((n: number) => (n === minedIn ? [{ hash: TX_HASH, from: ACCOUNT, nonce: '0x0' as Hex }] : []))
   const block = (n: number, full: boolean) => ({
     number: fake.pendingHead && n === HEAD ? null : numberToHex(n),
     hash: fake.pendingHead && n === HEAD ? null : hashOf(n),
@@ -34,9 +40,12 @@ const chainOf = (fake: Chain = {}) => {
   const request = async ({ method, params }: { method: string; params?: unknown[] }) => {
     switch (method) {
       case 'eth_blockNumber':
-        return numberToHex(HEAD)
-      case 'eth_getTransactionCount':
-        return numberToHex(Number(BigInt(params?.[1] as Hex)) >= MINED_IN ? 1 : 0)
+        return numberToHex(head)
+      case 'eth_getTransactionCount': {
+        const height = Number(BigInt(params?.[1] as Hex))
+        fake.countedAt?.push(height)
+        return numberToHex(height >= minedIn ? 1 : 0)
+      }
       case 'eth_getBlockByNumber': {
         const tag = params?.[0] as string
         if (tag === 'safe' && fake.safe === 'rejects the tag')
@@ -51,8 +60,8 @@ const chainOf = (fake: Chain = {}) => {
       case 'eth_getTransactionReceipt':
         return {
           transactionHash: TX_HASH,
-          blockHash: fake.receiptBlockHash ?? hashOf(MINED_IN),
-          blockNumber: numberToHex(MINED_IN),
+          blockHash: fake.receiptBlockHash ?? hashOf(minedIn),
+          blockNumber: numberToHex(minedIn),
           status: '0x1',
           logs: []
         }
@@ -116,6 +125,14 @@ describe('createKernelChain', () => {
       logs: []
     })
     expect(await chainOf().nonceTx(1)).toBeNull()
+  })
+
+  it('searches back from the head, so a recent nonce costs a few reads on a long chain', async () => {
+    const countedAt: number[] = []
+    const head = 40_000_000
+    const found = await chainOf({ head, minedIn: head - 2, countedAt }).nonceTx(0)
+    expect(found?.block).toBe(head - 2)
+    expect(countedAt).toStrictEqual([head, head - 1, head - 3, head - 2])
   })
 
   it('throws when the receipt names another block than the one searched', async () => {

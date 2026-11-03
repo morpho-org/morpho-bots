@@ -352,7 +352,6 @@ export const createExecutor = (options: ExecutorOptions) => {
         return broadcast(port, command)
       case 'release':
         return release(port, command)
-      case 'findNonceTx':
       case 'notify':
         return
       case 'report':

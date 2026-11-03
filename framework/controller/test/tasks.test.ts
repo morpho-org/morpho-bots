@@ -715,6 +715,16 @@ describe('an owned preparation', () => {
     await bot.runner.abandon()
   })
 
+  it("caps the submitted plan's fees at the spend its preparation allows", async () => {
+    const bot = family(PER_KEY)
+    bot.acceptingNewWork(true)
+    bot.write({ a: { bid: 1n } })
+    await bot.answer('a', { ok: true, validUntil: 60_000, steps: STEPS, maxSpendWei: 7n })
+    const [submitted] = bot.submits
+    expect(submitted?.type === 'Submit' && submitted.plan.maxSpendWei).toBe(7n)
+    await bot.runner.abandon()
+  })
+
   it('drops an answer whose captured version no longer matches the current fact', async () => {
     const bot = family(PER_KEY, bid => bid)
     bot.acceptingNewWork(true)

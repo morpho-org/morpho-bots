@@ -373,6 +373,25 @@ describe('checks before every irreversible act', () => {
     expect(h.commands('sign')).toHaveLength(1)
   })
 
+  it('says a plan abandoned on a reverted simulation reverted, and one whose simulation failed did not', () => {
+    const ended = (h: Harness, intentId: string) =>
+      h
+        .commands('notify')
+        .filter(c => c.intentId === intentId)
+        .at(-1)
+    const reverted = new Harness().start()
+    reverted.send({ type: 'Submit', plan: liquidationPlan('liq') })
+    reverted.simulate(false)
+    expect(ended(reverted, 'liq')).toMatchObject({ notice: 'abandoned', code: 'reverted' })
+
+    const failed = new Harness().start()
+    failed.send({ type: 'Submit', plan: liquidationPlan('liq') })
+    const [simulation] = failed.pending('simulate')
+    failed.send({ type: 'EffectFailed', request: simulation!.request })
+    expect(ended(failed, 'liq')).toMatchObject({ notice: 'abandoned', reason: 'simulate failed' })
+    expect(ended(failed, 'liq')).not.toHaveProperty('code')
+  })
+
   it('a fact that changes while a simulation is outstanding stops its late result at the slot', () => {
     const h = new Harness().start()
     const fact = {

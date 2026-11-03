@@ -41,27 +41,9 @@ function toJsonSafe(fields: Record<string, unknown>): Record<string, unknown> {
   ) as Record<string, unknown>
 }
 
-// Railway does not stamp its native identity onto forwarded logs, so replicate what the retired
-// Vector VRL did: fold whichever RAILWAY_* vars are present into the context (all absent under
-// docker-compose / local dev, so each is optional). Bots spread this into their global context.
-export function railwayContext(env: Record<string, string | undefined> = process.env): LogContext {
-  const map: Record<string, string | undefined> = {
-    railway_service: env.RAILWAY_SERVICE_NAME,
-    railway_deployment: env.RAILWAY_DEPLOYMENT_ID,
-    railway_environment: env.RAILWAY_ENVIRONMENT_NAME,
-    railway_replica: env.RAILWAY_REPLICA_ID
-  }
-  const context: LogContext = {}
-  for (const [key, value] of Object.entries(map)) {
-    const trimmed = value?.trim()
-    if (trimmed) context[key] = trimmed
-  }
-  return context
-}
-
 /**
- * `07-21 16:42:35` — UTC, stamped onto every stderr line so local runs and Railway's viewer show a
- * scan-friendly event time (Railway's own prefix is nanosecond ISO; local runs get nothing at all).
+ * `07-21 16:42:35` — UTC, stamped onto every stderr line so local runs and log viewers show a
+ * scan-friendly event time.
  * Year deliberately omitted for line width; the shipped BetterStack record keeps its own full `dt`.
  */
 function formatTime(date: Date) {

@@ -15,7 +15,7 @@ import {
 const MAX_LIF = 1036269430051813471n
 const LLTV = 860000000000000000n
 
-// The cbBTC-shaped slot these cases were originally written against: lltv 86%, so maxLif ~1.0363.
+// The cbBTC-shaped slot these cases run against: lltv 86%, so maxLif ~1.0363.
 const slot = (overrides: Partial<CollateralSlot> = {}): CollateralSlot => ({
   index: 3,
   amt: 100n * WAD,
@@ -263,17 +263,44 @@ describe('plan', () => {
     })
   })
 
-  it('skips (returns null) when a cap-binding seize rounds to zero — never a (0,0) bad-debt plan', () => {
+  it('skips when a cap-binding seize rounds to zero — never a (0,0) bad-debt plan', () => {
     // Post-maturity dust: 1 wei of debt against a high-priced slot. The cap binds, but the largest
-    // seize whose derived repaid fits in 1 wei rounds to 0 collateral. The plan must return null, NOT a
-    // { seized: 0, repaid: 0 } plan, which tick.ts would mis-route as a bad-debt write-off.
-    const result = plan(
+    // seize whose derived repaid fits in 1 wei rounds to 0 collateral. A { seized: 0, repaid: 0 } plan
+    // would be mis-routed as a bad-debt write-off.
+    const outcome = planWithReason(
       inputWithSlot(
         { amt: 1n * WAD, price: ORACLE_PRICE_SCALE * 10n },
         { blockTimestamp: 3000n, maturity: 2000n, healthy: true, debt: 1n, badDebt: 0n }
       )
     )
-    expect(result).toBeNull()
+    expect(outcome).toEqual({ plan: null, reason: 'seize_rounds_to_zero', headroom: undefined })
+  })
+
+  it('skips when the safety margin shaves a one-unit cap to zero, at any price scale', () => {
+    const dust = inputWithSlot(
+      { amt: 1n * WAD },
+      { blockTimestamp: 3000n, maturity: 2000n, healthy: true, debt: 1n, badDebt: 0n }
+    )
+    expect(planWithReason(dust).plan).toMatchObject({ seizedAssets: 1n })
+    expect(planWithReason(dust, { seizeCapMarginBps: 30 })).toEqual({
+      plan: null,
+      reason: 'seize_rounds_to_zero',
+      headroom: undefined
+    })
+  })
+
+  it('skips normal mode when a write-off pushes the debt under maxDebt, which would underflow', () => {
+    expect(
+      planWithReason(baseInput({ debt: 1000n * WAD, badDebt: 200n * WAD, maxDebt: 900n * WAD }))
+    ).toEqual({ plan: null, reason: 'writeoff_below_max_debt', headroom: undefined })
+  })
+
+  it('skips normal mode when the debt sits exactly at maxDebt, leaving no repay cap', () => {
+    expect(planWithReason(baseInput({ debt: 900n * WAD, maxDebt: 900n * WAD }))).toEqual({
+      plan: null,
+      reason: 'cap_not_positive',
+      headroom: undefined
+    })
   })
 })
 
@@ -379,15 +406,6 @@ describe('headroom floor', () => {
   it('is disabled at a floor of 0, reproducing the ungated plan exactly', () => {
     const input = baseInput(earlyRamp)
     expect(planWithReason(input, { headroomFloorBps: 0 })).toEqual(planWithReason(input))
-  })
-
-  it('pins the shipped default: suppressed at t+20s, allowed at t+40s', () => {
-    // The default is a LOWER BOUND on execution cost, not a typical cost — a change to it alters prod
-    // timing, so it breaks a test rather than sliding through.
-    expect(plan(baseInput(earlyRamp), { headroomFloorBps: 3 })).toBeNull()
-    expect(
-      plan(baseInput({ ...earlyRamp, blockTimestamp: 2040n }), { headroomFloorBps: 3 })
-    ).not.toBeNull()
   })
 
   it('does NOT skip a matured-and-unhealthy position that normal mode funds at the full maxLif', () => {

@@ -182,6 +182,12 @@ describe.skipIf(!hasAnvil)(
       await expect(effects.simulate(payload, unknown, open())).rejects.toThrow()
     })
 
+    it('opens a first bid at the tips of recent blocks, which carry none yet', async () => {
+      const { effects } = kernelFor(KEYS[4]!)
+      const first = await signTx(effects, bid(0), guard(true))
+      expect(parseTransaction(first.raw as Hex).maxPriorityFeePerGas).toBe(1n)
+    })
+
     it('outbids its own candidate on a replacement, within the spend ceiling', async () => {
       const { effects } = kernelFor(KEYS[1]!)
       const first = await signTx(effects, bid(0), guard(true))

@@ -44,6 +44,31 @@ describe('createTxReporter', () => {
     ])
   })
 
+  it("carries an unsent act's end code, and none for an end that has none", () => {
+    const { logger } = recordLogs()
+    const notSent: NotSent[] = []
+    const reportActivity = createTxReporter({
+      logger,
+      reportNotSent: fields => void notSent.push(fields)
+    })
+    for (const [n, code] of [
+      [1, 'reverted'],
+      [2, undefined]
+    ] as const)
+      reportActivity([
+        {
+          type: 'notice',
+          intentId: intent(n),
+          notice: 'abandoned',
+          reason: 'simulation failed',
+          included: [],
+          ...(code && { code })
+        }
+      ])
+    expect(notSent.map(fields => fields.code)).toStrictEqual(['reverted', undefined])
+    expect(notSent[1]).not.toHaveProperty('code')
+  })
+
   it('logs a successful inclusion as included whatever the outcome, and cancelled only when nothing ran', () => {
     const { lines, logger } = recordLogs()
     const reportActivity = createTxReporter({ logger, reportNotSent: () => {} })

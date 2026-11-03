@@ -15,9 +15,9 @@ export { ethCallGasCap } from './gas-limits'
 export { createHeartbeatMonitor, HEARTBEAT_INTERVAL_MS, HEARTBEAT_TIMEOUT_MS } from './heartbeat'
 export type { Finality } from './kernel-chain'
 export { blockTagAt, callAt, createKernelChain, parseFinality } from './kernel-chain'
-export { createKernelEffects } from './kernel-effects'
+export { createKernelEffects, firstBid, gasLimitFor } from './kernel-effects'
 export type { BotLogger, CreateLoggerOptions, LogContext, Logger, LogLevel } from './logger'
-export { createLogger, railwayContext } from './logger'
+export { createLogger } from './logger'
 export {
   JournalFileError,
   MissingBuildIdentityError,

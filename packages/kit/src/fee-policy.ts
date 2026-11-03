@@ -62,14 +62,14 @@ const FIRST_TIP_DIVISOR = 4n
 
 /**
  * First-send fees from the current base fee under the cap `maxFeePerGasWei`: a tip of a quarter of
- * the cap rounded up, at most 1 gwei, so a stuck send can re-bid, and a 2×-base-fee headroom max
- * within the cap. {@link bumpFees} drops once either required fee bump would exceed the cap. Pure.
+ * the cap rounded up, at most 1 gwei and at most `marketTip` (at least 1 wei), so a stuck send can
+ * re-bid, and a 2×-base-fee headroom max within the cap. {@link bumpFees} drops once either required
+ * fee bump would exceed the cap. Pure.
  */
-export function initialFees(baseFee: bigint, maxFeePerGasWei: bigint): Fees {
-  const maxPriorityFeePerGas = bigintMin(
-    MAX_FIRST_TIP_WEI,
-    mulDivUp(maxFeePerGasWei, 1n, FIRST_TIP_DIVISOR)
-  )
+export function initialFees(baseFee: bigint, maxFeePerGasWei: bigint, marketTip?: bigint): Fees {
+  const quarterTip = bigintMin(MAX_FIRST_TIP_WEI, mulDivUp(maxFeePerGasWei, 1n, FIRST_TIP_DIVISOR))
+  const maxPriorityFeePerGas =
+    marketTip === undefined ? quarterTip : bigintMin(quarterTip, marketTip === 0n ? 1n : marketTip)
   const maxFeePerGas = bigintMin(baseFee * 2n + maxPriorityFeePerGas, maxFeePerGasWei)
   return { maxFeePerGas, maxPriorityFeePerGas }
 }

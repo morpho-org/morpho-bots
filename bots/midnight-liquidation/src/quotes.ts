@@ -1,4 +1,4 @@
-import type { Logger } from '@repo/bot-kit'
+import type { Logger } from '@repo/kit'
 import type {
   QuoteOutcome,
   RateLimitedClient,
@@ -9,7 +9,7 @@ import type {
 } from '@repo/swaps'
 import type { Address } from 'viem'
 
-import { composeMultiVenueQuoting, previewUnwrapChain, resolveUnwraps } from '@repo/swaps'
+import { composeMultiVenueQuoting, previewUnwrapChain } from '@repo/swaps'
 import { isAddressEqual } from 'viem'
 
 import type { LiquidationPlan } from './sizing/plan'
@@ -35,18 +35,14 @@ const candidateOf = (plan: LiquidationPlan) => ({
  * already holds, and only the chosen one is firm-quoted. A missing collateral slot or an operator-excluded collateral short-circuits
  * to `no_config` (no API call), preserving no-API-call semantics for a position the bot won't route.
  *
- * `resolveRoute` exposes just the pair half of that pipeline, for the tick's phase A.5, so the expensive
- * half is not duplicated: the probe refresh the composer then starts for the same pair is absorbed by
- * the selector's staleness and in-flight gates, phase A.5 having already started it — which means the
- * cache may still be cold when the quote reads it, and fails open accordingly. It walks
- * {@link previewUnwrapChain} rather than resolving, so an exotic collateral costs NO amount-dependent
- * work here — a PT's pair comes off the TTL-cached markets list and a vault share's off the memoized
- * `asset()`, where resolving would have spent a hosted Pendle request whose calldata is then discarded
- * and re-fetched at quote time. Falls back to a full resolve only if some unwrapper lacks the seam.
+ * `resolvePair` exposes just the pair half of that pipeline, so the graph can learn which pair a
+ * collateral sells through once and price it purely at any size. It walks {@link previewUnwrapChain}
+ * rather than resolving, so an exotic collateral costs NO amount-dependent work — a PT's pair comes off
+ * the TTL-cached markets list and a vault share's off the memoized `asset()`.
  */
 export function composeQuoting(deps: {
   httpClient: RateLimitedClient
-  selector: VenueSelector
+  selector: Pick<VenueSelector, 'refresh' | 'select'>
   chainId: number
   executor: Address
   venues: readonly Venue[]
@@ -58,19 +54,15 @@ export function composeQuoting(deps: {
 }): {
   quoteFor: (plan: LiquidationPlan, out: LensOut, label: string) => Promise<QuoteOutcome>
   /**
-   * The pair a candidate's seize would actually be sold through, resolved through the same unwrap
-   * chain and the same operator opt-out `quoteFor` applies — so the tick warms and prices the venue
-   * pair the firm quote will really use, not the raw collateral.
+   * The pair `collateral` is sold through for `loan`, through the same unwrap chain and operator
+   * opt-out `quoteFor` applies, so the graph prices the pair the firm quote will really use. Its size
+   * is the seize itself at any size.
    *
-   * `null` when there is nothing to probe: no such collateral slot, an excluded collateral, or a sell
-   * path that already ends in the loan token. Callers must read that as unknown route cost rather than
-   * as free; only sizing's `swapFree` flag asserts that no route is needed.
+   * `null` when there is no such pair to price: an excluded collateral, a sell path that already ends
+   * in the loan token, or an unwrap chain whose pair only a size-dependent resolve can name, which is
+   * left to the preparation's firm quote. Callers read it as unknown route cost, never as free.
    */
-  resolveRoute: (
-    plan: LiquidationPlan,
-    out: LensOut,
-    label: string
-  ) => Promise<{ pair: VenuePair; amountIn: bigint } | null>
+  resolvePair: (collateral: Address, loan: Address) => Promise<VenuePair | null>
 } {
   const { selector, excludeCollaterals, logger, executor, unwrappers, ...rest } = deps
   const excluded = (token: Address) =>
@@ -89,28 +81,10 @@ export function composeQuoting(deps: {
   })
 
   return {
-    async resolveRoute(plan, out, label) {
-      const collateral = out.market.collateralParams[plan.collateralIndex]
-      if (!collateral || excluded(collateral.token)) return null
-      const previewed = await previewUnwrapChain(unwrappers, {
-        token: collateral.token,
-        stopToken: out.market.loanToken
-      })
-      // `amountIn` is a probe-interpolation input, so the seize is close enough: it feeds a cost
-      // estimate, never an encoded min-out. The full resolve is the fallback, and only it threads the
-      // chain's worst-case output.
-      const { token, amountIn } =
-        previewed !== null
-          ? { token: previewed, amountIn: plan.seizedAssets }
-          : await resolveUnwraps(unwrappers, {
-              token: collateral.token,
-              amountIn: plan.seizedAssets,
-              executor,
-              stopToken: out.market.loanToken,
-              correlation: { id: label, ...candidateOf(plan) }
-            })
-      if (isAddressEqual(token, out.market.loanToken)) return null
-      return { pair: { collateral: token, loan: out.market.loanToken }, amountIn }
+    async resolvePair(collateral, loan) {
+      if (excluded(collateral)) return null
+      const token = await previewUnwrapChain(unwrappers, { token: collateral, stopToken: loan })
+      return token === null || isAddressEqual(token, loan) ? null : { collateral: token, loan }
     },
 
     async quoteFor(plan, out, label) {

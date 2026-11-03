@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { createKernel, latched } from '../src'
+import { unidentifiedNonces } from '../src/kernel'
 import {
   ecrecoverPlan,
   FEE,
@@ -244,7 +245,7 @@ describe('nonces and the latch', () => {
     h.drive()
     h.head()
     h.nonceAt(1)
-    expect(h.commands('findNonceTx')).toEqual([{ type: 'findNonceTx', nonce: 0 }])
+    expect(unidentifiedNonces(h.state)).toEqual([0])
     h.finalize(h.block + 5)
     expect(Object.keys(h.state.nonces)).toEqual(['0'])
     expect(h.available('native')).toBe(99n * FEE)

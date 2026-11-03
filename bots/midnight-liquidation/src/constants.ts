@@ -7,7 +7,7 @@ import { MathLib } from '@morpho-org/morpho-ts'
 // Operational tuning whose correct value
 // depends on the chain (block-poll cadence, stuck-tx thresholds, settle cooldown, fee floors) lives
 // in each chain's `TuningConfig` row in `config.ts`, because its meaning differs per chain; the
-// mechanisms it feeds live in `@repo/bot-kit`, and swap-venue constants live in `@repo/swaps`.
+// mechanisms it feeds live in `@repo/kit`, and swap-venue constants live in `@repo/swaps`.
 
 /** 1e18 fixed-point one ("WAD") — the base scalar for Midnight's rate and share math. */
 export const WAD = MathLib.WAD
@@ -42,6 +42,9 @@ export const LISTED_MARKETS_MAX_AGE_MS = 10 * 60_000
  * on its own timer so a slow tokens fetch cannot delay the fail-closed whitelist refresh.
  */
 export const TOKEN_PRICES_REFRESH_MS = 60_000
+
+/** How long a fetched price table orders work: five missed refreshes, then it reads as unpriced. */
+export const TOKEN_PRICES_VALID_MS = 5 * TOKEN_PRICES_REFRESH_MS
 
 /**
  * Firm-quote attempts one position may spend in a single tick before its remaining, lower-ranked

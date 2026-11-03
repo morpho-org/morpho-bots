@@ -1,17 +1,17 @@
-import type { LogLevel } from '@repo/bot-kit'
+import type { Finality, LogLevel } from '@repo/kit'
 import type { Venue } from '@repo/swaps'
 import type { Address, Chain, Hex } from 'viem'
 
-import { hasBumpHeadroom } from '@repo/bot-kit'
 import { Executor } from '@repo/contracts'
+import { blocksFor as blocksSpanning, feeCeiling, parseFinality, stepCap } from '@repo/kit'
 import { tryCatch } from '@repo/utils'
 import { getAddress, isAddress, isHex, parseEther, parseGwei } from 'viem'
 import { base, mainnet } from 'viem/chains'
 
 import { InvalidConfigError } from './errors'
 
-// Swap venues are no longer a per-collateral config file: markets come from the Midnight Markets API
-// (the whitelist), and the enabled venues are inferred from which venue API keys are present in env.
+// Swap markets come from the Midnight Markets API (the whitelist), and the enabled venues are
+// inferred from which venue API keys are present in env.
 // The 0x/1inch quoting adapters + the venue selector live in `@repo/swaps`.
 const ZEROX_API_KEY_ENV = 'ZEROX_API_KEY'
 const ONEINCH_API_KEY_ENV = 'ONEINCH_API_KEY'
@@ -41,63 +41,31 @@ const blocksFor = (ms: number, blockTimeMs: number) => Math.max(1, Math.round(ms
  * these retimes that behaviour on all chains at once, which is the point: the value is a duration,
  * and only its expression in blocks is chain-specific.
  */
-const SETTLED_COOLDOWN_MS = 40_000
-const STUCK_MS = 8_000
-const RECONCILE_MS = 6_000
+/** How long a sent transaction may wait for inclusion before the kernel re-bids it. */
+export const STUCK_MS = 8_000
 const BALANCE_LOG_MS = 60_000
 const BACKOFF_BASE_MS = 4_000
 const BACKOFF_MAX_MS = 128_000
 
 /**
- * Block-watcher poll interval, in milliseconds. Chain-INDEPENDENT, so it is not part of
- * {@link TuningConfig}: polling faster than the chain produces blocks is harmless, and the cost of an
- * extra `eth_blockNumber` is far below the cost of learning about a liquidatable position a block
- * late. Passed explicitly by `index.ts` so a change to bot-kit's own default cannot silently retime
- * this bot; `test/config.test.ts` asserts the two still agree.
- */
-export const BLOCK_POLL_MS = 2_000
-
-/**
- * Chain-specific values threaded straight into the `@repo/bot-kit` runner, queue, and balance
- * monitor (see `index.ts`). NONE of these has an env var — a deployment retunes them by editing the
- * chain's row.
+ * Chain-specific values threaded into the kernel and the balance monitor (see `index.ts`). NONE of
+ * these has an env var — a deployment retunes them by editing the chain's row.
  *
  * Block-denominated fields are counts of BLOCKS derived from a shared wall-clock intent via
- * {@link blocksFor}, so one behaviour keeps roughly one timing on a ~2s and a ~12s chain. Only
- * roughly: the count is rounded and floored at one block, and the queue compares it strictly
- * (`elapsed > stuckBlocks`), so mainnet's `stuckBlocks: 1n` first bumps after two blocks (~24s)
- * against an 8s intent. That is later than intended but not premature — the tx has had two blocks
- * to be included.
+ * {@link blocksFor}, so one behaviour keeps roughly one timing on a ~2s and a ~12s chain.
  */
 export type TuningConfig = {
-  /** Blocks a settled position stays suppressed before it may be re-attempted. */
-  settledCooldownBlocks: bigint
-  /** Blocks without a receipt before the queue fee-bumps a pending tx. */
-  stuckBlocks: bigint
-  /** Blocks between nonce reconciliations against chain state. */
-  reconcileEveryBlocks: number
   /** Blocks between EOA gas-balance metric emissions. */
   balanceEveryBlocks: bigint
-  /**
-   * Fee-bump attempts before a stuck tx is dropped. Does not scale with block time — it is sized
-   * against how fast the chain's basefee can climb (EIP-1559 allows +12.5% per block). Reachable
-   * only while the bumped `maxFeePerGas` stays under `MAX_FEE_GWEI`, which is what the ladder test
-   * in `test/config.test.ts` pins.
-   */
-  maxBumpAttempts: number
 }
 
 /**
  * This chain's DEFAULTS for the knobs an operator overrides from the environment. Resolved inside
  * `loadConfig` and deliberately NOT re-exposed on {@link Config}: a resolved value is only ever read
- * from the field that holds it (`maxGasLimit`, `priorityFeeWei`, `quoting.*`), so there is no
+ * from the field that holds it (`quoting.*`), so there is no
  * pre-override copy to read by mistake.
  */
 type ChainDefaults = {
-  /** `PRIORITY_FEE_GWEI` — first-send tip, as a decimal gwei string. */
-  priorityFeeGwei: string
-  /** `MAX_GAS_LIMIT` — ceiling on a signed tx's gas limit. Bounds spend only with `MAX_SPEND_ETH`. */
-  maxGasLimit: bigint
   /** `SEIZE_CAP_MARGIN_BPS` — headroom shaved off the onchain repay cap when sizing a seize. */
   seizeCapMarginBps: number
   /** `BACKOFF_BASE_BLOCKS` — first step of the per-position failure backoff. */
@@ -110,16 +78,26 @@ type ChainDefaults = {
 export type ChainConfig = {
   chain: Chain
   midnight: Address
+  /** The wrapped native token, whose USD price turns a liquidation's profit into a fee ceiling. */
+  wrappedNative: Address
+  /** How long a world read authorizes acts: above this chain's slowest healthy read cadence. */
+  worldValidMs: number
+  /** The fewest stuck-nonce re-bids a send outlives before its quote ages out; see {@link sendLifeMs}. */
+  rebids: number
   tuning: TuningConfig
   defaults: ChainDefaults
 }
 
-const tuningFor = (blockTimeMs: number, maxBumpAttempts: number): TuningConfig => ({
-  settledCooldownBlocks: BigInt(blocksFor(SETTLED_COOLDOWN_MS, blockTimeMs)),
-  stuckBlocks: BigInt(blocksFor(STUCK_MS, blockTimeMs)),
-  reconcileEveryBlocks: blocksFor(RECONCILE_MS, blockTimeMs),
-  balanceEveryBlocks: BigInt(blocksFor(BALANCE_LOG_MS, blockTimeMs)),
-  maxBumpAttempts
+/**
+ * How long a prepared liquidation's quote authorizes its send: `rebids + 1` spans of one block more
+ * than the stuck threshold. The kernel re-bids every stuck threshold, not every span, so a send rides
+ * more re-bids than `rebids`: about 4 on Base and 13 on mainnet.
+ */
+const sendLifeMs = ({ chain, rebids }: Pick<ChainConfig, 'chain' | 'rebids'>) =>
+  (blocksSpanning(STUCK_MS, chain) + 1) * chain.blockTime! * (rebids + 1)
+
+const tuningFor = (blockTimeMs: number): TuningConfig => ({
+  balanceEveryBlocks: BigInt(blocksFor(BALANCE_LOG_MS, blockTimeMs))
 })
 
 const defaultsFor = (
@@ -143,31 +121,23 @@ const CHAIN_MAP: Record<number, ChainConfig> = {
   [base.id]: {
     chain: base,
     midnight: getAddress('0xAdedD8ab6dE832766Fedf0FaC4992E5C4D3EA18A'),
-    tuning: tuningFor(BASE_BLOCK_TIME_MS, 3),
-    defaults: defaultsFor(BASE_BLOCK_TIME_MS, {
-      // Clears the in-block p95 tip in ~91% of Base blocks; escalation only adds 1.42x on top.
-      priorityFeeGwei: '0.1',
-      maxGasLimit: 15_000_000n,
-      seizeCapMarginBps: 30
-    })
+    wrappedNative: getAddress('0x4200000000000000000000000000000000000006'),
+    // Over four times the longest gap between landed world reads in a day of production.
+    worldValidMs: 30_000,
+    rebids: 3,
+    tuning: tuningFor(BASE_BLOCK_TIME_MS),
+    defaults: defaultsFor(BASE_BLOCK_TIME_MS, { seizeCapMarginBps: 30 })
   },
   [mainnet.id]: {
     chain: mainnet,
     midnight: getAddress('0x471686c42792F93528B000beF54bC10E3aa2045f'),
-    // Mainnet basefee can rise 12.5% per block, so Base's 3-step ladder (1.42x) can fall further
-    // behind the market on every bump; 6 escalates the tip ~2.03x.
-    tuning: tuningFor(MAINNET_BLOCK_TIME_MS, 6),
+    wrappedNative: getAddress('0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2'),
+    // Twice the longest gap between landed world reads in a day of production: a missed block.
+    worldValidMs: 60_000,
+    // Mainnet's base fee compounds 12.5% per block between re-bids, so a send rides more of them.
+    rebids: 6,
+    tuning: tuningFor(MAINNET_BLOCK_TIME_MS),
     defaults: defaultsFor(MAINNET_BLOCK_TIME_MS, {
-      // Mainnet tips are a real market, unlike Base's. A tip too low to include is not merely a
-      // missed fill: it exhausts the bump ladder, drops the tx, and latches a nonce hole that stops
-      // the bot sending at all. Sized against a p90 tip of ~2 gwei measured over ~1k blocks (basefee
-      // ~0.2 gwei at the time); revisit against production inclusion data.
-      priorityFeeGwei: '2',
-      // Caps the units, not the cost — `MAX_SPEND_ETH` bounds `gas x fee`. Tightened here because
-      // gas is the knowable factor: a liquidation exec sits well under this, while MAX_FEE_GWEI has
-      // to stay wide enough for the bump ladder to survive a congested basefee (see
-      // `maxBumpAttempts`), so it cannot be tightened to limit cost.
-      maxGasLimit: 3_000_000n,
       // One-block oracle-drift headroom, and a mainnet block is ~6x the drift window of a Base one.
       seizeCapMarginBps: 60
     })
@@ -175,41 +145,16 @@ const CHAIN_MAP: Record<number, ChainConfig> = {
 }
 
 const LOG_LEVELS = ['debug', 'info', 'warn', 'error'] as const
-// The fee ceiling is deliberately NOT per-chain. It is not a bound on spend — `MAX_SPEND_ETH` is,
-// and only the product `gas * fee` ever was — but the headroom the bump ladder escalates into:
-// `bumpFees` DROPS a tx once the bumped maxFeePerGas would exceed it, and a drop latches a nonce
-// hole that stops the bot sending at all.
-//
-// It does not make the ladder unconditional, and how far the ladder reaches turns on what the basefee
-// does while a tx sits: a replacement's max is `max(prev * 1.125, 2*basefee + tip)`. Held flat, 300
-// gwei carries mainnet's 6 attempts to a ~72 gwei basefee and Base's 3 to ~105. Rising at the
-// EIP-1559 maximum it reaches only ~36 and ~25 — and Base is the tighter row despite its shallower
-// ladder, because it waits 5 blocks between bumps to mainnet's 2, so the basefee compounds further.
-// Past those the ladder truncates rather than the send failing outright. `test/config.test.ts` pins
-// all four bounds, so retuning a fee knob, `stuckBlocks`, or `maxBumpAttempts` has to restate them.
-const DEFAULT_MAX_FEE_GWEI = '300'
 
 // Floor for `MAX_GAS_LIMIT`. Below the intrinsic cost of the cheapest possible transaction, the
 // signing policy denies every prepared tx (`policy.ts` rejects `tx.gas > maxGasLimit`) while the
 // process stays up and healthy — a silent do-nothing bot. Fail at startup instead.
 const MIN_GAS_LIMIT = 21_000n
 
-// What one transaction may cost, end to end. Neither ceiling bounds spend on its own: `MAX_GAS_LIMIT`
-// caps the units and `MAX_FEE_GWEI` the price, and it is their PRODUCT that leaves the wallet — 15M
-// gas at 300 gwei is 4.5 ETH. That product is asserted directly, by the signing policy against the
-// gas the node actually estimated, and by the pending queue when it prices each bump.
-//
-// Chain-independent, because it is denominated in the gas token rather than in either chain's fee
-// level. Deliberately generous: it is sized to bound a runaway, not to price a liquidation, and sits
-// far above any plausible exec at either chain's real basefee. Calibrate down from production
-// `tx.confirmed` gas once there is a distribution to calibrate against — no measured exec-gas figure
-// exists yet, which is why this is a ceiling and not a budget.
-const DEFAULT_MAX_SPEND_ETH = '0.5'
 const PRIVATE_KEY_HEX_LENGTH = 66 // '0x' + 32 bytes
 
-// Borrower-candidate discovery defaults (the markets liquidation-candidates endpoint). The URL is a
-// public, unauthenticated endpoint, so it is safe to default in code (override via env per-env). The
-// health-factor cutoff is intentionally tight — matured positions are always included regardless.
+// The public Morpho API, which needs no key. The health-factor cutoff is intentionally tight —
+// matured positions are always included regardless.
 const DEFAULT_CANDIDATES_API_URL = 'https://api.morpho.org/markets/midnight/liquidation-candidates'
 const DEFAULT_HEALTH_FACTOR_LTE = 1.02
 
@@ -234,10 +179,6 @@ const DEFAULT_HEADROOM_FLOOR_BPS = 3
 // quantities and carries no tuned value, so it can only reject plans that would have reverted
 // onchain. Deliberately NOT a per-chain value — it does not encode gas.
 const DEFAULT_MIN_SURPLUS_BPS = 0
-// Opt-in per-position cooldown (ms) after a liquidation attempt fails to produce a submittable tx
-// (no route / quote failure / sim revert). 0 disables it — the default, so existing deployments
-// re-attempt every tick as before.
-const DEFAULT_POSITION_LIQUIDATION_COOLDOWN_MS = 0
 
 // Market whitelist + venue-probing defaults. The markets API is Morpho's own (not a rate-limited
 // venue), so it can be refreshed briskly. The probe uses an ISOLATED rps budget (see index.ts) so its
@@ -346,11 +287,21 @@ export type ProbeConfig = {
   ladderSizes: string[]
 }
 
+export type KernelStoreConfig = {
+  stateDirectory: string
+  enrollment: 'enrolling' | 'enrolled'
+}
+
 export type Config = {
   chainId: number
+  finality: Finality
   chain: Chain
   midnight: Address
-  /** Chain-specific runtime values threaded into the bot-kit runner, queue, and balance monitor. */
+  wrappedNative: Address
+  worldValidMs: number
+  /** How long a prepared liquidation may wait to be included, re-bids and all. */
+  sendLifeMs: number
+  /** Chain-specific runtime values threaded into the kernel and the balance monitor. */
   tuning: TuningConfig
   /** Ceiling on a signed tx's gas limit, enforced by the signing policy. See `maxSpendWei`. */
   maxGasLimit: bigint
@@ -358,6 +309,8 @@ export type Config = {
   rpcUrlFallback: string | undefined
   liquidatorPrivateKey: Hex
   executooorAddress: Address
+  /** When set, sent as `x-api-key` on every Morpho API request: candidates, tokens and markets. */
+  morphoApiKey: string | undefined
   /** Borrower-candidate discovery (the markets liquidation-candidates endpoint). */
   discovery: DiscoveryConfig
   /** Market whitelist (the Midnight Markets API). */
@@ -367,20 +320,14 @@ export type Config = {
   /** Venue-probing knobs. */
   probe: ProbeConfig
   quoting: QuotingConfig
-  /**
-   * Opt-in cooldown window (ms) before re-attempting a position whose last liquidation attempt failed
-   * to produce a submittable tx. 0 disables it (re-attempt every tick). See
-   * `POSITION_LIQUIDATION_COOLDOWN_MS`.
-   */
-  positionCooldownMs: number
-  maxFeeWei: bigint
+  /** Where the kernel keeps the account's ledger, and whether that ledger must already exist. */
+  kernel: KernelStoreConfig
+  maxFeePerGasWei: bigint
   /**
    * `MAX_SPEND_ETH` in wei — the ceiling on `gas * maxFeePerGas` for one transaction, and the only
-   * field here that bounds spend. `maxGasLimit` and `maxFeeWei` bound its two factors.
+   * field here that bounds spend. `maxGasLimit` and `maxFeePerGasWei` bound its two factors.
    */
   maxSpendWei: bigint
-  /** First-send `maxPriorityFeePerGas`. See `PRIORITY_FEE_GWEI`. */
-  priorityFeeWei: bigint
   logLevel: LogLevel
 }
 
@@ -418,7 +365,10 @@ function intEnv(
 // bound. Zero stays legal by default — it is a meaningful value for the backoff knobs.
 function bigintEnv(env: Env, name: string, def: bigint, bounds: { min?: bigint } = {}): bigint {
   const raw = env[name]?.trim()
-  if (!raw) return def
+  return raw ? bigintFrom(env, name, raw, bounds) : def
+}
+
+function bigintFrom(env: Env, name: string, raw: string, bounds: { min?: bigint }): bigint {
   if (!/^\d+$/.test(raw)) {
     throw new InvalidConfigError(`${name} must be a non-negative integer, got: ${env[name]}`)
   }
@@ -477,6 +427,27 @@ function ladderEnv(env: Env, name: string, def: string[]): string[] {
   return sizes
 }
 
+const parseHttpUrl = (raw: string) => {
+  const parsed = tryCatch(() => new URL(raw))
+  return parsed.data?.protocol === 'http:' || parsed.data?.protocol === 'https:'
+    ? parsed.data
+    : undefined
+}
+
+// Endpoint errors name the variable but never echo its value, which may embed a credential.
+function urlEnv(env: Env, name: string): string | undefined {
+  const raw = env[name]?.trim()
+  if (!raw) return undefined
+  if (!parseHttpUrl(raw)) throw new InvalidConfigError(`${name} is not a valid http(s) URL`)
+  return raw
+}
+
+// A Morpho API request may carry MORPHO_API_KEY, which must not cross the wire in plaintext.
+function httpsOnly(name: string, url: string): string {
+  if (new URL(url).protocol !== 'https:') throw new InvalidConfigError(`${name} must use https`)
+  return url
+}
+
 // Parses an optional comma-separated list of endpoint URLs, with a default, de-duplicating while
 // preserving order. Fails loud on any EMPTY entry (a leading/trailing/repeated comma is usually a
 // misinterpolated env var, i.e. an intended source silently missing — a narrowed whitelist with no
@@ -489,16 +460,16 @@ function urlListEnv(env: Env, name: string, def: string[]): string[] {
   const urls = raw.split(',').map(part => part.trim())
   if (urls.some(part => part.length === 0)) {
     throw new InvalidConfigError(
-      `${name} must not contain empty entries (leading, trailing, or repeated commas), got: ${env[name]}`
+      `${name} must not contain empty entries (leading, trailing, or repeated commas)`
     )
   }
-  const normalized = urls.map(url => {
-    const parsed = tryCatch(() => new URL(url))
-    if (parsed.error) {
-      throw new InvalidConfigError(`${name} is not a valid URL: ${url}`)
+  const normalized = urls.map((url, index) => {
+    const parsed = parseHttpUrl(url)
+    if (!parsed) {
+      throw new InvalidConfigError(`${name} entry ${index + 1} is not a valid http(s) URL`)
     }
-    parsed.data.pathname = parsed.data.pathname.replace(/\/+$/, '')
-    return parsed.data.toString()
+    parsed.pathname = parsed.pathname.replace(/\/+$/, '')
+    return parsed.toString()
   })
   return [...new Set(normalized)]
 }
@@ -518,6 +489,31 @@ function addressListEnv(env: Env, name: string): Address[] {
       }
       return getAddress(part)
     })
+}
+
+/**
+ * `KERNEL_STATE_DIR` holds the kernel's ledger and must survive a restart. `KERNEL_ENROLLMENT` is
+ * `enrolling` for the first start of a fresh account and `enrolled` for every later one.
+ */
+function kernelConfig(env: Env): KernelStoreConfig {
+  const stateDirectory = required(env, 'KERNEL_STATE_DIR').trim()
+  const enrollment = required(env, 'KERNEL_ENROLLMENT').trim()
+  if (enrollment !== 'enrolling' && enrollment !== 'enrolled') {
+    throw new InvalidConfigError(
+      `KERNEL_ENROLLMENT must be "enrolling" or "enrolled", got: ${env.KERNEL_ENROLLMENT}`
+    )
+  }
+  if (env.POSITION_LIQUIDATION_COOLDOWN_MS?.trim()) {
+    throw new InvalidConfigError(
+      'POSITION_LIQUIDATION_COOLDOWN_MS is no longer supported; failed positions back off by block'
+    )
+  }
+  if (env.PRIORITY_FEE_GWEI?.trim()) {
+    throw new InvalidConfigError(
+      'PRIORITY_FEE_GWEI is no longer supported; the first tip derives from MAX_FEE_GWEI'
+    )
+  }
+  return { stateDirectory, enrollment }
 }
 
 /**
@@ -549,6 +545,13 @@ export function loadConfig(
   // `tuning` is threaded to bot-kit as-is; `defaults` only ever appears in the `def` position of the
   // env parsers below, so an explicitly-set env var always wins.
   const { tuning, defaults } = chainConfig
+  const finalityName = `FINALITY_${chainId}`
+  const finality = parseFinality(required(env, finalityName).trim())
+  if (finality === undefined) {
+    throw new InvalidConfigError(
+      `${finalityName} must be safe, finalized, or a positive block depth, got: ${env[finalityName]}`
+    )
+  }
 
   const rpcUrl = required(env, 'RPC_URL')
 
@@ -579,48 +582,23 @@ export function loadConfig(
     )
   }
 
-  // Decimal gwei STRINGS, substituted only in the `||` fallback position so the validation below is
-  // identical whether the value came from env or from a default.
-  const maxFeeGwei = env.MAX_FEE_GWEI?.trim() || DEFAULT_MAX_FEE_GWEI
+  const maxFeeGwei = required(env, 'MAX_FEE_GWEI').trim()
   if (!/^\d+(\.\d+)?$/.test(maxFeeGwei) || Number(maxFeeGwei) <= 0) {
     throw new InvalidConfigError(`MAX_FEE_GWEI must be a positive number, got: ${env.MAX_FEE_GWEI}`)
   }
 
-  const priorityFeeGwei = env.PRIORITY_FEE_GWEI?.trim() || defaults.priorityFeeGwei
-  if (!/^\d+(\.\d+)?$/.test(priorityFeeGwei) || Number(priorityFeeGwei) <= 0) {
-    throw new InvalidConfigError(
-      `PRIORITY_FEE_GWEI must be a positive number, got: ${env.PRIORITY_FEE_GWEI}`
-    )
-  }
-  const priorityFeeWei = parseGwei(priorityFeeGwei)
-  if (priorityFeeWei <= 0n) {
-    throw new InvalidConfigError(
-      `PRIORITY_FEE_GWEI must be at least 1 wei, got: ${env.PRIORITY_FEE_GWEI}`
-    )
-  }
-  const maxFeeWei = parseGwei(maxFeeGwei)
-  if (!hasBumpHeadroom(priorityFeeWei, maxFeeWei)) {
-    // Name each side's SOURCE: the pair is resolved from two independent fallbacks, so an operator who
-    // set only one of them would otherwise see an error quoting a value they never configured.
-    const source = (envValue: string | undefined, fallback: string) =>
-      envValue?.trim() ? 'env' : fallback
-    throw new InvalidConfigError(
-      `PRIORITY_FEE_GWEI (${priorityFeeGwei}, from ${source(env.PRIORITY_FEE_GWEI, `chain ${chainId} default`)}) leaves no room to bump under MAX_FEE_GWEI (${maxFeeGwei}, from ${source(env.MAX_FEE_GWEI, 'built-in default')})`
-    )
-  }
+  const maxFeePerGasWei = parseGwei(maxFeeGwei)
 
-  // A budget under one gas unit at the fee ceiling could never admit any transaction, which would be
-  // the same silent do-nothing bot that MIN_GAS_LIMIT guards against from the other direction.
-  const maxSpendEth = env.MAX_SPEND_ETH?.trim() || DEFAULT_MAX_SPEND_ETH
+  const maxSpendEth = required(env, 'MAX_SPEND_ETH').trim()
   if (!/^\d+(\.\d+)?$/.test(maxSpendEth) || Number(maxSpendEth) <= 0) {
     throw new InvalidConfigError(
       `MAX_SPEND_ETH must be a positive decimal, got: ${env.MAX_SPEND_ETH}`
     )
   }
   const maxSpendWei = parseEther(maxSpendEth)
-  if (maxSpendWei < MIN_GAS_LIMIT * priorityFeeWei) {
+  if (stepCap(feeCeiling(maxFeePerGasWei, maxSpendWei)) <= 0n) {
     throw new InvalidConfigError(
-      `MAX_SPEND_ETH (${maxSpendEth}) cannot pay for ${MIN_GAS_LIMIT} gas at PRIORITY_FEE_GWEI (${priorityFeeGwei})`
+      `MAX_FEE_GWEI (${maxFeeGwei}) and MAX_SPEND_ETH (${maxSpendEth}) cannot fund a nonce fill and a step bid below it`
     )
   }
 
@@ -644,30 +622,20 @@ export function loadConfig(
       `No venues enabled (set ENABLE_LIFI=true or ${LIFI_API_KEY_ENV} / ${ZEROX_API_KEY_ENV} / ${ONEINCH_API_KEY_ENV}). Set at least one, or set ALLOW_BAD_DEBT_ONLY=true to run in bad-debt-only mode.`
     )
   }
-  const zeroxBaseUrl = env.ZEROX_BASE_URL?.trim() || undefined
-  if (zeroxBaseUrl && tryCatch(() => new URL(zeroxBaseUrl)).error) {
-    throw new InvalidConfigError(`ZEROX_BASE_URL is not a valid URL: ${zeroxBaseUrl}`)
-  }
-  const oneinchBaseUrl = env.ONEINCH_BASE_URL?.trim() || undefined
-  if (oneinchBaseUrl && tryCatch(() => new URL(oneinchBaseUrl)).error) {
-    throw new InvalidConfigError(`ONEINCH_BASE_URL is not a valid URL: ${oneinchBaseUrl}`)
-  }
-  const lifiBaseUrl = env.LIFI_BASE_URL?.trim() || undefined
-  if (lifiBaseUrl && tryCatch(() => new URL(lifiBaseUrl)).error) {
-    throw new InvalidConfigError(`LIFI_BASE_URL is not a valid URL: ${lifiBaseUrl}`)
-  }
   const venues: VenueConfig = {
     enabled: enabledVenues,
-    zeroxBaseUrl,
-    oneinchBaseUrl,
-    lifiBaseUrl,
+    zeroxBaseUrl: urlEnv(env, 'ZEROX_BASE_URL'),
+    oneinchBaseUrl: urlEnv(env, 'ONEINCH_BASE_URL'),
+    lifiBaseUrl: urlEnv(env, 'LIFI_BASE_URL'),
     excludeCollaterals: addressListEnv(env, 'EXCLUDE_COLLATERALS')
   }
 
-  // Market whitelist endpoint(s) — one, or a comma-separated list that is unioned per-source. Default
-  // to the public markets API; fail loud on any malformed entry.
+  // Market whitelist endpoint(s) — one, or a comma-separated list that is unioned per-source. Fail
+  // loud on any malformed entry.
   const markets: MarketsConfig = {
-    apiUrls: urlListEnv(env, 'MARKETS_API_URL', DEFAULT_MARKETS_API_URLS),
+    apiUrls: urlListEnv(env, 'MARKETS_API_URL', DEFAULT_MARKETS_API_URLS).map(url =>
+      httpsOnly('MARKETS_API_URL', url)
+    ),
     refreshMs: intEnv(env, 'MARKETS_REFRESH_MS', DEFAULT_MARKETS_REFRESH_MS, { min: 1 })
   }
 
@@ -706,41 +674,40 @@ export function loadConfig(
     backoffMaxBlocks: bigintEnv(env, 'BACKOFF_MAX_BLOCKS', defaults.backoffMaxBlocks)
   }
 
-  // Borrower-candidate discovery endpoint. Default to the public markets API; fail loud at startup on
-  // a malformed override rather than at the first tick's fetch.
-  const apiUrl = env.LIQUIDATION_CANDIDATES_API_URL?.trim() || DEFAULT_CANDIDATES_API_URL
-  if (tryCatch(() => new URL(apiUrl)).error) {
-    throw new InvalidConfigError(`LIQUIDATION_CANDIDATES_API_URL is not a valid URL: ${apiUrl}`)
-  }
+  // Fail loud at startup on a malformed override rather than at the first tick's fetch.
   const discovery: DiscoveryConfig = {
-    apiUrl,
+    apiUrl: httpsOnly(
+      'LIQUIDATION_CANDIDATES_API_URL',
+      urlEnv(env, 'LIQUIDATION_CANDIDATES_API_URL') ?? DEFAULT_CANDIDATES_API_URL
+    ),
     healthFactorLte: numberEnv(env, 'HEALTH_FACTOR_LTE', DEFAULT_HEALTH_FACTOR_LTE, { min: 1 })
   }
 
   return {
     chainId,
+    finality,
     chain: chainConfig.chain,
     midnight: chainConfig.midnight,
+    wrappedNative: chainConfig.wrappedNative,
+    worldValidMs: chainConfig.worldValidMs,
+    sendLifeMs: sendLifeMs(chainConfig),
     tuning,
-    maxGasLimit: bigintEnv(env, 'MAX_GAS_LIMIT', defaults.maxGasLimit, { min: MIN_GAS_LIMIT }),
+    maxGasLimit: bigintFrom(env, 'MAX_GAS_LIMIT', required(env, 'MAX_GAS_LIMIT').trim(), {
+      min: MIN_GAS_LIMIT
+    }),
     rpcUrl,
     rpcUrlFallback: env.RPC_URL_FALLBACK?.trim() || undefined,
     liquidatorPrivateKey,
     executooorAddress,
+    morphoApiKey: env.MORPHO_API_KEY?.trim() || undefined,
     discovery,
     markets,
     venues,
     probe,
     quoting,
-    positionCooldownMs: intEnv(
-      env,
-      'POSITION_LIQUIDATION_COOLDOWN_MS',
-      DEFAULT_POSITION_LIQUIDATION_COOLDOWN_MS,
-      { min: 0 }
-    ),
-    maxFeeWei,
+    kernel: kernelConfig(env),
+    maxFeePerGasWei,
     maxSpendWei,
-    priorityFeeWei,
     logLevel
   }
 }

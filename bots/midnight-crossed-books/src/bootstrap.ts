@@ -8,8 +8,7 @@ import {
   createRunner,
   createSigner,
   DEFAULT_MAX_DATA_BYTES,
-  DEFAULT_MAX_GAS_LIMIT,
-  railwayContext
+  DEFAULT_MAX_GAS_LIMIT
 } from '@repo/bot-kit'
 import { CrossedBooksResolver } from '@repo/contracts'
 import { getAbiItem, toFunctionSelector } from 'viem'
@@ -49,8 +48,7 @@ export async function createApplication(
   const logger = createLogger('info', {
     context: {
       bot: 'midnight-crossed-books',
-      chainId: config.chainId,
-      ...railwayContext()
+      chainId: config.chainId
     }
   })
   const chainClient = createDeploylessClient(config)

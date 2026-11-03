@@ -98,6 +98,24 @@ describe('revertReason', () => {
     expect(revertReason(new Error('plain failure'))).toBe('plain failure')
     expect(revertReason('string failure')).toBe('string failure')
   })
+
+  it('redacts every URL, credentials included', () => {
+    expect(
+      revertReason(new Error('fetch https://user:s3cret@rpc.example/v2/k3y failed; wss://x/k3y'))
+    ).toBe('fetch [redacted URL] failed; [redacted URL]')
+    expect(revertReason(new BaseError('request to https://rpc.example/v2/k3y timed out'))).toBe(
+      'request to [redacted URL] timed out'
+    )
+  })
+
+  it('redacts scheme-less userinfo credentials', () => {
+    expect(revertReason(new Error('X is bad, got: user:s3cret@rpc.example/v2'))).toBe(
+      'X is bad, got: [redacted URL]'
+    )
+    expect(revertReason(new Error('got: :s3cret@rpc.example or s3cret:@rpc.example'))).toBe(
+      'got: [redacted URL] or [redacted URL]'
+    )
+  })
 })
 
 describe('isCallRevert', () => {

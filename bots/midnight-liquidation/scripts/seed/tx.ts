@@ -2,7 +2,7 @@
 // simulate-then-send step. Both seeders talk to live Base with real keys, so every state-changing
 // call is simulated immediately before it is sent and the run aborts on the first revert.
 
-import type { createLogger } from '@repo/bot-kit'
+import type { createLogger } from '@repo/kit'
 import type { Address, PublicClient, WalletClient } from 'viem'
 
 import { delay as sleep, tryCatch } from '@repo/utils'

@@ -601,14 +601,20 @@ export type NoticeBody = {
   | ({ notice: 'refused' } & Refusal)
   | {
       notice: Ended
-      /** `cancelled`: a cancel ended the plan before any of its steps executed or compensation acted. */
-      code?: 'cancelled'
+      code?: EndCode
     }
   | { notice: Exclude<Notice, 'refused' | Ended> }
 )
 
 /** The terminal notices a cancelled plan can end in. */
 type Ended = 'abandoned' | 'compensated'
+
+/**
+ * Why a plan ended, when nothing of it ran. `cancelled`: a cancel ended it before any of its steps
+ * executed or compensation acted. `reverted`: its transaction's simulation reverted before it was
+ * ever exposed, as the effect classified it, not a transport failure.
+ */
+export type EndCode = 'cancelled' | 'reverted'
 
 /**
  * What one kernel transition did, in order, its own neutralizers included; `dropped` is an entry
@@ -659,7 +665,6 @@ export type Command =
   | { type: 'flush'; seq: number; ledger: DurableLedger }
   | { type: 'broadcast'; request: number; hash: Hash; raw: string }
   | { type: 'release'; request: number; payload: ReleasePayload }
-  | { type: 'findNonceTx'; nonce: number }
   | ({ type: 'notify' } & NoticeBody)
   | {
       type: 'report'

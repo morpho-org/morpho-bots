@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import type { PlanInput } from '../src'
 
 import { latched, querySubmission } from '../src'
+import { unidentifiedNonces } from '../src/kernel'
 import { encodeCall } from './codec'
 import { ecrecoverPlan, liquidationPlan, offer, publish, signTree, T, tree, W } from './fixtures'
 import { Harness } from './harness'
@@ -55,7 +56,7 @@ describe('lifecycle', () => {
     h.nonceAt(1)
     h.observe(G1)
     expect(h.state.lifecycle.kind).toBe('starting')
-    expect(h.commands('findNonceTx')).toEqual([{ type: 'findNonceTx', nonce: 0 }])
+    expect(unidentifiedNonces(h.state)).toEqual([0])
     h.mine(h.candidate('0xpublish').hash)
     expect(h.state.lifecycle.kind).toBe('running')
     expect(latched(h.state)).toBe(true)

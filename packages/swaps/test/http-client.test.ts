@@ -95,7 +95,7 @@ describe('createRateLimitedClient', () => {
       async () => {
         calls += 1
         return calls === 1
-          ? new Response('slow down', { status: 429, headers: { 'retry-after': '2' } })
+          ? new Response('slow down', { status: 429, headers: { 'retry-after': '1' } })
           : new Response(JSON.stringify({ ok: true }), { status: 200 })
       },
       { maxRetries: 2 },
@@ -104,7 +104,7 @@ describe('createRateLimitedClient', () => {
     const json = await client.getJson<{ ok: boolean }>({ venue: '0x', url: 'https://x/y' })
     expect(json).toEqual({ ok: true })
     expect(calls).toBe(2)
-    expect(sleeps).toContain(2000) // Retry-After: 2s
+    expect(sleeps).toContain(1000) // Retry-After: 1s
   })
 
   it('throws a rate_limited QuoteError after exhausting retries on 429', async () => {
@@ -114,6 +114,160 @@ describe('createRateLimitedClient', () => {
       .then(() => 'resolved')
       .catch(e => (e instanceof QuoteError ? e.reason : 'other'))
     expect(reason).toBe('rate_limited')
+  })
+
+  it('fails rate_limited at once when Retry-After outlasts the request deadline', async () => {
+    let calls = 0
+    const sleeps: number[] = []
+    const client = fastClient(
+      async () => {
+        calls += 1
+        return new Response('quota', { status: 429, headers: { 'retry-after': '7200' } })
+      },
+      { maxRetries: 2 },
+      sleeps
+    )
+    const reason = await client
+      .getJson({ venue: 'lifi', url: 'https://x/y' })
+      .catch(e => (e instanceof QuoteError ? e.reason : 'other'))
+    expect(reason).toBe('rate_limited')
+    expect(calls).toBe(1)
+    expect(sleeps).toEqual([])
+  })
+
+  it('asks a venue nothing more until the Retry-After of its last 429 passes', async () => {
+    let at = 0
+    const statuses: number[] = []
+    const client = createRateLimitedClient({
+      apiKeys: {},
+      rps: 1_000_000,
+      burst: 1_000_000,
+      maxRetries: 0,
+      timeoutMs: 1000,
+      fetchImpl: async () => {
+        const status = statuses.length === 0 ? 429 : 200
+        statuses.push(status)
+        return new Response('{}', { status, headers: { 'retry-after': '30' } })
+      },
+      now: () => at,
+      sleep: async () => {}
+    })
+    const reasonOf = (venue: 'lifi' | '0x') =>
+      client
+        .getJson({ venue, url: 'https://x/y' })
+        .then(() => 'ok')
+        .catch(e => (e instanceof QuoteError ? e.reason : 'other'))
+    expect(await reasonOf('lifi')).toBe('rate_limited')
+    at = 29_999
+    expect(await reasonOf('lifi')).toBe('rate_limited')
+    expect(await reasonOf('0x')).toBe('ok')
+    at = 30_000
+    expect(await reasonOf('lifi')).toBe('ok')
+    expect(statuses).toEqual([429, 200, 200])
+    expect(client.requests?.()).toBe(3)
+  })
+
+  it('keeps the longer cooldown when concurrent 429s disagree on Retry-After', async () => {
+    let at = 0
+    const pending: ((retryAfter: string) => void)[] = []
+    const client = createRateLimitedClient({
+      apiKeys: {},
+      rps: 1_000_000,
+      burst: 1_000_000,
+      maxRetries: 0,
+      timeoutMs: 1000,
+      fetchImpl: async () => {
+        if (pending.length === 2) return new Response('{}', { status: 200 })
+        const retryAfter = await new Promise<string>(resolve => pending.push(resolve))
+        return new Response('{}', { status: 429, headers: { 'retry-after': retryAfter } })
+      },
+      now: () => at,
+      sleep: async () => {}
+    })
+    const reasonOf = () =>
+      client
+        .getJson({ venue: 'lifi', url: 'https://x/y' })
+        .then(() => 'ok')
+        .catch(e => (e instanceof QuoteError ? e.reason : 'other'))
+    const long = reasonOf()
+    const short = reasonOf()
+    await new Promise(resolve => setImmediate(resolve))
+    pending[0]?.('60')
+    expect(await long).toBe('rate_limited')
+    pending[1]?.('5')
+    expect(await short).toBe('rate_limited')
+    at = 59_999
+    expect(await reasonOf()).toBe('rate_limited')
+    at = 60_000
+    expect(await reasonOf()).toBe('ok')
+  })
+
+  it('refuses a cooling venue without waiting for its rate limit', async () => {
+    const client = createRateLimitedClient({
+      apiKeys: {},
+      rps: 1e-9,
+      burst: 1,
+      maxRetries: 0,
+      timeoutMs: 1000,
+      fetchImpl: async () => new Response('{}', { status: 429 }),
+      now: () => 0,
+      sleep: () => new Promise<void>(() => {})
+    })
+    const reasonOf = () =>
+      client
+        .getJson({ venue: 'lifi', url: 'https://x/y' })
+        .catch(e => (e instanceof QuoteError ? e.reason : 'other'))
+    expect(await reasonOf()).toBe('rate_limited')
+    expect(await reasonOf()).toBe('rate_limited')
+  })
+
+  it('sends nothing more from a call that was retrying when its venue started cooling down', async () => {
+    let calls = 0
+    let release = () => {}
+    const blocked = new Promise<void>(resolve => (release = resolve))
+    const client = createRateLimitedClient({
+      apiKeys: {},
+      rps: 1_000_000,
+      burst: 1_000_000,
+      maxRetries: 1,
+      timeoutMs: 1000,
+      fetchImpl: async () => {
+        calls += 1
+        const retryAfter = calls === 1 ? '1' : '7200'
+        return new Response('{}', { status: 429, headers: { 'retry-after': retryAfter } })
+      },
+      now: () => 0,
+      sleep: () => blocked
+    })
+    const reasonOf = () =>
+      client
+        .getJson({ venue: 'lifi', url: 'https://x/y' })
+        .catch(e => (e instanceof QuoteError ? e.reason : 'other'))
+    const retrying = reasonOf()
+    await new Promise(resolve => setImmediate(resolve))
+    expect(await reasonOf()).toBe('rate_limited')
+    release()
+    expect(await retrying).toBe('rate_limited')
+    expect(calls).toBe(2)
+  })
+
+  it('fails api_error at once on a 503 whose Retry-After outlasts the request deadline', async () => {
+    let calls = 0
+    const sleeps: number[] = []
+    const client = fastClient(
+      async () => {
+        calls += 1
+        return new Response('maintenance', { status: 503, headers: { 'retry-after': '600' } })
+      },
+      { maxRetries: 2 },
+      sleeps
+    )
+    const reason = await client
+      .getJson({ venue: '1inch', url: 'https://x/y' })
+      .catch(e => (e instanceof QuoteError ? e.reason : 'other'))
+    expect(reason).toBe('api_error')
+    expect(calls).toBe(1)
+    expect(sleeps).toEqual([])
   })
 
   it('throws a no_route QuoteError on a non-429 4xx without retrying', async () => {

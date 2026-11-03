@@ -54,28 +54,10 @@ export const MAKER_KEY = '0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9
 export const BORROWER_KEY =
   '0x7c852118294e51e653712a81e05800f419141751be58f605c371e15141b007a6' as Hex
 
-// Well-known anvil dev keys (throwaway; funded via setBalance on the fork). #0 is the liquidator EOA
-// the bot signs with; #1 deploys the Executor singleton (it has no owner, so the deployer is moot).
-export const LIQUIDATOR_KEY =
-  '0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80' as Hex
+// Anvil dev key #1 deploys the Executor singleton; it has no owner, so the deployer is moot.
 const DEPLOYER_KEY = '0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d' as Hex
 
-export const LIQUIDATOR = privateKeyToAccount(LIQUIDATOR_KEY).address
-
-// Fail loud (no skip) when the fork RPC isn't configured — the suite cannot run without it. Named
-// per-chain (8453 = Base) so CI can supply it as a secret of the same name; locally, set it in
-// bots/midnight-liquidation/.env.test.local. Resolved via a function so the value is typed `string`
-// (a module-level narrowing wouldn't flow into startFork's closure).
-function requireForkUrl(): string {
-  const url = process.env.RPC_URL_8453
-  if (!url) {
-    throw new Error(
-      'RPC_URL_8453 is required for the fork suite — set it in bots/midnight-liquidation/.env.test.local'
-    )
-  }
-  return url
-}
-const FORK_URL = requireForkUrl()
+export const FORK_URL: string | undefined = process.env.RPC_URL_8453
 
 export type TestClient = ReturnType<typeof testClient>
 
@@ -121,21 +103,21 @@ async function waitForRpc(url: string, timeoutMs = 30_000): Promise<void> {
   throw new Error(`anvil RPC at ${url} not ready within ${timeoutMs}ms${detail}`)
 }
 
-// Anvil port registry — vitest runs test FILES IN PARALLEL (bun's runner was serial, so fixed ports
-// used to be safe within a bot only). Every fork suite in the repo must claim a distinct port:
+// Anvil port registry — vitest runs test FILES IN PARALLEL, so every fork suite in the repo must
+// claim a distinct port:
 //   8545 bots/blue-liquidation      fork/liquidation
 //   8546 bots/quoter-bot         e2e/setup-check
 //   8547 bots/midnight-liquidation  fork/liquidation
-//   8548 bots/midnight-liquidation  fork/queue
 //   8549 bots/quoter-bot            e2e/quoter-bot
 //   8551 packages/kit               kernel.anvil (local chain, no fork)
 //   8552 framework/kernel           host.anvil (local chain, no fork)
 /**
  * Boots an anvil instance forking Base at FORK_BLOCK (chain id pinned to Base so signatures match).
  * `port` is explicit so parallel fork test files never collide — see the registry above.
- * Requires the `anvil` binary on PATH (Foundry locally; foundry-toolchain in CI).
+ * Requires the `anvil` binary on PATH (Foundry locally; foundry-toolchain in CI) and `FORK_URL`.
  */
 export async function startFork(port = 8545): Promise<{ anvil: ForkHandle; rpcUrl: string }> {
+  if (!FORK_URL) throw new Error('RPC_URL_8453 is required to start the fork')
   const anvil = toForkHandle(
     spawn(
       'anvil',

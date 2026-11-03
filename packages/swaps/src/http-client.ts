@@ -19,6 +19,9 @@ import { QuoteError } from './errors'
  */
 export type HttpVenue = Venue | 'pendle'
 
+/** How long a venue that answered 429 without a `Retry-After` is left alone. */
+const RATE_LIMIT_COOLDOWN_MS = 60_000
+
 // Per-host auth: where each host's API key goes. Uniswap is onchain (no key). Keys are injected
 // here, at the single point of use, and never logged (we log only the path, never the query/headers).
 const VENUE_AUTH: Record<HttpVenue, (key: string | undefined) => Record<string, string>> = {
@@ -57,11 +60,10 @@ export type RateLimitedClient = {
 type FetchLike = (url: string, init?: RequestInit) => Promise<Response>
 
 /**
- * A rate-limited JSON HTTP client shared across venues. Each venue gets its own token bucket (their
- * limits differ — 1inch's free tier is 1 RPS). Retries 429/5xx/network up to `maxRetries`, honoring
- * `Retry-After`; per-request deadline is `timeoutMs`. Calls `fetch` directly
- * because it needs the raw `Response` to read `status` + the `Retry-After` header for backoff. Throws
- * a {@link QuoteError} carrying a classified reason on exhaustion.
+ * Rate-limited JSON client with a token bucket per venue. Retries 429/5xx/network up to `maxRetries`,
+ * honoring a `Retry-After` no longer than `timeoutMs` and failing at once past it, so an exhausted
+ * quota never parks a caller. A venue whose last answer was 429 then fails `rate_limited` without a
+ * request until its `Retry-After` passes. Throws a {@link QuoteError} carrying a classified reason.
  */
 export function createRateLimitedClient(deps: {
   apiKeys: Partial<Record<HttpVenue, string>>
@@ -77,6 +79,16 @@ export function createRateLimitedClient(deps: {
   const now = deps.now ?? (() => Date.now())
   const sleep = deps.sleep ?? delay
   const buckets = new Map<HttpVenue, { take: () => Promise<void> }>()
+  const cooledUntil = new Map<HttpVenue, number>()
+  const refuseWhileCooling = (venue: HttpVenue) => {
+    if (now() < (cooledUntil.get(venue) ?? 0))
+      throw new QuoteError('rate_limited', `${venue} is cooling down after HTTP 429`)
+  }
+  const coolAfter = (venue: HttpVenue, status: number, hinted: number | undefined) => {
+    if (status !== 429) return
+    const until = now() + (hinted ?? RATE_LIMIT_COOLDOWN_MS)
+    cooledUntil.set(venue, Math.max(until, cooledUntil.get(venue) ?? 0))
+  }
   let requests = 0
   const bucketFor = (venue: HttpVenue) => {
     let bucket = buckets.get(venue)
@@ -100,9 +112,11 @@ export function createRateLimitedClient(deps: {
         url.searchParams.set(key, value)
       }
       const headers = VENUE_AUTH[args.venue](deps.apiKeys[args.venue])
+      refuseWhileCooling(args.venue)
 
       for (let attempt = 0; ; attempt++) {
         await bucketFor(args.venue).take()
+        refuseWhileCooling(args.venue)
         requests += 1
         const { data: response, error: networkError } = await tryCatch(
           fetchImpl(url.toString(), { headers, signal: AbortSignal.timeout(deps.timeoutMs) })
@@ -122,10 +136,12 @@ export function createRateLimitedClient(deps: {
         }
 
         if (response.status === 429 || response.status >= 500) {
-          if (attempt < deps.maxRetries) {
-            await sleep(retryAfterMs(response.headers.get('retry-after')) ?? backoffMs(attempt))
+          const hinted = retryAfterMs(response.headers.get('retry-after'))
+          if (attempt < deps.maxRetries && (hinted === undefined || hinted <= deps.timeoutMs)) {
+            await sleep(hinted ?? backoffMs(attempt))
             continue
           }
+          coolAfter(args.venue, response.status, hinted)
           throw new QuoteError(
             response.status === 429 ? 'rate_limited' : 'api_error',
             `${args.venue} HTTP ${response.status} (${url.pathname})`

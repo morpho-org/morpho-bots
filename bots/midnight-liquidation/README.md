@@ -13,9 +13,10 @@ This package is operational code, but it is still intentionally narrow:
 - Supported chains: Base (`CHAIN_ID=8453`) and Ethereum mainnet (`CHAIN_ID=1`). **One process per
   chain** — the bot is single-chain by design; horizontal scale is one deployment per chain.
 - Each chain carries its own calibration (`TuningConfig` in `src/config.ts`): block-denominated
-  values are derived from a shared wall-clock intent through the chain's block time, and the fee /
-  economics values are set per chain. The fee/economics half is env-overridable (see **Per-chain
-  defaults**); the block-timing half is code-only, changed by editing the chain's row.
+  values are derived from a shared wall-clock intent through the chain's block time, and the
+  economics values are set per chain. The economics half is env-overridable (see **Per-chain
+  defaults**); the block-timing half is code-only, changed by editing the chain's row. The fee
+  bounds have no default: each release sets them (see [Release values](#release-values)).
 - The markets the bot may touch come from the Midnight Markets API (`listed=true`) as a **whitelist**:
   only listed markets are discovered, probed, and liquidated (fail-closed). There is no hand-maintained
   collateral list.
@@ -30,9 +31,10 @@ This package is operational code, but it is still intentionally narrow:
   route through Uniswap pools anyway, and a direct Uniswap route can't be ranked on real output.
 - For positions with multiple active collaterals, the planner sizes **every** activated slot — in both
   liquidation modes when the position is matured and unhealthy, since the contract opens both gates —
-  and ranks the resulting candidates by expected surplus. The tick works down that ranking and submits
-  at most one liquidation per position, so a transient venue failure or a closed gate on one candidate
-  falls through to the next in the same tick.
+  and ranks the resulting candidates by expected surplus net of route cost. The position's
+  preparation works down that ranking and answers with the first candidate that quotes and simulates,
+  so a transient venue failure or a closed gate on one candidate falls through to the next in the same
+  preparation, and at most one liquidation of a position is ever in flight.
 - ⚠️ **The bot does not yet support the protocol's full collateral range.** Midnight allows 16
   activated collaterals per borrower, which at two open modes is 32 candidates; the planner keeps only
   the top `MAX_PLAN_CANDIDATES_PER_POSITION` (4) after ranking, so it bounds the quotes and
@@ -46,6 +48,22 @@ This package is operational code, but it is still intentionally narrow:
   liquidatable even with no venue key set, and it is exempt from `HEADROOM_FLOOR_BPS` — that floor
   bounds a route cost this path does not pay.
 
+## Architecture
+
+The bot is one graph on the bot framework (`docs/framework/AUTHORING.md`). Its `src/` root is the
+framework skeleton: `graph.ts` declares the graph, `run.ts` starts it, `kernel.ts` loads the
+liquidator's key and builds its kernel, `report.ts` writes the operator log, `sources.ts` reads the
+world at each head, `routes.ts` resolves and prices each position's route, and `prepare.ts` quotes,
+encodes and simulates one liquidation. Around them:
+
+- `discovery/` — candidate borrowers, listed markets and token prices from the Morpho API.
+- `state/` — the deployless lens that reads each position's live Midnight state.
+- `runner/` and `sizing/` — pure eligibility, profitability, ranking and seize-exact sizing;
+  `liquidation.ts` applies them to one position reading.
+- `execution/` — the Executor calldata and the swap step; `quotes.ts` composes venue quoting.
+- `generated/` — the API client; `constants.ts` and `stats.ts` — protocol constants and
+  per-tick counters.
+
 ## Prerequisites
 
 - Node.js `24.22.1` (`nvm use` from the repo root).
@@ -56,7 +74,8 @@ This package is operational code, but it is still intentionally narrow:
   deterministic address derived by `@repo/contracts`; startup still requires code to exist there.
 - Network access to the markets liquidation-candidates API and the Midnight Markets API (both public
   by default; override with `LIQUIDATION_CANDIDATES_API_URL` / `MARKETS_API_URL`, the latter accepting
-  a comma-separated list of endpoints whose whitelists are unioned).
+  a comma-separated list of endpoints whose whitelists are unioned). An endpoint that needs a key
+  takes it from `MORPHO_API_KEY`.
 - At least one enabled venue to swap-liquidate a collateral that is not the loan token:
   `ENABLE_LIFI=true` (or a `LIFI_API_KEY`), `ZEROX_API_KEY`, and/or `ONEINCH_API_KEY`. With none
   enabled the bot refuses to start unless `ALLOW_BAD_DEBT_ONLY=true` is set — and even then it is not
@@ -76,9 +95,10 @@ Environment variables:
 | `RPC_URL_FALLBACK`                                        | no       | —                                     | Optional fallback RPC for the signer's transport.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | `LIQUIDATOR_PRIVATE_KEY`                                  | yes      | —                                     | `0x`-prefixed 32-byte private key for the sender EOA.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | `EXECUTOOOR_ADDRESS`                                      | no       | derived                               | Override for the shared Executor address.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| `LIQUIDATION_CANDIDATES_API_URL`                          | no       | public                                | Liquidation-candidates endpoint polled for borrower discovery. Defaults to the public Morpho Markets API; validated as a URL at startup (fail-loud).                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `MORPHO_API_KEY`                                          | no       | —                                     | Morpho API key, sent as `x-api-key` on every Morpho API request (candidates, tokens, markets) when set. Needed only for an endpoint that requires one; request one from Morpho.                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| `LIQUIDATION_CANDIDATES_API_URL`                          | no       | public                                | Liquidation-candidates endpoint polled for borrower discovery; its base also serves token prices. Must be https and the final address: redirects are not followed. Validated at startup (fail-loud).                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | `HEALTH_FACTOR_LTE`                                       | no       | `1.02`                                | Health-factor cutoff sent to discovery (`health_factor_lte`); matured positions are always included regardless. Floored at `1.0`. Over-inclusive by design — the onchain lens is the source of truth.                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| `MARKETS_API_URL`                                         | no       | public                                | Midnight Markets endpoint(s) used as the market whitelist (`listed=true`). Accepts a comma-separated list, whose whitelists are unioned per-source (see below). Defaults to the public Morpho Markets API; every entry is validated as a URL at startup (fail-loud). ⚠️ Set a list only after an image that supports it is live, and clear it back to one URL before rolling back — older images reject a list.                                                                                                                                                                                                                |
+| `MARKETS_API_URL`                                         | no       | public                                | Midnight Markets endpoint(s) used as the market whitelist (`listed=true`). Accepts a comma-separated list, whose whitelists are unioned per-source (see below). Every entry must be https and the final address (redirects are not followed), and is validated at startup (fail-loud). ⚠️ Set a list only after an image that supports it is live, and clear it back to one URL before rolling back — older images reject a list.                                                                                                                                                                                              |
 | `MARKETS_REFRESH_MS`                                      | no       | `60000`                               | How often the whitelist is refreshed. The endpoint is Morpho's own (not rate-limited); last-known-good is served on a transient failure.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | `ZEROX_API_KEY`                                           | cond.    | —                                     | Enables the `0x` venue when set. Read at point of use; never stored on config or logged.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | `ONEINCH_API_KEY`                                         | cond.    | —                                     | Enables the `1inch` venue when set. Read at point of use; never stored on config or logged.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
@@ -87,25 +107,27 @@ Environment variables:
 | `ALLOW_BAD_DEBT_ONLY`                                     | no       | `false`                               | When no venue is enabled, the bot refuses to start unless this is `true` (it then discovers positions, realizes bad debt, and liquidates loan-as-collateral slots, which need no route; it never swap-liquidates, and an unwrap chain counts as a swap here).                                                                                                                                                                                                                                                                                                                                                                  |
 | `ZEROX_BASE_URL` / `ONEINCH_BASE_URL` / `LIFI_BASE_URL`   | no       | public                                | Optional venue API host overrides.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | `EXCLUDE_COLLATERALS`                                     | no       | —                                     | Comma-separated collateral addresses the bot must never seize/hold — skipped (no quote) even in a listed market.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| `MAX_FEE_GWEI`                                            | no       | `300`                                 | Ceiling on the price of one gas unit — the headroom the bump ladder needs, not a bound on cost (that is `MAX_SPEND_ETH`). A value near the basefee makes the queue drop the tx and latch a nonce hole. Chain-independent.                                                                                                                                                                                                                                                                                                                                                                                                      |
-| `MAX_GAS_LIMIT`                                           | no       | chain-dependent                       | Ceiling on a signed transaction's gas limit, enforced by the signing policy. Caps the units, not the cost. Tightened per chain because gas is the knowable factor, while `MAX_FEE_GWEI` must stay wide for the bump ladder. Must be at least `21000`. See **Per-chain defaults**.                                                                                                                                                                                                                                                                                                                                              |
-| `MAX_SPEND_ETH`                                           | no       | `0.5`                                 | Ceiling on `gas x maxFeePerGas` for one transaction, in ETH — the bound on what a single tx can cost, enforced by the signing policy and by the queue when it prices each bump. Neither `MAX_GAS_LIMIT` nor `MAX_FEE_GWEI` bounds cost alone. Chain-independent.                                                                                                                                                                                                                                                                                                                                                               |
-| `PRIORITY_FEE_GWEI`                                       | no       | chain-dependent                       | First-send tip — this value, not the ceiling, is what the bot actually pays for inclusion, since the bump ladder only escalates it 12.5% per attempt. Must leave room for one bump under `MAX_FEE_GWEI`. See **Per-chain defaults**.                                                                                                                                                                                                                                                                                                                                                                                           |
+| `MAX_FEE_GWEI`                                            | yes      | —                                     | Ceiling on the price of one gas unit. The first tip derives from it, about a fifth of it and at most 1 gwei, and re-bids escalate under it; at it the bot waits, live, for fees to fall. Set per chain in the release values. `PRIORITY_FEE_GWEI` is no longer supported, and the bot refuses to start while it is set.                                                                                                                                                                                                                                                                                                        |
+| `MAX_GAS_LIMIT`                                           | yes      | —                                     | Ceiling on a signed transaction's gas limit, enforced by the signing policy. Caps the units, not the cost. Must be at least `21000`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `MAX_SPEND_ETH`                                           | yes      | —                                     | Ceiling on `gas x maxFeePerGas` for one transaction, in ETH — the bound on what a single tx can cost, enforced by the signing policy and reserved by the kernel per unresolved nonce. With `MAX_FEE_GWEI` it must fund a nonce fill and a step bid one bump below it, or the bot refuses to start.                                                                                                                                                                                                                                                                                                                             |
 | `LOG_LEVEL`                                               | no       | `info`                                | One of `debug`, `info`, `warn`, `error`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | `CACHE_DIR`                                               | no       | `.cache`                              | Soltag/deployless cache directory.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| `QUOTE_TIMEOUT_MS`                                        | no       | `2500`                                | Per-quote HTTP deadline (the firm quote runs inside the per-block tick).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `QUOTE_TIMEOUT_MS`                                        | no       | `2500`                                | Per-quote HTTP deadline (the firm quote runs inside a position's preparation).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | `HTTP_RPS` / `HTTP_BURST`                                 | no       | `2` / `5`                             | Per-venue token-bucket refill rate and burst for FIRM quotes. The 1inch free tier is 1 RPS — set `HTTP_RPS=1` if you only use 1inch.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | `PROBE_HTTP_RPS`                                          | no       | `1`                                   | Per-venue token-bucket rate for BACKGROUND probes, on a separate client so probe bursts never queue ahead of a live firm quote.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | `PROBE_STALE_MS`                                          | no       | `45000`                               | Probe-cache TTL per pair. A pair is re-probed only when a liquidatable position touches it after the cache goes stale — no probe traffic on quiet markets. Kept short because the cached curve is a price level and the route cost derived from it is the same order (~20bps) as the post-maturity liquidation incentive it is weighed against; venue _ordering_ is unaffected by cache age.                                                                                                                                                                                                                                   |
 | `PROBE_LADDER`                                            | no       | `0.01,0.1,1,10,100,1000,10000,100000` | Comma-separated log-scaled probe sizes in **USD**, converted per-collateral to base units against the token price (whole collateral tokens for a collateral the price source cannot price). Fixed and deliberately wide — decades from \$0.01 to \$100k bracket every real seize size on any collateral, so `select` interpolates rather than clamping.                                                                                                                                                                                                                                                                        |
-| `HTTP_MAX_RETRIES`                                        | no       | `2`                                   | Retries on 429/5xx/network (honoring `Retry-After`) before a quote fails.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `HTTP_MAX_RETRIES`                                        | no       | `2`                                   | Retries on 429/5xx/network (honoring `Retry-After`) before a quote fails. A venue whose last answer was 429 is then not asked again until its `Retry-After` passes, or 60s without one.                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | `MAX_ROUTE_IMPACT_BPS`                                    | no       | `500`                                 | Reject a venue's quoted output more than this far below the oracle reference (route-quality guard).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | `SEIZE_CAP_MARGIN_BPS`                                    | no       | chain-dependent                       | Headroom shaved off the onchain repay cap when sizing a cap-binding seize, so a one-block oracle move can't trip the contract's RCF/debt check. `0` sizes right at the cap.                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | `HEADROOM_FLOOR_BPS`                                      | no       | `3`                                   | **Lower bound** on swap execution cost — the cheapest route you would ever expect, NOT a typical cost. A seize-exact plan's whole margin is the incentive `(lif - 1)/lif`, so a plan below this floor cannot fund its own repay by any route and is skipped as `plan.skipped` / `insufficient_headroom` before it costs a quote, a simulation or a gas estimate. Post-maturity the incentive ramps from zero over an hour, so this acts as a pure time gate: `3` suppresses roughly the first 25s on a 4.4%-maxLif tier. Set it too high and it blinds the earliest, most contested part of a maturity. `0` disables the gate. |
 | `MIN_SURPLUS_BPS`                                         | no       | `0`                                   | Surplus over break-even a quoted route's **expected** output must clear before the bot spends a simulation on it, in bps of the plan's contract-derived repay. `0` is pure break-even: both sides then come from the contract's own formula with no tuned value, so the gate can only reject plans that would have reverted anyway. It gates the expected output only — the min-out actually encoded in the swap calldata stays at break-even — so raising it buys margin against a route that underperforms its quote, not against oracle drift between simulation and inclusion.                                             |
 | `PENDLE_SLIPPAGE_BPS`                                     | no       | `50`                                  | Slippage for the Pendle PT → underlying unwrap hop (before the downstream venue sells).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| `BACKOFF_BASE_BLOCKS` / `BACKOFF_MAX_BLOCKS`              | no       | chain-dependent                       | Exponential per-position cooldown (in blocks) after a failed quote/simulate, bounding API + RPC usage under a backlog. An economic refusal (`floor_unmet`, an unprofitable quote) never arms it, and neither does a send the chain itself declined — see [Broadcast And Pending Queue](#broadcast-and-pending-queue).                                                                                                                                                                                                                                                                                                          |
-| `POSITION_LIQUIDATION_COOLDOWN_MS`                        | no       | `0`                                   | Opt-in per-position cooldown (ms) after a failed liquidation attempt; `0` disables it (re-attempt every tick).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `BACKOFF_BASE_BLOCKS` / `BACKOFF_MAX_BLOCKS`              | no       | chain-dependent                       | Exponential per-position backoff (in blocks) after a failed quote or simulation, or a liquidation the kernel refused or ended unsettled, bounding API + RPC usage under a backlog. An economic refusal (`floor_unmet`, an unprofitable quote) never arms it — see [Kernel and backoff](#kernel-and-backoff).                                                                                                                                                                                                                                                                                                                   |
+| `KERNEL_STATE_DIR`                                        | yes      | —                                     | Directory holding the signing kernel's ledger (`kernel-<chainId>-<account>.json`) and journal. Must survive restarts; the chart mounts a volume there.                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `BUILD_REVISION` / `BUILD_IMAGE_TAG`                      | yes      | —                                     | The source revision and image the journal names; the Dockerfile bakes them in from build args.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `KERNEL_ENROLLMENT`                                       | yes      | —                                     | `enrolling` for the first start of a fresh account, `enrolled` for every later one; a missing ledger under `enrolled` refuses to start. `POSITION_LIQUIDATION_COOLDOWN_MS` is no longer supported, and the bot refuses to start while it is set.                                                                                                                                                                                                                                                                                                                                                                               |
+| `FINALITY_<CHAIN_ID>`                                     | yes      | —                                     | `safe`, `finalized`, or a positive block depth: the block the kernel treats as final on that chain, e.g. `FINALITY_8453=safe`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | `BETTERSTACK_SOURCE_TOKEN` / `BETTERSTACK_INGESTING_HOST` | no       | —                                     | Opt-in log shipping; when both are set the bot's in-process loglayer transport ships structured logs to BetterStack (inert otherwise).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | `BETTERSTACK_HEARTBEAT_URL`                               | no       | —                                     | Optional Better Stack Uptime heartbeat URL, pinged every minute; failures only log a warning and never interrupt liquidations.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 
@@ -119,11 +141,16 @@ CHAIN_ID=8453
 RPC_URL=https://base-mainnet.example
 RPC_URL_FALLBACK=https://base-mainnet-fallback.example
 LIQUIDATOR_PRIVATE_KEY=0x...
+KERNEL_STATE_DIR=./.kernel
+KERNEL_ENROLLMENT=enrolling   # first start of a fresh account only; `enrolled` afterwards
+FINALITY_8453=safe
+BUILD_REVISION=...            # required: the commit, `git rev-parse HEAD`
+BUILD_IMAGE_TAG=local
+MAX_FEE_GWEI=0.5              # required: the ceiling on the fee per gas
+MAX_GAS_LIMIT=15000000        # required: the ceiling on a signed transaction's gas limit
+MAX_SPEND_ETH=0.5             # required: the ceiling on one transaction's cost
 ZEROX_API_KEY=...
 ONEINCH_API_KEY=...
-# Fee and economics knobs default from the chain's row in src/config.ts; set them only to override.
-# Every value below is already Base's default — shown for shape, not because it needs setting.
-PRIORITY_FEE_GWEI=0.1
 LOG_LEVEL=info
 ```
 
@@ -135,42 +162,54 @@ same behaviour keeps the same timing on a ~2s and a ~12s chain.
 
 **Code-only** — no env var; retuned by editing the chain's row in `src/config.ts`:
 
-| Default                                       | Base (8453)  | Mainnet (1) | Why it differs                                     |
-| --------------------------------------------- | ------------ | ----------- | -------------------------------------------------- |
-| `settledCooldownBlocks` / `stuckBlocks`       | `20n` / `4n` | `3n` / `1n` | Same wall-clock intent, ~6x the block time.        |
-| `reconcileEveryBlocks` / `balanceEveryBlocks` | `3` / `30n`  | `1` / `5n`  | Same, for nonce reconciliation and the gas metric. |
-| `maxBumpAttempts`                             | `3`          | `6`         | Mainnet basefee can climb 12.5% per block.         |
+| Default              | Base (8453) | Mainnet (1) | Why it differs                              |
+| -------------------- | ----------- | ----------- | ------------------------------------------- |
+| `balanceEveryBlocks` | `30n`       | `5n`        | Same wall-clock intent, ~6x the block time. |
 
-`stuckBlocks` is counted from the block that first _sights_ a broadcast, not from the block the tick
-started on, so the wait before a bump is one block longer than the number itself — on mainnet's `1n`
-that is the difference between one block and two. The baseline is deliberately sourced this way: a
-tick's head is captured before quoting and simulation, and ageing against it once fee-bumped fresh
-transactions within a second of sending them.
+The kernel re-bids a transaction that waits 8s for inclusion, converted to each chain's blocks: 4
+on Base and 1 on mainnet. A prepared liquidation's quote authorizes its send for the chain's **send
+life**, `(stuck blocks + 1) x block time x (re-bids + 1)`: 40s on Base and 168s on mainnet, so a
+stuck send is re-bid rather than cancelled, and a quote never rides past it. `rebids` (3 on Base, 6
+on mainnet) is only the minimum that sizes the send life. The kernel re-bids every stuck-block
+interval until the fee step cap or the send life ends: about 4 times on Base and 13 on mainnet. So a
+stuck mainnet tip can rise to about 1.125^13, or 4.6 times, its first bid, under `MAX_FEE_GWEI` and
+`MAX_SPEND_ETH`.
 
 **Env-overridable** — the chain's row supplies the default, the env var wins:
 
 | Default                                      | Base (8453)  | Mainnet (1)  | Why it differs                                      |
 | -------------------------------------------- | ------------ | ------------ | --------------------------------------------------- |
-| `PRIORITY_FEE_GWEI`                          | `0.1`        | `2`          | Base tips are nominal; mainnet's are a real market. |
-| `MAX_GAS_LIMIT`                              | `15000000`   | `3000000`    | Caps gas units; tightened where fees are real.      |
 | `SEIZE_CAP_MARGIN_BPS`                       | `30`         | `60`         | One block of oracle drift is ~6x longer on mainnet. |
 | `BACKOFF_BASE_BLOCKS` / `BACKOFF_MAX_BLOCKS` | `2n` / `64n` | `1n` / `11n` | Same wall-clock intent, ~6x the block time.         |
 
-`MAX_FEE_GWEI` is deliberately **not** per-chain (`300` on both). It bounds the price of a gas unit,
-not the cost of a transaction, and it is the headroom the bump ladder escalates into: the queue drops
-a tx — latching a nonce hole — once a bumped `maxFeePerGas` would exceed it, so a tight ceiling
-shortens the ladder exactly when congestion makes it matter. That is why it cannot double as a spend
-limit. `test/config.test.ts` pins the basefee each chain completes its full ladder at, in both the
-flat and the maximum-rise regime, driving bot-kit's own fee functions rather than restating them.
+`MAX_FEE_GWEI`, `MAX_SPEND_ETH` and `MAX_GAS_LIMIT` are required, with no default; the release
+values below set them per chain. `MAX_FEE_GWEI` bounds the price of a gas unit, and caps the first
+tip: kit tips the median of the last 20 blocks' 90th-percentile tips, about 0.010 gwei on Base in
+October 2026, but never more than a quarter of the step cap (one bump below the ceiling) or 1 gwei.
+So 0.5 gwei on Base tips at most about 0.11 gwei and re-bids a whole send life up to about a 0.067
+gwei base fee, and 50 gwei on mainnet tips at most 1 gwei and re-bids up to about a 3.77 gwei base
+fee ([test/config.test.ts](./test/config.test.ts) pins both at those caps). When the node serves no
+fee history within 2 s, kit logs `fees.no_market_tip` once and tips the cap's quarter. `MAX_SPEND_ETH` is what bounds cost: it
+caps `gas x maxFeePerGas` for one transaction, enforced by the signing policy against the gas the
+node estimated, and the kernel reserves it per unresolved nonce. `MAX_GAS_LIMIT` caps the units;
+mainnet keeps 3M.
 
-`MAX_SPEND_ETH` is what actually bounds cost, also **not** per-chain (`0.5` on both, since it is
-denominated in the gas token rather than in either chain's fee level). It caps `gas x maxFeePerGas`
-for a single transaction — the product is what leaves the wallet, and neither factor bounds it alone:
-15M gas at 300 gwei is 4.5 ETH. It is enforced twice, by the signing policy against the gas the node
-actually estimated, and by the pending queue, which prices each bump against it so an unaffordable
-bump retires the tx through the ordinary ceiling drop instead of a signing refusal. The default is
-sized to bound a runaway rather than to price a liquidation; calibrate it down once production
-`tx.confirmed` gas gives a distribution to calibrate against.
+#### Fee bounds
+
+A liquidation's own transactions spend at most its expected profit: the quoted output over the
+repay, or a swap-free slot's surplus, priced in the chain's wrapped native token through both tokens'
+USD prices, less Base's L1 data fee, which is charged outside the gas price. That ceiling only lowers
+`MAX_SPEND_ETH`, and so can lower the first tip's cap, a quarter of the per-gas cap. Recovery fills still
+price at `MAX_SPEND_ETH`. A preparation logs `gas.unaffordable` and backs its position off when the
+ceiling cannot fund a first bid at the current base fee: the node's gas estimate with the kit's 20%
+headroom, bid at twice the base fee plus the largest tip it may take, priced by the signer's own
+`firstBid` in `@repo/kit`, so a tight ceiling never shrinks the gas limit to the bare estimate. It
+also refuses a bid the step cap prices under the current base fee, which no block would include. A
+post-maturity swap's profit grows with its ramp, so its refusal holds the position only to the next
+head. It logs `plan.no_surplus` without quoting
+an alternative whose oracle surplus is worth nothing. While either USD price is unknown or expired,
+it logs `gas.unpriced` and sends under `MAX_SPEND_ETH` alone. A bad-debt write-off earns nothing and
+is always sent under `MAX_SPEND_ETH`.
 
 `MIN_SURPLUS_BPS` is deliberately **not** per-chain: it stays at pure break-even (`0`) on both, where
 the gate compares two contract-derived quantities and can only reject plans that would have reverted
@@ -197,15 +236,15 @@ There is no swap config file. Instead:
   The max-age staleness rule (`LISTED_MARKETS_MAX_AGE_MS` — a build-time constant of 10 minutes, not an
   environment variable) is applied **per source**, so one endpoint going down or going stale narrows the
   whitelist to its still-fresh peers (`markets.source_expired`) rather than emptying it and halting all
-  liquidations. Only when _every_ source is stale is the whitelist empty, reported every tick as
+  liquidations. Only when _every_ source is stale is the whitelist empty, reported every world read as
   `markets.whitelist_expired` — fail-closed. Each source's own set survives its own transient failures
   (last-known-good, `markets.refresh_failed`); a source that returns a successful but empty list is
   authoritative, and because a healthy peer would otherwise mask it, that transition is called out as
   `markets.listed_empty`. A cold start with no successful fetch lists nothing.
 
-  **Environments deliberately differ here.** Staging reads both the public endpoint and the test-market
-  endpoint, so its whitelist is a strict superset of production's and it exercises the same API
-  production depends on. Production reads the public endpoint only. Adding a source **widens what the
+  **Environments deliberately differ here.** Staging reads both production's endpoint and the
+  test-market endpoint, so its whitelist is a strict superset of production's and it exercises the
+  same API production depends on. Production reads one endpoint only. Adding a source **widens what the
   bot will spend real capital on**, and the whitelist is only as trustworthy as the endpoints serving
   it — anyone who can list a market on any configured endpoint can direct that deployment's key at it.
   Note that `EXCLUDE_COLLATERALS` is a poor veto for this: it is collateral-scoped, and every currently
@@ -222,10 +261,11 @@ There is no swap config file. Instead:
   collateral→loan pair, a background job requests
   indicative quotes from every enabled venue at the `PROBE_LADDER` sizes and caches each venue's rate
   curve, which is then interpolated at the actual seize size. This probe is **gated** to pairs that
-  have a liquidatable position that is neither cooled-down nor backed off, is cached for
+  have a listed, liquidatable position that is neither in flight nor backed off, is cached for
   `PROBE_STALE_MS`, and runs on its own `PROBE_HTTP_RPS`
-  budget — so venues' tight rate limits (~1 req/sec) are respected and quiet markets cost nothing. It
-  is started, never awaited: a pair is warmed for the next tick rather than delaying this one.
+  budget — so venues' tight rate limits (~1 req/sec) are respected and quiet markets cost nothing. A
+  sweep is started on each world read, and on each newly resolved route, by an effect nothing awaits;
+  its curve lands in the graph's `curves` level when it settles.
 - **When a position is liquidatable**, the bot firm-quotes once against the pre-chosen best venue and
   applies the `MAX_ROUTE_IMPACT_BPS` oracle route-quality guard — never fanning out firm quotes across
   venues at once. Whether it then tries the runner-up depends on what the curve knew: see
@@ -271,16 +311,21 @@ pnpm --filter @morpho-org/midnight-liquidation exec vitest run
 ## Testing
 
 - `pnpm --filter @morpho-org/midnight-liquidation exec vitest run` — unit tests for the sizing planner, the deployless lens,
-  discovery (the candidate + markets APIs and their shared retry loop), quoting / venue selection, the
-  pending queue, eligibility, and the exec encoder.
-- **Fork suite** (`test/fork/`) — end-to-end against a real Base fork. Unlike a fixture-gated suite it
-  **seeds its own liquidatable position** ([test/fork/seed.ts](./test/fork/seed.ts)): Midnight has no
-  `borrow()`, so it clones a curator-trusted market, funds both EOAs via cheatcodes, signs an offer,
-  and drives the `supplyCollateral` + `take` offer-book path, then warps past maturity to make the
-  position liquidatable. `liquidation.test.ts` then drives lens → plan → swap → exec, asserts the tx
-  lands, and asserts the Executor ends holding zero of both tokens; `queue.test.ts` bumps a stuck tx
-  and asserts the replacement lands at the same nonce. Both **require `RPC_URL_8453`** (an archive
-  endpoint that serves the fork block) and fail loud — not skip — when it is unset.
+  discovery (the candidate + markets APIs and their shared retry loop), quoting / venue selection,
+  eligibility, the exec encoder against the shared validator (every refusal), the world read and the
+  preparation, and scenarios that run the whole graph and its kernel against a fake chain: delisting
+  and whitelist expiry, a liquidation's neutrality, and a send's life: re-bid when stuck, aged out at
+  its send life, and cancelled once its market is delisted.
+- **Fork suite** (`test/fork/`) — end-to-end on a Base fork; it skips unless `RPC_URL_8453` (an
+  archive endpoint that serves the fork block) is set, and CI's Fork job fails without it. It
+  **seeds its own liquidatable positions** ([test/fork/seed.ts](./test/fork/seed.ts)): Midnight has
+  no `borrow()`, so it clones a curator-trusted market, funds both EOAs via cheatcodes, signs an
+  offer, and drives the `supplyCollateral` + `take` offer-book path, then warps past maturity and the
+  LIF ramp. `liquidation.test.ts` runs the liquidator with its real kernel and a fresh key, once for
+  a WETH-collateral position sold through Uniswap V3 and once for a loan-as-collateral position with
+  an empty swap plan. Each run asserts the liquidation lands, the ledger records every nonce the chain
+  holds, a clean stop finalizes the journal, the EOA gains USDC, and the Executor ends holding zero
+  of both tokens. Use anvil 1.5: 1.8.1 rejects the seed's `take` with `NotActivated`.
 
 ## Seeding liquidatable positions
 
@@ -352,10 +397,15 @@ export RPC_URL_8453=https://base-mainnet.example
 export RPC_URL_1=https://eth-mainnet.example
 export LIQUIDATOR_PRIVATE_KEY=0x...
 export ZEROX_API_KEY_8453=...   # and/or ONEINCH_API_KEY_8453 / LIFI_API_KEY_8453
-docker compose up --build
+export MAX_SPEND_ETH=0.5
+export FINALITY_8453=safe MAX_FEE_GWEI_8453=0.5 MAX_GAS_LIMIT_8453=15000000
+export FINALITY_1=safe MAX_FEE_GWEI_1=50 MAX_GAS_LIMIT_1=3000000
+export KERNEL_ENROLLMENT_8453=enrolling KERNEL_ENROLLMENT_1=enrolling  # see Kernel state
+BUILD_REVISION=$(git rev-parse HEAD) docker compose up --build
 ```
 
-Run a single chain with `docker compose up --build bot-8453`.
+Each service keeps its own state volume. Run a single chain with
+`docker compose up --build bot-8453`.
 
 Optional variables:
 
@@ -366,101 +416,197 @@ export RPC_URL_FALLBACK_8453=https://base-mainnet-fallback.example
 export ALLOW_BAD_DEBT_ONLY_1=true   # run a chain unarmed, with no venue key
 ```
 
-## Deploying to Railway
+## Deploying
 
-The bot runs as one service per chain on the Railway project `bot.liquidation.midnight` (discovery is
-the remote API — no Postgres or indexer service).
-[scripts/deploy-railway.ts](./scripts/deploy-railway.ts) provisions and deploys them idempotently from
-the [Railway CLI](https://docs.railway.com/guides/cli), so it runs the same locally or in CI.
+The bot runs on the AWS tools Kubernetes cluster, one StatefulSet per chain, deployed by Argo CD
+from the chart at [`helm/midnight-liquidation`](./helm/midnight-liquidation). The Argo CD
+applications live in morpho-infra:
 
-Railway service names are project-wide: production uses `bot-<chainId>` (`bot-8453`, `bot-1`), while
-non-production environments use an environment prefix (for example, `staging-bot-8453`).
+- `dev-8453` follows `bots` main and is the staging deployment. Its `env` and `replicas` move to a
+  morpho-tools-deployment `values-dev-8453.yaml` before this bot's kernel release lands there.
+- `prd-1` and `prd-8453` take values files from morpho-tools-deployment and render the chart from the
+  public `morpho-bots` snapshot. Both read one image pin, `image.yaml`, so they move together. The
+  platform team owns their `replicas`, the production kill switch, in morpho-infra.
 
-The [Dockerfile](./Dockerfile) is a single-stage Node image (pnpm installs, esbuild bundles, node runs);
-`RAILWAY_DOCKERFILE_PATH` points Railway at it and `railway up` runs from the repo root so the pnpm
-workspace resolves.
+Every push to main publishes `bots/midnight-liquidation:<commit>` to ECR, built with
+`BUILD_REVISION=<commit>`. A `Releases midnight-liq` release's `Image` job adds the tag
+`midnight-liq-<PR#>` to that image. Pin a release tag in morpho-tools-deployment only after its
+release's `Image` job succeeded: a pin to a tag with no image takes the bot offline. Rollback pins an
+earlier image.
 
-Authenticate the CLI first — set `RAILWAY_TOKEN` (a project token scoped to the target project /
-environment, recommended for CI) or run `railway login`. The script bakes in no project identifier, so
-set `RAILWAY_PROJECT_ID` to the project you're deploying to, then provide the secrets via the
-environment and run the script:
+### Release values
 
-```sh
-export RAILWAY_PROJECT_ID=...   # required: the Railway project to deploy to
-export RPC_URL_8453=https://base-mainnet.example
-export RPC_URL_1=https://eth-mainnet.example
-export LIQUIDATOR_PRIVATE_KEY=0x...          # or per-chain LIQUIDATOR_PRIVATE_KEY_<chainId>
-export ZEROX_API_KEY=...                     # one venue credential covers every chain; suffix it
-                                             # (ZEROX_API_KEY_1) only to give a chain its own
-export ALLOW_BAD_DEBT_ONLY_1=true            # every chain needs a venue key or this opt-in, or the
-                                             # run is refused before it touches Railway
-# Optional: RAILWAY_ENVIRONMENT (defaults to production), RPC_URL_FALLBACK_<chainId>,
-# PRIORITY_FEE_GWEI_<chainId>, MAX_GAS_LIMIT_<chainId>, MAX_SPEND_ETH_<chainId>.
-pnpm --filter @morpho-org/midnight-liquidation run deploy:railway
-```
+A release sets `image.repository`, `image.tag`, `serviceAccount.name`, `serviceAccount.roleArn`,
+`runtimeSecret.key`, and these `env` entries. The chart defaults none of these entries, and the bot
+refuses to start without any one of them:
 
-Secrets are read from the script's environment, piped to Railway via stdin (never argv), and never
-logged. The script fails loud — before mutating any Railway state — if a chain's `RPC_URL_<chainId>`
-or private key is missing, or if a chain has no venue enabled and no `ALLOW_BAD_DEBT_ONLY_<chainId>`
-opt-in.
+| Var                   | Base (`8453`)                            | Mainnet (`1`)                |
+| --------------------- | ---------------------------------------- | ---------------------------- |
+| `CHAIN_ID`            | `8453`                                   | `1`                          |
+| `FINALITY_<CHAIN_ID>` | `FINALITY_8453=safe`                     | `FINALITY_1=safe`            |
+| `MAX_FEE_GWEI`        | `0.5`                                    | `50`                         |
+| `MAX_SPEND_ETH`       | `0.5`                                    | `0.5`                        |
+| `MAX_GAS_LIMIT`       | `15000000`                               | `3000000`                    |
+| `KERNEL_ENROLLMENT`   | `enrolling`, then `enrolled` (see below) | `enrolling`, then `enrolled` |
 
-The venue posture is **synchronized** on every full run: `ENABLE_LIFI` / `ALLOW_BAD_DEBT_ONLY` are set
-explicitly, and each venue key and fee override is either set from this run's inputs or **deleted**
-when absent — so neither a stale opt-in nor a dropped key can linger from a previous run. A `CRASHED`
-deployment counts as a failed deploy, because the bot fails loud on a bad config.
+At these values one transaction costs at most 0.0075 ETH on Base and 0.15 ETH on mainnet. The old
+bot also reads `MAX_FEE_GWEI`, so set these values in the same change that pins the kernel image:
+set ahead of it, they retune the old bot. Other non-secret settings from
+[Configuration](#configuration), such as `LOG_LEVEL` or `ALLOW_BAD_DEBT_ONLY`, also go in `env`.
 
-Set `DEPLOY_ONLY=1` (or `true`) to re-ship every **already-provisioned** `bot-<chainId>` service from
-the current working tree without setting any secrets or variables — the mode the deploy CI uses (it
-holds no RPC/keys). In this mode the RPC and key requirements do not apply.
+The chart sets `KERNEL_STATE_DIR=/repo/state`, where it mounts the state volume, and refuses a
+release whose `env` sets it. `state.storageClass` (`tools-gp3`) and `state.size` (`10Gi`) shape that
+volume; the render fails if either is empty.
 
-Mainnet needs the Executor deployed once before its service can boot (startup asserts it holds code):
+### Runtime secret
+
+Each release reads the AWS Secrets Manager secret `midnight-liquidation/<env>/<chainId>/runtime`
+(`eu-west-3`), named by `runtimeSecret.key`, into the pod's environment. It is a JSON object with
+unsuffixed keys:
+
+- `RPC_URL`, and optionally `RPC_URL_FALLBACK`.
+- Optionally `MORPHO_API_KEY`, with `LIQUIDATION_CANDIDATES_API_URL` and `MARKETS_API_URL` pointing at
+  an endpoint that needs it. Each bot holds its own key.
+- `LIQUIDATOR_PRIVATE_KEY`. Dev and production hold distinct keys, and two releases on one chain
+  never share one: each pod keeps its own nonce.
+- The venue keys: `ZEROX_API_KEY`, `ONEINCH_API_KEY`, `LIFI_API_KEY`. Each one enables its venue, and
+  `ENABLE_LIFI=true` in `env` enables LiFi without a key. A release with no venue sets
+  `ALLOW_BAD_DEBT_ONLY=true` in `env`, or the bot refuses to start.
+- `BETTERSTACK_SOURCE_TOKEN` and `BETTERSTACK_INGESTING_HOST`, and optionally
+  `BETTERSTACK_HEARTBEAT_URL`.
+
+The ExternalSecret refreshes it every five minutes, and a change restarts the pod.
+
+### Kernel state
+
+The claim `<statefulset>-state` (for example `prd-8453-midnight-liquidation-state`) holds the
+kernel's ledger, `kernel-<chainId>-<account>.json`, and the journal. It is an EBS volume in one
+availability zone, so the pod schedules there. Neither `helm uninstall`, deleting the Argo CD
+application, nor an Argo CD prune deletes it. The journal does not yet rotate, and this bot writes
+more per head than blue (prices, routes and curves), so measure its growth on dev before trusting
+`10Gi` in production.
+
+`KERNEL_ENROLLMENT` is `enrolling` for the first start of an account with no ledger and `enrolled`
+for every start after it. The kernel refuses an enrollment over an existing ledger and an enrolled
+start with none: it logs `kernel.stopped` with `outcome: refused` and the reason, and exits. A
+refusing pod restarts into the same refusal and is never Ready, so each recovery ends with Platform
+deleting the release's one pod, as for blue-liquidation.
+
+To start an account on the kernel:
+
+1. Stop the old pod and confirm the account has no transaction pending. An `enrolling` start refuses
+   at once on a pending transaction; on `unrecorded pending transaction`, wait for it to mine and
+   restart.
+2. Set `KERNEL_ENROLLMENT=enrolling` in the release and sync. The start waits, signing nothing,
+   until the account's nonce at `safe` matches its latest one.
+3. Wait for the pod to log `kernel.running`, which it logs only after its first ledger write lands
+   as `kernel-<chainId>-<account>.json` in `/repo/state`.
+4. Set `KERNEL_ENROLLMENT=enrolled` and sync, before anything else restarts the pod. A restart then
+   reloads the ledger: no refusal, and the journal ends `clean`.
+
+### Runbook
+
+- **Stops and grace.** A clean stop waits for every nonce record to reach finality. On mainnet
+  `safe`, that is far past the 120s grace, so a stop soon after a send ends in SIGKILL. That is
+  crash-equivalent: the ledger is durable and a restart adopts it, but the journal ends unclean. Flip
+  enrollment and roll images only when `tick.end.oldestPendingMs` is 0 and no send is within
+  finality. A requested stop raises `kernel.alarm`, which can page.
+- **Finality stall.** Finality must lag the head by less than the kernel's reorg window: 150 blocks
+  on Base and 128 on mainnet. A restart during an L1 finality stall of about 26 minutes or more is
+  refused; wait for finality to resume before restarting mainnet.
+- **Seeding.** Seed positions only with lender and borrower keys distinct from the liquidation key.
+  A send from the kernel's key outside the kernel moves the nonce past its ledger: the kernel
+  recovers while running, or refuses at startup.
+- **Rollback to the pre-kernel bot** takes more than a re-pin. In one change, pin the old image and
+  remove `MAX_FEE_GWEI`, `MAX_SPEND_ETH`, `MAX_GAS_LIMIT` and the kernel variables, which restores
+  its defaults: under these ceilings its queue drops a replacement that exceeds the cap and latches a
+  nonce hole. Its sends also move the nonce past the kept ledger, so before returning to the kernel,
+  archive the ledger file from the claim and start `enrolling`.
+
+### Executor and mainnet
+
+Mainnet needs the Executor deployed once before its release can start (startup asserts it holds
+code):
 
 ```sh
 RPC_URL=<mainnet> DEPLOYER_PRIVATE_KEY=0x... pnpm --filter @repo/contracts run deploy:executor
 ```
 
-Provisioning mainnet ahead of any listed market is safe: the whitelist is fail-closed, so the bot
-idles at `markets.listed { markets: 0 }` rather than erroring, and starts working when markets list.
-
-### Venue API keys
-
-There is no swap config file to upload anymore — venues are enabled by the presence of their API key
-(or `ENABLE_LIFI_<chainId>=true` for keyless LiFi). The deploy script uploads
-`LIFI_API_KEY_<chainId>`, `ZEROX_API_KEY_<chainId>`, and `ONEINCH_API_KEY_<chainId>` when they are
-present in its environment. Every per-chain input takes the `_<chainId>` suffix, and the split is by
-whether the value is genuinely the same on every chain:
-
-| Accepts an unsuffixed fallback                                                                                                        | Suffixed-only                                                          |
-| ------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
-| `ZEROX_API_KEY`, `ONEINCH_API_KEY`, `LIFI_API_KEY`, `ENABLE_LIFI` — one venue credential is honored on every chain the venue supports | `RPC_URL` — per chain by definition                                    |
-| `LIQUIDATOR_PRIVATE_KEY` — reusing one funded EOA across chains is intended                                                           | `PRIORITY_FEE_GWEI`, `MAX_GAS_LIMIT` — separately calibrated per chain |
-| `MAX_SPEND_ETH` — chain-independent by design, denominated in the gas token                                                           | `ALLOW_BAD_DEBT_ONLY` — arms a chain rather than crediting it          |
-
-Suffixing always wins over the unsuffixed name, so a chain that needs its own value can still have one.
-
-`ALLOW_BAD_DEBT_ONLY_<chainId>` is suffixed-only because it **arms** rather than narrows: with no
-venue enabled, that chain's service refuses to start without it, and runs — spending gas to realize
-bad debt — with it. It must name the chain it means.
+Starting mainnet ahead of any listed market is safe: the whitelist is fail-closed, so the bot idles
+at `markets.listed { markets: 0 }` rather than erroring, and starts working when markets list.
 
 ## How it works
 
 ### Startup
 
-[src/index.ts](./src/index.ts) loads config, creates two viem clients, and starts the block-poll runner.
-The read client wraps the RPC transport with `deployless` support so the bot can execute its Solidity
-lens via `eth_call`. The signer client is plain HTTP and owns transaction submission with a local
-pending-nonce cursor.
+[src/index.ts](./src/index.ts) loads and validates config, builds the deployless read client, checks
+that both the Executor and the Midnight singleton hold code, refreshes the market whitelist once
+(non-fatal: a failed first fetch lists nothing), wires the venue selector, the two rate-limited HTTP
+clients and the quoter, runs one discovery self-check, and starts the liquidator
+([src/run.ts](./src/run.ts)): one `@repo/engine` graph whose `@repo/kernel` alone holds
+the key. The kernel refuses to start on an unexplained nonce, a ledger for another account, or
+`enrolled` with no ledger.
 
 Startup fails loudly if required env vars are missing, the chain is unsupported, no venue API key is
 set without `ALLOW_BAD_DEBT_ONLY=true`, or the configured Executor address has no bytecode.
 
-### Trigger
+### The graph
 
-`@repo/bot-kit`'s shared runner
-([packages/bot-kit/src/runner/runner.ts](../../packages/bot-kit/src/runner/runner.ts)) polls the
-latest block and runs the bot's per-block tick ([src/runner/tick.ts](./src/runner/tick.ts)) once per
-new block. If blocks arrive while a tick is still running, the watcher coalesces work rather than
-running overlapping ticks.
+[src/graph.ts](./src/graph.ts): each head the kernel's chain delivers starts a world
+read ([src/sources.ts](./src/sources.ts)) — discovery, filtered to the whitelist, then the
+lens for exactly those pairs pinned to that head by its hash — that writes every liquidatable position
+as a keyed level. Only a discovery that walked its whole scope and a lens that validly read every pair
+vouch that a missing position is gone; a failed read changes no position, a pair the lens could not
+read is failed, and a read cut short carries just what it read.
+
+A position's **fact**, the one evidence its liquidation rests on, is that it is still liquidatable in a
+market the whitelist lists. The fact expires when the last fresh source listing its market would
+age out, or with its read if that is sooner, and a clock re-judges the
+whitelist's age every few seconds, so a delisting or a whitelist past `LISTED_MARKETS_MAX_AGE_MS`
+withdraws every held position at once, with no new head and whatever discovery is doing; the kernel
+refuses a liquidation whose fact changed or expired before its nonce.
+
+Positions are open keys: a newly discovered one is a candidate at once. Each is sized purely and bid
+at its best alternative's USD surplus net of route cost. Token prices
+are a level keyed by token that a timer refreshes, each table expiring `TOKEN_PRICES_VALID_MS` (five
+minutes) after the fetch that produced it, so a price API outage leaves positions unpriced rather than
+priced on old data. Route costs come from two more levels the graph holds, each written by an effect
+nothing awaits ([src/routes.ts](./src/routes.ts)):
+
+- **`routes`**, keyed by collateral and loan token: which pair a collateral sells through, resolved
+  through the unwrap chain's preview, refreshed every ten minutes, and expiring an hour after the
+  resolve that found it, through any failed re-resolves. A collateral whose pair only a
+  size-dependent resolve can name, or an excluded one, has no pair, and its position bids gross; its
+  firm quote still prices it.
+- **`curves`**, keyed by pair: each pair's probe curve as its last sweep left it, with the sweep's
+  time, expiring once it is older than quoting trusts a cost level (`MAX_COST_LEVEL_AGE_MS`). A
+  sweep that throws or leaves no venue's curve writes `failed`, never an empty curve.
+
+A price, route or curve past its expiry reads as absent wherever it is used, which falls open to
+gross or unpriced ranking, and to the `MAX_SPEND_ETH` fee ceiling with no gas check (see
+[Fee bounds](#fee-bounds)). A preparation that finds any of its position's
+readings expired logs `pricing.expired` with how many of each (`prices`, `routes`, `curves`).
+
+The world read is discovery and the pinned lens read only. The bid reads the curve at each
+alternative's own size through the same interpolation, clamp and trust check quoting uses, as of a
+clock node, so a curve that ages past trust falls open without a new head, and a position whose
+pair's curve is already held competes net in the very step its read lands. A position any of whose
+routes is unresolved, cold, untrusted, unreferenced or unpriced bids its gross surplus, and an
+unpriced loan token bids below every priced position. There is no cutoff: the bid orders, never gates. The `@repo/controller` task family prepares candidates in bid order, at most
+`PREPARE_CONCURRENCY` at once and within the firm quote rate
+([src/prepare.ts](./src/prepare.ts)), skipping any position the kernel holds a plan or an
+unresolved send for, or that is backed off. A preparation orders its alternatives net of route cost
+with the same pure function over the same levels, and works down them through quote, profitability and
+simulation, answering with the first that passes. Each prepared liquidation goes to the kernel with
+the conflict id `position:<id>`, so liquidations of different positions are pending at once and two of
+one never are. The kernel refuses one read before its own last inclusion on that position, which is
+what keeps a lagging read from re-sending a position just liquidated, and lets a position with
+collateral left be liquidated again from a read after that inclusion.
+
+A position declined on its economics (a route short of its repay) is prepared again at the next head,
+since the post-maturity incentive ramps on wall clock without its fact changing, or sooner once its
+loan token's price, its collaterals' routes or their pairs' curves are rewritten. Its preparation reads
+only those, so another market's curve sweep or route never retries it.
 
 ### Discovery
 
@@ -477,18 +623,19 @@ whose market is not listed is dropped before the lens read (fail-closed) — the
 gate on _which_ markets the bot acts on; the lens remains the correctness gate on _whether_ a position
 is liquidatable.
 
-Discovery failure is tolerated: a transient API error logs `discover.error` and the tick proceeds with
-zero new candidates so the pending queue (confirmations / fee bumps) is still driven that block. A
-runaway paginated response is capped at `MAX_DISCOVERY_PAGES` and logs `discover.max_pages` rather than
-silently truncating (which would be under-inclusion — a liquidation missed).
+Discovery failure is tolerated: a transient API error logs `discover.error` and the read fails, so no
+position changes, while the kernel keeps driving every transaction it already holds. A runaway
+paginated response is capped at `MAX_DISCOVERY_PAGES`, logs `discover.max_pages`, and makes the read
+carry only what it reached rather than read the rest as gone.
 
 Separately, [src/discovery/token-prices.ts](./src/discovery/token-prices.ts) keeps a snapshot of token
 USD prices from the markets tokens endpoint, refreshed on its own timer (independent of
 `MARKETS_REFRESH_MS`, so a slow tokens fetch cannot stall the fail-closed whitelist refresh) and served
 last-known-good. It has **two consumers**:
 
-- the tick's **ranking**, which values each candidate's gross surplus and its interpolated route cost
-  in the same USD scale so the two are subtractable;
+- the **ranking**: positions bid at their best alternative's USD surplus net of route cost, and a preparation values
+  each alternative's surplus and its interpolated route cost in the same USD scale so the two are
+  subtractable;
 - the **probe ladder's denomination** ([src/index.ts](./src/index.ts)), which converts the USD
   `PROBE_LADDER` rungs into the collateral's base units.
 
@@ -541,7 +688,7 @@ valid && gateAllows && hasDebt && !locked && (block.timestamp > maturity || !hea
   60 minutes and the RCF cap is disabled.
 - Post-maturity **unhealthy** positions open both onchain gates, so the bot builds both candidate
   plans and **retains both**, ranked best-first and attempted in order — a mode that fails falls
-  through to the other in the same tick rather than forfeiting the position. Normal mode pays the full `maxLif`
+  through to the other in the same preparation rather than forfeiting the position. Normal mode pays the full `maxLif`
   immediately while the post-maturity LIF is still ramping, so `plan.built { postMaturityMode: false }`
   on a matured position shortly after maturity is expected behavior, not a mode-selection bug; once the
   ramp completes, ties resolve to post-maturity (its gate cannot close if the price recovers).
@@ -612,11 +759,12 @@ keeps ordinary one-block moves from tripping it.
 The bot computes the oracle-priced reference output for free (no extra API call) and rejects any venue
 route more than `MAX_ROUTE_IMPACT_BPS` below it (`quote.route_quality_failed`). Quote failures (no
 route, timeout, rate-limited, API error) log `quote.failed`; once every ranked venue is exhausted the
-position is backed off — an exponential per-position cooldown that bounds API + RPC usage when many
-positions fail (the rate-limit defense). A successful submit clears the backoff; nothing else does.
+alternative fails, and a preparation none of whose alternatives passed backs its position off — an
+exponential per-position backoff that bounds API + RPC usage when many positions fail (the rate-limit
+defense). A settled liquidation clears the backoff; nothing else does.
 
-If no venue is enabled (bad-debt-only mode) or the collateral is on `EXCLUDE_COLLATERALS`, the tick
-logs `config.no_swap_path` and skips the candidate (no API call, no backoff). Pure bad-debt
+If no venue is enabled (bad-debt-only mode) or the collateral is on `EXCLUDE_COLLATERALS`, the
+preparation logs `config.no_swap_path` and skips the candidate (no API call, no backoff). Pure bad-debt
 realization skips quoting entirely. A **loan-as-collateral** candidate is the exception to the
 no-venue case: its sell path is already over, so it resolves to a zero-step plan before the
 enabled-venue check is reached and is liquidated normally.
@@ -634,61 +782,50 @@ Executor:
   the unwrap chain introduced from the Executor to the liquidator EOA (the full-drain invariant);
 - zero/zero bad-debt realization uses no callback and no sweeps.
 
-`@repo/bot-kit`'s shared simulator ([packages/bot-kit/src/simulate.ts](../../packages/bot-kit/src/simulate.ts))
+`@repo/kit`'s shared simulator ([packages/kit/src/simulate.ts](../../packages/kit/src/simulate.ts))
 runs `eth_call` from the liquidator EOA against the real Executor calldata. Any revert means the bot
 does not broadcast.
 
-### Broadcast and pending queue
+### Kernel and backoff
 
-On simulation success, `@repo/bot-kit`'s shared pending queue
-([packages/bot-kit/src/queue/pending-queue.ts](../../packages/bot-kit/src/queue/pending-queue.ts))
-sends the transaction through the signer client and tracks it by nonce and by the position's
-`(marketId, borrower)` key.
+The kernel admits a liquidation only if the shared validator
+([@repo/validators executor-liquidation.ts](../../framework/validators/src/executor-liquidation.ts))
+reads it as creating no commitment: a zero-value `exec_606BaXt` whose first call is Midnight
+`liquidate` on a market of this chain and this Midnight, received and called back on the Executor,
+whose callback transfers nothing out and ends approving Midnight, and whose trailing sweeps pay both
+market tokens and every approved token to the account — or a bad-debt write-off that moves nothing,
+pays the account, and calls nothing back. It then simulates the exact bytes at its head, signs
+through `@repo/kit`'s kernel signer, re-bids a transaction stuck for 8s at a higher fee, and records
+every nonce in its ledger before it acts. A liquidation rests on its position's fact and holds no
+longer than its send life, since its quote was priced when it was prepared: past it, or once the fact
+goes absent and either its last read expires or a re-bid checks it, the kernel cancels the
+liquidation and fills its nonce if it is still unmined. When no bid fits under `MAX_FEE_GWEI`, the bot
+stays live but lands nothing new until fees fall, and `tick.end` reports `pendingAtCeiling` and
+`oldestPendingMs`. Several liquidations may be pending, as many as its native reservations allow:
+one per nonce until its transaction resolves, at the per-transaction spend ceiling. Liquidations
+sharing a swap route are not reserved against each other: a squeezed route reverts at simulation or
+onchain, at the cost of gas.
 
-While that position is in flight, later ticks skip it. On each block the queue checks receipts,
-logs confirmed or reverted transactions, and fee-bumps stuck transactions until either they confirm,
-hit the fee ceiling, or exhaust bump attempts.
+A position backs off exponentially in blocks (`BACKOFF_BASE_BLOCKS` doubling to `BACKOFF_MAX_BLOCKS`)
+when a preparation's quote fails or its simulation reverts, and when the kernel refuses a liquidation
+of it or ends one other than settled; a settled one clears it. An alternative refused only on its
+economics keeps its position from backing off. A bad-debt write-off is its own task, `writeoff`,
+with its own backoff, writing the same conflict `position:<id>`, so a position backed off for failed
+swaps still realizes its bad debt, and the two never run together. Its `intentId` ends `.writeoff`.
+Backoff lives in the graph and resets on restart; the kernel's ledger, not the bot, carries a send
+across a restart.
 
-A queue answer that broadcast nothing is classified three ways, counted on `tick.end` as
-`sendRefused` / `sendReverted` / `sendRejected` (which sum to `notSent`):
-
-- **refused** — the queue declined before reaching the send (aborted-send latch, failed nonce sync,
-  nonce hole). Queue-wide, so it is held against no position.
-- **execution-reverted** — the node rejected this position's own transaction with an onchain
-  execution revert (`tx.submit_failed`, `executionRevert: true`, plus the 4-byte `selector` when the
-  payload carried one). **This does not extend the position's suppression window**, and it also
-  exempts the position from an entry a sibling candidate armed, whichever order the two ran in — an
-  execution revert, unlike a broadcast, does not stop the next-ranked sibling from being tried.
-  Post-maturity the LIF ramps over an hour, so a min-out shortfall says nothing about the next
-  attempt; backing off sampled that ramp
-  exponentially, which is what turned a maturity into 4–9 minutes per position on 2026-08-28. The
-  position is instead retried as fast as the tick can drain, with skipped heights coalesced. An
-  opted-in `POSITION_LIQUIDATION_COOLDOWN_MS` window is deliberately left armed: it is a flat
-  operator throttle, not a ramp sampler, so lifting it is an operator's call.
-- **rejected** — the send machinery failed (nonce, funds, RPC). Nothing was learned about the plan,
-  so the position backs off exactly as before.
-
-Because the execution-reverted case carries no throttle at all, an unbroken streak of
-execution-reverted sends on one position is tracked and reported as `send.revert_streak` (warn) on the
-one send that first takes it past 15 minutes, carrying the revert count, the streak duration, the last
-selector, and whether that selector stayed constant across the streak. Only that crossing is logged:
-with no throttle on the path, warning on every later revert would ship a line per tick — two, when
-both of a position's siblings revert — for as long as it stays stuck. A constant selector over a long
-streak points at a structural fault — an expired route deadline, malformed aggregator calldata,
-an estimator/provider discrepancy, a gate that keeps closing — rather than an incentive that has yet
-to catch up. The threshold is a duration and not an attempt count on purpose: the incentive ramps on
-wall clock, so attempts-to-clear is `clearing_time / sweep_period` and shrinks every time the bot
-gets faster, which a count threshold would have to be recalibrated against. The streak only reports;
-it never suppresses.
-
-`bots/blue-liquidation` deliberately diverges here and keeps backoff on every rejected send,
-execution reverts included: its liquidation incentive is static rather than ramping, so a declined
-send there really is evidence about the next block.
-
-Queue state is in-memory. On restart, chain truth wins: the bot rediscovers live candidates and the
-signer nonce cursor starts from the pending chain nonce. If the initial raw broadcast fails after a
-nonce is claimed but before a hash is returned, the signer rolls the cursor back and the queue aborts
-that tick instead of counting a hashless transaction as submitted.
+One send-stage revert does not back off: a post-maturity swap liquidation whose simulation at the
+kernel's head reverts before it is sent. Its incentive ramps with time, so the revert says nothing
+about the next block (TIB-2026-08-28, "Midnight send shortfall", decision 3). The kit's simulation
+effect classifies the revert as `main` did: viem's `ExecutionRevertedError` class, or the node's
+canonical `execution reverted` message where a transport drops the class, never a contract's reason
+string. The kernel then ends the act `abandoned` with `code: 'reverted'`, which
+`liquidation.not_sent` carries. The position is held only until the next head, then prepared again;
+a revert at that preparation's own simulation backs it off as before. Everything else still backs
+off: a normal-mode (health-based) liquidation's revert, a swap-free slot's or a write-off's revert
+(they sell nothing, so they cannot fall short of the ramp), a simulation that failed in transport, a
+revert at gas estimation, and a liquidation that reverted onchain.
 
 ### Log correlation
 
@@ -697,13 +834,25 @@ Every **position-scoped** event carries the position in one field, **`id`**, who
 events group into one row per position with **no normalization in the query** (`GROUP BY id`). `tx.*`
 used to name the same string `label`; it does not any more. The full set:
 
-`plan.skipped`, `plan.built`, `preselect.skipped`, `route.unresolved`, `cooldown.skip`,
-`config.no_swap_path`, `quote.excluded_collateral`, `quote.unprofitable`, `unwrap.failed`,
-`unwrap.resolved`, `unwrap.bad_route`, `unwrap.preview_reverted`, `unwrap.preview_zero`,
-`quote.floor_unmet`, `quote.ok`, `quote.failed`, `quote.route_quality_failed`, `probe.error`,
-`select.cold_default`, `select.ok`, `simulate.ok`, `simulate.revert`, `send.revert_streak`,
-`tx.send_aborted`, `tx.submit_failed`, `tx.sent`, `tx.bumped`, `tx.confirmed`, `tx.reverted`,
-`tx.dropped`, `tx.replace_failed`, `tx.onblock_error`, `nonce.sync_failed`, `queue.nonce_hole`.
+`plan.skipped`, `plan.built`, `plan.no_surplus`, `preselect.skipped`, `config.no_swap_path`,
+`quote.excluded_collateral`, `quote.unprofitable`, `unwrap.failed`, `unwrap.resolved`,
+`unwrap.bad_route`, `unwrap.preview_reverted`, `unwrap.preview_zero`, `quote.floor_unmet`, `quote.ok`,
+`quote.failed`, `quote.route_quality_failed`, `probe.error`, `select.cold_default`, `select.ok`,
+`simulate.ok`, `simulate.revert`, `gas.unpriced`, `gas.unaffordable`, `prepare.error`, `act.submitted`, `act.dropped`, `act.rejected`, `backoff.set`,
+`backoff.cleared`, `liquidation.not_sent`, `tx.submit_failed`, `tx.sent`,
+`tx.bumped`, `tx.broadcast_unknown`, `tx.included`, `tx.reverted`, `tx.cancelled`, `tx.dropped`. The `tx.*` events
+come from the kernel's activity; a replacement at the same `nonce` is `tx.bumped`, naming `oldHash`
+and `newHash`.
+
+`tick.end` closes each world read; `complete` is true only when that read vouched for its whole
+scope (discovery walked it all and the lens read every pair), and false for a read that carried only
+part of it or failed. Its `liquidatable`, `inflightSkipped`, `planSkipped`, `planned`
+and `backoffSkipped` describe that read, and `liquidatable === inflightSkipped + planSkipped + planned`
+still holds; every other counter (`candidates`, `preselectSkipped`, `noSwapPath`, `quoteFailed`,
+`quoteUnprofitable`, `noSurplus`, `gasUnaffordable`, `ok`, `reverted`, `unpriced`, `firmCalls`, `firmCallsUnknown`, `broadcast`,
+`notSent`) counts what finished since the previous `tick.end`, since preparations run beside world
+reads rather than inside them, so the old per-tick sums across them no longer hold. `cooledDown` is
+always `0`. It also carries `oldestPendingMs`, `pendingAtCeiling` and `waitingMaxFeePerGasWei`.
 
 `plan.skipped` is deduplicated: an unchanged skip repeats at most once every 10 minutes, so count
 skipped positions per block from `tick.end.planSkipped`, not from `plan.skipped` lines.
@@ -714,25 +863,65 @@ reading a single line — grouping keys on `id`.
 `id` identifies a **position**, and one position yields several candidates (one per activated
 collateral slot, and a matured-and-unhealthy slot in both open modes). The per-**candidate** key is
 therefore `(id, collateralIndex, postMaturityMode)`, and both discriminators ride on every
-per-candidate event, the `@repo/swaps` quote events included. `send.revert_streak` deliberately
-carries none: the streak is keyed by position and spans whichever siblings reverted, so attributing it
-to one `(slot, mode)` would misreport it.
+per-candidate event, the `@repo/swaps` quote events included. The `act.*`, `backoff.*` and `tx.*`
+events carry none: they describe the position's one liquidation, whose candidate the preparation's
+`simulate.ok` names.
 
 Everything else is scoped to something other than a position and carries **no** `id`, by design —
 don't group it by one:
 
-- **per tick** — `discover.*`, `lens.read`, `probe.warmed`, `tick.end`, `tick.error`, `block.new`
+- **per world read** — `discover.*`, `lens.read`, `probe.warmed`, `tick.end`, `tick.error`,
+  `markets.whitelist_expired`
 - **per venue pair** — `probe.warm_failed`, `probe.venue_error`, `probe.refreshed` (several positions
   in one market share a probe)
-- **queue-wide** — `queue.nonce_hole_cleared`, `queue.maintenance_failed`, `reconcile.failed` (a
-  condition that would have refused any position)
+- **kernel-wide** — `kernel.running`, `kernel.alarm`, `kernel.error`, `kernel.stopped`,
+  `runner.failed`
 - **process / config** — `startup`, `shutdown`, `quoting.*`, `markets.*`, `prices.*`, `discovery.*`,
-  `signer.*`, `heartbeat.*`, `runner.*`, `watcher.error`, `pendle.*`
+  `signer.*`, `heartbeat.*`, `pendle.*`
+
+#### Changes from the pre-kernel bot
+
+For queries and dashboards written against the bot before it ran on the kernel (BetterStack sources
+2607569 and 2639416):
+
+- **`tick.end`** is logged per world read, and every counter but `liquidatable`, `inflightSkipped`,
+  `planSkipped`, `planned` and `backoffSkipped` covers what finished since the previous one, so the
+  burst analysis reads `tick.end` spacing, not `durationMs`. `submitted` is now `broadcast`;
+  `siblingSkipped`, `sendRefused`, `sendReverted`, `sendRejected` and `durationMs` are gone;
+  `cooledDown` is always 0; `complete` means the read covered its scope. It adds `oldestPendingMs`,
+  `pendingAtCeiling` and `waitingMaxFeePerGasWei`.
+- **`tx.*`** come from the kernel's activity. Each adds `intentId` but `tx.included` and
+  `tx.reverted`, which still join on `id` and `txHash`:
+  - `tx.confirmed` is now `tx.included`, with the same fields; its `nonce` is `null` for a
+    receipt that lands after its act ended.
+  - `tx.sent`, `tx.bumped` and `tx.broadcast_unknown` name their fees `maxFeePerGasWei` and
+    `priorityFeePerGasWei`, in place of `maxFee` and `priority`; `tx.broadcast_unknown` has no
+    `attempt`.
+  - `tx.dropped.reason` is the kernel's reason, in place of the queue's reasons such as
+    `fee_ceiling`; it adds `notice` and has no `detail`.
+  - `tx.submit_failed.reason` is `rejected` or `withheld`, with no `executionRevert`, `selector`,
+    `collateralIndex` or `postMaturityMode`; the preparation's `simulate.ok` names the candidate.
+  - A send-stage execution revert is `liquidation.not_sent` with `code: 'reverted'`, in place of
+    `tx.submit_failed` with `executionRevert: true`; `act.submitted` carries
+    `exemptFromBackoff: ['reverted']` for the post-maturity liquidations it applies to.
+  - `tx.reverted` adds `notice: null`. `tx.cancelled` is new.
+- **`shutdown`** has no `pending` field: the kernel's ledger holds what is pending, and
+  `kernel.stopped` reports what it left open.
+- **New**: `act.*`, `backoff.*`, `kernel.running`, `kernel.alarm`, `kernel.error`,
+  `kernel.stopped`, `runner.failed`, `prepare.error`, `liquidation.not_sent` and `pricing.expired`.
+- **Gone**: the runner's `block.new`, `runner.start`, `runner.shutdown` and `watcher.error`; the
+  queue's `tx.send_aborted`, `tx.replace_failed`, `tx.onblock_error`, `tx.observer_failed`,
+  `nonce.sync_failed`, `queue.nonce_hole`, `queue.nonce_hole_cleared`, `reconcile.failed` and
+  `queue.maintenance_failed`; `cooldown.skip`, `send.revert_streak` and `route.unresolved`; and the
+  `railway_*` context fields.
 
 ## Important operational notes
 
 - The liquidator gate checks the Executor address, not the EOA, because `liquidate` is called by the
   Executor.
+- **Kernel state**: each release needs a volume at `KERNEL_STATE_DIR`; start a fresh account once
+  with `KERNEL_ENROLLMENT=enrolling`, then `enrolled` once it logs `kernel.running`. The chart
+  provisions the volume and sets `KERNEL_STATE_DIR`; see [Kernel state](#kernel-state).
 - Markets are allowlisted by the `listed=true` whitelist. A non-listed market is skipped rather than
   guessed; a collateral on `EXCLUDE_COLLATERALS` is never seized.
 - Aggregator venues (`0x`, `1inch`) add a third-party API dependency on the execution path. Dropping

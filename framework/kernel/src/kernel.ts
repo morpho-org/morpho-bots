@@ -5,6 +5,7 @@ import type {
   CommitmentSpec,
   Command,
   DurableLedger,
+  EndCode,
   Entry,
   BlockRef,
   Fact,
@@ -285,6 +286,12 @@ export const latched = (state: KernelState): boolean =>
     r => !r.resolution && (r.foreign === true || r.candidates.some(c => uncovered(r, c)))
   )
 
+/** Nonces the chain has consumed that no evidence resolved yet: the transaction there must be identified. */
+export const unidentifiedNonces = (state: KernelState) =>
+  Object.values(state.nonces)
+    .filter(r => !r.resolution && r.nonce < (state.chainNonce ?? 0))
+    .map(r => r.nonce)
+
 /** What the kernel's own chain sources poll each block, independent of the engine's frames. */
 export const pollSet = (state: KernelState) => ({
   receipts: Object.values(state.nonces).flatMap(r =>
@@ -405,13 +412,15 @@ export const createKernel = (config: KernelConfig) => {
     emit(out, { type: 'notify', intentId, notice: 'refused', ...refusal })
   /**
    * A plan's last notice carries its inclusions, since the nonce records behind them may be pruned
-   * first, and says `cancelled` only when a cancel ended it and nothing of it ran ({@link Plan.cancelled}).
+   * first, and says `cancelled` only when a cancel ended it and nothing of it ran ({@link Plan.cancelled}),
+   * or the `code` {@link failPlan} gives an unexposed plan when nothing of it ran.
    */
   const notifyEnded = (
     out: Command[],
     plan: Plan,
     notice: Exclude<Notice, 'refused'>,
-    reason?: string
+    reason?: string,
+    code?: Exclude<EndCode, 'cancelled'>
   ): void => {
     const included = [...(plan.included ?? [])]
     const body = {
@@ -423,6 +432,8 @@ export const createKernel = (config: KernelConfig) => {
     const ended = notice === 'abandoned' || notice === 'compensated'
     if (ended && plan.cancelled && !plan.neutralized && included.length === 0)
       return emit(out, { ...body, notice, code: 'cancelled' })
+    if (notice === 'abandoned' && code !== undefined && included.length === 0)
+      return emit(out, { ...body, notice, code })
     emit(out, { ...body, notice })
   }
 
@@ -1488,7 +1499,14 @@ export const createKernel = (config: KernelConfig) => {
     failPlan(s, out, plan, reason)
   }
 
-  const failPlan = (s: KernelState, out: Command[], plan: Plan, reason: string): void => {
+  /** `code` says why an unexposed plan was abandoned; an exposed one's compensation carries none. */
+  const failPlan = (
+    s: KernelState,
+    out: Command[],
+    plan: Plan,
+    reason: string,
+    code?: Exclude<EndCode, 'cancelled'>
+  ): void => {
     withdraw(s, plan)
     plan.reason = reason
     if (plan.recovery) {
@@ -1504,7 +1522,7 @@ export const createKernel = (config: KernelConfig) => {
     dropUnexposed(s, plan)
     if (!plan.exposed) {
       plan.status = 'abandoned'
-      return notifyEnded(out, plan, 'abandoned', reason)
+      return notifyEnded(out, plan, 'abandoned', reason, code)
     }
     plan.status = 'compensating'
     for (const entry of Object.values(s.entries)) {
@@ -2050,10 +2068,6 @@ export const createKernel = (config: KernelConfig) => {
       s.nextNonce = through
       enterRecovering(s, out, 'unrecorded nonce')
     }
-    for (const record of Object.values(s.nonces)) {
-      if (!record.resolution && record.nonce < event.latest)
-        emit(out, { type: 'findNonceTx', nonce: record.nonce })
-    }
     if (s.lifecycle.kind === 'starting') s.lifecycle.nonceChecked = true
   }
 
@@ -2143,7 +2157,7 @@ export const createKernel = (config: KernelConfig) => {
   const simulated: Handler<'Simulated'> = (s, out, event) => {
     const taken = take(s, event.request, ['simulate'])
     if (!taken) return
-    if (!event.ok) return failPlan(s, out, taken.plan, 'simulation failed')
+    if (!event.ok) return failPlan(s, out, taken.plan, 'simulation failed', 'reverted')
     taken.plan.sim = { block: event.block, blockHash: event.blockHash }
     taken.plan.phase = 'await-slot'
   }
@@ -2770,9 +2784,7 @@ export const createKernel = (config: KernelConfig) => {
     if (Object.values(s.nonces).some(r => r.foreign))
       return enterRecovering(s, out, 'foreign nonce outstanding at start')
     const since = s.lifecycle.startHead ?? (s.lifecycle.startHead = s.head.number)
-    const consumedUnresolved = Object.values(s.nonces).some(
-      r => !r.resolution && r.nonce < (s.chainNonce ?? 0)
-    )
+    const consumedUnresolved = unidentifiedNonces(s).length > 0
     const unobserved = Object.values(s.entries).some(
       e => UNRETIRED.has(e.state) && (e.observed === undefined || e.observed.block < since)
     )

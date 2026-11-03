@@ -59,17 +59,14 @@ export const abiRevertDecoder =
     return args && args.length > 0 ? `${errorName}(${args.join(', ')})` : errorName
   }
 
-/**
- * A concise failure reason: the decoded revert (via `decode`, defaulting to the standard
- * `Error`/`Panic` shapes) when the revert carries data, else viem's short message. Never includes
- * the request/calldata dump that bloats `error.message` (and gets truncated by log shippers).
- * Plain errors keep their message, so trust-boundary logs must redact it or use a safer fallback.
- * Protocols with custom ABI errors pass `abiRevertDecoder(theirAbi)`.
- */
-export const revertReason = (
-  error: unknown,
-  decode: RevertDecoder = decodeStandardRevert
-): string => {
+const URL_PATTERN = /\b[a-z][a-z\d+.-]*:\/\/\S+/giu
+const SCHEMELESS_USERINFO_PATTERN = /[^\s:/@]*:[^\s/@]*@\S+/gu
+
+/** `text` with every URL and scheme-less `user:pass@host` redacted, so no credential is logged. */
+export const redactUrls = (text: string) =>
+  text.replace(URL_PATTERN, '[redacted URL]').replace(SCHEMELESS_USERINFO_PATTERN, '[redacted URL]')
+
+const reasonOf = (error: unknown, decode: RevertDecoder): string => {
   if (!(error instanceof BaseError)) {
     return error instanceof Error ? error.message : String(error)
   }
@@ -83,3 +80,10 @@ export const revertReason = (
   }
   return error.shortMessage
 }
+
+/**
+ * A concise reason, redacted by {@link redactUrls}: the revert `decode` reads, else viem's short
+ * message, never the request dump. A plain error keeps its message, so keep response bodies out.
+ */
+export const revertReason = (error: unknown, decode: RevertDecoder = decodeStandardRevert) =>
+  redactUrls(reasonOf(error, decode))

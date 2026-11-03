@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { Logger } from '../src/logger'
 
-import { createLogger, railwayContext } from '../src/logger'
+import { createLogger } from '../src/logger'
 
 /** `07-21 16:42:35` — the UTC stamp every stderr line must carry. */
 const TIME_SHAPE = /^\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/
@@ -242,26 +242,5 @@ describe('createLogger BetterStack path', () => {
       attempts: ['1', '2']
     })
     fetchSpy.mockClear()
-  })
-})
-
-describe('railwayContext', () => {
-  it('names each present Railway identity under its log field, trimmed, and omits the rest', () => {
-    expect(
-      railwayContext({
-        RAILWAY_SERVICE_NAME: ' bot ',
-        RAILWAY_DEPLOYMENT_ID: 'dep-1',
-        RAILWAY_ENVIRONMENT_NAME: 'production',
-        RAILWAY_REPLICA_ID: 'replica-1'
-      })
-    ).toStrictEqual({
-      railway_service: 'bot',
-      railway_deployment: 'dep-1',
-      railway_environment: 'production',
-      railway_replica: 'replica-1'
-    })
-    expect(railwayContext({ RAILWAY_SERVICE_NAME: '  ', RAILWAY_REPLICA_ID: 'r' })).toStrictEqual({
-      railway_replica: 'r'
-    })
   })
 })

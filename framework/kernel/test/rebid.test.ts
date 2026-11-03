@@ -155,6 +155,16 @@ describe('a stuck accepted step is re-bid through its own path', () => {
     h.simulate(false)
     expect(signsAt(h, 0)).toHaveLength(1)
     expect(h.lastReason('liq')).toBe('simulation failed')
+    const [original] = h.candidates()
+    h.head()
+    h.mine(original!.hash, { status: 'reverted' })
+    for (let i = 0; i < 4; i++) h.head()
+    const last = h
+      .commands('notify')
+      .filter(c => c.intentId === 'liq')
+      .at(-1)
+    expect(last).toMatchObject({ notice: 'compensated' })
+    expect(last).not.toHaveProperty('code')
   })
 
   it('is refused for evidence that changed since its first bid, as a first bid is', () => {

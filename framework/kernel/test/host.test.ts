@@ -771,6 +771,24 @@ describe('the kernel hosted on the engine', () => {
     await driver.abandon()
   })
 
+  it('looks up no nonce a receipt of its own already resolved', async () => {
+    const chain = new FakeChain()
+    chain.height = 10
+    chain.finalized = 8
+    const driver = await start({ chain })
+    await running(driver)
+    driver.send({ type: 'Submit', plan: liquidationPlan('liq') })
+    await until(() => driver.state().nonces[0]?.candidates[0]?.sent === 'accepted', 'the broadcast')
+    chain.receipts.set('0xexec', { block: 11, branch: 'A' })
+    chain.nonce = 1
+    chain.height = 11
+    await until(() => driver.state().nonces[0]?.resolution !== undefined, 'the receipt')
+    chain.height = 14
+    await until(() => driver.state().head?.number === 14, 'later heads')
+    expect(chain.lookups).toBe(0)
+    await driver.abandon()
+  })
+
   it('keeps reading observations when a nonce lookup keeps failing', async () => {
     const chain = new FakeChain()
     chain.height = 10
@@ -788,6 +806,22 @@ describe('the kernel hosted on the engine', () => {
     await sleep(30)
     chain.capacityReads = []
     await until(() => chain.capacityReads.length >= 3, 'capacity reads despite the lookup')
+    await driver.abandon()
+  })
+
+  it('reaches a later nonce lookup while the earlier ones keep failing', async () => {
+    const chain = new FakeChain()
+    chain.height = 10
+    chain.finalized = 8
+    const asked = new Set<number>()
+    chain.nonceTx = nonce => {
+      asked.add(nonce)
+      return Promise.reject(new Error('lookup unavailable'))
+    }
+    const driver = await start({ chain })
+    await running(driver)
+    chain.nonce = 6
+    await until(() => asked.has(5), 'the sixth lookup')
     await driver.abandon()
   })
 
@@ -1542,7 +1576,6 @@ describe('kernels in one process', () => {
         'kernel.observed',
         'kernel.in',
         'kernel.commands',
-        'kernel.lookups',
         'kernel.activity',
         'kernel.heads',
         'kernel.observe',

@@ -151,7 +151,7 @@ carries risk, revoking and adopted ones included" reads it through `isBusy`; no 
 
 ## 4. Backoff
 
-`declareBackoff(g, id, { runId, prepared, activity, heads, policy })` is the fold `id` with the
+`declareBackoff(g, id, { runId, prepared, submitted, activity, heads, policy })` is the fold `id` with the
 events node `${id}.events`. `policy` is `{ baseBlocks, maxBlocks }`, each a whole number from 1,
 checked when the fold is declared ("is refused at build with a bound that is not a whole number of
 blocks").
@@ -181,8 +181,17 @@ blocks").
     cancelled, so its failure is counted there. An intent id naming no task backs the key off
     under the untasked slot, which every task of the key heeds ("backs off only the task whose act
     the kernel ended unsettled").
+- An exemption is per act. The fold also reads the family's events (§5): a `submitted` event with
+  `exemptFromBackoff` records those codes against its intent id, and the act's terminal notice
+  (`refused`, `settled`, `abandoned`, `compensated` or `failed`) forgets them. A failure notice for
+  that intent id whose code is among them sets no failure: the entry waits only until the next
+  head, `until = block + 1`, with `failures` unchanged (0 when it had none), and emits no event
+  ("holds an act submitted exempt from its end code only until the next head, counting no
+  failure", "backs off the same end for an act submitted with no exemption", "exempts only its own
+  act, and spends the exemption on that act's end").
 - A `settled` notice clears the entry at its intent id's key and task, and only that one ("keeps
-  each task of a key on its own backoff, and a settlement clears only its own").
+  each task of a key on its own backoff, and a settlement clears only its own"). It emits `cleared`
+  only for an entry with `failures` above 0.
 - `isBackedOff(backoff, key, task)` is whether the task's own entry or the key's untasked entry
   holds; with no task, whether any entry of the key holds; with no backoff state, false ("keeps each
   task of a key on its own backoff, and a settlement clears only its own"; "backs off only the task
@@ -287,9 +296,12 @@ ticket. The effect names each request by its ticket and sequences by `seq` ("sta
 outcome itself and keeps evidence from its own captured reading" shows the reading kept beside the
 ticket; the request's `input` is untested).
 
-The handler gets `{ signal }` and returns a `PrepareOutcome`: `{ ok: true, steps, validUntil? }` or
-`{ ok: false, reason, backoff }`. The act holds while every fact it rests on does; `validUntil` only
-shortens that, for a preparation that read something no fact carries ("is submitted to hold until
+The handler gets `{ signal }` and returns a `PrepareOutcome`: `{ ok: true, steps, validUntil?,
+exemptFromBackoff?, maxSpendWei? }` or `{ ok: false, reason, backoff }`. `exemptFromBackoff` names the kernel end
+codes that hold the act's key only to the next head (§4); the act's `submitted` event carries it.
+`maxSpendWei` reaches the plan as given, where it can only lower the fee ceiling of the act's own
+transactions (kernel SPEC §6, "Fees") ("caps the submitted plan's fees at the spend its preparation allows").
+The act holds while every fact it rests on does; `validUntil` only shortens that, for a preparation that read something no fact carries ("is submitted to hold until
 its fact expires"). The runtime stamps the outcome with the request's `id`, `key`,
 `task` and `version` before writing it to `${id}.prepared`, whatever the handler put in it ("stamps
 the adapter outcome itself and keeps evidence from its own captured reading").
@@ -319,7 +331,7 @@ The kernel therefore refuses it once the block it was read at is orphaned, and a
 fact was only read again at a newer canonical block ("rests on the read it was prepared from, so
 the kernel refuses it once that block is orphaned"; "still goes once its fact was only read again
 at a newer canonical block"). The plan is `act(domain, { intentId, steps, restsOn: readings,
-validUntil?, conflicts, decision: { key, priority, prepared: ticket } })`, with the conflicts the
+validUntil?, maxSpendWei?, conflicts, decision: { key, priority, prepared: ticket } })`, with the conflicts the
 task declared when the preparation was asked.
 
 `act.submitted` means the family sent `Submit`, not that the kernel admitted it. The family holds the
@@ -413,8 +425,12 @@ be written raw instead (review).
   a family that reaches the kernel after the declaration returned"). A fact may be declared after
   the kernel's view was read ("acts on a fact declared after the view was read, sampling the kernel
   state").
-- `b.source(id, { level, at, queue, validForMs, read })` is the effect `id` on the lane `id`, one
-  read at a time with `queue` waiting, writing `${id}.reads`, folded by `keyedLevel` into `level`.
+- `b.source(id, { level, at, queue, validForMs, samples, read })` is the effect `id` on the lane
+  `id`, one read at a time with `queue` waiting, writing `${id}.reads`, folded by `keyedLevel` into
+  `level`. `read` gets `samples` as an effect does, each current when called rather than pinned to
+  the head it reads at ("hands read its own samples, each current when read calls it"). The source
+  samples the kernel's state as `state`, so a sample of that name is refused ("refuses a sample
+  named state, which it keeps for the kernel").
   `validForMs` must be a positive safe integer ("refuses a validForMs that is not a positive safe
   integer"). A `complete` or `carried` write expires no later than `validForMs` after the read
   started, keeping its own expiry when that comes first ("expires each read validForMs after the
