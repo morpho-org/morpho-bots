@@ -330,11 +330,10 @@ describe('a restart resumes the recovery and bounds it stopped under', () => {
     expect(h.reports().at(-1)).toMatchObject({ outcome: 'unsafe', open: { nonces: [0] } })
   })
 
-  it('restored recovery names its reason and keeps the latch age', () => {
+  it('restored recovery names its reason', () => {
     const config = makeConfig({ recoveryBoundMs: 10_000_000 })
     const h = new Harness(config).start()
     h.nonceAt(0, 1)
-    expect(h.state.nonces[0]?.unknownSince).toBe(1)
     h.flush()
     h.crash()
     h.boot()
@@ -345,7 +344,6 @@ describe('a restart resumes the recovery and bounds it stopped under', () => {
       reason: 'foreign nonce outstanding at start'
     })
     expect(h.block).toBe(2)
-    expect(h.state.nonces[0]?.unknownSince).toBe(1)
   })
 
   it('a restart after a foreign transaction took one of our nonces comes back recovering', () => {

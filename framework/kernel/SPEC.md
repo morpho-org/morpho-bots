@@ -14,7 +14,8 @@ A kernel is one reducer per `(signing account, chain)`. It is the only code that
 releases a signature, and the only code that changes the ledger. Everything handed to it is untrusted
 except its own configuration, its validators, its own chain reads, and the effects that sign: `signTx`
 and `signTyped` must sign exactly the payload they are given, at the given nonce and within the given
-fee, and report the hash of the bytes they signed. The kernel does not re-check what they return.
+fee, and report the hash of the bytes they signed and, for a transaction, the fees and gas limit it
+was signed at. The kernel does not re-check what they return; a ledger records it as given (§6).
 
 ## 1. Identities
 
@@ -56,7 +57,7 @@ KernelState
   entries[id]    Entry                            the commitment ledger (§5)
   nonces[n]      NonceRecord                      per-nonce candidate records (§6)
   plans[id]      Plan                             in-memory plan progress (§4)
-  outstanding[request] = { kind, plan, hash? }
+  outstanding[request] = { kind, plan, hash?, terms?, generation? }
   slot           request | -1 | undefined         the single exposure pipeline (§4.3)
   seq, ackedSeq  flush sequence number, and the highest one the runtime acknowledged as durable
   capacity[r], watermarks[r]                      hash-bound capacity reads and read-your-writes floors (§7)
@@ -76,25 +77,25 @@ cannot leak on a missed release, and is "rebuilt at startup" for free (review).
 Every event is an input to `reduce`. Every command is an output the runtime executes and answers with
 an event. The kernel never awaits anything (review).
 
-| Source                 | Events                                                                                                                                                                                                       |
-| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| lifecycle              | `Start{ledger (untrusted, §11.4), enrollment}`, `Stop`, `Halt{reason}`, `Tick{now}`                                                                                                                          |
-| admission (engine)     | `Submit{plan}`, `Advance{intentId, stage, basisBlock, notAfter, evidence?}` (§4.3), `Affirm{ids}`, `Observed{observations}` (§4.4)                                                                           |
-| untrusted plan builder | `Materialized{request, payload, witness}`                                                                                                                                                                    |
-| effect operators       | `Simulated`, `Signed`, `EffectFailed`, `TimedOut`, `Flushed{seq}`, `FlushFailed{seq, reason}`, `Broadcasted{request?, hash, outcome}`, `Released`                                                            |
-| kernel chain sources   | `Head`, `Header{number, hash}`, `Reorg{fork}`, `Receipt`, `NonceAt{latest, pending}`, `NonceTx{nonce, hash, …}`, `CommitmentObserved{id, consumed, neutralized}`, `Capacity{block, blockHash}`, `Seen{hash}` |
+| Source                 | Events                                                                                                                                                                                                                                                 |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| lifecycle              | `Start{ledger (untrusted, §11.4), enrollment}`, `Stop`, `Halt{reason}`, `Tick{now}`                                                                                                                                                                    |
+| admission (engine)     | `Submit{plan}`, `Advance{intentId, stage, basisBlock, notAfter, evidence?}` (§4.3), `Affirm{ids}`, `Observed{observations}` (§4.4)                                                                                                                     |
+| untrusted plan builder | `Materialized{request, payload, witness}`                                                                                                                                                                                                              |
+| effect operators       | `Simulated`, `Signed`, `StepCapReached`, `FeeCeilingReached`, `EffectFailed`, `TimedOut`, `Flushed{seq}`, `FlushFailed{seq, reason}`, `Broadcasted{request?, hash, outcome}`, `Released`                                                               |
+| kernel chain sources   | `Head`, `Header{number, hash}`, `Reorg{fork}`, `Receipt`, `NonceAt{latest, pending, safe?}`, `NonceTx{nonce, hash, …}`, `CommitmentObserved{id, consumed, neutralized}`, `Capacity{block, blockHash}`, `Seen{hash}`, `Alarm{reason}`, `Refuse{reason}` |
 
-| Command                                                                   | Answered by                                                               |
-| ------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
-| `materialize{request, intentId, step, signatures, witness}`               | `Materialized`, or `EffectFailed`/`TimedOut`                              |
-| `simulate{request, payload}`                                              | `Simulated{ok, block, blockHash}`                                         |
-| `sign{request, payload}`, plus `{nonce, feeLevel, fee}` for a transaction | `Signed{hash, raw}` for a transaction, `Signed{signature}` for typed data |
-| `flush{seq, ledger}`                                                      | `Flushed{seq}` after tmp → fsync → rename → fsync dir                     |
-| `broadcast{request, hash, raw}`                                           | `Broadcasted{outcome}` or `TimedOut`                                      |
-| `release{request, payload}`                                               | `Released{ok \| unknown}` or `TimedOut`                                   |
-| `findNonceTx{nonce}`                                                      | `NonceTx`: the transaction the account sent at that nonce                 |
-| `notify{intentId, notice, reason}`                                        | nothing; this is the engine's outcome feed                                |
-| `report{outcome, reason, open}`                                           | nothing; this is the terminal stop result                                 |
+| Command                                                                                  | Answered by                                                                                                                                   |
+| ---------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `materialize{request, intentId, step, signatures, witness}`                              | `Materialized`, or `EffectFailed`/`TimedOut`                                                                                                  |
+| `simulate{request, payload}`                                                             | `Simulated{ok, block, blockHash}`                                                                                                             |
+| `sign{request, payload}`, plus `{nonce, feeLevel, fee, kind, outbid?}` for a transaction | `Signed{hash, raw, bid}` for a transaction, or `StepCapReached`/`FeeCeilingReached` when no bid fits (§6); `Signed{signature}` for typed data |
+| `flush{seq, ledger}`                                                                     | `Flushed{seq}` after tmp → fsync → rename → fsync dir                                                                                         |
+| `broadcast{request, hash, raw}`                                                          | `Broadcasted{outcome}` or `TimedOut`                                                                                                          |
+| `release{request, payload}`                                                              | `Released{ok \| unknown}` or `TimedOut`                                                                                                       |
+| `findNonceTx{nonce}`                                                                     | `NonceTx`: the transaction the account sent at that nonce                                                                                     |
+| `notify{intentId, notice, reason}`                                                       | nothing; this is the engine's outcome feed                                                                                                    |
+| `report{outcome, reason, open}`                                                          | nothing; this is the terminal stop result                                                                                                     |
 
 The kernel's chain adapter polls the chain on its own, never through the bot's sources, so a slow
 strategy read never stalls a receipt, a nonce read, or a recovery observation. The runtime polls
@@ -110,8 +111,9 @@ matches the kernel's header at that height (§8)
 `Submit` is one atomic transition: it admits the plan with its reservation, or refuses and leaves no
 trace but the observations it carried, which are applied before admission (§4.4). A plan that names
 one it `supersedes` is judged with that plan set aside, on a copy; the
-superseded plan fails only once this one is admitted, never past its commit point, and a
-risk-reducing plan is superseded only by another. In order:
+superseded plan fails only once this one is admitted, never past its commit point or while its
+current transaction occupies a nonce, and a risk-reducing plan is superseded only by another. In
+order:
 
 1. **Idempotency.** A submission id held by an active plan or a durable record, with the same step
    digest, returns `notify(known, status)`. With a different digest it is refused as a conflict. An
@@ -195,19 +197,20 @@ validator read, and anything later must fit inside it ("a dependent step cannot 
 A plan's `status` is `executing → settled | abandoned | compensating → compensated | failed`. While
 executing, the current step `cursor` is in one `phase`:
 
-| Phase              | Entered when                                                                     | Leaves on                                                                                                                                                                                                                                                                             |
-| ------------------ | -------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `ready`            | a step starts                                                                    | at a stage boundary, `awaiting-advance` before any check; else authorization re-check (§4.4), then `materialize`, `simulate`, `sign` (typed data), or `await-slot` (release)                                                                                                          |
-| `materialize`      | step payload missing                                                             | `Materialized` → authorize + envelope fit → `ready`; refusal or timeout → fail                                                                                                                                                                                                        |
-| `awaiting-advance` | a step follows an included transaction or a release (a stage boundary)           | `Advance{stage = cursor}` admitted on the next stage's own evidence, read at or after `lastInclusion` → `ready`; a refused one (`stalled`) leaves it parked; expiry, a halt or supersession → fail                                                                                    |
-| `simulate`         | transaction step                                                                 | `Simulated{ok}` → `await-slot`, recording `(block, blockHash)`; not ok or timeout → fail                                                                                                                                                                                              |
-| `await-slot`       | simulation passed, or a release step                                             | slot free, recovery plans first: re-check; if the simulation is stale go back to `ready`; else pick the nonce and emit `sign` (tx) or commit (release)                                                                                                                                |
-| `sign`             | typed data: from `ready`. transaction: holds the slot                            | typed: `Signed` → entries `signed`, next step. tx: `Signed` → final check (§4.4) → **commit** (§4.5), or back to `ready` if the simulation aged, or fail. A signing timeout or failure frees the slot and fails the plan                                                              |
-| `commit`           | commit point passed; flush emitted, even when the commit changed nothing durable | `Flushed{seq ≥ flushSeq}` → dispatch check (§4.5) → emit `broadcast`/`release` → `expose`, or withhold and fail. `FlushFailed` → a transaction candidate is kept as `rejected`, a release's plan fails; the kernel enters recovery, or stops unsafe if already recovering or `fenced` |
-| `expose`           | exposure act dispatched                                                          | `Broadcasted` or `TimedOut` (→ candidate `unknown`) → `include`. `Released`/timeout → next step                                                                                                                                                                                       |
-| `include`          | transaction dispatched                                                           | nonce resolution with this candidate executed and validator-confirmed → `lastInclusion`, next step. Resolved to anything else → fail                                                                                                                                                  |
+| Phase              | Entered when                                                                     | Leaves on                                                                                                                                                                                                                                                                                                                                                              |
+| ------------------ | -------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ready`            | a step starts                                                                    | at a stage boundary, `awaiting-advance` before any check; else authorization re-check (§4.4), then `materialize`, `simulate`, `sign` (typed data), or `await-slot` (release)                                                                                                                                                                                           |
+| `materialize`      | step payload missing                                                             | `Materialized` → authorize + envelope fit → `ready`; refusal or timeout → fail                                                                                                                                                                                                                                                                                         |
+| `awaiting-advance` | a step follows an included transaction or a release (a stage boundary)           | `Advance{stage = cursor}` admitted on the next stage's own evidence, read at or after `lastInclusion` → `ready`; a refused one (`stalled`) leaves it parked; expiry, a halt or supersession → fail                                                                                                                                                                     |
+| `simulate`         | transaction step                                                                 | `Simulated{ok}` → `await-slot`, recording `(block, blockHash)`; not ok or timeout → fail                                                                                                                                                                                                                                                                               |
+| `await-slot`       | simulation passed, or a release step                                             | slot free, recovery plans first: re-check; if the simulation is stale go back to `ready`; if an earlier transaction step has not executed, wait in `ready` (§6, "The predecessor rule"); if latched and the step occupies its nonce, wait in `include`; else pick the nonce, the plan's recorded one or the next unallocated, and emit `sign` (tx) or commit (release) |
+| `sign`             | typed data: from `ready`. transaction: holds the slot                            | typed: `Signed` → entries `signed`, next step. tx: `Signed` → final check (§4.4) → **commit** (§4.5), or back to `ready` if the simulation aged, or fail. `StepCapReached` or `FeeCeilingReached` → `include`, capped, holding no slot (§6). A signing timeout or failure frees the slot and fails the plan                                                            |
+| `commit`           | commit point passed; flush emitted, even when the commit changed nothing durable | `Flushed{seq ≥ flushSeq}` → dispatch check (§4.5) → emit `broadcast`/`release` → `expose`, or withhold and fail. `FlushFailed` → a transaction candidate is `withheld`, since bytes go out only after their flush, a release's plan fails; the kernel enters recovery, or stops unsafe if already recovering or `fenced`                                               |
+| `expose`           | exposure act dispatched                                                          | `Broadcasted` or `TimedOut` (→ candidate `unknown`) → `include`. `Released`/timeout → next step                                                                                                                                                                                                                                                                        |
+| `include`          | transaction dispatched, or a capped bid waiting                                  | its nonce resolving, here or in any earlier phase (§6): a candidate of this step executed and validator-confirmed → `lastInclusion`, next step; anything else → fail. Its nonce stuck → `ready` at the same nonce, to bid again (§6)                                                                                                                                   |
 
-`fail(plan)` cancels its outstanding read requests and frees a slot held before the commit point. Any
+`fail(plan)` withdraws its outstanding requests other than a send or release already handed off, and
+frees a slot it holds before that hand-off; a candidate still awaiting its flush is withheld. Any
 late result for them is then discarded. Then:
 
 - **Nothing exposed**: its `intended` and `signed` entries are deleted, its reservation disappears
@@ -218,6 +221,27 @@ late result for them is then discarded. Then:
   of this plan or one that neutralizes its entries (so nothing that could recreate or undo the
   exposure can still execute). A `revoking` entry or a provisional cancel is not compensation. The
   plan is `failed` if any entry is stuck; the kernel is then already recovering ("a later step failing after an earlier one exposed compensates the exposure", "compensation is complete only when the cancellation is final and its nonce resolved", "compensation that cannot complete keeps the exposure and ends in recovery and an unsafe stop").
+
+A plan whose transaction occupies its nonce (§6) is **cancelled** rather than failed when its
+deadline passes, a stop forbids it, its nonce stays uncertain, or recovery must bid over a step that
+may not bid again (§6): it fails as above, and a fill then races its candidates. `cancelled` is a
+reason code, never a status. Only the terminal notice, `abandoned` or `compensated`, carries it, and
+only when no step of the plan was included and its compensation never acted: no neutralizer for one
+of its entries was committed, before the cancel or after it (`Plan.neutralized`, which never
+clears). The intermediate `compensating` notice carries no verdict ("says cancelled on the last
+notice when the fill wins, and on no notice before it", "when a neutralizer of its entry was
+committed before the cancel", "when a neutralizer of its entry is committed after the cancel", "a
+step recovery races with a fill is cancelled like any step that cannot bid again").
+
+A step that lands after its plan stopped reading its nonce is still named in the plan's `included`,
+so a cancelled step whose original wins is reported as executed, and each inclusion says whether its
+receipt succeeded. Each new inclusion is an `included` activity, which the tx reporter logs as
+`tx.included` on success and `tx.reverted` otherwise, each distinct outcome of a hash once: a step
+that lands after the plan's last notice is still logged, a reorg that lands the same outcome again is
+not, and one that changes it is. A nonce record dropped at finality is a `final` activity naming its
+hashes, after which the reporter forgets them ("reports the step executed, and not cancelled, when
+its original wins after the cancel", "names a step that lands after its plan ended in its
+inclusions", "names the inclusion of a reverted step that compensates and prunes at once").
 
 A plan that finishes its last step is `settled`: every transaction step was included, every `sign`
 step signed, and every release answered, `unknown` included. It does not mean inclusion is final; a consumer that needs finality (a saga gate) waits for the nonce records to be
@@ -233,18 +257,18 @@ signatures run concurrently. Many transactions may be pending onchain at once ("
 An authorization to perform one exposure act is the conjunction, evaluated at the `Signed` event
 (transactions) or at slot acquisition (releases), of:
 
-| Element            | Bound to                                                                                                                                            |
-| ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------- |
-| exact action bytes | the payload that was authorized, simulated, and signed. The hash is what the flush records                                                          |
-| validator reading  | computed from those bytes and their witness; it fits the envelope                                                                                   |
-| policy             | the payload re-authorized under the mode in force _now_, at slot acquisition and again at `Signed`                                                  |
-| decision validity  | `now < notAfter` while the current step is uncommitted                                                                                              |
-| fresh basis        | after a stage boundary: the advance's basis and facts `≥ lastInclusion`, and simulation block ≥ that inclusion                                      |
-| own effects        | `basisBlock` and every fact's block `≥ watermarks[r]` for every resource the plan consumes or commits, at admission, slot acquisition, and `Signed` |
-| evidence           | every fact the stage rests on, as the kernel last observed it (below), and `now < notAfter`                                                         |
-| simulation         | `ok` at a canonical block no older than `head − maxSimLagBlocks`                                                                                    |
-| reservation        | held by construction: the plan's envelope is in `holds` from admission                                                                              |
-| nonce              | the next unallocated nonce, or a still-open record for a replacement                                                                                |
+| Element            | Bound to                                                                                                                                                    |
+| ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| exact action bytes | the payload that was authorized, simulated, and signed. The hash is what the flush records                                                                  |
+| validator reading  | computed from those bytes and their witness; it fits the envelope                                                                                           |
+| policy             | the payload re-authorized under the mode in force _now_, at slot acquisition and again at `Signed`                                                          |
+| decision validity  | `now < notAfter`, for every plan but recovery, in every phase (§4.4, "One deadline")                                                                        |
+| fresh basis        | after a stage boundary: the advance's basis and chain facts `≥ lastInclusion`, and simulation block ≥ that inclusion                                        |
+| own effects        | `basisBlock` and every chain fact's block `≥ watermarks[r]` for every resource the plan consumes or commits, at admission, slot acquisition, and `Signed`   |
+| evidence           | every fact the stage rests on, as the kernel last observed it (below), and `now < notAfter`                                                                 |
+| simulation         | `ok` at a canonical block no older than `head − maxSimLagBlocks`                                                                                            |
+| reservation        | held by construction: the plan's envelope is in `holds` from admission                                                                                      |
+| nonce              | the next unallocated nonce, or the plan's recorded one (`terms.nonce`): unresolved, still the plan's, and resolved nowhere since the bid was asked for (§6) |
 
 Supersession, expiry, and a stop or halt that forbids the plan fail it at that event and cancel its
 attempts, and the late result is then discarded by request. Before its commit, a changed fact fails
@@ -258,9 +282,13 @@ reports against this plan:
   ("a simulation that ages past the lag bound while signing is redone, and the signed bytes never leave").
 
 **Evidence.** A plan names the facts its decision rests on, each with the version it was decided on
-and the block and hash of this chain it was read at. `Submit` and `Advance` refuse a fact that names
-no block; a candidate's recorded authority without one still loads, since it authorizes nothing
-again. For registered fact nodes, `factId(node, key)` is unambiguous: a registered node id may not
+and its basis: for a chain fact, the block and hash of this chain it was read at; for an offchain
+fact, such as a venue quote, the time it was observed. `Submit` and `Advance` refuse a fact that
+names no basis, and evidence with no chain fact: a chain fact anchors `basisBlock`, the fresh basis
+after a stage boundary, and the own-effect checks, none of which an observation time can. A
+candidate's recorded authority with a fact that names no basis still loads, since it authorizes
+nothing again ("stalls a stage whose evidence names no basis", "refuses an act resting on offchain facts alone", "stalls a stage whose evidence is
+offchain alone"). For registered fact nodes, `factId(node, key)` is unambiguous: a registered node id may not
 contain `/`, while a key may, and the first `/` separates them ("refuses a fact node holding / through
 %s", "both attach paths route a key holding / to its registered fact node"). `factId` itself is an
 exported formatter and does not validate arbitrary strings. The host's `observe` fold hands the
@@ -268,7 +296,14 @@ kernel the current observation of every fact a plan names with the plan, and eve
 `Observed`, while any plan rests on it. A fact is refused when it is read below the evidence floor,
 unobserved, unknown or failed, at another version, read at a block the kernel holds no header for or
 has orphaned, or read before the conflict mark of any id the plan declares: the block of the last
-inclusion, or the head after the last release, of our own plan writing that id ("refuses a fact that is unknown or failed, or no longer at the version decided on", "refuses a fact read at a block it does not hold, or on a branch that was orphaned", "refuses evidence on a conflict id read before our own effect on it was included", "stalls a stage whose evidence names no block", "loads a ledger whose recorded authority names no block, since it authorizes nothing again").
+inclusion, or the head after the last release, of our own plan writing that id ("refuses a fact that is unknown or failed, or no longer at the version decided on", "refuses a fact read at a block it does not hold, or on a branch that was orphaned", "refuses evidence on a conflict id read before our own effect on it was included", "loads a ledger whose recorded authority names no block, since it authorizes nothing again").
+An offchain fact has no block, so only the observation checks and its expiry (below) apply: it is
+refused when unobserved, unknown or failed, at another version, or observed with no expiry, since
+no block age bounds it ("refuses an act whose offchain fact is observed with no expiry"), and never
+for the evidence floor, a header, or a conflict mark. Its validity does not depend on a block, and our own effect is
+caught by the chain fact beside it ("is admitted beside a chain fact, with no block for the kernel
+to hold", "refuses an act once the offchain fact is at another version", "refuses an act at the
+offchain fact expiry", "is never refused for predating our own effect").
 
 The evidence floor is `max(evidenceFloor, head − maxEvidenceAgeBlocks, 0)`, and a fact below it is
 refused as `evidence_too_old`. `maxEvidenceAgeBlocks` (K) is required per bot and refused when it is
@@ -290,15 +325,37 @@ crashed run may have seen heads it never made durable, but none more than K abov
 K above its durable `after`. Either bound alone puts the mark past every head the
 release could have left at, so a restart onto a source lagging further than K still marks it high
 enough, and evidence on its writes is refused until then.
-The rule binds a plan **until its nonce is committed**. The nonce picked at slot acquisition is
-provisional until then, so the rule is still checked when the signer is invoked and at `Signed`.
-After the commit, a neutral plan goes and the chain arbitrates, while a risk-increasing plan is still
-withheld for its evidence and `notAfter`. Risk-reducing and recovery plans are never refused for the
-validity of their facts; one that names evidence still ends at the deadline its evidence lowers
-`notAfter` to ("ends a risk-reducing plan at the deadline its evidence fell to"). The check runs at admission, slot acquisition, `Signed`, and through the
-executor's guards immediately before the signer is invoked and before the network handoff. The
+The facts bind a plan **until its current bid is committed**, while it is bidding uncommitted
+(`ready` through `sign`, or parked). The nonce picked at slot acquisition is provisional until then,
+so the rule is still checked when the signer is invoked and at `Signed`. A re-bid passes it again,
+as its first bid did. After the commit, a neutral plan goes and the chain arbitrates its facts, while
+a risk-increasing plan is still withheld for them. Risk-reducing and recovery plans are never refused
+for the validity of their facts. The check runs at admission, slot acquisition, `Signed`, and through
+the executor's guards immediately before the signer is invoked and before the network handoff. The
 candidate's record carries the evidence and decision record it was authorized on, so the flush that
-gates the send also records why.
+gates the send also records why ("is refused for evidence that changed since its first bid, as a
+first bid is", "reserves its fee, and is not withheld after commit for stale evidence").
+
+**One deadline.** Apart from the evidence exemptions, every plan but recovery ends at `notAfter`, in
+every phase: no bid is asked for, signed or handed off past it, and `Tick` ends the plan there, also
+while it waits in `include`, for a predecessor, or at its step cap (§6). A plan whose transaction
+occupies its nonce is cancelled (§4.3), so a fill races its candidates; a candidate awaiting its
+flush or its hand-off is withheld; a send already handed off is left to its answer. A risk-reducing
+plan that names evidence ends at the deadline its evidence lowers `notAfter` to, and a withdrawal at
+its own expiry ("ends a risk-reducing plan at the deadline its evidence fell to", "cancels a step
+waiting in include before its nonce is stuck, and its nonce is filled", "withholds a cancellation
+committed before its deadline whose flush lands after it", "cancels a cancellation whose send waits
+at hand-off past its deadline, keeping the send to answer", "withholds a neutral plan whose deadline
+passed while its ledger write was held", "is not re-bid past its deadline, even when nothing cancels
+it first").
+
+A plan or an `Advance` may also name `validUntil`, when what was decided stops holding apart from
+the evidence's expiries. It is a cap on the one deadline, not a second one, and is slated for removal
+with BOTS-484. The kernel keeps it for the current stage and caps `notAfter` with it at
+admission and at every stage, and every refresh of a resting plan's deadline (below) is
+`min(refreshed, validUntil)`, so no observation extends a deadline past it. A plan waiting to
+advance therefore ends at its current stage's `validUntil` at the latest ("a refreshed observation
+never extends the deadline past what the decision is valid until").
 
 An observation of a present or absent fact may carry its read's `expiry`, in the kernel's clock. One
 that is not a non-negative safe integer makes the fact failed, with an alarm. Wherever the kernel
@@ -306,15 +363,16 @@ takes in observations (`Observed`, and the seeds of `Submit` and `Advance`), it 
 `notAfter` of every executing plan whose current evidence names the fact to that expiry, and a new
 plan or stage starts from the earliest of its own `notAfter` and the expiries the kernel holds for
 its facts. Within a stage a deadline never rises, whether an expiry is extended or removed; an
-accepted `Advance` replaces it. Lowering a deadline refuses nothing by itself: the checks above
-judge it, with the same post-commit, risk-reducing and recovery rules. The one exception is a plan
-**resting** on its stage: its step is being included (`include`), or it is parked and not yet past
-its deadline. No step of it is judged on that evidence again, so while every fact it rests on reads
+accepted `Advance` replaces it. Lowering a deadline refuses nothing by itself: the checks above and
+the deadline judge it. The one exception is a plan **resting** on its stage: its step is being
+included (`include`) or it is parked, and its deadline has not passed. No step of it is judged on
+that evidence again until it bids or advances, so while every fact it rests on reads
 again at the version it was decided on, its deadline becomes the earliest of their latest
-expiries, judged once the whole batch is in. A changed or unavailable reading never extends it, nor
+expiries and its `validUntil`, judged once the whole batch is in. A changed or unavailable reading
+never extends it, nor
 does a batch that reads one of its facts twice, so the plan ends at its deadline
-unless the bot supersedes it first, and a parked plan already past its deadline is never revived
-("reads a fact as failed, and keeps its deadline, when its expiry is %s", "falls to an expiry that appears on an unchanged fact, and the act is refused at it", "never rises within a stage, whether the expiry is extended or removed", "falls for every executing plan a later submission seeds the same fact for", "follows its facts read again unchanged, and rebroadcasts while they hold", "is never extended by an equal read %s one that no longer holds", "stays past its deadline once there, whatever a later read says").
+unless the bot supersedes it first, and no plan already past its deadline is ever revived
+("an observation once the deadline has passed never extends it", "reads a fact as failed, and keeps its deadline, when its expiry is %s", "falls to an expiry that appears on an unchanged fact, and the act is refused at it", "never rises within a stage, whether the expiry is extended or removed", "falls for every executing plan a later submission seeds the same fact for", "follows its facts read again unchanged, and rebroadcasts while they hold", "is never extended by an equal read %s one that no longer holds", "stays past its deadline once there, whatever a later read says").
 
 **Stages.** A step after an included transaction or a release begins a new stage. The plan parks
 there before anything judges it, so a stage is never refused on an earlier stage's evidence, which
@@ -340,28 +398,40 @@ kernel never produces a signature it would refuse to expose ("after a typed sign
 The commit point is the reducer transition at `Signed` (transaction) or slot acquisition (release)
 that passes §4.4. In that one transition:
 
-1. For a transaction: append a candidate `{hash, raw, payload, kind, intentId, step, creates, exposes,
-retires, consumes, feeLevel, sent: unsent}` to the nonce record, and advance `nextNonce` if the
-   nonce was fresh ("a replacement is recorded at the nonce, level and fee it was signed at", "after the flush: the candidate reads back with the evidence and decision it went on, and no authority").
-2. Created commitments become `exposed` and record this hash as a creator. Carried commitments move
+1. For a transaction: append a candidate to the nonce record with its hash, raw bytes, payload,
+   kind, intent id, step, reading (`creates`, `exposes`, `retires`, `consumes`), `feeLevel`, `fee`,
+   the bid it was signed at (`maxFeePerGas`, `maxPriorityFeePerGas`, `gas`), its send head, and
+   `sent: unsent`, and advance `nextNonce` if the nonce was fresh ("a replacement is recorded at the
+   nonce, level and fee it was signed at", "records the bid a candidate was signed at, and its first
+   broadcast as its send head", "after the flush: the candidate reads back with the evidence and
+   decision it went on, and no authority").
+2. Created commitments become `exposed` and record this nonce as a creator. Carried commitments move
    `signed → exposed`; ones this plan already released stay as they are. Retired ones move to
-   `revoking`, recording the neutralizing hash and the prior state ("ecrecover quoting signs in memory, exposes at the publish commit, and goes live on inclusion", "a reorg that removes a cancel reopens it; the reservation was never released").
+   `revoking`, recording the neutralizing nonce and the prior state. A step's consumption is
+   committed with its first candidate only, so a re-bid adds none ("ecrecover quoting signs in
+   memory, exposes at the publish commit, and goes live on inclusion", "a reorg that removes a cancel
+   reopens it; the reservation was never released", "a step's second candidate consumes nothing
+   more, and the nonce's winner settles the step").
 3. Check first that every carried signature was produced by this plan, every carried commitment is
    this plan's and `signed`, `exposed`, or `live`, every created one is this plan's and still
-   `intended` or `signed`, and every retired one is owned. Otherwise the signed bytes are discarded
-   and the plan fails ("a publish carrying a signature this plan never produced is refused at the commit point").
+   `intended` or `signed`, or `exposed` by this step's own candidates at this nonce alone (a creator
+   re-bid), every retired one is owned, and the step's consumption, counted once, fits the envelope.
+   Otherwise the signed bytes are discarded and the plan fails ("a publish carrying a signature this
+   plan never produced is refused at the commit point", "a step that created a commitment may bid
+   again at its nonce, and either candidate creates it").
 4. Record the submission as `exposed` ("a crash after the first exposure keeps the submission record, so resubmission is refused").
 5. Emit `flush` with the new durable projection, and record `committedAt = now` ("after the commit point but before the flush is written: nothing left the process", "a flush acknowledged after the dispatch bound withholds the act").
 
 **The dispatch check.** The act is dispatched only on its `Flushed`, and only if, at that event, the
-plan still passes `stillAuthorized` and re-authorization under the current policy, its simulation
-block is still canonical, and `now − committedAt ≤ maxDispatchLagMs`. Otherwise the act is
-**withheld**: the candidate is marked `withheld`, nothing is sent, and the plan fails into
-compensation. The durable record already says "possibly sent", which is conservative. The withheld
-nonce is then filled like a rejected one, and exposure recorded for a withheld release is
-neutralized. A withheld **neutralizer** never left the process, so the entries it would have retired
-go back to their prior state at once. The recovery controller then neutralizes them again, and a
-withheld recovery candidate no longer counts as contesting its nonce (`nonces.test.ts`,
+plan still passes `stillAuthorized` and re-authorization under the current policy, its deadline has
+not passed (§4.4), its simulation block is still canonical, and
+`now − committedAt ≤ maxDispatchLagMs`. Otherwise the act is **withheld**: the candidate is marked
+`withheld`, nothing is sent, and the plan fails into compensation. The durable record already says "possibly sent", which
+is conservative. The withheld nonce is then filled like a rejected one, and exposure recorded for a
+withheld release is neutralized. A withheld **neutralizer** never left the process, so the entries
+it would have retired go back to their prior state at once, unless another candidate at that nonce
+that was not withheld still retires them (§5). The recovery controller then neutralizes them
+again, and a withheld recovery candidate no longer counts as contesting its nonce (`nonces.test.ts`,
 "a withheld recovery neutralizer hands its entry back, and recovery occupies the nonce again", "a fact that changes during the flush withholds a risk-increasing broadcast; the recorded nonce is filled", "dispatch withholds an act whose simulation block the kernel knows was orphaned").
 
 This bounds the window in which the kernel knowingly sends obsolete bytes to the time between the
@@ -395,20 +465,20 @@ states:
 | `revoking` | a neutralizer for it has passed its commit point                       | yes     | yes      | the neutralizer candidate is reloaded and re-sent from stored bytes; if it lost, re-neutralized                            |
 | `retired`  | positive evidence at finality                                          | pruned  | no       | if the pruning flush was lost, re-learned from the chain                                                                   |
 
-| From                  | Event (evaluated each pass)                                                             | To          |
-| --------------------- | --------------------------------------------------------------------------------------- | ----------- |
-| —                     | admission reads a `creates`                                                             | `intended`  |
-| `intended`            | typed-data `Signed` for its sign step                                                   | `signed`    |
-| `intended`/`signed`   | commit point of a transaction that creates it, or of an act that carries it             | `exposed`   |
-| `intended`/`signed`   | plan abandoned, settled without carrying it, or failed                                  | deleted     |
-| `exposed`             | a creator or carrier candidate wins its nonce with a successful receipt                 | `live`      |
-| `live`                | the block that made it live is reorged away                                             | `exposed`   |
-| `exposed`/`live`      | commit point of a neutralizer that retires it                                           | `revoking`  |
-| `revoking`            | its neutralizer resolves not executed (lost, reverted, unconfirmed, or external winner) | prior state |
-| `revoking`            | any of our neutralizers for it resolves executed **at a final block**                   | `retired`   |
-| any open              | final observation: `neutralized`, or `consumed ≥ cap`                                   | `retired`   |
-| any open              | final block timestamp > the commitment's enforceable expiry                             | `retired`   |
-| `exposed` (inclusion) | every creator candidate is final and lost or reverted                                   | `retired`   |
+| From                  | Event (evaluated each pass)                                                                                                                                                          | To          |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------- |
+| —                     | admission reads a `creates`                                                                                                                                                          | `intended`  |
+| `intended`            | typed-data `Signed` for its sign step                                                                                                                                                | `signed`    |
+| `intended`/`signed`   | commit point of a transaction that creates it, or of an act that carries it                                                                                                          | `exposed`   |
+| `intended`/`signed`   | plan abandoned, settled without carrying it, or failed                                                                                                                               | deleted     |
+| `exposed`             | a creator or carrier candidate wins its nonce with a successful receipt                                                                                                              | `live`      |
+| `live`                | the block that made it live is reorged away                                                                                                                                          | `exposed`   |
+| `exposed`/`live`      | commit point of a neutralizer that retires it                                                                                                                                        | `revoking`  |
+| `revoking`            | its neutralizing nonce resolves to a winner that did not execute it (lost, reverted, unconfirmed, or external), or, unresolved, holds no candidate retiring it that was not withheld | prior state |
+| `revoking`            | its neutralizing nonce's winner retires it and executed, **at a final block**                                                                                                        | `retired`   |
+| any open              | final observation: `neutralized`, or `consumed ≥ cap`                                                                                                                                | `retired`   |
+| any open              | final block timestamp > the commitment's enforceable expiry                                                                                                                          | `retired`   |
+| `exposed` (inclusion) | every creating nonce is final, and its winner did not create it                                                                                                                      | `retired`   |
 
 Rules that hold across the table:
 
@@ -428,32 +498,73 @@ Rules that hold across the table:
   expected transition (a missing `SetIsRootRatified` log) counts as _having created_ the commitment,
   because absence never retires. It counts as _not having neutralized_ one, and it fails the plan's
   step. The kernel raises an alarm ("a success without its expected log never proves the commitment absent").
+- **Hand-back is owned by the nonce.** Entries record their creators and their neutralizing
+  candidate by nonce, since a nonce may hold several candidates. Before the nonce resolves, a
+  `revoking` entry stays so while any candidate there that was not withheld retires it, since only
+  `withheld` proves bytes never left and a rejection does not (§6). Once it resolves, only the
+  winner counts: a winner that executed and retires it keeps it, retiring at finality; anything else
+  hands it back to its prior state, even if losing candidates would have retired it. A creator dies
+  only on what its nonce's winner created. A handed-back entry returns to `revoking` under any
+  unresolved nonce that still holds such a candidate, after a reorg or a restart, and is otherwise
+  the bot's to decide again: its next decision or the dead-man switch governs it ("an older
+  neutralizer that wins keeps the entry, though a newer one at its nonce loses", "a fill that wins
+  hands the entry back, though accepted cancellations at its nonce retire it", "a reorg that orphans
+  the winning fill returns the entry to its cancellations, which retire it", "a restart returns a
+  handed-back entry to the cancellations its unresolved nonce still holds").
 - **Revocation needs no fresh decision input.** It uses the stored neutralizer, re-authorized by the
   current validator and recovery policy (§12, "policy changes during recovery")
   ("after a neutralizer is flushed but before it is sent: the stored bytes are re-sent, not re-derived", "recovery after a config change removed the market cancels from the stored neutralizer", "the recovery policy refuses a stored neutralizer whose reading also creates exposure").
 - **Three lifetimes are distinct**: a plan's `notAfter` (its deadline, which is its current
   stage's evidence deadline, or a withdrawal's own expiry since it rests on no fact: a submission
-  or `Advance` past it is refused, no uncommitted step goes past it, a risk-increasing step is
-  withheld past it throughout, a plan that parks past it ends, an equal re-read extends it only
-  while the plan rests (§4.4), and the kernel rebroadcasts an
-  `unknown` candidate only before it, §4.4), the
+  or `Advance` past it is refused, every plan but recovery ends at it in any phase, an equal
+  re-read extends it only while the plan rests and never once it has passed, and the kernel
+  re-sends a step's bytes only before it, §4.4), the
   entry's `expiry` (enforceable validity, in chain time), and the revocation obligation (§10). A
   plan has no execution horizon of its own ("an intent submitted past its deadline is never signed", "a commitment past its enforceable expiry at a final block retires without any action", "an expired plan is not rebroadcast while latched", "ends a parked plan whose finished stage deadline an observation lowered past, on its next advance").
 
 ## 6. Nonces, the latch, and resolution
 
 A **nonce record** exists from the first commit point at that nonce until its resolution is final.
-Its candidates are every transaction the kernel signed and committed at that nonce: the original, fee
-or payload replacements, recovery neutralizers, and fills. Each candidate is durable with its raw
-bytes and its reading ("after the flush: the candidate reads back with the evidence and decision it went on, and no authority", "drops a settled plan once its nonce resolves, and keeps it while the record is open").
+Its candidates are every transaction the kernel signed and committed at that nonce: the original,
+its re-bids, recovery neutralizers, and fills. Each candidate is durable with its raw bytes, its
+reading, the fees and gas limit it was signed at, and its **send head**: the head of its first
+broadcast, or of its commit while it has none, which rebroadcasts never move ("after the flush: the
+candidate reads back with the evidence and decision it went on, and no authority", "drops a settled
+plan once its nonce resolves, and keeps it while the record is open", "keeps the commit head as the
+send head of bytes a crash kept from leaving").
 
 **Send status.** A candidate's `sent` is `unsent → accepted | rejected | unknown | withheld`.
 `unknown` means the kernel holds no acknowledgement it trusts and has not seen the candidate in the
-pool. Only `Seen` or an `accepted` acknowledgement moves `unknown → accepted`. A later rejection of an `unknown` candidate is
-ignored, because a rebroadcast answered "already known" or "nonce too low" is not evidence. A
-broadcast attempt records the hash it sent, so a late timeout marks that candidate and no other. On
-reload, every candidate that is not `rejected` or `withheld` becomes `unknown`: the process cannot
-know whether the pool still holds it ("a timed-out broadcast is unknown, latches, and is reconciled when it lands late", "a latch never clears on time or on a late rejection: past its bound the kernel recovers", "a late timeout of a rebroadcast cannot mark an unflushed candidate as sent", "after the flush is written but before the broadcast: exposure is assumed, latched, and neutralized").
+pool. An answer to a send sets the status only of an `unsent` or `rejected` candidate: an
+acknowledgement makes it `accepted`, an ambiguous answer or a timeout `unknown`, and a refusal
+`rejected`. Only `Seen` or an acknowledgement moves `unknown → accepted`, and nothing moves
+`accepted` or `unknown` to `rejected`, so within a running process an accepted candidate is never
+demoted. "Already known" for the same hash is acceptance; no answer to a rebroadcast is ever a
+rejection. The signer and `@repo/kit`'s effects read that answer as acceptance, so a re-send
+re-accepts bytes the pool still holds. A broadcast attempt records the hash it sent, so a late
+timeout marks that candidate and no other ("a timed-out broadcast is unknown, latches, and is
+reconciled when it lands late", "a latch never clears on time or on a late rejection: past its
+bound the kernel recovers", "a late timeout of a rebroadcast cannot mark an unflushed candidate as
+sent", "never demotes an accepted candidate while running").
+
+**Uncertainty.** An `unknown` candidate is **covered** once a candidate at a higher level at its
+nonce is `accepted`: the pool holds a bid that replaces it, so it adds no uncertainty. One predicate,
+an _uncovered_ `unknown` candidate, decides the latch, the latch bound, and the one-time re-send
+below. Each candidate records `unknownSince`, the head it became `unknown` at, once, and drops it
+when it is accepted. A record's uncertainty age is the oldest `unknownSince` over its uncovered
+`unknown` candidates, judged by coverage rather than resolution, and with none it has no age ("a
+covered unknown neither latches nor escalates past the latch bound").
+
+On reload, every candidate that is not `rejected` or `withheld` becomes `unknown`, since the process
+cannot know whether the pool still holds it. Only a candidate that was an uncovered `unknown` when
+stored keeps its `unknownSince`; one accepted at the crash has none, and one a higher accepted bid
+covered drops its own, since reload uncovers it. Each starts its age at the first head after the
+restart. So a nonce genuinely uncertain at the crash keeps its age and may pass the latch bound at
+once, while one accepted then is judged afresh ("a nonce uncertain once long ago still runs after a
+restart 200 blocks later", "a restart keeps no age for an unknown a higher accepted bid covered, and
+re-accepts the bytes", "a nonce genuinely uncertain at a crash escalates at the first head 200 blocks
+later", "after the flush is written but before the broadcast: exposure is assumed, latched, and
+neutralized").
 
 **Foreign records.** A `NonceAt` while running whose `latest` or `pending` count is beyond `nextNonce`
 proves the account sent something the kernel never recorded. The kernel records every nonce in that
@@ -484,34 +595,86 @@ the record stays unresolved, its fee stays reserved, the clean predicate stays f
 turns the stop unsafe (trace: "a nonce consumed by a transaction the kernel cannot identify"). Its
 candidates' `consumes` stay reserved by the nonce-record rule of §7.
 
+**Resolution in any phase.** When any candidate at a nonce resolves, the executing plan bound there
+is settled by the nonce's winner before the record can be pruned, whatever phase it is in: one of its
+own step's candidates (for recovery, one of its own kind), executed and confirmed, moves it on, and
+anything else fails it.
+Work it has in flight is withdrawn and its slot released. The resolution also bumps the plan's
+`terms.generation`, and a bid at a recorded nonce is checked at exactly four points, slot
+acquisition, the signing guard, `Signed`, and hand-off: the nonce is still the plan's, unresolved,
+and resolved nowhere since the bid was asked for. So nothing is signed at a resolved nonce, and bytes
+withheld at hand-off because their nonce resolved settle their plan by the winner rather than fail it
+("a nonce resolving settles its plan by the winner, whatever the re-bid is doing", "a fill whose
+nonce resolves while it is signed is refused and records nothing", "withholds at hand-off the bytes
+of a recovery bid whose nonce resolved", "a fill re-bid at the nonce its step took settles nothing
+of its own, and the step reads its winner").
+
 **Loser semantics.** At a final resolution, every non-winning candidate is proven unable to execute.
 "Dropped" is never a state here, because a locally abandoned transaction can still mine ("a replacement neutralizer that wins proves the original unable to run; a late receipt for it is ignored").
 
-**The latch** is derived, not stored: some unresolved record has an `unknown` candidate, or is
-foreign. While
-latched, admission and dispatch run under the recovery policy only. The latch never clears on time.
-When `head − unknownSince > latchBoundBlocks`, the kernel enters recovery ("a latch never clears on time or on a late rejection: past its bound the kernel recovers", "a foreign record reloaded at startup puts the kernel back in bounded recovery").
+**The latch** is derived, not stored: some unresolved record has an uncovered `unknown` candidate,
+or is foreign. While latched, admission and dispatch run under the recovery policy only, and no step
+bids again at a nonce it occupies; a first bid the lifecycle allows (§4.1), such as a new
+cancellation, still signs. The latch never clears on time. When the head is more than `latchBoundBlocks` past a
+record's uncertainty age, the kernel enters recovery ("a latch never clears on time or on a late
+rejection: past its bound the kernel recovers", "a foreign record reloaded at startup puts the
+kernel back in bounded recovery", "a cancellation, which may run while latched, is not re-bid while
+another nonce latches the kernel").
 
-**Rebroadcast.** Every `stuckBlocks`, an unresolved record's `unknown` candidate is re-sent from its
-stored `raw` if it is a recovery action (neutralizer or fill), or if it is a step whose plan is still
-executing, **unexpired**, and the kernel is running. That last case is the one explicit
-exception to "only the recovery policy while latched": re-sending the bytes that caused the latch adds
-no new signature and no new exposure, and it is the fastest way to resolve the latch. Expiry, the
-plan's end, or a stop revokes it, and the candidate is then left to resolve or be filled (trace: "an
-expired plan is not rebroadcast while latched"). Re-sending needs no flush. Signing again would, and
-KMS signatures are not deterministic, so a re-signed transaction would be a new candidate.
+**Stuck nonces.** A nonce is **stuck** once `stuckBlocks` have passed since its newest candidate's
+send head while one of its candidates is `accepted` or uncovered `unknown`. Rebroadcasts keep their
+own clock and never move a send head. The kernel ties bidding to the nonce: it decides _when_ a
+nonce bids again, the signer decides _how much_ (below), and what is bid comes from the obligation
+behind the nonce ("a crash before the broadcast counts the stuck threshold from its commit head").
+A stuck nonce, re-sent in any lifecycle but bid on only while the kernel is running or recovering:
 
-**Replacement.** A new candidate at an open nonce goes through the full pre-action check and commit
-point with `feeLevel = max + 1`. The recovery controller (§10) occupies a record when the kernel is
-recovering, or when all its candidates are `rejected` or `withheld`. It prefers the lowest open nonce not already
-contested by recovery. A neutralizer goes there if some entry needs one, and otherwise a fill. A fill
-competes with the original. Whichever wins resolves the nonce, and a winning original is reconciled
-like any other (trace: "a replacement cancel that loses to the original").
+- **is re-sent once if uncertain.** Its highest uncovered `unknown` candidate is re-sent from its
+  stored `raw`, once per process and never while a send of that nonce is outstanding: a step's
+  bytes only while its plan executes, before its deadline, with the kernel running, and recovery
+  bytes always. Re-sending needs no flush and adds no exposure. "Once" is process-local, as the
+  failed-fill mark of §10 is, so a restart may repeat it. If the nonce is still uncertain once that
+  re-send is answered, or nothing there may be re-sent, the step bound to it is cancelled and
+  recovery bids there. Signing again would need a flush, and KMS signatures are not deterministic,
+  so a re-signed transaction is a new candidate ("re-sends a timed-out step once, never while that
+  re-send is out, then cancels it for a
+  fill", "re-sends again once in a new process", "an expired plan is not rebroadcast while
+  latched").
+- **is re-bid by the plan bound to it.** The executing plan whose current transaction occupies the
+  nonce goes from `include` back to `ready` on the same cursor and bids again there, one level up,
+  through every check of its first bid: lifecycle and policy, the validator, evidence, the deadline,
+  watermarks, a fresh simulation, the signing guard, the commit point, the flush, and the dispatch
+  check. A risk-reducing step is still never refused for evidence. A step bids again only while the
+  kernel is not latched, the lifecycle allows its plan, and it is not at its step cap; otherwise it
+  waits, and while recovering it is cancelled (§4.3) and recovery bids there. A recovery plan bids
+  again the same way, under
+  the recovery policy ("goes back to ready at the same nonce, one level up, and is checked as its
+  first bid was", "simulates afresh even while its last simulation is recent", "a creator re-bid
+  wins and creates its commitment").
+- **continues its obligation through recovery** when no plan is bound to it, because its plan ended,
+  was cancelled, or a restart dropped it. A neutralizer still revoking its entry there bids again as
+  a neutralizer and spends none of the entry's attempts; anything else, a cancelled step and a
+  cancellation included, gets a fill. So after a restart a step's nonce is filled, never re-bid
+  ("an unknown recovery neutralizer the re-send does not resolve continues as a neutralizer",
+  "cancels a step waiting in include before its nonce is stuck, and its nonce is filled", "after
+  the flush lands but before the broadcast: latched, then the nonce is filled while running").
 
-**Fees.** The kernel prices every candidate by calling the **fee policy**, a function the bot hands
-it at construction alongside its policy and validators: `feePolicy({kind, nonce, level, head,
-admittedHead}) → fee`. Escalation schedules (a bump per replacement level, a fee target that rises
-with a transaction's age) live there, not in the kernel. The kernel only clamps the result:
+**The predecessor rule.** A transaction step bids only once every earlier transaction step of its
+plan resolved to its own successful winner: read at that nonce while its record stands, which a plan
+awaiting it keeps from pruning, and from the plan's `included` once pruned at finality. Otherwise it
+waits, and its deadline cancels it ("waits while a reorg undoes its predecessor, and bids once it
+lands again", "waits on a predecessor a reorg reverted, keeping its record, and is cancelled at its
+deadline", "reads its predecessor from its inclusions once that record is pruned").
+
+**Replacement.** A new candidate at an open nonce, whether a re-bid, a neutralizer or a fill, goes
+through the full pre-action check and commit point with `feeLevel = max + 1`. The recovery
+controller (§10) occupies a record for a neutralizer when the kernel is recovering, or when all its
+candidates are `rejected` or `withheld`, preferring the lowest open nonce not already contested by
+recovery. A fill competes with the original. Whichever wins resolves the nonce, and a winning
+original is reconciled like any other (trace: "a replacement cancel that loses to the original").
+
+**Fees.** The kernel sets every candidate's spend ceiling by calling the **fee policy**, a function
+the bot hands it at construction alongside its policy and validators: `feePolicy({kind, nonce,
+level, head, admittedHead}) → fee`. The kernel only clamps the result:
 
 - a plan's own candidates get at most the tighter of the policy ceiling (`feeReserve`) and the plan's
   `maxSpendWei`, so a liquidation can't be bumped past what its expected profit allows
@@ -523,12 +686,67 @@ with a transaction's age) live there, not in the kernel. The kernel only clamps 
   (the plan is abandoned, or compensates if an earlier step exposed something), and a recovery
   candidate is priced at the policy ceiling ("a fee policy that throws fails a step before exposure, but recovery still prices at the ceiling").
 
+The signer prices the bid within that fee. `sign` names the candidate's kind and, at a recorded
+nonce, `outbid`: the highest `maxFeePerGas` and `maxPriorityFeePerGas` recorded there, field by
+field, which a replacement must outbid; `signTx` also receives `feeReserve` as the recovery spend
+bound. Pricing reads the ledger, never memory, so a replacement after a restart outbids what was
+signed before it. The signer reports the fees and gas limit it signed, which the kernel records as
+given, since signing effects are trusted; a ledger is refused on reload when a candidate's gas
+limit times its max fee exceeds its fee, or its priority fee exceeds its max fee ("asks a
+replacement to outbid the highest fees recorded at its nonce", "asks for the highest recorded fees
+field by field over every candidate at the nonce, across a restart", "refuses a ledger whose
+candidate records a malformed bid").
+
+`@repo/kit`'s kernel effects are the ruleset. A first bid prices from the base fee, tipping a
+quarter of its cap and at most 1 gwei so it can be re-bid; a replacement bumps the recorded fees by
+the 12.5% EIP-1559 requires, with a 1 wei floor. Every bid stays under
+the fill ceiling `C = min(maxFeePerGasWei, feeReserve / 100_000)`, the most a nonce fill's gas
+bound lets the recovery spend fund per gas, and a step's under its **step cap**, the largest fee one
+bump below `C` on both fields, so a fill can always outbid it; a step's own spend bound applies on
+top. When no bump fits, it signs nothing and answers `capped`, which the executor reports as
+`StepCapReached` for a step and `FeeCeilingReached` for a fill or neutralizer. Bumps are geometric,
+so the ceiling bounds the bids at a nonce by arithmetic, with no count ("stops bumping at the
+ceiling with no count of bids, and waits beside its candidates"). The arithmetic is tested in kit
+(review).
+
+**At the ceiling.** A step at its cap waits in `include` beside its candidates, holding no slot,
+until its nonce resolves or its deadline cancels it ("leaves a step its signer cannot price under the
+step cap waiting, unsigned, until its deadline"). A fill or neutralizer at its cap **waits at the fee
+ceiling**, live but blocked. It raises one `kernel.alarm`, keeps every candidate and obligation, is
+neither failed nor counted as failed compensation, and bids no more at that nonce. Every
+`stuckBlocks` it re-sends the bytes of the highest recovery candidate there that was not withheld,
+whatever its send status, since a rejection is not proof the bytes cannot land; no new
+signature, no flush. A re-sent `rejected` candidate that is acknowledged or "already known" becomes
+`accepted`; one whose answer is ambiguous or times out becomes `unknown` and starts its age. The
+waiting nonce blocks every later one, so the bot lands nothing new; once the base fee falls below
+the signed max fee of the re-sent bytes they land on their own, and otherwise an operator raises the
+ceiling and restarts ("stays live with one alarm, bids no more, and re-sends its highest fill until
+it lands", "skips a withheld higher fill and re-sends the lower one", "withholds bytes whose flush
+failed and never re-sends them, re-sending the lower fill", "takes a re-sent rejected fill that is
+acknowledged as accepted, covering a lower unknown", "ages a re-send that times out as unknown, and
+clears the latch once the next is acknowledged", "never demotes a candidate accepted while its
+send is still out, when that send times out", "leaves a fill its signer cannot price under the fee ceiling waiting, unsigned and unfailed, at its
+nonce").
+
+Fee exhaustion enters bounded recovery in two cases only. A waiting nonce with no recovery bytes to
+re-send enters it at once. Bytes the node has evicted and now refuses for their fee read as a
+lasting uncertainty after a restart, and take the latch bound. A recovery bid with no recorded nonce
+to wait at fails as any recovery attempt does ("enters bounded recovery at once when the nonce has
+no recovery bid to re-send", "keeps running when the node still holds the bytes, and waits at the
+ceiling again", "takes the bounded recovery path when the node evicted the bytes and refuses them",
+"fails a neutralizer at a fresh nonce its signer cannot price under the fee ceiling as a recovery
+attempt").
+
 Reservations are unchanged: every unresolved nonce still reserves the full `feeReserve`, because
 recovery may occupy any open nonce at the policy ceiling (trace file: `fees.test.ts`) (untested).
 
 **`rejected` is not proof.** A definitive-looking RPC rejection is recorded, does not latch, and does
 not resolve anything. The nonce is filled so that it resolves. `withheld` is handled the same way
 ("a rejected first broadcast is not proof the transaction cannot run: its nonce is filled", "a withheld recovery neutralizer hands its entry back, and recovery occupies the nonce again").
+A recovery bid rejected at its own nonce holds that nonce, so no other recovery takes it: once the
+nonce is stuck the same plan bids there again, up to the fee ceiling, where it waits re-sending its
+signed bytes ("bids again at that nonce, and the later bid retires the entry", "waits at the
+ceiling, re-sending the bytes it signed until they land").
 
 **Replacement traces.** Candidates at one nonce are mutually exclusive: they reserve the per-resource
 maximum and one fee, not the sum, until the nonce is final ("mutually exclusive candidates reserve
@@ -548,8 +766,15 @@ replacement leaves the original's effects applied ("a replacement cancel that lo
   ("mutually exclusive candidates reserve the largest, not the sum, until the nonce is final")
   ("the fee reserve of a nonce": "is held again when a reorg undoes the resolution, and admission respects it"),
 - for every executing plan, its envelope `consumes` not yet committed, plus one `feeReserve` per
-  uncommitted transaction step ("holds a later stage capacity while parked, and spends it on advance without re-checking")
-  ("a plan whose only cost is its fee": "reserves its fee, and is not withheld after commit for stale evidence or a passed deadline").
+  transaction step not yet counted at a nonce: every later step, and the current one unless it
+  occupies a recorded nonce. A plan **occupies** a nonce (`occupiesNonce`) when the record at its
+  `terms.nonce` holds a candidate of its current step, or, for a recovery plan, is its target from
+  creation. So a transaction is counted against its nonce or its plan, never both, in every phase
+  and for recovery too, and a step's consumption is counted once however many candidates it signs
+  ("holds a later stage capacity while parked, and spends it on advance without re-checking")
+  ("a plan whose only cost is its fee": "reserves its fee, and is not withheld after commit for stale evidence")
+  ("a recovery fill at an occupied nonce holds one fee reserve and one consumption", "a step
+  included but not final holds the next step its own reserve, and the next bid takes a new nonce").
 
 `available(r) = min(caps[r], observed capacity[r]) − holds[r]`. A resource with neither a cap nor an
 observation has zero capacity ("an admission that would exceed a cap is refused atomically", "capacity read at a block that is reorged away cannot back an admission").
@@ -737,10 +962,11 @@ asks for more from a production validator: "no commitment" must be shown from
 the payload, by checking that the nested calls sweep every asset they touch (ADR-2026-05-28). The
 reference model's validator does not decode nested calls; the production one,
 `executorLiquidationValidator` in `@repo/validators`, does. It decodes `exec_606BaXt`, the protocol's
-`liquidate` and the callback queue it runs, and requires that the callback transfers nothing out,
-that the trailing calls sweep the market's tokens and every token the callback approves to the
-account, and that every call it decodes re-encodes byte for byte. Anything it cannot decode exactly is refused;
-venue calls inside the callback stay opaque, bounded by simulation. The kernel gives this bot nonce
+`liquidate` and the callback queue it runs, and requires that the callback makes no direct
+`transfer` or `transferFrom` call, that the trailing calls are whole-balance `transfer` calls to the
+account for the market's tokens and every token the callback approves, and that every call it decodes
+re-encodes byte for byte. Anything it cannot decode exactly is refused;
+venue calls inside the callback stay opaque, and their router is trusted, as the [validators SPEC](../validators/SPEC.md) states (review). The kernel gives this bot nonce
 records, the latch, fills, and the clean-stop predicate.
 That is exactly what a liquidator with an unknown-outcome transaction needs (trace: "a clean stop
 waits for an unknown-outcome liquidation").
@@ -752,9 +978,11 @@ means `Start` failed its checks and touched nothing ("recovery that hits its bou
 keeps everything durable, and gates the next start", "a missing ledger for an enrolled account
 refuses to start rather than assuming no history").
 
-- **`starting`** admits only risk-reducing work. It becomes `running` when all three hold: a
-  `NonceAt` has been read, every record below the chain's nonce is resolved, and every unretired entry
-  has been observed at or after the first head since start. A loaded foreign record sends it to
+- **`starting`** admits only risk-reducing work. It becomes `running` when all four hold: a
+  `NonceAt` has been read, every record below the chain's nonce is resolved, every unretired entry
+  has been observed at or after the first head since start, and a ledger is on disk, loaded at
+  start or acknowledged by a fresh enrollment's first flush ("a fresh enrollment runs only once its
+  first ledger write lands, so running proves the ledger exists"). A loaded foreign record sends it to
   `recovering` (`foreign nonce outstanding at start`) as soon as a `NonceAt` and a head are read,
   without waiting for its lookup or any observation.
   Waiting on a startup read never suspends the dead-man switch: once any open entry's affirmation
@@ -764,10 +992,13 @@ refuses to start rather than assuming no history").
 - **`running`** is the normal state (review).
 - **`recovering(reason)`** is entered on `Stop`, `Halt`, latch bound, flush failure, stuck
   compensation, finality violation, an external or unrecorded nonce, or a chain nonce ahead of the
-  ledger while running. Pre-commit plans that are not risk-reducing fail at once. Recovering is
-  terminal-bound: it only ends in `stopped`. A second halt is ignored, because recovery runs once
-  ("a halt from anywhere in the bot is a stop: one recovery, the same terminal predicate", "stop
-  abandons unexposed work at once and never reports clean while an entry is open").
+  ledger while running. Plans still bidding uncommitted that the lifecycle no longer allows end at
+  once, cancelled if they occupy a nonce (§4.3) and failed otherwise; plans in `include`, `commit`
+  or `expose` are left to settle. Recovering is terminal-bound: it only ends in `stopped`. A second
+  halt is ignored, because recovery runs once ("a halt from anywhere in the bot is a stop: one
+  recovery, the same terminal predicate", "stop abandons unexposed work at once and never reports
+  clean while an entry is open", "is cancelled by a stop while it bids, but left to settle while it
+  waits in include").
 
 **Adoption at start.** `Start` observes every loaded entry before `running` and keeps only what the
 current configuration would still create. It skips an entry already flagged `compensate`, and
@@ -792,13 +1023,15 @@ re-affirming, however often it restarts").
   affirming (because its decision graph is wedged, its inputs are stale, or it no longer desires the
   entry) is withdrawn by the kernel, without the graph ("an entry the decision graph stops affirming
   is withdrawn by the kernel on its own").
-- It starts a fill for every occupiable record that is all `rejected` or `withheld`, or that is
-  stuck while recovering ("a rejected first broadcast is not proof the transaction cannot run: its
-  nonce is filled", "a fact that changes during the flush withholds a risk-increasing broadcast; the
-  recorded nonce is filled"). When a recovery fill fails before exposure, that nonce waits until a
-  strictly higher head before another fill starts; ticks and duplicate or lower heads do not retry,
-  and one nonce's wait does not delay another nonce or a neutralizer ("a recovery fill whose %s fails
-  waits for a later head", "a failed recovery fill does not delay a fill for another nonce", "a
+- It starts a fill for every occupiable record that is all `rejected` or `withheld`, unless a
+  recovery bid holds it, which bids there again instead (§6) ("a rejected
+  first broadcast is not proof the transaction cannot run: its nonce is filled", "a fact that
+  changes during the flush withholds a risk-increasing broadcast; the recorded nonce is filled"). A
+  stuck nonce gets its recovery bid, a fill or a continued neutralizer, by the rules of §6, and a
+  nonce waiting at the fee ceiling is re-sent rather than bid on. When a recovery fill fails before
+  exposure, that nonce waits until a strictly higher head before another fill starts; ticks and
+  duplicate or lower heads do not retry, and one nonce's wait does not delay another nonce or a
+  neutralizer ("a recovery fill whose %s fails waits for a later head", "a failed recovery fill does not delay a fill for another nonce", "a
   failed recovery fill does not delay a neutralizer"). The failure-head mark is process-local ("a
   failed recovery fill pace mark is process-local").
 - Each neutralizer re-authorizes the entry's stored neutralizer with the current validator and
@@ -812,15 +1045,15 @@ re-affirming, however often it restarts").
 finality", "clean is reported only after the final flush is acknowledged", "a failed final flush is
 an unsafe stop", "an unrecorded pending transaction is an open obligation, never a clean stop").
 
-| Predicate          | Definition                                                                                                                                                                                                                  |
-| ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| plan abandoned     | failed with nothing exposed; its reservation is gone in the same transition                                                                                                                                                 |
-| intent may repeat  | its plan is terminal and no unretired entry or open record names it                                                                                                                                                         |
-| nonce resolved     | a canonical resolution at a final block; losers are then proven unable to execute                                                                                                                                           |
-| commitment retired | final positive evidence (§5 table)                                                                                                                                                                                          |
-| **clean stop**     | recovering; no unretired entry; no nonce record (foreign ones included); no plan past its commit point; no slot held; and `ackedSeq ≥ seq`, so the final flush is acknowledged. Until then the kernel waits in `recovering` |
-| **unsafe stop**    | recovering for `recoveryBoundMs`, a fenced flush, or any failed flush while recovering (including the final one); `report.open` lists every open entry and nonce                                                            |
-| next start gated   | any durable entry or record: `starting` until resolved or observed, latched while unknown                                                                                                                                   |
+| Predicate          | Definition                                                                                                                                                                                                                        |
+| ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| plan abandoned     | failed with nothing exposed; its reservation is gone in the same transition                                                                                                                                                       |
+| intent may repeat  | its plan is terminal and no unretired entry or open record names it                                                                                                                                                               |
+| nonce resolved     | a canonical resolution at a final block; losers are then proven unable to execute                                                                                                                                                 |
+| commitment retired | final positive evidence (§5 table)                                                                                                                                                                                                |
+| **clean stop**     | recovering; no unretired entry; no nonce record (foreign ones included); no executing plan occupying a nonce; no slot held; and `ackedSeq ≥ seq`, so the final flush is acknowledged. Until then the kernel waits in `recovering` |
+| **unsafe stop**    | recovering for `recoveryBoundMs`, a fenced flush, or any failed flush while recovering (including the final one); `report.open` lists every open entry and nonce                                                                  |
+| next start gated   | any durable entry or record: `starting` until resolved or observed, latched while unknown                                                                                                                                         |
 
 ## 11. Durable format and crash boundaries
 
@@ -838,16 +1071,16 @@ a directory) reads as present and malformed, never as absent, so neither an enro
 enrolling start can pass it. Temporaries a crash left are deleted at startup:
 
 ```
-header      { format: 4, chainId, account, seq }
+header      { format: 6, chainId, account, seq }
 nextNonce   the next nonce the kernel would allocate
 entries     exposed | live | revoking entries: spec (incl. neutralizer), state, intentId,
-            validator id@version, creators, deadCreators, origin (the creating payload and its
-            witness), consumedFinal, prior, neutralizing, compensate, affirmedBy (last
-            affirmation, floored to revokeAfterStaleMs / 4)
+            validator id@version, creators and deadCreators (by nonce), origin (the creating
+            payload and its witness), consumedFinal, prior, neutralizing (its nonce), compensate,
+            affirmedBy (last affirmation, floored to revokeAfterStaleMs / 4)
 nonces      open records: every candidate with hash, raw bytes, payload, kind, intentId, step,
-            creates/exposes/retires/consumes, feeLevel, fee, sent, writes (its plan's conflict
-            writes), authority (the evidence and decision record it was sent on); the record's
-            unknownSince and foreign flag
+            creates/exposes/retires/consumes, feeLevel, fee, maxFeePerGas, maxPriorityFeePerGas,
+            gas, sendHead, sent, unknownSince, writes (its plan's conflict writes), authority (the
+            evidence and decision record it was sent on); the record's foreign flag
 submissions submission id → { intentId, status, digest }
 watermarks  resource → block of the last final effect on it
 conflictMarks [conflict id, block] pairs: our own last inclusion or release writing each id,
@@ -859,12 +1092,15 @@ releases    intent id → { writes, after, restored? }: the conflict ids its rel
 ```
 
 What survives a restart is exactly what a crash loop must not reset. The dead-man switch
-(`affirmedBy`), pending compensation, the latch's age (`unknownSince`), and the read-your-writes floors
-all persist, so repeated restarts can neither keep an unaffirmed offer alive nor dodge the latch bound
-(traces: "a restart does not extend an unaffirmed offer past its stale bound", "a restart does not
-restart the latch bound"). `stuck` and
+(`affirmedBy`), pending compensation, each candidate's uncertainty age (`unknownSince`), its send
+head, and the read-your-writes floors all persist, so repeated restarts can neither keep an
+unaffirmed offer alive nor dodge the latch bound (traces: "a restart does not extend an unaffirmed
+offer past its stale bound", "a restart does not restart the latch bound"). `stuck` and
 `recoveryAttempts` reset on purpose: a new process, often with fixed config, gets a fresh bounded
-attempt, and each attempt is a neutralizer, which costs gas and never safety.
+attempt, and each attempt is a neutralizer, which costs gas and never safety. So does what paces a
+nonce within one process: its one-time re-send, its failed-fill mark, when it was first held, and
+its candidates' flush sequence numbers. A restart may repeat a re-send, which adds no exposure (§6)
+("re-sends again once in a new process").
 
 Signed raw transactions are on disk. They are not secrets once broadcast, but they are exposure
 material before that, so the file is `0600` and never logged (review). The format has no field for a key, a
@@ -890,17 +1126,17 @@ before the lazy flush"); a lost resolution is re-resolved, and a lost terminal s
 
 ### 11.3 Crash boundaries
 
-| Crash between                            | Disk holds                        | Recovery rule                                                                                                                         | Trace                                                   |
-| ---------------------------------------- | --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------- |
-| admission and any signature              | nothing new                       | the plan is gone; the reservation is gone; the nonce is reused                                                                        | before any signature                                    |
-| typed signature and its carrier's commit | nothing new                       | the signature died in memory                                                                                                          | after a typed signature                                 |
-| commit point and the flush landing       | old file                          | nothing left the process; the same nonce is reused                                                                                    | after the commit point but before the flush             |
-| flush landing and the broadcast          | candidate, `exposed` entries      | the candidate is `unknown`, so the kernel is latched; the entries are observed; the bound → recovery → neutralizer occupies the nonce | after the flush is written but before the broadcast     |
-| broadcast and its result                 | same                              | the receipt resolves it; entries `live`; adopted                                                                                      | after the broadcast but before its result               |
-| neutralizer flush and its broadcast      | candidate, `revoking` entry       | the stored bytes are re-sent, not re-signed                                                                                           | after a neutralizer is flushed but before it is sent    |
-| release flush and its answer             | its conflict writes in `releases` | the release may have left: they are marked at the first head `h` after the restart at `max(after, h + 1) + K + 1`                     | a release that crashes between its flush and its answer |
-| final retirement and its lazy flush      | a stale `live` entry              | re-observed and retired again                                                                                                         | after retirement but before the lazy flush              |
-| unsafe stop and the next start           | everything open                   | `starting`; latched while a restored record is `unknown` or foreign; unretired entries observed before `running`                      | recovery that hits its bound                            |
+| Crash between                            | Disk holds                        | Recovery rule                                                                                                                                                                                 | Trace                                                   |
+| ---------------------------------------- | --------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------- |
+| admission and any signature              | nothing new                       | the plan is gone; the reservation is gone; the nonce is reused                                                                                                                                | before any signature                                    |
+| typed signature and its carrier's commit | nothing new                       | the signature died in memory                                                                                                                                                                  | after a typed signature                                 |
+| commit point and the flush landing       | old file                          | nothing left the process; the same nonce is reused                                                                                                                                            | after the commit point but before the flush             |
+| flush landing and the broadcast          | candidate, `exposed` entries      | the candidate is `unknown`, so the kernel is latched; the entries are observed; once stuck from its commit head the nonce is filled, or past the latch bound recovery neutralizes the entries | after the flush is written but before the broadcast     |
+| broadcast and its result                 | same                              | the receipt resolves it; entries `live`; adopted                                                                                                                                              | after the broadcast but before its result               |
+| neutralizer flush and its broadcast      | candidate, `revoking` entry       | the stored bytes are re-sent, not re-signed                                                                                                                                                   | after a neutralizer is flushed but before it is sent    |
+| release flush and its answer             | its conflict writes in `releases` | the release may have left: they are marked at the first head `h` after the restart at `max(after, h + 1) + K + 1`                                                                             | a release that crashes between its flush and its answer |
+| final retirement and its lazy flush      | a stale `live` entry              | re-observed and retired again                                                                                                                                                                 | after retirement but before the lazy flush              |
+| unsafe stop and the next start           | everything open                   | `starting`; latched while a restored record is `unknown` or foreign; unretired entries observed before `running`                                                                              | recovery that hits its bound                            |
 
 ### 11.4 Startup checks (all fail closed as `stopped(refused)`)
 
@@ -936,8 +1172,19 @@ authority").
   never recorded is a rollback or a foreign signer. This also catches a rollback that spans a
   broadcast ("a rolled-back ledger is caught when the chain nonce is ahead of it", "a rolled-back
   ledger is caught when only the pending nonce is ahead of it").
-- A fresh enrollment with `pending ≠ latest`: refused ("a fresh enrollment over an unrecorded pending
-  transaction refuses to start").
+- A fresh enrollment with `pending ≠ latest`: refused, the adapter reporting the higher pending
+  count of its head and `safe` reads ("a fresh enrollment over an unrecorded pending transaction
+  refuses to start", "refuses to enroll when the pending nonce advances between its two nonce
+  reads"). With `pending = latest`, it takes no nonce and stays `starting` until the nonce at the
+  chain's `safe` block, which the chain adapter reads while the kernel holds none, equals `latest`,
+  whatever finality the kernel otherwise follows. A mined transaction that is not yet safe could
+  still be reorged out, lowering the chain's nonce below one taken from the head, so nothing could
+  fill it ("a fresh enrollment waits for the chain nonce to be final, so a reorg that drops a
+  transaction cannot strand it", "enrolls only once the nonce at the safe block matches the head,
+  whatever its finality"). A chain that serves no `safe` tag, rejecting it as a parameter or
+  answering it with no block, refuses the start, while a `safe` read that merely failed is retried
+  ("refuses a fresh enrollment on a chain that serves no safe tag", "retries a safe read that
+  failed, and enrolls once it answers").
 
 ### 11.5 Rollback, fencing, and single ownership
 
@@ -1037,15 +1284,23 @@ activity. The host declares:
   waiting past the dispatch window");
 - the chain adapter ([`chain-adapter.ts`](./src/chain-adapter.ts)), an effect on the poll clock
   over the bot's `KernelChain` reads. The host reads the ledger and the account's code, then lets
-  `Start` through before the first poll, which delivers the window from finality (or `reorgDepth`
-  below the head) to the head, and guarantees:
+  `Start` through before the first poll. That poll sends `Refuse`, which stops a `starting` kernel
+  as refused, when the finalized block lags the head by `reorgDepth` or more ("refuses to start
+  when finality lags the head past its reorg window"). It links the window from finality (or
+  `reorgDepth` below the head) to the head and delivers its blocks within `max(maxSimLagBlocks,
+maxEvidenceAgeBlocks)` of the head, the heights a simulation or fact may still be read at ("links
+  its first window down to finality a bounded batch at a time, handing over only usable heads"),
+  and guarantees:
   - every chain read after `Start`, nonce lookups included, runs in the one serialized poll, so no read observes
     state another invalidated mid-flight; a reset or rollback also bumps a generation that every
     read checks before it delivers ("finishes a slow vouch inside its poll, so it never checks an
     anchor that moved on", "reads nothing at a tip fetched before the finalized chain was found
     replaced", "drops a nonce lookup whose vouch finds the finalized chain replaced");
   - every block delivered as a `Head`, each fetched parent checked against the link it continues,
-    so a source that changes forks mid-walk delivers nothing; a fork within `reorgDepth` delivered
+    so a source that changes forks mid-walk delivers nothing, with a walk's parents read a bounded
+    batch at a time, so a poll gap of many fast blocks costs a few round trips, not one per block
+    ("follows a poll gap deeper than its window on a 100ms chain, keeping its evidence", "rolls back
+    to a fork found by a batched walk below a poll gap"); a fork within `reorgDepth` delivered
     as `Reorg` before any replacement read; a head behind the tip, once the tip is gone from the
     source, as `Reorg` to that head; a fork deeper than the window, like a changed finalized block,
     as `Halt` plus `Reorg{fork: -1}`, which drops all evidence, since no height is proved to
@@ -1058,11 +1313,22 @@ activity. The host declares:
   - a `Header` from its own reads immediately before any receipt or `NonceTx`, re-checking the
     finalized anchor first when that height is final ("a restart resolves a transaction mined before
     it, once the block is vouched for", "does not vouch for a final block once the finalized chain
-    changed under it");
+    changed under it"); a vouched header at a height the kernel holds from another branch rolls it
+    back, so evidence from a branch the source switched to never sits beside the head it replaced
+    ("never holds a receipt below its window beside a head from the branch it replaced", "never
+    holds a nonce lookup below its window beside a head from the branch it replaced");
   - the last finalized block re-read each poll, a change to it handled as above, and newer
     finality delivered even when the head has not moved ("carries finality forward on an unchanged
     head, so a resolved record settles", "forgets a final-looking receipt when the finalized chain is
-    replaced, so it cannot settle");
+    replaced, so it cannot settle"); finality below the retained blocks, newly reported or stalled
+    while the head moves on, is never walked back to: it is held where it was, with one `Alarm`
+    raised again only once it has returned, until it is back inside them, so nothing settles early
+    ("holds finality below its window with one alarm, never walking back, until it returns", "alarms
+    once on finality stalled below its window, and again only after it returned"); a chain that
+    serves no tag for the kernel's finality refuses a kernel not yet started, and while running
+    raises one `Alarm` and moves no head until it serves it again ("refuses to start on a chain that
+    serves no tag for its finality", "alarms once when the chain stops serving its finality tag while
+    running");
   - each evidence read isolated, so one failing read never starves the others ("keeps reading
     observations when a nonce lookup keeps failing"), with nonce lookups last and at most a few per
     poll (untested).
@@ -1094,27 +1360,27 @@ sits between them (review).
 kernel and `pollMs` must be positive, as every clock's period is (untested); every other value is trusted as
 given ("refuses a configured bound that is not an integer in its range").
 
-| Option                                     | What it bounds                                                                                                  |
-| ------------------------------------------ | --------------------------------------------------------------------------------------------------------------- |
-| `chainId`, `account`                       | The kernel's identity (§1); a ledger for another identity refuses to start (§11.4)                              |
-| `validators`                               | What an action means (§9)                                                                                       |
-| `policy.targets`, `policy.recoveryTargets` | Default-deny transaction targets in normal and in recovery mode (§4.2)                                          |
-| `caps`                                     | What reservations and kept commitments may hold, per resource (§7); a restart trims what exceeds them (§11.4)   |
-| `observedResources`                        | Resources the chain adapter reads each poll; one is refused for capacity until read after our last effect on it |
-| `feeReserve`                               | The native ceiling reserved per unresolved nonce (§6, §7)                                                       |
-| `feePolicy`                                | Each candidate's fee ceiling, which the kernel clamps (§6)                                                      |
-| `maxSimLagBlocks`                          | How far below head a simulation may be (§4.4)                                                                   |
-| `maxEvidenceAgeBlocks`                     | The evidence floor (§4.4); refused at construction unless an integer in [0, 2³²]                                |
-| `latchBoundBlocks`                         | How long the latch may hold before the kernel enters recovery (§6)                                              |
-| `stuckBlocks`                              | How often an unknown candidate is rebroadcast (§6)                                                              |
-| `revokeAfterStaleMs`                       | How long a commitment stands without `Affirm` (§10); the ledger stores affirmations to a quarter of it (§11.1)  |
-| `maxRecoveryAttempts`, `recoveryBoundMs`   | Recovery's attempt and time limits, past which the entry is stuck or the stop unsafe (§10)                      |
-| `maxDispatchLagMs`                         | How long after its final check an act may still be dispatched (§4.5)                                            |
-| `enrollment`                               | Whether a ledger must already exist (§11.4)                                                                     |
-| `pollMs`                                   | The chain adapter's poll interval                                                                               |
-| `effectTimeoutMs`                          | Every effect's time limit but the flush's; a send's is the smaller of it and `maxDispatchLagMs`                 |
-| `finality`                                 | The required finality tag or fixed depth that `createKernelChain` reports (§8)                                  |
-| `reorgDepth`                               | How many delivered blocks are kept to find a fork; a deeper reorg halts the kernel (§8)                         |
+| Option                                     | What it bounds                                                                                                            |
+| ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------- |
+| `chainId`, `account`                       | The kernel's identity (§1); a ledger for another identity refuses to start (§11.4)                                        |
+| `validators`                               | What an action means (§9)                                                                                                 |
+| `policy.targets`, `policy.recoveryTargets` | Default-deny transaction targets in normal and in recovery mode (§4.2)                                                    |
+| `caps`                                     | What reservations and kept commitments may hold, per resource (§7); a restart trims what exceeds them (§11.4)             |
+| `observedResources`                        | Resources the chain adapter reads each poll; one is refused for capacity until read after our last effect on it           |
+| `feeReserve`                               | The native ceiling reserved per unresolved nonce (§6, §7), and the recovery spend bound the fee ceiling derives from (§6) |
+| `feePolicy`                                | Each candidate's spend ceiling, which the kernel clamps and the signer prices its bid within (§6)                         |
+| `maxSimLagBlocks`                          | How far below head a simulation may be (§4.4)                                                                             |
+| `maxEvidenceAgeBlocks`                     | The evidence floor (§4.4); refused at construction unless an integer in [0, 2³²]                                          |
+| `latchBoundBlocks`                         | How long the latch may hold before the kernel enters recovery (§6)                                                        |
+| `stuckBlocks`                              | How long since its newest send a nonce waits before it is stuck, and how often a nonce at the fee ceiling re-sends (§6)   |
+| `revokeAfterStaleMs`                       | How long a commitment stands without `Affirm` (§10); the ledger stores affirmations to a quarter of it (§11.1)            |
+| `maxRecoveryAttempts`, `recoveryBoundMs`   | Recovery's attempt and time limits, past which the entry is stuck or the stop unsafe (§10)                                |
+| `maxDispatchLagMs`                         | How long after its final check an act may still be dispatched (§4.5)                                                      |
+| `enrollment`                               | Whether a ledger must already exist (§11.4)                                                                               |
+| `pollMs`                                   | The chain adapter's poll interval                                                                                         |
+| `effectTimeoutMs`                          | Every effect's time limit but the flush's; a send's is the smaller of it and `maxDispatchLagMs`                           |
+| `finality`                                 | The required finality tag or fixed depth that `createKernelChain` reports (§8)                                            |
+| `reorgDepth`                               | Blocks kept to find a fork and the anchor; finality must lag less, or start is refused and finality held (§8)             |
 
 ### 13.2 Durable submission handoff: kernel side only, single chain
 
@@ -1166,9 +1432,20 @@ work: refused while the kernel is latched or recovering").
 
 ## 14. What is deliberately left out
 
-- **Fee-bump arithmetic and replacement of a still-valid step.** Escalation is the fee policy's job
-  (§6, "Fees"); `bumpFees` is one candidate implementation. The spec requires only that a bump pass
-  through the commit point as a new candidate and stay within the clamps.
+- **Competitive bidding.** The kernel decides when a nonce bids again and the signer's ruleset how
+  much, on a fixed schedule under a fixed ceiling (§6). Nothing escalates in response to rival bids
+  for an opportunity: no priority gas auctions, no mempool watching, no private bundles or relays.
+  Where profit depends on winning a contested gas auction, a kernel bot is out of the running by
+  design.
+- **Bid budgets.** No count of bids per nonce: the ceiling bounds them by arithmetic, and only the
+  winner pays gas.
+- **Payload replacement at an occupied nonce.** A re-bid re-signs the step's own payload. A fresh
+  quote for the same opportunity is a cancel and a new plan.
+- **An enforced fee configuration.** Each bot builds its own kernel and owns its configuration; kit
+  offers the ruleset as a helper. No startup check enforces the fee settings: one that leaves a step
+  no room below the ceiling costs only liveness, since the nonce waits at the ceiling and reports it.
+- **Other signers.** Only the bot holds its key and uses its nonces, and no rule here is designed
+  around another signer. A foreign record (§6) detects one, or a rolled-back ledger.
 - **Batch neutralization.** It is an optimization with a clear rule (§9.2).
 - **Offchain book reconciliation and orphan adoption** (groups the API shows but the ledger lacks).
   The kernel does not adopt orphans. A decision-layer reservation does not bound kernel admission
@@ -1215,6 +1492,9 @@ work: refused while the kernel is latched or recovering").
   make it unreachable today, and the reversion pass shows removing it breaks no trace.
 - **Foreign transactions are never contested.** A foreign pending transaction may execute anything
   the key can. The kernel halts and reports it, and resolution waits on positive identification.
+- **A nonce at the fee ceiling blocks every later one.** The bot lands nothing new until the base
+  fee falls below what that nonce signed, or an operator raises the ceiling and restarts. The kernel
+  alarms once and reports it; it does not escalate past the ceiling on its own.
 - **`revokeAfterStaleMs` bounds how long a wedged engine leaves offers live.** Setting it long trades
   churn for exposure.
 - **A failed bot graph halts the kernel; a failed kernel cannot withdraw anything.** The kernel is
@@ -1225,6 +1505,9 @@ work: refused while the kernel is latched or recovering").
   to start on an account with code and signs only what a validator claims, and no reference
   validator claims an EIP-7702 authorization; the kernel itself has no check for one. Anyone may
   submit one the account signed earlier. A kernel's account must never have signed one.
+- **A step that lands after a restart is never reported.** A late landing is reported only by the
+  process that sent the plan's last notice (§4.3); a restart keeps no plan, so the bot's operator
+  log misses a step that lands after it, though the ledger still resolves its nonce.
 - **Retired entries stay in memory until the process restarts.** Terminal plans that nothing names
   are dropped after each event, but a retirement is not, so a late observation of a retired
   commitment never lands on a new one with the same id. Its id stays refused and memory grows with

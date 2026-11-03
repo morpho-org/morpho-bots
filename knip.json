@@ -1,7 +1,7 @@
 {
   "$schema": "https://unpkg.com/knip@5/schema.json",
   "exclude": ["enumMembers", "classMembers"],
-  "ignoreBinaries": ["forge", "mkfifo", "railway"],
+  "ignoreBinaries": ["forge", "helm", "mkfifo", "railway"],
   "workspaces": {
     ".": {
       "ignoreDependencies": ["tsx"]

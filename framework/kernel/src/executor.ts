@@ -1,14 +1,16 @@
 import type { createKernel } from './kernel'
 import type { LedgerStore } from './store'
 import type {
+  CandidateKind,
   Command,
-  FeeContext,
+  GasFees,
   Hash,
   KernelConfig,
   KernelEvent,
   KernelState,
   Payload,
   ReleasePayload,
+  SignedBid,
   TxPayload,
   TypedPayload
 } from './types'
@@ -20,6 +22,21 @@ import type {
  * discarded.
  */
 export type EffectGuard = { signal: AbortSignal; mayAct(): boolean }
+
+/** What the kernel asks a transaction to be signed at; the signer prices the bid within it. */
+export type TxBid = {
+  nonce: number
+  level: number
+  kind: CandidateKind
+  /** The candidate's native spend ceiling. */
+  fee: bigint
+  /** What a fill or neutralizer may spend, which sets the fee ceiling every bid stays under. */
+  recoveryFee: bigint
+  /** The highest fees recorded at the nonce, field by field, which a replacement must outbid. */
+  outbid?: GasFees
+}
+
+export type SignedTx = { hash: Hash; raw: string; bid: SignedBid }
 
 /** The head a simulation is pinned to: the kernel's own, while its header stands. */
 export type SimulationHead = NonNullable<KernelState['head']>
@@ -37,12 +54,8 @@ export type KernelEffects = {
     signal: AbortSignal
   ): Promise<{ payload: Payload; witness?: unknown }>
   simulate(payload: TxPayload, at: SimulationHead, signal: AbortSignal): Promise<boolean>
-  /** `fee` is the candidate's native spend ceiling; a replacement at the nonce has a higher `level`. */
-  signTx(
-    payload: TxPayload,
-    candidate: Pick<FeeContext, 'nonce' | 'level'> & { fee: bigint },
-    guard: EffectGuard
-  ): Promise<{ hash: Hash; raw: string }>
+  /** `capped`: no bid within the ceilings outbids {@link TxBid.outbid}, so nothing was signed. */
+  signTx(payload: TxPayload, bid: TxBid, guard: EffectGuard): Promise<SignedTx | 'capped'>
   signTyped(payload: TypedPayload, guard: EffectGuard): Promise<string>
   broadcast(raw: string, guard: EffectGuard): Promise<'accepted' | 'rejected' | 'unknown'>
   release(payload: ReleasePayload, guard: EffectGuard): Promise<'ok' | 'unknown'>
@@ -234,11 +247,22 @@ export const createExecutor = (options: ExecutorOptions) => {
         }
       )
     }
-    const { payload, nonce, fee, feeLevel: level } = command
+    const { payload, nonce, fee, feeLevel: level, kind, outbid } = command
+    const bid: TxBid = {
+      nonce,
+      level,
+      kind,
+      fee,
+      recoveryFee: options.config.feeReserve,
+      ...(outbid ? { outbid } : {})
+    }
     const signTx = (signal: AbortSignal) =>
-      effects.signTx(payload, { nonce, fee, level }, signGuard(port, request, signal))
+      effects.signTx(payload, bid, signGuard(port, request, signal))
     return run(port, request, signTx, {
-      done: ({ hash, raw }) => ({ type: 'Signed', request, hash, raw }),
+      done: (signed): KernelEvent =>
+        signed === 'capped'
+          ? { type: kind === 'step' ? 'StepCapReached' : 'FeeCeilingReached', request }
+          : { type: 'Signed', request, hash: signed.hash, raw: signed.raw, bid: signed.bid },
       failed: { type: 'EffectFailed', request }
     })
   }

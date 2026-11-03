@@ -1,4 +1,5 @@
-import type { Logger } from '@repo/bot-kit'
+import type { Logger } from '@repo/kit'
+import type { CursorPage, FetchPage } from '@repo/utils'
 import type { Address, Hex } from 'viem'
 
 import { delay, fetchWithRetry, tryCatch } from '@repo/utils'
@@ -7,32 +8,30 @@ import { getAddress, isAddress } from 'viem'
 import type { MarketParams } from '../market'
 import type { MarketParamsResolver } from '../state/market-params'
 
-/** A discovered (market id, borrower) pair from the GraphQL API, before params are resolved. */
+import { CandidatesApiRefusedError, CandidatesApiResponseError } from '../errors'
+
+/** A discovered (market id, borrower) pair from the candidates API, before params are resolved. */
 type BorrowerId = { marketId: Hex; borrower: Address }
 
 /** A candidate position to evaluate: a (market, borrower) pair, with the market's immutable params
  * resolved onchain via `idToMarketParams(id)` (see ../state/market-params.ts). */
 export type BorrowerCandidate = { marketParams: MarketParams; borrower: Address }
 
-/** One page of the skip-paginated `marketPositions` response: raw rows plus the server's total. */
-export type PositionPage = { items: readonly unknown[]; countTotal: number | null }
-
 /**
- * Fetches one page of positions at the given `skip` offset. It is injected into
- * {@link discoverCandidates} so the pagination + row parsing is unit-testable without a network; the
- * runtime adapter that actually calls the endpoint is {@link createGraphqlCandidateSource}.
+ * Fetches one page of candidates given the previous page's cursor (`null` for the first page). It is
+ * injected into {@link discoverCandidates} so the pagination + row parsing is unit-testable without a
+ * network; the runtime adapter that actually calls the endpoint is {@link createApiCandidateSource}.
  */
-export type FetchPositionPage = (skip: number) => Promise<PositionPage>
+export type FetchCandidatePage = FetchPage<unknown>
 
 // Per-request tuning: a short deadline. The retry policy lives in `@repo/utils` (see
 // {@link fetchWithRetry}).
 const REQUEST_TIMEOUT_MS = 5_000
-/** The API's maximum page size — also the pagination loop's partial-page signal, so the fetcher and
- * the loop must agree on it (which is why {@link createGraphqlCandidateSource} takes no override). */
+/** The endpoint's maximum page size (it rejects anything larger with a 400). */
 export const PAGE_LIMIT = 1000
 
 /**
- * Hard cap on pages followed in one discovery pass — a runaway backstop, NOT an expected limit.
+ * Hard cap on pages followed in one discovery pass — a runaway-cursor backstop, NOT an expected limit.
  * {@link PAGE_LIMIT} × this = 10,000 positions at or under the health-factor cutoff, far above any
  * realistic universe. Hitting it is logged loud (`discover.max_pages`) because silently truncating a
  * paginated candidate set is *under-inclusion* — a liquidatable position we would then never see
@@ -42,81 +41,55 @@ const MAX_DISCOVERY_PAGES = 10
 
 /**
  * Row-level companion to {@link MAX_DISCOVERY_PAGES}: a hard cap on candidates collected in one pass.
- * The page backstop bounds *pages*, but the API can return the whole universe in a single oversized
- * page (observed: ~135k rows when the `healthFactor_lte` filter never reaches the server), which slips
- * straight under a page-count cap. Reaching this many candidates under a health-factor cutoff means
- * the filter almost certainly isn't narrowing — logged loud as `discover.oversized` so it's alertable.
- * Truncating here is safe (unlike the paginated case {@link MAX_DISCOVERY_PAGES} guards): the query
- * orders by ascending health factor, so the retained candidates are the most-at-risk, and the onchain
- * lens still filters the rest. Kept equal to the page ceiling so both backstops bound the same volume.
+ * The page backstop bounds *pages*, but a server that ignores `limit` or the health-factor filter can
+ * return the whole universe in one oversized page, which slips straight under a page-count cap.
+ * Logged loud as `discover.oversized`.
+ * Truncating here is safe (unlike the paginated case {@link MAX_DISCOVERY_PAGES} guards): the endpoint
+ * orders by ascending health factor, so the retained candidates are the most-at-risk.
  */
 const MAX_CANDIDATES = PAGE_LIMIT * MAX_DISCOVERY_PAGES
-
-/**
- * The `marketPositions` query: only listed markets, only positions at or below the health-factor
- * cutoff, scoped to this bot's chain server-side. Ascending health-factor order puts the worst
- * positions on page 1, so even a pathological truncation degrades gracefully. Only
- * `market.marketId` + `user.address` are consumed — the market's params are recovered onchain from
- * `idToMarketParams(id)` and the lens re-reads all position state fresh, so the API is a coverage
- * source, never a correctness dependency.
- */
-const MARKET_POSITIONS_QUERY = `
-  query MarketPositions($chainIds: [Int!], $hfLte: Float!, $first: Int!, $skip: Int!) {
-    marketPositions(
-      where: { chainId_in: $chainIds, healthFactor_lte: $hfLte, marketListed: true }
-      orderBy: HealthFactor
-      orderDirection: Asc
-      first: $first
-      skip: $skip
-    ) {
-      pageInfo { count countTotal }
-      items { market { marketId } user { address } }
-    }
-  }
-`
 
 // Blue Market ids are always bytes32, so require the full 64 hex chars (stricter than bare isHex).
 const MARKET_ID_RE = /^0x[0-9a-fA-F]{64}$/
 
-// Validates and normalizes one raw response row into an id pair, or `null` if malformed. The id is
-// lowercased to match `marketId()` (keccak256 output) so map keys and log fields agree everywhere.
+// Validates and normalizes one raw response row into an id pair, or `null` if malformed. Only
+// `market_id` + `borrower` are read — params come from `idToMarketParams(id)` and the lens re-reads
+// all position state fresh onchain. The id is lowercased to match `marketId()` (keccak256 output) so
+// map keys and log fields agree everywhere.
 function parseCandidate(row: unknown): BorrowerId | null {
   if (typeof row !== 'object' || row === null) return null
-  const { market, user } = row as { market?: unknown; user?: unknown }
-  if (typeof market !== 'object' || market === null) return null
-  if (typeof user !== 'object' || user === null) return null
-  const { marketId } = market as { marketId?: unknown }
-  const { address } = user as { address?: unknown }
+  const { market_id: marketId, borrower } = row as { market_id?: unknown; borrower?: unknown }
   if (typeof marketId !== 'string' || !MARKET_ID_RE.test(marketId)) return null
-  if (typeof address !== 'string' || !isAddress(address, { strict: false })) return null
-  return { marketId: marketId.toLowerCase() as Hex, borrower: getAddress(address) }
+  if (typeof borrower !== 'string' || !isAddress(borrower, { strict: false })) return null
+  return { marketId: marketId.toLowerCase() as Hex, borrower: getAddress(borrower) }
 }
 
 /**
- * Walks the skip-paginated position set: parse every row, de-dupe (market, borrower) pairs across
- * pages, and count malformed rows for the caller's drop diagnostics. Stops on a partial page, on
- * reaching the server-reported total, at the {@link MAX_DISCOVERY_PAGES} page backstop, or at the
- * {@link MAX_CANDIDATES} row cap (both logged loud — see their docs). Note skip-pagination can shift
- * under concurrent updates; the de-dupe absorbs
- * duplicates and a transiently missed row reappears next tick.
+ * Walks the cursor-paginated candidate set: parse every row, de-dupe (market, borrower) pairs across
+ * pages, and count malformed rows for the caller's drop diagnostics. Stops when the cursor runs out,
+ * at the {@link MAX_DISCOVERY_PAGES} page backstop, or at the {@link MAX_CANDIDATES} row cap (both
+ * logged loud — see their docs). `complete` is false when a backstop cut the walk short, so nothing it
+ * did not reach reads as gone. Not `collectPages` from `@repo/utils`: the row cap must stop the walk
+ * before fetching another page, which a collect-then-cap walk cannot.
  */
 export async function discoverBorrowerIds(
-  fetchPage: FetchPositionPage,
+  fetchPage: FetchCandidatePage,
   deps: { logger: Logger; maxPages?: number; maxCandidates?: number }
-): Promise<{ pairs: BorrowerId[]; rawRows: number; malformed: number }> {
+): Promise<{ pairs: BorrowerId[]; rawRows: number; malformed: number; complete: boolean }> {
   const maxPages = deps.maxPages ?? MAX_DISCOVERY_PAGES
   const maxCandidates = deps.maxCandidates ?? MAX_CANDIDATES
   const seen = new Set<string>()
   const pairs: BorrowerId[] = []
   let rawRows = 0
   let malformed = 0
-  let skip = 0
+  let cursor: string | null = null
+  let complete = true
 
   for (let pages = 0; ; ) {
-    const page = await fetchPage(skip)
+    const page: CursorPage<unknown> = await fetchPage(cursor)
     pages += 1
-    rawRows += page.items.length
-    for (const row of page.items) {
+    rawRows += page.data.length
+    for (const row of page.data) {
       const candidate = parseCandidate(row)
       if (!candidate) {
         malformed += 1
@@ -128,42 +101,43 @@ export async function discoverBorrowerIds(
       pairs.push(candidate)
       if (pairs.length >= maxCandidates) break
     }
-    // Row-level runaway backstop — truncate an oversized result and log loud; see MAX_CANDIDATES.
     if (pairs.length >= maxCandidates) {
       deps.logger.warn('discover.oversized', {
         cap: maxCandidates,
         collected: pairs.length,
         rawRows
       })
+      complete = false
       break
     }
-    skip += page.items.length
-    const exhausted =
-      page.items.length < PAGE_LIMIT || (page.countTotal !== null && skip >= page.countTotal)
-    if (exhausted) break
+    cursor = page.cursor
+    if (!cursor) break
     if (pages >= maxPages) {
       deps.logger.warn('discover.max_pages', { pages, cap: maxPages, collected: pairs.length })
+      complete = false
       break
     }
   }
 
-  return { pairs, rawRows, malformed }
+  return { pairs, rawRows, malformed, complete }
 }
 
 /**
- * Reads the full over-inclusive (market, borrower) candidate universe from the GraphQL API and joins
+ * Reads the full over-inclusive (market, borrower) candidate universe from the candidates API and joins
  * it to onchain `MarketParams` via the injected resolver. Ids that don't resolve on THIS chain's
  * singleton are dropped — the backstop against an API/deployment mismatch (e.g. Robinhood's
  * non-canonical singleton). Malformed rows and unresolved ids never vanish silently: the resolver
  * uses `allowFailure`, so without the `discover.dropped` warn a schema change or a wrong singleton
- * would read as "0 candidates" with no error anywhere.
+ * would read as "0 candidates" with no error anywhere. A malformed row is a pair it could not read,
+ * so the walk is no longer `complete`; an unresolved id is not, since a resolved one is cached for
+ * good and an id that never resolved never held a position.
  */
 export async function discoverCandidates(
-  fetchPage: FetchPositionPage,
+  fetchPage: FetchCandidatePage,
   resolveParams: MarketParamsResolver,
   deps: { logger: Logger; maxPages?: number; maxCandidates?: number }
-): Promise<BorrowerCandidate[]> {
-  const { pairs, rawRows, malformed } = await discoverBorrowerIds(fetchPage, deps)
+): Promise<{ candidates: BorrowerCandidate[]; complete: boolean }> {
+  const { pairs, rawRows, malformed, complete } = await discoverBorrowerIds(fetchPage, deps)
   const marketIds = [...new Set(pairs.map(pair => pair.marketId))]
   const resolved = await resolveParams(marketIds)
   const unresolved = marketIds.filter(id => !resolved.has(id))
@@ -191,79 +165,73 @@ export async function discoverCandidates(
     })
   }
 
-  return candidates
+  return { candidates, complete: complete && malformed === 0 }
 }
 
-/** The `fetch` shape the GraphQL source calls — injectable for tests. */
+/** The `fetch` shape the candidates source calls — injectable for tests. */
 type FetchLike = (url: string, init: RequestInit) => Promise<Response>
 
-// Narrows the GraphQL envelope AFTER the retry loop: a 2xx body with an `errors` array or a shape we
-// don't recognize is a request/schema-level failure, not a transient one — retrying the identical
-// document cannot help, so these throw outside `fetchWithRetry` (whose callback treats every throw
-// as a retryable network failure).
-function parsePage(body: unknown, label: string): PositionPage {
-  const { errors, data } = (body ?? {}) as { errors?: unknown; data?: unknown }
-  if (Array.isArray(errors) && errors.length > 0) {
-    const { message } = (errors[0] ?? {}) as { message?: unknown }
-    const detail = typeof message === 'string' ? message : JSON.stringify(errors[0])
-    throw new Error(`${label} GraphQL error: ${detail}`)
+// Validated after `fetchWithRetry` so schema failures are not retried. Only `null` ends the walk: a
+// missing or empty cursor throws rather than silently truncating it.
+function parsePage(body: unknown): CursorPage<unknown> {
+  const { data, cursor } = (body ?? {}) as { data?: unknown; cursor?: unknown }
+  if (!Array.isArray(data)) throw new CandidatesApiResponseError('missing data')
+  if (cursor !== null && typeof cursor !== 'string') {
+    throw new CandidatesApiResponseError('missing cursor')
   }
-  const { marketPositions } = (data ?? {}) as { marketPositions?: unknown }
-  const { items, pageInfo } = (marketPositions ?? {}) as { items?: unknown; pageInfo?: unknown }
-  if (!Array.isArray(items)) throw new Error(`${label} parse error: missing items`)
-  const { count, countTotal } = (pageInfo ?? {}) as { count?: unknown; countTotal?: unknown }
-  // The server's own row count disagreeing with the page it sent is exactly the kind of quiet
-  // truncation discovery must never absorb silently.
-  if (typeof count === 'number' && count !== items.length) {
-    throw new Error(`${label} parse error: pageInfo.count ${count} != items ${items.length}`)
-  }
-  return { items, countTotal: typeof countTotal === 'number' ? countTotal : null }
+  if (cursor === '') throw new CandidatesApiResponseError('empty cursor')
+  return { data, cursor }
 }
 
 /**
- * Runtime adapter: a {@link FetchPositionPage} backed by the Morpho GraphQL API via a plain `fetch`
- * POST (a static document + variables needs no GraphQL client, and a client would do no runtime
- * validation anyway). The retry callback ONLY fetches and defensively parses JSON — 429/5xx/network
- * retries (honoring `Retry-After`) happen in {@link fetchWithRetry}, and the GraphQL envelope is
- * validated after it via {@link parsePage} so request-level failures are never retried. A
- * non-retryable failure throws; the caller catches it (logs `discover.error`) and proceeds so the
- * pending queue is still driven that block. `fetchImpl`/`sleep` are injectable for tests.
+ * A {@link FetchCandidatePage} over the Morpho API's blue liquidation-candidates endpoint, retried per
+ * {@link fetchWithRetry}. Throws {@link CandidatesApiRefusedError} on a 3xx or a 4xx other than 429.
  */
-export function createGraphqlCandidateSource(deps: {
+export function createApiCandidateSource(deps: {
   url: string
+  apiKey: string
   chainId: number
   healthFactorLte: number
   fetchImpl?: FetchLike
   sleep?: (ms: number) => Promise<void>
-}): FetchPositionPage {
+}): FetchCandidatePage {
   const fetchImpl = deps.fetchImpl ?? fetch
   const sleep = deps.sleep ?? delay
-  const label = 'market-positions'
+  const label = 'liquidation-candidates'
 
-  return async skip => {
-    const body = await fetchWithRetry(
-      async () => {
-        const response = await fetchImpl(deps.url, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            query: MARKET_POSITIONS_QUERY,
-            variables: {
-              chainIds: [deps.chainId],
-              hfLte: deps.healthFactorLte,
-              first: PAGE_LIMIT,
-              skip
-            }
-          }),
-          signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS)
-        })
-        // Parse defensively INSIDE the callback so a non-JSON 5xx body still reaches the HTTP
-        // status/Retry-After policy (an `undefined` data on a 2xx throws "parse error" instead).
-        const parsed = await tryCatch(response.json())
-        return { data: parsed.error ? undefined : (parsed.data ?? undefined), response }
-      },
-      { label, sleep }
+  return async cursor => {
+    const url = new URL(deps.url)
+    url.searchParams.set('chain_ids', String(deps.chainId))
+    url.searchParams.set('health_factor_lte', String(deps.healthFactorLte))
+    url.searchParams.set('limit', String(PAGE_LIMIT))
+    if (cursor) url.searchParams.set('cursor', cursor)
+
+    let status: number | undefined
+    const body = await tryCatch(
+      fetchWithRetry(
+        async () => {
+          const response = await fetchImpl(url.toString(), {
+            headers: { 'x-api-key': deps.apiKey },
+            // fetch strips only `Authorization` on a cross-origin redirect, so following one could leak
+            // the key: https://fetch.spec.whatwg.org/#http-redirect-fetch
+            redirect: 'manual',
+            signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS)
+          })
+          status = response.status
+          // Parse defensively INSIDE the callback so a non-JSON 5xx body still reaches the HTTP
+          // status/Retry-After policy (an `undefined` data on a 2xx throws "parse error" instead).
+          const parsed = await tryCatch(response.json())
+          return { data: parsed.error ? undefined : (parsed.data ?? undefined), response }
+        },
+        { label, sleep }
+      )
     )
-    return parsePage(body, label)
+    if (body.error) {
+      if (status !== undefined && status >= 300 && status < 500 && status !== 429) {
+        throw new CandidatesApiRefusedError(status)
+      }
+      throw body.error
+    }
+    return parsePage(body.data)
   }
 }

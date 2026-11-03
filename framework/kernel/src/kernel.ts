@@ -8,6 +8,7 @@ import type {
   Entry,
   BlockRef,
   Fact,
+  GasFees,
   Hash,
   Id,
   KernelActivity,
@@ -21,6 +22,7 @@ import type {
   OkValidatorReading,
   Origin,
   Payload,
+  Phase,
   Plan,
   PlanInput,
   Refusal,
@@ -30,6 +32,8 @@ import type {
   ReleasePayload,
   Resolution,
   Resources,
+  SignedBid,
+  SignTerms,
   Step,
   StepSpec,
   TxPayload,
@@ -40,6 +44,7 @@ import type {
 import { activityOf } from './activity'
 import { asStored, encodeLedger, encodeStored, isHeld, toDurable } from './durable'
 import { KernelConfigError } from './errors'
+import { isChainFact } from './types'
 import {
   authorityDefect,
   conflictsDefect,
@@ -66,11 +71,14 @@ const REQUEST_CEILING = 2 ** 52
 /** Far past any bot's need, and small enough that a block plus it stays a safe integer. */
 const MAX_EVIDENCE_AGE_BLOCKS = 2 ** 32
 const NO_PRUNE: Pruned = { nonces: [], plans: [] }
+const NOTHING_TO_RESEND = 'a nonce at the fee ceiling has no recovery bid to re-send'
+
+const larger = (a: bigint, b: bigint) => (a > b ? a : b)
 
 /** Blocks and times from outside are compared, and `NaN` passes every comparison. */
 const isBlockOrTime = (n: number) => Number.isSafeInteger(n) && n >= 0
-/** Phases in which the plan's current step is not committed; a parked plan's next step is not. */
-const PRE_COMMIT = new Set([
+/** Phases before the commit point of the current step's bid; a parked plan's next step has none. */
+const UNCOMMITTED = new Set<Phase>([
   'ready',
   'materialize',
   'awaiting-advance',
@@ -78,6 +86,7 @@ const PRE_COMMIT = new Set([
   'await-slot',
   'sign'
 ])
+const biddingUncommitted = (plan: Plan) => UNCOMMITTED.has(plan.phase)
 const OPEN_ENTRY = new Set(['exposed', 'live'])
 const UNRETIRED = new Set(['intended', 'signed', 'exposed', 'live', 'revoking'])
 
@@ -124,13 +133,21 @@ const asRefusal = (code: RefusalCode, reason: string): Refusal => ({ code, reaso
 const EVIDENCE_EXPIRED = asRefusal('evidence_expired', 'evidence expired')
 const PREDATES_OWN = 'predates our own'
 
-/** {@link authorityDefect}, tightened for live input: only a ledger's record may hold a fact with no block. */
+/**
+ * {@link authorityDefect}, tightened for live input: only a ledger's record may hold a fact with no
+ * basis, and evidence must hold a chain fact to anchor the decision's basis.
+ */
 const liveAuthorityDefect = (evidence: readonly Fact[] | undefined, decision: unknown) => {
   const defect = authorityDefect(evidence, decision)
   if (defect) return defect
-  for (const fact of evidence ?? []) if (fact.basis === undefined) return 'evidence names no block'
+  if (!evidence?.length) return undefined
+  if (evidence.some(fact => fact.basis === undefined)) return 'evidence names no basis'
+  if (!evidence.some(isChainFact)) return 'evidence names no block'
   return undefined
 }
+
+const chainBlocks = (evidence: readonly Fact[] = []) =>
+  evidence.filter(isChainFact).map(fact => fact.basis.block)
 
 const STEP_KINDS: readonly unknown[] = ['sign', 'tx', 'release']
 
@@ -168,6 +185,21 @@ const remainingOf = (entry: Entry): Resources =>
   )
 
 /**
+ * Whether `plan`'s current transaction is counted against a recorded nonce instead of a reservation
+ * of its own: the record at its terms holds a candidate of this step, or is a recovery plan's target.
+ */
+export const occupiesNonce = (state: KernelState, plan: Plan): boolean =>
+  plan.terms !== undefined &&
+  state.nonces[plan.terms.nonce] !== undefined &&
+  (plan.recovery !== undefined || stepCandidates(state, plan).length > 0)
+
+/** The candidates the plan's current step has committed, all at the one nonce its terms name. */
+const stepCandidates = (state: KernelState, plan: Plan): Candidate[] =>
+  state.nonces[plan.terms?.nonce ?? -1]?.candidates.filter(
+    c => c.intentId === plan.intentId && c.step === plan.cursor
+  ) ?? []
+
+/**
  * Everything currently reserved, derived from state so it can never drift from the ledger. A
  * nonce's fee reserve is held until its transaction resolves, and again if a reorg undoes that.
  * Hazard: a reorg over-commits fees by one reserve per resolution it undoes, until it is observed,
@@ -194,7 +226,7 @@ export const holds = (config: KernelConfig, state: KernelState): Record<string, 
     addTo(remaining, plan.committedConsumes, -1n)
     for (const [key, amount] of Object.entries(remaining))
       if (amount > 0n) addTo(total, { [key]: amount })
-    const committed = PRE_COMMIT.has(plan.phase) ? plan.cursor : plan.cursor + 1
+    const committed = occupiesNonce(state, plan) ? plan.cursor + 1 : plan.cursor
     const txSteps = plan.steps.slice(committed).filter(step => step.kind === 'tx').length
     addTo(total, { native: config.feeReserve * BigInt(txSteps) })
   }
@@ -209,10 +241,48 @@ export const available = (config: KernelConfig, state: KernelState, resource: st
   return (limit ?? 0n) - (holds(config, state)[resource] ?? 0n)
 }
 
+/** An `unknown` candidate is covered, and adds no uncertainty, once a higher bid at its nonce is accepted. */
+const uncovered = (record: Pick<NonceRecord, 'candidates'>, c: Candidate) =>
+  c.sent === 'unknown' &&
+  !record.candidates.some(d => d.feeLevel > c.feeLevel && d.sent === 'accepted')
+
+/**
+ * A candidate read back from the ledger may have been sent, so it is `unknown` unless it was rejected
+ * or withheld. Only one uncovered when stored keeps its age; the rest start one at the next head.
+ */
+const reloaded = (record: Pick<NonceRecord, 'candidates'>, c: Candidate): Candidate => {
+  const { unknownSince, ...rest } = c
+  const sent = c.sent === 'rejected' || c.sent === 'withheld' ? c.sent : 'unknown'
+  const aged = unknownSince !== undefined && uncovered(record, c)
+  return { ...rest, sent, ...(aged ? { unknownSince } : {}) }
+}
+
+/** How long a nonce has been uncertain: since the oldest of its uncovered `unknown` candidates. */
+const uncertainSince = (record: NonceRecord): number | undefined => {
+  const since = record.candidates.flatMap(c =>
+    uncovered(record, c) && c.unknownSince !== undefined ? [c.unknownSince] : []
+  )
+  return since.length > 0 ? Math.min(...since) : undefined
+}
+
+/**
+ * An unresolved nonce whose recovery could not outbid it under the fee ceiling: it bids no more and
+ * re-sends what it signed, live but blocking every later nonce, until it resolves.
+ */
+export const waitsAtCeiling = (state: KernelState, record: NonceRecord): boolean =>
+  !record.resolution &&
+  Object.values(state.plans).some(
+    p =>
+      p.status === 'executing' &&
+      p.recovery !== undefined &&
+      p.terms?.nonce === record.nonce &&
+      p.terms.capped === true
+  )
+
 /** Some unresolved nonce may be executing something the kernel cannot yet account for. */
 export const latched = (state: KernelState): boolean =>
   Object.values(state.nonces).some(
-    r => !r.resolution && (r.foreign === true || r.candidates.some(c => c.sent === 'unknown'))
+    r => !r.resolution && (r.foreign === true || r.candidates.some(c => uncovered(r, c)))
   )
 
 /** What the kernel's own chain sources poll each block, independent of the engine's frames. */
@@ -333,20 +403,28 @@ export const createKernel = (config: KernelConfig) => {
   ): void => emit(out, { type: 'notify', intentId, notice, ...(reason ? { reason } : {}) })
   const refuse = (out: Command[], intentId: Id, refusal: Refusal): void =>
     emit(out, { type: 'notify', intentId, notice: 'refused', ...refusal })
-  /** A plan's last notice carries its inclusions, since the nonce records behind them may be pruned first. */
+  /**
+   * A plan's last notice carries its inclusions, since the nonce records behind them may be pruned
+   * first, and says `cancelled` only when a cancel ended it and nothing of it ran ({@link Plan.cancelled}).
+   */
   const notifyEnded = (
     out: Command[],
     plan: Plan,
     notice: Exclude<Notice, 'refused'>,
     reason?: string
-  ): void =>
-    emit(out, {
+  ): void => {
+    const included = [...(plan.included ?? [])]
+    const body = {
       type: 'notify',
       intentId: plan.intentId,
-      notice,
       ...(reason ? { reason } : {}),
-      included: [...(plan.included ?? [])]
-    })
+      included
+    } as const
+    const ended = notice === 'abandoned' || notice === 'compensated'
+    if (ended && plan.cancelled && !plan.neutralized && included.length === 0)
+      return emit(out, { ...body, notice, code: 'cancelled' })
+    emit(out, { ...body, notice })
+  }
 
   const canonical = (s: KernelState, e: BlockRef) => s.headers[e.block] === e.blockHash
   const isFinal = (s: KernelState, e: BlockRef) => e.block <= s.finalized.number && canonical(s, e)
@@ -432,16 +510,16 @@ export const createKernel = (config: KernelConfig) => {
     mayIncreaseRisk(s) ||
     (riskReducing(plan) && s.lifecycle.kind !== 'stopped')
 
-  /** Why a plan's uncommitted step may not go past its deadline: its evidence, or the intent, expired. */
+  /** Why a plan may not go on past its deadline, in any phase: its evidence, or the intent, expired. */
   const expired = (s: KernelState, plan: Plan): string | undefined => {
     if (s.now < plan.notAfter) return undefined
     return plan.evidence?.length ? EVIDENCE_EXPIRED.reason : 'intent expired'
   }
 
-  /** Past its commit, a step is held to its deadline only as {@link evidenceRefusal} holds it. */
+  /** Past its commit, the clock and {@link withholdReason} hold a step to its deadline. */
   const decisionRefusal = (s: KernelState, plan: Plan): string | undefined => {
     if (!lifecycleAllows(s, plan)) return 'lifecycle forbids this action'
-    if (plan.recovery || !PRE_COMMIT.has(plan.phase)) return undefined
+    if (plan.recovery || !biddingUncommitted(plan)) return undefined
     return expired(s, plan)
   }
 
@@ -460,13 +538,18 @@ export const createKernel = (config: KernelConfig) => {
     const conflicts = [...(plan.conflicts?.reads ?? []), ...(plan.conflicts?.writes ?? [])]
     const floor = evidenceFloor(s)
     for (const fact of plan.evidence ?? []) {
-      if (fact.basis.block < floor)
+      const chain = isChainFact(fact)
+      if (chain && fact.basis.block < floor)
         return asRefusal('evidence_too_old', `evidence ${fact.id} read below block ${floor}`)
       const invalid = (why: string) => asRefusal('evidence_invalid', `evidence ${fact.id} ${why}`)
       const seen = s.observations[fact.id]
       if (!seen) return invalid('unobserved')
       if ('unavailable' in seen) return invalid(seen.unavailable)
       if (seen.version !== fact.version) return invalid('changed')
+      if (!chain) {
+        if (seen.expiry === undefined) return invalid('is offchain with no expiry')
+        continue
+      }
       const held = s.headers[fact.basis.block]
       if (held === undefined) return invalid('read at a block the kernel does not hold')
       if (held !== fact.basis.blockHash) return invalid('read on an orphaned block')
@@ -481,13 +564,12 @@ export const createKernel = (config: KernelConfig) => {
   }
 
   /**
-   * Evidence and its `notAfter` are the current stage's, and bind a plan only until its nonce is
-   * committed; after that a risk-increasing plan is still withheld for them, while a neutral one
-   * goes and the chain arbitrates (§4.4). A risk-reducing plan is never refused for evidence.
+   * Facts bind a neutral plan until its bid commits and a risk-increasing one until dispatch; a
+   * risk-reducing one never. The deadline binds every non-recovery plan in every phase: {@link expired}.
    */
   const evidenceRefusal = (s: KernelState, plan: Plan): Refusal | undefined => {
     if (plan.recovery || riskReducing(plan)) return undefined
-    if (!PRE_COMMIT.has(plan.phase) && !riskIncreasing(plan)) return undefined
+    if (!biddingUncommitted(plan) && !riskIncreasing(plan)) return undefined
     if (s.now >= plan.notAfter) return EVIDENCE_EXPIRED
     return factRefusal(s, plan)
   }
@@ -509,7 +591,7 @@ export const createKernel = (config: KernelConfig) => {
       ...Object.keys(plan.envelope.consumes),
       ...specs.flatMap(spec => Object.keys(spec.resources))
     ]
-    const oldest = Math.min(plan.basisBlock, ...(plan.evidence ?? []).map(f => f.basis.block))
+    const oldest = Math.min(plan.basisBlock, ...chainBlocks(plan.evidence))
     const stale = resources.find(resource => oldest < (s.watermarks[resource] ?? 0))
     if (stale === undefined) return undefined
     return asRefusal(
@@ -578,9 +660,11 @@ export const createKernel = (config: KernelConfig) => {
     alarm(s, reason)
     for (const id of s.planOrder) {
       const plan = s.plans[id]!
-      if (plan.status === 'executing' && PRE_COMMIT.has(plan.phase) && !lifecycleAllows(s, plan)) {
-        failPlan(s, out, plan, `recovering: ${reason}`)
-      }
+      if (plan.status !== 'executing' || !biddingUncommitted(plan) || lifecycleAllows(s, plan))
+        continue
+      const why = `recovering: ${reason}`
+      if (occupiesNonce(s, plan)) cancel(s, out, plan, why)
+      else failPlan(s, out, plan, why)
     }
   }
 
@@ -685,7 +769,7 @@ export const createKernel = (config: KernelConfig) => {
       return asRefusal('duplicate', 'duplicate: unresolved exposure')
     if (input.maxSpendWei !== undefined && input.maxSpendWei <= 0n)
       return asRefusal('malformed', 'fee ceiling must be positive')
-    if (!isBlockOrTime(input.basisBlock) || !isBlockOrTime(input.notAfter))
+    if (![input.basisBlock, input.notAfter, input.validUntil ?? 0].every(isBlockOrTime))
       return asRefusal('malformed', 'basis block and expiry must be non-negative safe integers')
     if (s.now >= input.notAfter) return EVIDENCE_EXPIRED
     const lifecycle = s.lifecycle.kind
@@ -724,7 +808,8 @@ export const createKernel = (config: KernelConfig) => {
     committedConsumes: {},
     exposed: false,
     basisBlock: input.basisBlock,
-    notAfter: withDeadline(s, input.notAfter, input.evidence),
+    notAfter: withDeadline(s, Math.min(input.notAfter, input.validUntil ?? NEVER), input.evidence),
+    ...(input.validUntil !== undefined && { validUntil: input.validUntil }),
     ...(input.maxSpendWei !== undefined ? { maxSpendWei: input.maxSpendWei } : {}),
     ...(input.evidence ? { evidence: input.evidence.map(fact => ({ ...fact })) } : {}),
     ...(input.conflicts ? { conflicts: conflictsOf(input.conflicts) } : {}),
@@ -769,7 +854,7 @@ export const createKernel = (config: KernelConfig) => {
   const admission = (s: KernelState, input: PlanInput, digest: string) => {
     const superseded = input.supersedes === undefined ? undefined : s.plans[input.supersedes]
     const replaced = superseded?.status === 'executing' ? superseded : undefined
-    if (replaced && !PRE_COMMIT.has(replaced.phase))
+    if (replaced && (occupiesNonce(s, replaced) || !biddingUncommitted(replaced)))
       return asRefusal(
         'supersession',
         `${replaced.intentId} is past its commit and cannot be superseded`
@@ -913,7 +998,10 @@ export const createKernel = (config: KernelConfig) => {
       if (seen.length === 0) continue
       const settled = !plan.evidence!.some(fact => seenTwice.has(fact.id))
       const refreshed = settled && resting(s, plan) ? reread(s, plan) : undefined
-      plan.notAfter = refreshed ?? Math.min(plan.notAfter, ...seen)
+      plan.notAfter =
+        refreshed === undefined
+          ? Math.min(plan.notAfter, ...seen)
+          : Math.min(refreshed, plan.validUntil ?? NEVER)
     }
   }
 
@@ -928,11 +1016,11 @@ export const createKernel = (config: KernelConfig) => {
   }
 
   /**
-   * Whether no step of `plan` is judged on its evidence again before an `Advance` decides afresh, so
-   * an equal re-read only keeps it alive; a parked plan already past its deadline is never revived.
+   * Whether no step of `plan` is judged on its evidence again before it bids or an `Advance` decides
+   * afresh, so an equal re-read only keeps it alive; a plan already past its deadline is never revived.
    */
   const resting = (s: KernelState, plan: Plan) =>
-    plan.phase === 'include' || (plan.phase === 'awaiting-advance' && s.now < plan.notAfter)
+    (plan.phase === 'include' || plan.phase === 'awaiting-advance') && s.now < plan.notAfter
 
   /** Keeps only what an executing plan rests on, so state is bounded by live work. */
   const pruneObservations = (s: KernelState) => {
@@ -994,6 +1082,7 @@ export const createKernel = (config: KernelConfig) => {
       })
     }
     if (step.kind === 'tx') {
+      if (!predecessorsExecuted(s, plan)) return
       plan.phase = 'simulate'
       const n = request(s, plan, 'simulate')
       return emit(out, {
@@ -1100,12 +1189,17 @@ export const createKernel = (config: KernelConfig) => {
         advance(s, out, plan)
         continue
       }
-      const target = plan.recovery?.targetNonce
-      if (target !== undefined && (!s.nonces[target] || s.nonces[target].resolution)) {
-        failPlan(s, out, plan, 'target nonce already resolved')
+      const unbound = targetRefusal(s, plan, plan.terms?.generation)
+      if (unbound) {
+        failPlan(s, out, plan, unbound)
         continue
       }
-      const nonce = target ?? s.nextNonce
+      const wait = waitingPhase(s, plan)
+      if (wait) {
+        plan.phase = wait
+        continue
+      }
+      const nonce = plan.terms?.nonce ?? s.nextNonce
       if (nonce === undefined) continue
       const feeLevel = 1 + Math.max(0, ...(s.nonces[nonce]?.candidates.map(c => c.feeLevel) ?? []))
       const fee = feeFor(s, plan, nonce, feeLevel)
@@ -1113,20 +1207,72 @@ export const createKernel = (config: KernelConfig) => {
         failPlan(s, out, plan, 'fee policy gave no usable fee')
         continue
       }
-      plan.terms = { nonce, feeLevel, fee }
-      plan.phase = 'sign'
-      const n = request(s, plan, 'sign')
-      s.slot = n
-      emit(out, {
-        type: 'sign',
-        request: n,
-        intentId: plan.intentId,
-        payload: step.payload as TxPayload,
-        ...plan.terms
-      })
-      return
+      return askToSign(s, out, plan, { nonce, feeLevel, fee })
     }
   }
+
+  /**
+   * A bid at the plan's recorded nonce is checked against that nonce at the slot, the signing guard,
+   * `Signed`, and hand-off: still the plan's, unresolved, and resolved nowhere since it was asked.
+   */
+  const targetRefusal = (s: KernelState, plan: Plan, generation: number | undefined) => {
+    if (generation !== plan.terms?.generation) return 'its nonce resolved'
+    if (!plan.terms) return undefined
+    return occupiesNonce(s, plan) && !s.nonces[plan.terms.nonce]!.resolution
+      ? undefined
+      : 'target nonce already resolved'
+  }
+
+  /** A step bids only after its earlier transactions executed, and never again at its nonce while latched. */
+  const waitingPhase = (s: KernelState, plan: Plan): 'ready' | 'include' | undefined => {
+    if (!predecessorsExecuted(s, plan)) return 'ready'
+    return !plan.recovery && occupiesNonce(s, plan) && latched(s) ? 'include' : undefined
+  }
+
+  /**
+   * Every earlier transaction step resolved to its own successful winner: read at its nonce while
+   * the record stands, which a plan awaiting it keeps, and from `included` once pruned at finality.
+   */
+  const predecessorsExecuted = (s: KernelState, plan: Plan) =>
+    plan.steps.slice(0, plan.cursor).every((step, i) => {
+      if (step.kind !== 'tx') return true
+      const inclusion = plan.included?.find(included => included.step === i)
+      if (!inclusion) return false
+      const found = findCandidate(s, inclusion.hash)
+      return (
+        !found || (found[0].resolution !== undefined && executedBy(found[0].resolution, found[1]))
+      )
+    })
+
+  const askToSign = (s: KernelState, out: Command[], plan: Plan, terms: SignTerms) => {
+    plan.phase = 'sign'
+    const n = request(s, plan, 'sign')
+    s.outstanding[n] = {
+      ...s.outstanding[n]!,
+      terms,
+      ...(plan.terms ? { generation: plan.terms.generation } : {})
+    }
+    s.slot = n
+    const outbid = highestFees(s.nonces[terms.nonce])
+    emit(out, {
+      type: 'sign',
+      request: n,
+      intentId: plan.intentId,
+      payload: plan.steps[plan.cursor]!.payload as TxPayload,
+      kind: plan.recovery?.kind ?? 'step',
+      ...terms,
+      ...(outbid ? { outbid } : {})
+    })
+  }
+
+  const highestFees = (record: NonceRecord | undefined): GasFees | undefined =>
+    record?.candidates.reduce<GasFees | undefined>(
+      (highest, c) => ({
+        maxFeePerGas: larger(highest?.maxFeePerGas ?? 0n, c.maxFeePerGas),
+        maxPriorityFeePerGas: larger(highest?.maxPriorityFeePerGas ?? 0n, c.maxPriorityFeePerGas)
+      }),
+      undefined
+    )
 
   /**
    * A plan's own candidates are bounded by the tighter of the policy and plan ceilings; recovery
@@ -1171,13 +1317,23 @@ export const createKernel = (config: KernelConfig) => {
     if (!reading.exposes.every(id => ours(id, ['signed', 'exposed', 'live']))) {
       return 'exposes a commitment this plan has not signed'
     }
-    if (!reading.creates.every(c => ours(c.id, ['intended', 'signed']))) {
+    const nonce = plan.terms?.nonce
+    const recreates = (id: Id) => {
+      const creating = s.nonces[nonce ?? -1]?.candidates.filter(c => c.creates.includes(id)) ?? []
+      return (
+        ours(id, ['exposed']) &&
+        creating.length > 0 &&
+        creating.every(c => c.intentId === plan.intentId && c.step === plan.cursor) &&
+        s.entries[id]!.creators.every(n => n === nonce)
+      )
+    }
+    if (!reading.creates.every(c => ours(c.id, ['intended', 'signed']) || recreates(c.id))) {
       return 'creates a commitment that is already out'
     }
     if (!reading.retires.every(id => owned(s, id)))
       return 'neutralizes a commitment the kernel does not own'
     const committed: Record<string, bigint> = { ...plan.committedConsumes }
-    addTo(committed, reading.consumes)
+    if (stepCandidates(s, plan).length === 0) addTo(committed, reading.consumes)
     if (exceeds(plan.envelope.consumes, committed)) return 'consumes beyond the admitted envelope'
     return undefined
   }
@@ -1199,7 +1355,7 @@ export const createKernel = (config: KernelConfig) => {
     s: KernelState,
     out: Command[],
     plan: Plan,
-    signed?: { hash: string; raw: string }
+    signed?: { hash: string; raw: string; bid: SignedBid; terms: SignTerms }
   ): void => {
     const step = plan.steps[plan.cursor]!
     const reading = step.reading!
@@ -1210,47 +1366,8 @@ export const createKernel = (config: KernelConfig) => {
     }
     for (const id of reading.exposes)
       if (s.entries[id]!.state === 'signed') s.entries[id]!.state = 'exposed'
-    if (signed) {
-      const { nonce, feeLevel, fee } = plan.terms!
-      const record = (s.nonces[nonce] ??= {
-        nonce,
-        candidates: [],
-        lastActionHead: s.head?.number ?? 0
-      })
-      record.candidates.push({
-        hash: signed.hash,
-        raw: signed.raw,
-        payload: step.payload as TxPayload,
-        kind: plan.recovery?.kind ?? 'step',
-        intentId: plan.intentId,
-        step: plan.cursor,
-        creates: reading.creates.map(c => c.id),
-        exposes: [...reading.exposes],
-        retires: [...reading.retires],
-        consumes: reading.consumes,
-        feeLevel,
-        fee,
-        sent: 'unsent',
-        writes: writesOf(plan),
-        ...authorityOf(plan)
-      })
-      record.lastActionHead = s.head?.number ?? record.lastActionHead
-      if (nonce === s.nextNonce) s.nextNonce = nonce + 1
-      for (const c of reading.creates) {
-        const entry = s.entries[c.id]!
-        entry.state = 'exposed'
-        entry.creators.push(signed.hash)
-        entry.origin = originOf(step)
-      }
-      for (const id of reading.retires) {
-        const entry = s.entries[id]!
-        if (OPEN_ENTRY.has(entry.state)) entry.prior = entry.state as 'exposed' | 'live'
-        entry.state = 'revoking'
-        entry.neutralizing = { nonce, hash: signed.hash }
-      }
-      addTo(plan.committedConsumes as Record<string, bigint>, reading.consumes)
-      plan.pending = signed
-    } else s.releases[plan.intentId] = releaseOf(s, plan)
+    if (signed) recordCandidate(s, plan, signed)
+    else s.releases[plan.intentId] = releaseOf(s, plan)
     plan.exposed = plan.exposed || !plan.recovery
     if (plan.submissionId)
       s.submissions[plan.submissionId] = {
@@ -1262,6 +1379,68 @@ export const createKernel = (config: KernelConfig) => {
     plan.flushSeq = s.seq + 1
     plan.committedAt = s.now
     if (s.slot === undefined) s.slot = -1
+  }
+
+  const recordCandidate = (
+    s: KernelState,
+    plan: Plan,
+    signed: { hash: string; raw: string; bid: SignedBid; terms: SignTerms }
+  ) => {
+    const step = plan.steps[plan.cursor]!
+    const reading = step.reading!
+    const { nonce, feeLevel, fee } = signed.terms
+    const firstOfStep = stepCandidates(s, plan).length === 0
+    const sendHead = s.head?.number ?? 0
+    const record = (s.nonces[nonce] ??= {
+      nonce,
+      candidates: [],
+      lastActionHead: sendHead,
+      openedAt: s.now
+    })
+    record.candidates.push({
+      hash: signed.hash,
+      raw: signed.raw,
+      payload: step.payload as TxPayload,
+      kind: plan.recovery?.kind ?? 'step',
+      intentId: plan.intentId,
+      step: plan.cursor,
+      creates: reading.creates.map(c => c.id),
+      exposes: [...reading.exposes],
+      retires: [...reading.retires],
+      consumes: reading.consumes,
+      feeLevel,
+      fee,
+      ...signed.bid,
+      sendHead,
+      sent: 'unsent',
+      writes: writesOf(plan),
+      ...authorityOf(plan)
+    })
+    record.lastActionHead = s.head?.number ?? record.lastActionHead
+    if (nonce === s.nextNonce) s.nextNonce = nonce + 1
+    plan.terms ??= { nonce, generation: 0 }
+    recordEntries(s, step, nonce)
+    if (firstOfStep) addTo(plan.committedConsumes as Record<string, bigint>, reading.consumes)
+    plan.pending = { hash: signed.hash, raw: signed.raw }
+    const entry = plan.recovery?.entry === undefined ? undefined : s.entries[plan.recovery.entry]
+    const owner = entry && s.plans[entry.intentId]
+    if (owner) owner.neutralized = true
+  }
+
+  /** The entries a committed candidate at `nonce` creates or retires, recorded against that nonce. */
+  const recordEntries = (s: KernelState, step: Step, nonce: number) => {
+    for (const c of step.reading!.creates) {
+      const entry = s.entries[c.id]!
+      entry.state = 'exposed'
+      if (!entry.creators.includes(nonce)) entry.creators.push(nonce)
+      entry.origin = originOf(step)
+    }
+    for (const id of step.reading!.retires) {
+      const entry = s.entries[id]!
+      if (OPEN_ENTRY.has(entry.state)) entry.prior = entry.state as 'exposed' | 'live'
+      entry.state = 'revoking'
+      entry.neutralizing = { nonce }
+    }
   }
 
   const settlePlan = (s: KernelState, out: Command[], plan: Plan) => {
@@ -1286,7 +1465,8 @@ export const createKernel = (config: KernelConfig) => {
     }
   }
 
-  const failPlan = (s: KernelState, out: Command[], plan: Plan, reason: string): void => {
+  /** Ends the work a plan has in flight; bytes already handed to a send are left to its answer. */
+  const withdraw = (s: KernelState, plan: Plan) => {
     for (const [n, outstanding] of Object.entries(s.outstanding)) {
       if (
         outstanding.plan !== plan.intentId ||
@@ -1296,11 +1476,25 @@ export const createKernel = (config: KernelConfig) => {
         continue
       releaseSlot(s, Number(n))
     }
+    if (plan.phase !== 'commit') return
+    const found = pendingAtNonce(s, plan)
+    if (found) withhold(s, ...found)
+    s.slot = undefined
+  }
+
+  /** Ends a plan whose current transaction is out at its nonce, which a fill then races. */
+  const cancel = (s: KernelState, out: Command[], plan: Plan, reason: string) => {
+    plan.cancelled = true
+    failPlan(s, out, plan, reason)
+  }
+
+  const failPlan = (s: KernelState, out: Command[], plan: Plan, reason: string): void => {
+    withdraw(s, plan)
     plan.reason = reason
     if (plan.recovery) {
       plan.status = 'failed'
-      if (plan.recovery.kind === 'fill' && plan.recovery.targetNonce !== undefined) {
-        const record = s.nonces[plan.recovery.targetNonce]
+      if (plan.recovery.kind === 'fill' && plan.terms) {
+        const record = s.nonces[plan.terms.nonce]
         if (record) record.failedFillHead = s.head?.number ?? 0
       }
       const entry = plan.recovery.entry ? s.entries[plan.recovery.entry] : undefined
@@ -1345,7 +1539,7 @@ export const createKernel = (config: KernelConfig) => {
     !record.candidates.some(
       c => c.kind !== 'step' && c.sent !== 'rejected' && c.sent !== 'withheld'
     ) &&
-    !activeRecovery(s, p => p.recovery?.targetNonce === record.nonce) &&
+    !activeRecovery(s, p => p.terms?.nonce === record.nonce) &&
     (s.lifecycle.kind === 'recovering' ||
       rejectedOnly(record) ||
       record.candidates.every(c => s.plans[c.intentId]?.status !== 'executing'))
@@ -1355,31 +1549,29 @@ export const createKernel = (config: KernelConfig) => {
       .filter(r => occupiable(s, r) && (s.lifecycle.kind === 'recovering' || rejectedOnly(r)))
       .toSorted((a, b) => a.nonce - b.nonce)[0]?.nonce
 
+  /** A `continued` neutralizer bids again at its stuck nonce, which spends none of the entry's attempts. */
   const startRecovery = (
     s: KernelState,
     out: Command[],
     kind: 'neutralizer' | 'fill',
-    entry?: Entry,
-    targetNonce?: number
+    { entry, nonce, continued }: { entry?: Entry; nonce?: number; continued?: true } = {}
   ) => {
     const payload = kind === 'fill' ? fillPayload(config.account) : entry!.spec.neutralizer
     const registered = !entry || readsVersion(entry.validator)
     const reading = registered ? authorize(payload, undefined, 'recovery') : undefined
     if (entry) {
       if (!reading?.ok || !reading.retires.includes(entry.spec.id)) return markStuck(s, out, entry)
-      if (entry.recoveryAttempts >= config.maxRecoveryAttempts) return markStuck(s, out, entry)
-      entry.recoveryAttempts++
+      if (!continued && entry.recoveryAttempts >= config.maxRecoveryAttempts)
+        return markStuck(s, out, entry)
+      if (!continued) entry.recoveryAttempts++
     }
-    const target = kind === 'fill' ? targetNonce : recoverTarget(s)
-    const intentId = `recovery:${kind}:${entry?.spec.id ?? targetNonce}:${s.nextRequest++}`
+    const target = nonce ?? (kind === 'neutralizer' ? recoverTarget(s) : undefined)
+    const intentId = `recovery:${kind}:${entry?.spec.id ?? target}:${s.nextRequest++}`
     const plan: Plan = {
       intentId,
       digest: encodeStored(payload),
-      recovery: {
-        kind,
-        ...(entry ? { entry: entry.spec.id } : {}),
-        ...(target !== undefined ? { targetNonce: target } : {})
-      },
+      recovery: { kind, ...(entry ? { entry: entry.spec.id } : {}) },
+      ...(target !== undefined ? { terms: { nonce: target, generation: 0 } } : {}),
       steps: [{ kind: 'tx', payload, reading: reading as OkValidatorReading }],
       cursor: 0,
       stage: 0,
@@ -1406,7 +1598,7 @@ export const createKernel = (config: KernelConfig) => {
       plan =>
         plan.status === 'executing' &&
         !plan.recovery &&
-        PRE_COMMIT.has(plan.phase) &&
+        !occupiesNonce(s, plan) &&
         (plan.steps[plan.cursor]?.reading?.retires.includes(entry.spec.id) ?? false)
     )
 
@@ -1425,19 +1617,23 @@ export const createKernel = (config: KernelConfig) => {
     if (kind !== 'running' && kind !== 'recovering') return
     for (const entry of Object.values(s.entries)) {
       if (!owesNeutralizer(s, entry)) continue
-      startRecovery(s, out, 'neutralizer', entry)
+      startRecovery(s, out, 'neutralizer', { entry })
       if (s.lifecycle.kind !== kind) return
     }
     for (const record of Object.values(s.nonces).toSorted((a, b) => a.nonce - b.nonce)) {
-      if (!occupiable(s, record)) continue
-      if (record.failedFillHead !== undefined && (s.head?.number ?? 0) <= record.failedFillHead)
-        continue
-      const stuck =
-        s.lifecycle.kind === 'recovering' &&
-        (s.head?.number ?? 0) - record.lastActionHead >= config.stuckBlocks
-      if (rejectedOnly(record) || stuck) startRecovery(s, out, 'fill', undefined, record.nonce)
+      if (!occupiable(s, record) || !rejectedOnly(record) || fillFailedHere(s, record)) continue
+      startRecovery(s, out, 'fill', { nonce: record.nonce })
     }
   }
+
+  /** Bytes at `record` handed to a send whose answer has not come back. */
+  const sending = (s: KernelState, record: NonceRecord) =>
+    Object.values(s.outstanding).some(
+      o => o.kind === 'broadcast' && record.candidates.some(c => c.hash === o.hash)
+    )
+
+  const fillFailedHere = (s: KernelState, record: NonceRecord) =>
+    record.failedFillHead !== undefined && (s.head?.number ?? 0) <= record.failedFillHead
 
   const executedBy = (resolution: Resolution, candidate: Candidate) =>
     resolution.winner === candidate.hash && resolution.success && resolution.confirmed
@@ -1455,49 +1651,79 @@ export const createKernel = (config: KernelConfig) => {
     raiseWatermark(s, Object.keys(entry.spec.resources), block)
   }
 
-  /** A losing or reverted neutralizer hands its entry back; a provisional win releases nothing. */
-  const applyRetires = (
-    s: KernelState,
-    candidate: Candidate,
-    resolution: Resolution,
-    final: boolean
-  ) => {
-    const executed = executedBy(resolution, candidate)
-    for (const id of candidate.retires) {
+  /**
+   * Owned hand-back: until its nonce resolves an entry stays revoking while any candidate there that
+   * was not withheld retires it, since only `withheld` proves the bytes never left. Once resolved,
+   * only an executed winner that retires it keeps it, retiring it at finality; anything else hands
+   * it back to its prior state.
+   */
+  const reviewRevocations = (s: KernelState, record: NonceRecord) => {
+    const resolution = record.resolution
+    const winner = resolution && record.candidates.find(c => c.hash === resolution.winner)
+    for (const id of new Set(record.candidates.flatMap(c => c.retires))) {
       const entry = s.entries[id]
-      if (entry?.state !== 'revoking') continue
-      if (executed && final) retire(s, entry, 'neutralized', resolution.block)
-      else if (executed) entry.retireEvidence = resolution
-      else handBack(s, candidate)
+      if (entry?.state !== 'revoking' || entry.neutralizing?.nonce !== record.nonce) continue
+      if (!resolution) {
+        if (!record.candidates.some(c => c.sent !== 'withheld' && c.retires.includes(id)))
+          handBack(s, entry)
+      } else if (!winner || !executedBy(resolution, winner) || !winner.retires.includes(id)) {
+        handBack(s, entry)
+      } else if (isFinal(s, resolution)) retire(s, entry, 'neutralized', resolution.block)
+      else entry.retireEvidence = resolution
     }
   }
 
+  const handBack = (s: KernelState, entry: Entry) => {
+    entry.state = entry.prior ?? 'exposed'
+    delete entry.neutralizing
+    delete entry.retireEvidence
+    reclaim(s, entry)
+  }
+
   /**
-   * An `inclusion` commitment whose every creator is final and did not execute never existed. A
-   * success counts as creating even unconfirmed: only a winner that did not succeed proves absence.
+   * An open entry goes back to revoking under any unresolved nonce still holding a candidate that was
+   * not withheld and retires it, as after a reorg undoes the resolution that handed it back.
    */
-  const applyCreation = (
-    s: KernelState,
-    candidate: Candidate,
-    resolution: Resolution,
-    final: boolean
-  ) => {
-    const ran = resolution.winner === candidate.hash && resolution.success
-    for (const id of [...candidate.creates, ...candidate.exposes]) {
+  const reclaim = (s: KernelState, entry: Entry) => {
+    if (!OPEN_ENTRY.has(entry.state)) return
+    const owner = Object.values(s.nonces).find(
+      r =>
+        !r.resolution &&
+        r.candidates.some(c => c.sent !== 'withheld' && c.retires.includes(entry.spec.id))
+    )
+    if (!owner) return
+    entry.prior = entry.state as 'exposed' | 'live'
+    entry.state = 'revoking'
+    entry.neutralizing = { nonce: owner.nonce }
+  }
+
+  /**
+   * An `inclusion` commitment whose every creating nonce is final and whose winner there did not
+   * create it never existed. A success counts as creating even unconfirmed: only a winner that did
+   * not succeed, or did not create it, proves absence.
+   */
+  const applyCreation = (s: KernelState, record: NonceRecord, resolution: Resolution) => {
+    const winner = record.candidates.find(c => c.hash === resolution.winner)
+    const ran = winner !== undefined && resolution.success ? winner : undefined
+    for (const id of [...(ran?.creates ?? []), ...(ran?.exposes ?? [])]) markLive(s, id, resolution)
+    if (!isFinal(s, resolution)) return
+    for (const id of new Set(record.candidates.flatMap(c => c.creates))) {
       const entry = s.entries[id]
-      if (!entry || entry.state === 'retired') continue
-      if (ran) {
-        if (entry.state === 'exposed') entry.state = 'live'
-        if (entry.state === 'revoking' && entry.prior === 'exposed') entry.prior = 'live'
-        entry.liveAt = resolution
-        continue
-      }
-      if (!final || entry.spec.exposure !== 'inclusion' || !candidate.creates.includes(id)) continue
-      if (!entry.deadCreators.includes(candidate.hash)) entry.deadCreators.push(candidate.hash)
-      if (entry.creators.every(h => entry.deadCreators.includes(h)))
+      if (!entry || entry.state === 'retired' || entry.spec.exposure !== 'inclusion') continue
+      if (ran?.creates.includes(id)) continue
+      if (!entry.deadCreators.includes(record.nonce)) entry.deadCreators.push(record.nonce)
+      if (entry.creators.every(n => entry.deadCreators.includes(n)))
         retire(s, entry, 'creator did not execute', resolution.block)
     }
-    if (final && ran) raiseWatermark(s, Object.keys(candidate.consumes), resolution.block)
+    if (ran) raiseWatermark(s, Object.keys(ran.consumes), resolution.block)
+  }
+
+  const markLive = (s: KernelState, id: Id, resolution: Resolution) => {
+    const entry = s.entries[id]
+    if (!entry || entry.state === 'retired') return
+    if (entry.state === 'exposed') entry.state = 'live'
+    if (entry.state === 'revoking' && entry.prior === 'exposed') entry.prior = 'live'
+    entry.liveAt = resolution
   }
 
   const settleNonces = (s: KernelState) => {
@@ -1505,19 +1731,28 @@ export const createKernel = (config: KernelConfig) => {
       const resolution = record.resolution
       if (!resolution) continue
       const final = isFinal(s, resolution)
-      for (const candidate of record.candidates) {
-        applyRetires(s, candidate, resolution, final)
-        applyCreation(s, candidate, resolution, final)
-      }
+      reviewRevocations(s, record)
+      applyCreation(s, record, resolution)
       const awaited = Object.values(s.plans).some(
-        p => p.status === 'executing' && p.terms?.nonce === record.nonce && !PRE_COMMIT.has(p.phase)
+        p =>
+          p.status === 'executing' &&
+          ((p.terms?.nonce === record.nonce && occupiesNonce(s, p)) ||
+            awaitsPredecessor(p, record, resolution))
       )
-      if (!final || awaited || record.foreign) continue
+      if (!final || awaited || sending(s, record) || record.foreign) continue
       const spent = record.candidates.flatMap(c => Object.keys(c.consumes))
       raiseWatermark(s, ['native', ...spent], resolution.block)
       prunedFrom.get(s)?.nonces.push(record)
       delete s.nonces[record.nonce]
     }
+  }
+
+  /** A plan whose earlier step bid here and did not execute here waits on this record ({@link predecessorsExecuted}). */
+  const awaitsPredecessor = (plan: Plan, record: NonceRecord, resolution: Resolution) => {
+    const earlier = record.candidates.filter(
+      c => c.intentId === plan.intentId && c.step < plan.cursor
+    )
+    return earlier.length > 0 && !earlier.some(c => executedBy(resolution, c))
   }
 
   const releaseInFlight = (s: KernelState, intentId: Id) =>
@@ -1573,7 +1808,7 @@ export const createKernel = (config: KernelConfig) => {
         status: 'compensated',
         digest: plan.digest
       }
-    notifyEnded(out, plan, 'compensated')
+    notifyEnded(out, plan, 'compensated', plan.reason)
   }
 
   const progressPlans = (s: KernelState, out: Command[]) => {
@@ -1583,27 +1818,47 @@ export const createKernel = (config: KernelConfig) => {
         settleCompensation(s, out, plan)
         continue
       }
-      if (plan.status !== 'executing' || plan.phase !== 'include') continue
-      const resolution = plan.terms && s.nonces[plan.terms.nonce]?.resolution
-      if (!resolution) continue
-      const hash = plan.pending?.hash
-      const mined = hash !== undefined && resolution.winner === hash
-      if (mined) {
-        plan.included = [
-          ...(plan.included ?? []),
-          { step: plan.cursor, hash, block: resolution.block }
-        ]
-      }
-      if (mined && resolution.success && resolution.confirmed) {
-        plan.lastInclusion = resolution.block
-        plan.cursor++
-        plan.phase = 'ready'
-        delete plan.pending
-        advance(s, out, plan)
-      } else {
-        failPlan(s, out, plan, 'step did not execute')
-      }
+      if (plan.status !== 'executing') continue
+      if (occupiesNonce(s, plan) && s.nonces[plan.terms!.nonce]!.resolution)
+        settleByWinner(s, out, plan)
+      else if (plan.phase === 'ready') advance(s, out, plan)
     }
+  }
+
+  /**
+   * Once its nonce resolves, in whatever phase, a plan withdraws what it has in flight and the
+   * winner settles it: one of its own step's candidates, or for recovery one of its own kind.
+   */
+  const settleByWinner = (s: KernelState, out: Command[], plan: Plan) => {
+    const record = s.nonces[plan.terms!.nonce]!
+    const resolution = record.resolution!
+    withdraw(s, plan)
+    const winner = record.candidates.find(c => c.hash === resolution.winner)
+    const recovery = plan.recovery
+    const own = winner?.intentId === plan.intentId && winner.step === plan.cursor
+    const ours = recovery
+      ? winner?.kind === recovery.kind &&
+        (recovery.entry === undefined || winner.retires.includes(recovery.entry))
+      : own
+    if (own) {
+      plan.included = [
+        ...(plan.included ?? []),
+        {
+          step: plan.cursor,
+          hash: winner.hash,
+          block: resolution.block,
+          success: resolution.success
+        }
+      ]
+    }
+    if (!ours || !executedBy(resolution, winner!))
+      return failPlan(s, out, plan, 'step did not execute')
+    plan.lastInclusion = resolution.block
+    plan.cursor++
+    plan.phase = 'ready'
+    delete plan.pending
+    delete plan.terms
+    advance(s, out, plan)
   }
 
   const confirmSafely = (validator: Validator, payload: TxPayload, logs: readonly Log[]) => {
@@ -1632,21 +1887,35 @@ export const createKernel = (config: KernelConfig) => {
           !('ok' in validator) &&
           confirmSafely(validator, candidate.payload, logs)))
     record.resolution = { ...at, winner, success: status === 'success', confirmed }
+    staleTerms(s, record.nonce)
     if (status === 'success' && !confirmed)
       alarm(s, `${winner} succeeded without its expected transition`)
     if (candidate) raiseConflictMarks(s, candidate.writes, at.block)
-    reinclude(s, candidate, at.block)
+    reinclude(s, candidate, at.block, status === 'success')
   }
 
-  /** A step a reorg orphaned after its plan moved on is named again once it lands on the new fork. */
-  const reinclude = (s: KernelState, candidate: Candidate | undefined, block: number) => {
+  const staleTerms = (s: KernelState, nonce: number) => {
+    for (const plan of Object.values(s.plans))
+      if (plan.status === 'executing' && plan.terms?.nonce === nonce) plan.terms.generation++
+  }
+
+  /**
+   * A step that lands after its plan stopped reading its nonce is named in its inclusions: one a reorg
+   * orphaned after the plan moved on, or the current step of a plan that ended, as a cancelled one.
+   */
+  const reinclude = (
+    s: KernelState,
+    candidate: Candidate | undefined,
+    block: number,
+    success: boolean
+  ) => {
     if (candidate?.kind !== 'step') return
     const plan = s.plans[candidate.intentId]
     const { step, hash } = candidate
-    if (!plan || step >= plan.cursor || plan.included?.some(i => i.step === step)) return
-    plan.included = [...(plan.included ?? []), { step, hash, block }].toSorted(
-      (a, b) => a.step - b.step
-    )
+    if (!plan || plan.included?.some(i => i.step === step)) return
+    if (step > plan.cursor || (step === plan.cursor && plan.status === 'executing')) return
+    const inclusion = { step, hash, block, success }
+    plan.included = [...(plan.included ?? []), inclusion].toSorted((a, b) => a.step - b.step)
     plan.lastInclusion = Math.max(plan.lastInclusion ?? 0, block)
   }
 
@@ -1732,14 +2001,12 @@ export const createKernel = (config: KernelConfig) => {
         s.nonces[stored.nonce] = {
           nonce: stored.nonce,
           lastActionHead: 0,
-          ...(stored.unknownSince === undefined ? {} : { unknownSince: stored.unknownSince }),
+          openedAt: event.now,
           ...(stored.foreign ? { foreign: true as const } : {}),
-          candidates: stored.candidates.map(c => ({
-            ...c,
-            sent: c.sent === 'rejected' || c.sent === 'withheld' ? c.sent : 'unknown'
-          }))
+          candidates: stored.candidates.map(c => reloaded(stored, c))
         }
       }
+      for (const entry of Object.values(s.entries)) reclaim(s, entry)
       withdrawUnadoptable(s, out)
       if (ledger.nextNonce !== null) s.nextNonce = ledger.nextNonce
       s.seq = ledger.header.seq
@@ -1765,6 +2032,7 @@ export const createKernel = (config: KernelConfig) => {
     if (s.nextNonce === undefined) {
       if (event.pending !== event.latest)
         return stop(s, out, 'refused', 'unrecorded pending transaction')
+      if (event.safe !== event.latest) return
       s.nextNonce = event.latest
     } else if (event.latest > s.nextNonce || event.pending > s.nextNonce) {
       if (s.lifecycle.kind === 'starting')
@@ -1775,7 +2043,7 @@ export const createKernel = (config: KernelConfig) => {
           nonce,
           candidates: [],
           lastActionHead: event.block,
-          unknownSince: event.block,
+          openedAt: s.now,
           foreign: true
         }
       }
@@ -1798,7 +2066,7 @@ export const createKernel = (config: KernelConfig) => {
   /** Why a parked plan's next stage may not rest on `facts`: one read before our own last effect. */
   const predatesInclusion = (plan: Plan, basisBlock: number, facts: readonly Fact[] = []) => {
     const floor = plan.lastInclusion ?? 0
-    const stale = facts.find(fact => fact.basis.block < floor)
+    const stale = facts.filter(isChainFact).find(fact => fact.basis.block < floor)
     if (stale) return `evidence ${stale.id} ${PREDATES_OWN} inclusion`
     return basisBlock < floor ? `decision ${PREDATES_OWN} inclusion` : undefined
   }
@@ -1809,13 +2077,15 @@ export const createKernel = (config: KernelConfig) => {
     plan: Plan,
     event: Extract<KernelEvent, { type: 'Advance' }>
   ): Plan => {
-    const { evidence: _e, decision: _d, ...rest } = plan
+    const { evidence: _e, decision: _d, validUntil: _v, ...rest } = plan
+    const validUntil = event.validUntil ?? plan.validUntil
     return {
       ...rest,
       stage: plan.cursor,
       basisBlock: event.basisBlock,
       phase: 'ready',
-      notAfter: withDeadline(s, event.notAfter, event.evidence),
+      notAfter: withDeadline(s, Math.min(event.notAfter, validUntil ?? NEVER), event.evidence),
+      ...(validUntil !== undefined && { validUntil }),
       ...(event.evidence && { evidence: event.evidence.map(fact => ({ ...fact })) }),
       ...(event.decision && { decision: { ...event.decision } })
     }
@@ -1841,7 +2111,7 @@ export const createKernel = (config: KernelConfig) => {
     if (plan?.status !== 'executing' || plan.recovery) return 'no executing plan'
     if (plan.phase !== 'awaiting-advance' || event.stage !== plan.cursor)
       return `not awaiting stage ${event.stage}`
-    const times = [event.basisBlock, event.notAfter]
+    const times = [event.basisBlock, event.notAfter, event.validUntil ?? 0]
     if (!times.every(isBlockOrTime))
       return 'basis block and expiry must be non-negative safe integers'
     return liveAuthorityDefect(event.evidence, event.decision)
@@ -1900,6 +2170,13 @@ export const createKernel = (config: KernelConfig) => {
       return advance(s, out, plan)
     }
     s.slot = undefined
+    const terms = taken.outstanding.terms!
+    if (targetRefusal(s, plan, taken.outstanding.generation)) return resolvedMeanwhile(s, out, plan)
+    const wait = waitingPhase(s, plan)
+    if (wait) {
+      plan.phase = wait
+      return
+    }
     const refusal = stillAuthorized(s, plan) ?? reauthorized(s, plan)
     if (refusal) return failPlan(s, out, plan, `final check: ${refusal}`)
     if (!simFresh(s, plan)) {
@@ -1907,8 +2184,41 @@ export const createKernel = (config: KernelConfig) => {
       return advance(s, out, plan)
     }
     s.slot = event.request
-    commit(s, out, plan, { hash: event.hash!, raw: event.raw! })
+    commit(s, out, plan, { hash: event.hash!, raw: event.raw!, bid: event.bid!, terms })
   }
+
+  /** Nothing is signed at a nonce that resolved since it was asked for; a step's candidate settles it. */
+  const resolvedMeanwhile = (s: KernelState, out: Command[], plan: Plan) => {
+    if (plan.recovery || stepCandidates(s, plan).length === 0)
+      return failPlan(s, out, plan, 'target nonce resolved while signing')
+    plan.phase = 'include'
+  }
+
+  /**
+   * A plan that cannot outbid its nonce waits at its cap, holding no slot, beside its candidates: a
+   * step until its deadline cancels it, recovery until the nonce resolves ({@link waitsAtCeiling}).
+   * Recovery with no recorded nonce to wait at fails as any recovery attempt does.
+   */
+  const capReached: Handler<'StepCapReached' | 'FeeCeilingReached'> = (s, out, event) => {
+    const taken = take(s, event.request, ['sign'])
+    if (!taken) return
+    const plan = taken.plan
+    if (!occupiesNonce(s, plan))
+      return plan.recovery ? failPlan(s, out, plan, 'no bid fits under the fee ceiling') : undefined
+    plan.terms!.capped = true
+    plan.phase = 'include'
+    if (!plan.recovery) return
+    const record = s.nonces[plan.terms!.nonce]!
+    alarm(s, `nonce ${record.nonce} waits at the fee ceiling`)
+    if (!ceilingBytes(record)) enterRecovering(s, out, NOTHING_TO_RESEND)
+  }
+
+  /** The bytes a nonce waiting at the ceiling re-sends: its highest recovery bid that was not withheld. */
+  const ceilingBytes = (record: NonceRecord) =>
+    record.candidates
+      .filter(c => c.kind !== 'step' && c.sent !== 'withheld')
+      .toSorted((a, b) => a.feeLevel - b.feeLevel)
+      .at(-1)
 
   /** A broadcast that times out is `unknown`, never failed; any other effect failing is pre-exposure. */
   const effectFailed: Handler<'EffectFailed' | 'TimedOut'> = (s, out, event) => {
@@ -1917,10 +2227,7 @@ export const createKernel = (config: KernelConfig) => {
     const plan = s.plans[outstanding.plan]
     if (outstanding.kind === 'broadcast') {
       const found = outstanding.hash ? findCandidate(s, outstanding.hash) : undefined
-      if (found && found[1].sent === 'unsent') {
-        found[1].sent = 'unknown'
-        found[0].unknownSince ??= s.head?.number ?? 0
-      }
+      if (found && answerable(found[1])) markUnknown(s, found[1])
       releaseSlot(s, event.request)
       if (plan?.request === event.request && plan.phase === 'expose') plan.phase = 'include'
       return
@@ -1939,6 +2246,7 @@ export const createKernel = (config: KernelConfig) => {
 
   /** Bytes known to be obsolete before dispatch stay home; the record already makes that conservative. */
   const withholdReason = (s: KernelState, plan: Plan) =>
+    expired(s, plan) ??
     stillAuthorized(s, plan) ??
     reauthorized(s, plan) ??
     (plan.sim && !canonical(s, plan.sim) ? 'simulation orphaned by a reorg' : undefined) ??
@@ -1946,15 +2254,34 @@ export const createKernel = (config: KernelConfig) => {
       ? 'dispatch window exceeded'
       : undefined)
 
-  /** Entries whose neutralizing candidate provably never ran or never left resume their revocation obligation. */
-  const handBack = (s: KernelState, candidate: Candidate) => {
-    for (const id of candidate.retires) {
-      const entry = s.entries[id]
-      if (entry?.state !== 'revoking' || entry.neutralizing?.hash !== candidate.hash) continue
-      entry.state = entry.prior ?? 'exposed'
-      delete entry.neutralizing
-      delete entry.retireEvidence
-    }
+  /** The candidate a committed plan awaits dispatch of, found at the nonce its terms name. */
+  const pendingAtNonce = (s: KernelState, plan: Plan): [NonceRecord, Candidate] | undefined => {
+    const record = plan.pending && plan.terms ? s.nonces[plan.terms.nonce] : undefined
+    const candidate = record?.candidates.find(c => c.hash === plan.pending!.hash)
+    return candidate && [record!, candidate]
+  }
+
+  /** A candidate's uncertainty starts once, when it becomes `unknown`, and ends once it is accepted. */
+  const markUnknown = (s: KernelState, candidate: Candidate) => {
+    candidate.sent = 'unknown'
+    if (s.head) candidate.unknownSince = s.head.number
+  }
+
+  /**
+   * Whose send status any answer to a send replaces: bytes never answered, or refused, which a
+   * re-send at the fee ceiling may yet get taken; nothing turns `accepted` or `unknown` into `rejected`.
+   */
+  const answerable = (candidate: Candidate) =>
+    candidate.sent === 'unsent' || candidate.sent === 'rejected'
+
+  const markAccepted = (candidate: Candidate) => {
+    candidate.sent = 'accepted'
+    delete candidate.unknownSince
+  }
+
+  const withhold = (s: KernelState, record: NonceRecord, candidate: Candidate) => {
+    candidate.sent = 'withheld'
+    reviewRevocations(s, record)
   }
 
   /** A committed plan waiting on the ledger write `seq`, or on one before it. */
@@ -1976,9 +2303,8 @@ export const createKernel = (config: KernelConfig) => {
       const step = plan.steps[plan.cursor]!
       const withheld = withholdReason(s, plan)
       if (withheld) {
-        const found = plan.pending && findCandidate(s, plan.pending.hash)
-        if (found) found[1].sent = 'withheld'
-        if (found) handBack(s, found[1])
+        const found = pendingAtNonce(s, plan)
+        if (found) withhold(s, ...found)
         s.slot = undefined
         plan.phase = 'include'
         failPlan(s, out, plan, `withheld: ${withheld}`)
@@ -1989,6 +2315,8 @@ export const createKernel = (config: KernelConfig) => {
         s.slot = request(s, plan, 'release')
         emit(out, { type: 'release', request: s.slot, payload: step.payload as ReleasePayload })
       } else {
+        const candidate = findCandidate(s, plan.pending!.hash)?.[1]
+        if (candidate?.sent === 'unsent') candidate.sendHead = s.head?.number ?? candidate.sendHead
         s.slot = request(s, plan, 'broadcast')
         emit(out, {
           type: 'broadcast',
@@ -2000,7 +2328,7 @@ export const createKernel = (config: KernelConfig) => {
     }
   }
 
-  /** The disk may or may not hold the record, so the candidate is kept as if it might have been sent. */
+  /** Bytes go out only after their flush, so a candidate whose flush failed is withheld; the disk may still hold it. */
   const flushFailed: Handler<'FlushFailed'> = (s, out, event) => {
     if (!isIssued(s, event.seq)) {
       alarm(s, 'malformed FlushFailed event ignored')
@@ -2008,8 +2336,8 @@ export const createKernel = (config: KernelConfig) => {
     }
     for (const plan of Object.values(s.plans)) {
       if (!waitsOn(plan, event.seq)) continue
-      const found = plan.pending && findCandidate(s, plan.pending.hash)
-      if (found) found[1].sent = 'rejected'
+      const found = pendingAtNonce(s, plan)
+      if (found) withhold(s, ...found)
       plan.phase = 'include'
       if (!found) failPlan(s, out, plan, 'flush failed')
     }
@@ -2023,12 +2351,10 @@ export const createKernel = (config: KernelConfig) => {
   const broadcasted: Handler<'Broadcasted'> = (s, out, event) => {
     const found = findCandidate(s, event.hash)
     if (event.outcome === 'withheld') return withheldAtHandoff(s, out, event, found)
-    if (found?.[1].sent === 'unsent') {
-      found[1].sent = event.outcome
-      if (event.outcome === 'unknown') found[0].unknownSince ??= s.head?.number ?? 0
-    } else if (found?.[1].sent === 'unknown' && event.outcome === 'accepted') {
-      found[1].sent = 'accepted'
-    }
+    const candidate = found?.[1]
+    if (candidate && answerable(candidate) && event.outcome === 'unknown') markUnknown(s, candidate)
+    else if (candidate && answerable(candidate)) candidate.sent = event.outcome
+    else if (candidate?.sent === 'unknown' && event.outcome === 'accepted') markAccepted(candidate)
     const outstanding = event.request === undefined ? undefined : s.outstanding[event.request]
     if (outstanding?.kind !== 'broadcast') return
     releaseSlot(s, event.request!)
@@ -2043,10 +2369,7 @@ export const createKernel = (config: KernelConfig) => {
     event: Extract<KernelEvent, { type: 'Broadcasted' }>,
     found: [NonceRecord, Candidate] | undefined
   ) => {
-    if (found?.[1].sent === 'unsent') {
-      found[1].sent = 'withheld'
-      handBack(s, found[1])
-    }
+    if (found?.[1].sent === 'unsent') withhold(s, ...found)
     const outstanding = event.request === undefined ? undefined : s.outstanding[event.request]
     if (outstanding?.kind !== 'broadcast') return
     releaseSlot(s, event.request!)
@@ -2054,6 +2377,7 @@ export const createKernel = (config: KernelConfig) => {
     if (plan?.status !== 'executing' || plan.request !== event.request || plan.phase !== 'expose')
       return
     plan.phase = 'include'
+    if (found?.[0].resolution) return
     failPlan(s, out, plan, `withheld at handoff: ${withholdReason(s, plan) ?? 'guard refused'}`)
   }
 
@@ -2085,7 +2409,7 @@ export const createKernel = (config: KernelConfig) => {
     }
     for (const record of Object.values(s.nonces)) {
       if (record.lastActionHead === 0) record.lastActionHead = event.number
-      if (record.candidates.some(c => c.sent === 'unknown')) record.unknownSince ??= event.number
+      for (const c of record.candidates) if (c.sent === 'unknown') c.unknownSince ??= event.number
     }
   }
 
@@ -2103,7 +2427,7 @@ export const createKernel = (config: KernelConfig) => {
         p.status === 'executing' && p.sim ? [p.sim.block] : []
       ),
       ...Object.values(s.plans).flatMap(p =>
-        p.status === 'executing' ? (p.evidence ?? []).map(fact => fact.basis.block) : []
+        p.status === 'executing' ? chainBlocks(p.evidence) : []
       ),
       ...Object.values(s.entries).flatMap(e =>
         e.state === 'retired'
@@ -2142,6 +2466,7 @@ export const createKernel = (config: KernelConfig) => {
     for (const record of Object.values(s.nonces)) {
       if (record.resolution && record.resolution.block > fork) delete record.resolution
     }
+    for (const entry of Object.values(s.entries)) reclaim(s, entry)
     dropInclusionsAbove(s, fork)
     for (const [resource, observed] of Object.entries(s.capacity)) {
       if (observed.block > fork) delete s.capacity[resource]
@@ -2170,6 +2495,7 @@ export const createKernel = (config: KernelConfig) => {
     }
     const { block, blockHash } = event
     record.resolution = { block, blockHash, winner: null, success: false, confirmed: false }
+    staleTerms(s, record.nonce)
     record.foreign = true
     enterRecovering(
       s,
@@ -2193,9 +2519,10 @@ export const createKernel = (config: KernelConfig) => {
     }
     s.now = Math.max(s.now, event.now)
     for (const plan of Object.values(s.plans)) {
-      if (plan.status !== 'executing' || plan.recovery || !PRE_COMMIT.has(plan.phase)) continue
+      if (plan.status !== 'executing' || plan.recovery) continue
       const reason = expired(s, plan)
-      if (reason) failPlan(s, out, plan, reason)
+      if (reason && occupiesNonce(s, plan)) cancel(s, out, plan, reason)
+      else if (reason) failPlan(s, out, plan, reason)
     }
   }
 
@@ -2228,6 +2555,8 @@ export const createKernel = (config: KernelConfig) => {
     },
     Simulated: simulated,
     Signed: signed,
+    StepCapReached: (s, out, event) => capReached(s, out, event),
+    FeeCeilingReached: (s, out, event) => capReached(s, out, event),
     EffectFailed: (s, out, event) => effectFailed(s, out, event),
     TimedOut: (s, out, event) => effectFailed(s, out, event),
     Flushed: flushed,
@@ -2236,7 +2565,7 @@ export const createKernel = (config: KernelConfig) => {
     Released: released,
     Seen: (s, _out, event) => {
       const found = findCandidate(s, event.hash)
-      if (found && found[1].sent === 'unknown') found[1].sent = 'accepted'
+      if (found?.[1].sent === 'unknown') markAccepted(found[1])
     },
     Head: head,
     Header: header,
@@ -2252,7 +2581,11 @@ export const createKernel = (config: KernelConfig) => {
     },
     Tick: tick,
     Stop: (s, out) => enterRecovering(s, out, 'stop requested'),
-    Halt: (s, out, event) => enterRecovering(s, out, event.reason)
+    Halt: (s, out, event) => enterRecovering(s, out, event.reason),
+    Alarm: (s, _out, event) => alarm(s, event.reason),
+    Refuse: (s, out, event) => {
+      if (s.lifecycle.kind === 'starting') stop(s, out, 'refused', event.reason)
+    }
   }
 
   const handle = <T extends KernelEvent['type']>(
@@ -2269,13 +2602,12 @@ export const createKernel = (config: KernelConfig) => {
     settleReleases(s)
     progressPlans(s, out)
     for (const record of Object.values(s.nonces)) {
-      if (record.resolution || record.unknownSince === undefined) continue
-      if (!record.candidates.some(c => c.sent === 'unknown')) continue
-      if ((s.head?.number ?? 0) - record.unknownSince > config.latchBoundBlocks)
+      const since = record.resolution ? undefined : uncertainSince(record)
+      if (since !== undefined && (s.head?.number ?? 0) - since > config.latchBoundBlocks)
         enterRecovering(s, out, 'latch bound exceeded')
     }
     if (s.lifecycle.kind === 'starting') checkStarted(s, out)
-    rebroadcast(s, out)
+    unstick(s, out)
     recover(s, out)
     dispatchSlot(s, out)
     pruneConflictMarks(s)
@@ -2314,18 +2646,117 @@ export const createKernel = (config: KernelConfig) => {
     return plan?.status === 'executing' && s.now < plan.notAfter && s.lifecycle.kind === 'running'
   }
 
-  /** Re-sends recorded bytes, which adds no exposure, for a candidate still worth landing. */
-  const rebroadcast = (s: KernelState, out: Command[]) => {
+  /**
+   * A nonce is stuck once `stuckBlocks` pass since its newest candidate's send head while one of its
+   * candidates is `accepted` or {@link uncovered}. An uncertain one gets one re-send, then a bid.
+   */
+  const unstick = (s: KernelState, out: Command[]) => {
     if (!s.head) return
-    for (const record of Object.values(s.nonces)) {
-      if (record.resolution || s.head.number - record.lastActionHead < config.stuckBlocks) continue
-      const candidate = record.candidates.find(c => c.sent === 'unknown' && resendable(s, c))
-      if (!candidate) continue
-      record.lastActionHead = s.head.number
-      const n = s.nextRequest++
-      s.outstanding[n] = { kind: 'broadcast', plan: candidate.intentId, hash: candidate.hash }
-      emit(out, { type: 'broadcast', request: n, hash: candidate.hash, raw: candidate.raw })
+    for (const record of Object.values(s.nonces).toSorted((a, b) => a.nonce - b.nonce)) {
+      if (record.resolution || record.foreign) continue
+      if (waitsAtCeiling(s, record)) {
+        resendAtCeiling(s, out, record)
+        continue
+      }
+      const sent = Math.max(...record.candidates.map(c => c.sendHead))
+      if (s.head.number - sent < config.stuckBlocks) continue
+      if (rejectedOnly(record)) {
+        rebidRejected(s, out, record)
+        continue
+      }
+      const live = record.candidates.filter(c => c.sent === 'accepted' || uncovered(record, c))
+      if (live.length === 0) continue
+      const uncertain = live.some(c => c.sent === 'unknown')
+      if (uncertain && !resentInVain(s, out, record)) continue
+      bidAgain(s, out, record, uncertain)
     }
+  }
+
+  /** Re-sends an uncertain nonce's highest eligible bytes once per process; true once spent and none is in flight. */
+  const resentInVain = (s: KernelState, out: Command[], record: NonceRecord) => {
+    if (sending(s, record)) return false
+    const candidate = record.candidates
+      .filter(c => uncovered(record, c) && resendable(s, c) && !record.resent?.includes(c.hash))
+      .at(-1)
+    if (!candidate) return true
+    ;(record.resent ??= []).push(candidate.hash)
+    resend(s, out, record, candidate)
+    return false
+  }
+
+  /**
+   * A nonce at the fee ceiling bids no more: every `stuckBlocks` it re-sends the bytes it already
+   * signed and flushed, whatever their send status, so they land once the base fee falls below them.
+   */
+  const resendAtCeiling = (s: KernelState, out: Command[], record: NonceRecord) => {
+    if (sending(s, record) || s.head!.number - record.lastActionHead < config.stuckBlocks) return
+    const bytes = ceilingBytes(record)
+    if (!bytes) return enterRecovering(s, out, NOTHING_TO_RESEND)
+    resend(s, out, record, bytes)
+  }
+
+  const resend = (s: KernelState, out: Command[], record: NonceRecord, candidate: Candidate) => {
+    record.lastActionHead = s.head!.number
+    const n = s.nextRequest++
+    s.outstanding[n] = { kind: 'broadcast', plan: candidate.intentId, hash: candidate.hash }
+    emit(out, { type: 'broadcast', request: n, hash: candidate.hash, raw: candidate.raw })
+  }
+
+  const boundTo = (s: KernelState, record: NonceRecord) =>
+    Object.values(s.plans).filter(
+      p => p.status === 'executing' && p.terms?.nonce === record.nonce && occupiesNonce(s, p)
+    )
+
+  /**
+   * A stuck recovery bid whose every candidate at its nonce was rejected bids there again, bounded by
+   * the fee ceiling; it holds the nonce, so no other recovery takes it. A step's is filled instead.
+   */
+  const rebidRejected = (s: KernelState, out: Command[], record: NonceRecord) => {
+    const lifecycle = s.lifecycle.kind
+    if (lifecycle !== 'running' && lifecycle !== 'recovering') return
+    const recovery = boundTo(s, record).find(p => p.recovery)
+    if (recovery?.phase === 'include') rebid(s, out, recovery)
+  }
+
+  /**
+   * The plan bound to a stuck nonce bids there again, a step only while it may add risk; otherwise
+   * recovery continues the nonce's obligation. A step at an uncertain nonce is cancelled for it.
+   */
+  const bidAgain = (s: KernelState, out: Command[], record: NonceRecord, uncertain: boolean) => {
+    const lifecycle = s.lifecycle.kind
+    if (lifecycle !== 'running' && lifecycle !== 'recovering') return
+    const bound = boundTo(s, record)
+    const recovery = bound.find(p => p.recovery)
+    const step = bound.find(p => !p.recovery)
+    if (step && uncertain) cancel(s, out, step, 'its nonce stayed uncertain after a re-send')
+    else if (step && !recovery) {
+      const mayBid = step.phase === 'include' && !step.terms!.capped && !latched(s)
+      if (mayBid && lifecycleAllows(s, step)) return rebid(s, out, step)
+      if (s.lifecycle.kind !== 'recovering') return
+      cancel(s, out, step, `recovering: ${s.lifecycle.reason}`)
+    }
+    if (recovery) return recovery.phase === 'include' ? rebid(s, out, recovery) : undefined
+    continueObligation(s, out, record)
+  }
+
+  /** A bound plan bids again at its nonce, back through every check of its first bid. */
+  const rebid = (s: KernelState, out: Command[], plan: Plan) => {
+    plan.phase = 'ready'
+    advance(s, out, plan)
+  }
+
+  /** A neutralizer still revoking its entry here bids again as one; anything else is filled. */
+  const continueObligation = (s: KernelState, out: Command[], record: NonceRecord) => {
+    const last = record.candidates.filter(c => c.kind !== 'step').at(-1)
+    const entry =
+      last?.kind === 'neutralizer'
+        ? last.retires
+            .map(id => s.entries[id])
+            .find(e => e?.state === 'revoking' && e.neutralizing?.nonce === record.nonce)
+        : undefined
+    if (entry)
+      return startRecovery(s, out, 'neutralizer', { entry, nonce: record.nonce, continued: true })
+    if (!fillFailedHere(s, record)) startRecovery(s, out, 'fill', { nonce: record.nonce })
   }
 
   /** Waiting on a startup read never suspends the dead-man switch: a lapsed affirmation recovers from what is stored. */
@@ -2345,7 +2776,8 @@ export const createKernel = (config: KernelConfig) => {
     const unobserved = Object.values(s.entries).some(
       e => UNRETIRED.has(e.state) && (e.observed === undefined || e.observed.block < since)
     )
-    if (consumedUnresolved || unobserved) return
+    const noLedgerOnDisk = s.ackedSeq === 0
+    if (consumedUnresolved || unobserved || noLedgerOnDisk) return
     s.lifecycle = { kind: 'running' }
   }
 
@@ -2355,7 +2787,7 @@ export const createKernel = (config: KernelConfig) => {
     const openNonces = Object.keys(s.nonces).length > 0
     const inFlight =
       s.slot !== undefined ||
-      Object.values(s.plans).some(p => p.status === 'executing' && !PRE_COMMIT.has(p.phase))
+      Object.values(s.plans).some(p => p.status === 'executing' && occupiesNonce(s, p))
     const durable = s.ackedSeq >= s.seq
     if (!openEntries && !openNonces && !inFlight && durable)
       return stop(s, out, 'clean', s.lifecycle.reason)
@@ -2395,11 +2827,12 @@ export const createKernel = (config: KernelConfig) => {
     now: number,
     hash?: string
   ): string | undefined => {
+    const s = { ...state, now }
+    const resent = hash === undefined ? undefined : findCandidate(s, hash)
+    if (resent?.[0].resolution) return 'its nonce resolved'
     const plan = state.plans[intentId]
     if (plan === undefined || plan.recovery !== undefined) return undefined
     if (plan.status !== 'executing') return `plan ${plan.status}`
-    const s = { ...state, now }
-    const resent = hash === undefined ? undefined : findCandidate(s, hash)
     if (resent?.[1].sent !== 'unknown') return withholdReason(s, plan)
     return resendable(s, resent[1]) ? undefined : 're-send revoked'
   }
@@ -2415,6 +2848,9 @@ export const createKernel = (config: KernelConfig) => {
     if (plan?.status !== 'executing') return `plan ${plan?.status ?? 'gone'}`
     const s = { ...state, now }
     const step = plan.steps[plan.cursor]
+    const unbound = step?.kind === 'tx' ? targetRefusal(s, plan, outstanding.generation) : undefined
+    if (unbound) return unbound
+    if (step?.kind === 'tx' && waitingPhase(s, plan)) return 'it may not bid yet'
     return (
       stillAuthorized(s, plan) ??
       reauthorized(s, plan) ??

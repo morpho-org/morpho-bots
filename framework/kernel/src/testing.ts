@@ -78,6 +78,7 @@ export class FakeChain implements KernelChain {
     }
   }
   block = async (number: number) => this.blockAt(number)
+  safe = async () => this.blockAt(this.height - this.finalityLag)
   nonceAt = async () => ({ latest: this.nonce, pending: this.nonce + this.mempool.size })
   accountCode = async () => '0x'
   private evidence = (hash: string) => {
@@ -109,7 +110,11 @@ export class FakeChain implements KernelChain {
       const hash = `0x${candidate.nonce.toString(16).padStart(4, '0')}${candidate.level}`
       this.bytes.set(hash, { payload, nonce: candidate.nonce })
       this.signed.push(hash)
-      return { hash, raw: hash }
+      return {
+        hash,
+        raw: hash,
+        bid: { maxFeePerGas: candidate.fee, maxPriorityFeePerGas: candidate.fee, gas: 1n }
+      }
     },
     signTyped: () => Promise.reject(new Error('no typed data here')),
     broadcast: async (raw, guard) => {

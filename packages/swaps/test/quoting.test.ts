@@ -11,7 +11,12 @@ import type { Unwrapper } from '../src/unwrappers/resolve'
 import { ONEINCH_ROUTER, ZEROX_ALLOWANCE_HOLDER } from '../src/constants'
 import { routeCostBps } from '../src/cost-bps.utils'
 import { QuoteError } from '../src/errors'
-import { clearsFloor, composeMultiVenueQuoting, passesRouteQuality } from '../src/quoting'
+import {
+  clearsFloor,
+  composeMultiVenueQuoting,
+  passesRouteQuality,
+  priceByVenue
+} from '../src/quoting'
 
 const ROUTER = getAddress('0x5555555555555555555555555555555555555555')
 const LOAN = getAddress('0x6666666666666666666666666666666666666666')
@@ -1087,5 +1092,37 @@ describe('venue fall-through cap', () => {
       firmQuoteCostBps: 400,
       firmCalls: 1
     })
+  })
+})
+
+describe('priceByVenue', () => {
+  const BASE_URLS = {
+    '0x': 'https://zerox.test',
+    '1inch': 'https://oneinch.test',
+    lifi: 'https://lifi.test',
+    liquidswap: 'https://liquidswap.test'
+  } as const
+
+  it.each(Object.entries(BASE_URLS))('probes %s at its own base URL', async (venue, baseUrl) => {
+    const urls: string[] = []
+    const client: RateLimitedClient = {
+      getJson: async (args: { url: string }) => {
+        urls.push(args.url)
+        throw new Error('stop after the request is built')
+      }
+    }
+    await priceByVenue(client, {
+      venue: venue as Venue,
+      baseUrls: BASE_URLS,
+      params: {
+        chainId: 8453,
+        tokenIn: '0x7777777777777777777777777777777777777777',
+        tokenOut: '0x6666666666666666666666666666666666666666',
+        amountIn: 100n,
+        tokenInDecimals: 18
+      }
+    }).catch(() => undefined)
+    expect(urls).toHaveLength(1)
+    expect(urls[0]?.startsWith(`${baseUrl}/`)).toBe(true)
   })
 })

@@ -1,0 +1,240 @@
+{
+  "executor-liquidation@1": {
+    "a liquidation sweeping both tokens": {
+      "claims": true,
+      "reading": {
+        "ok": true,
+        "creates": [],
+        "exposes": [],
+        "carries": [],
+        "retires": [],
+        "consumes": {}
+      }
+    },
+    "a liquidation leaving collateral unswept": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "the tokens it touches are not all swept to the account"
+      }
+    },
+    "a write-off": {
+      "claims": true,
+      "reading": {
+        "ok": true,
+        "creates": [],
+        "exposes": [],
+        "carries": [],
+        "retires": [],
+        "consumes": {}
+      }
+    },
+    "a write-off paying someone else": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "a write-off moves nothing and calls nothing back"
+      }
+    },
+    "a write-off with a sweep": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "a write-off moves nothing and calls nothing back"
+      }
+    },
+    "a seizure received elsewhere": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "seized collateral is not received and called back on the Executor"
+      }
+    },
+    "a seizure called back elsewhere": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "seized collateral is not received and called back on the Executor"
+      }
+    },
+    "a callback returning the wrong value": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "callback does not return the success value"
+      }
+    },
+    "a market on another chain": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "market is not on this Midnight"
+      }
+    },
+    "an account that is not an address": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "the account is not an address"
+      }
+    },
+    "a transaction to the protocol": {
+      "claims": false,
+      "reading": {
+        "ok": true,
+        "creates": [],
+        "exposes": [],
+        "carries": [],
+        "retires": [],
+        "consumes": {}
+      }
+    }
+  },
+  "executor-liquidation@2": {
+    "a liquidation sweeping both tokens": {
+      "claims": true,
+      "reading": {
+        "ok": true,
+        "creates": [],
+        "exposes": [],
+        "carries": [],
+        "retires": [],
+        "consumes": {}
+      }
+    },
+    "a liquidation leaving collateral unswept": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "the tokens it touches are not all swept to the account"
+      }
+    },
+    "a sweep of a fixed amount": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "sweep does not pay the account"
+      }
+    },
+    "a sweep without the balance read": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "sweep amount is not one balance read"
+      }
+    },
+    "an approved intermediate left unswept": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "the tokens it touches are not all swept to the account"
+      }
+    },
+    "a sweep reading the balance of another holder": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "sweep amount is not the Executor balance of its token"
+      }
+    },
+    "a sweep reading the balance of another token": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "sweep amount is not the Executor balance of its token"
+      }
+    },
+    "a sweep splicing its balance elsewhere": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "sweep amount is not the Executor balance of its token"
+      }
+    },
+    "a callback step that calls the Executor": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "a callback call carries value or a callback, or calls the Executor"
+      }
+    },
+    "an approved intermediate swept too": {
+      "claims": true,
+      "reading": {
+        "ok": true,
+        "creates": [],
+        "exposes": [],
+        "carries": [],
+        "retires": [],
+        "consumes": {}
+      }
+    },
+    "a write-off": {
+      "claims": true,
+      "reading": {
+        "ok": true,
+        "creates": [],
+        "exposes": [],
+        "carries": [],
+        "retires": [],
+        "consumes": {}
+      }
+    },
+    "a write-off paying someone else": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "a write-off moves nothing and calls nothing back"
+      }
+    },
+    "a write-off with a sweep": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "a write-off moves nothing and calls nothing back"
+      }
+    },
+    "a seizure received elsewhere": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "seized collateral is not received and called back on the Executor"
+      }
+    },
+    "a seizure called back elsewhere": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "seized collateral is not received and called back on the Executor"
+      }
+    },
+    "a callback returning the wrong value": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "callback does not return the success value"
+      }
+    },
+    "a market on another chain": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "market is not on this Midnight"
+      }
+    },
+    "an account that is not an address": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "the account is not an address"
+      }
+    },
+    "a transaction to the protocol": {
+      "claims": false,
+      "reading": {
+        "ok": false,
+        "reason": "not the configured Executor"
+      }
+    }
+  }
+}

@@ -13,7 +13,7 @@ import type { ModelTree } from './validators'
 import { available, createKernel, decodeLedger } from '../src'
 import { encodeLedger } from '../src/testing'
 import { decodeCall } from './codec'
-import { ecrecoverPlan, makeConfig, publish, signatureOf, T, txHash } from './fixtures'
+import { bidOf, ecrecoverPlan, makeConfig, publish, signatureOf, T, txHash } from './fixtures'
 import { modelLog } from './validators'
 
 type Answerable = Extract<Command, { request: number }>
@@ -88,7 +88,14 @@ export class Harness {
   start(nonce = 0) {
     this.boot('enrolling', null)
     this.head(1)
-    this.send({ type: 'NonceAt', block: 1, blockHash: this.hash(1), latest: nonce, pending: nonce })
+    this.send({
+      type: 'NonceAt',
+      block: 1,
+      blockHash: this.hash(1),
+      latest: nonce,
+      pending: nonce,
+      safe: nonce
+    })
     this.flush()
     return this
   }
@@ -110,6 +117,11 @@ export class Harness {
       finalized,
       finalizedTimestamp: BigInt(Math.max(finalized, 0) * 2)
     })
+  }
+
+  /** Advances the head far enough past every send that each unresolved nonce is stuck. */
+  stall() {
+    for (let i = 0; i < this.config.stuckBlocks; i++) this.head()
   }
 
   /** Advances the head until `block` is final. */
@@ -158,7 +170,13 @@ export class Harness {
       this.answer(command)
       if ('nonce' in command) {
         const hash = txHash(command.payload, command.nonce, command.feeLevel)
-        this.send({ type: 'Signed', request: command.request, hash, raw: `raw(${hash})` })
+        this.send({
+          type: 'Signed',
+          request: command.request,
+          hash,
+          raw: `raw(${hash})`,
+          bid: bidOf(command)
+        })
       } else {
         this.send({
           type: 'Signed',
@@ -183,7 +201,7 @@ export class Harness {
     if (ack) this.send({ type: 'Flushed', seq: latest.seq })
   }
 
-  broadcast(outcome: 'accepted' | 'rejected' | 'unknown' | 'timeout' = 'accepted') {
+  broadcast(outcome: 'accepted' | 'rejected' | 'unknown' | 'withheld' | 'timeout' = 'accepted') {
     for (const command of this.pending('broadcast')) {
       this.answer(command)
       if (outcome === 'timeout') this.send({ type: 'TimedOut', request: command.request })
@@ -283,13 +301,14 @@ export class Harness {
     return this.commands('report')
   }
 
-  nonceAt(latest: number, pending = latest) {
+  nonceAt(latest: number, pending = latest, safe = latest) {
     return this.send({
       type: 'NonceAt',
       block: this.block,
       blockHash: this.hash(this.block),
       latest,
-      pending
+      pending,
+      safe
     })
   }
 

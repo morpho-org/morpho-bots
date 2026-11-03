@@ -16,7 +16,7 @@ const read = (write: KeyedWrite<VaultReading>) => ({ from: 'world', value: write
 describe('countTick', () => {
   it("counts each step's first broadcast at a nonce, as the tx reporter did", () => {
     const state = fold(TX_SCENARIO.map(value => ({ from: 'activity', value }) as const))
-    expect(state.counts.broadcast).toBe(5)
+    expect(state.counts.broadcast).toBe(6)
   })
 
   it('counts simulation reverts, dry runs and errors by the reason a preparation declined', () => {

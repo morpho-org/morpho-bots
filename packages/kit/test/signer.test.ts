@@ -1,6 +1,12 @@
 import type { Chain, Hex } from 'viem'
 
-import { InvalidInputRpcError, keccak256, MethodNotFoundRpcError, parseTransaction } from 'viem'
+import {
+  InvalidInputRpcError,
+  keccak256,
+  MethodNotFoundRpcError,
+  parseTransaction,
+  RpcError
+} from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
 import { base } from 'viem/chains'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -263,7 +269,7 @@ describe('sign and broadcastRaw', () => {
     })
   })
 
-  it('broadcastRaw throws a definitive rejection and reports an ambiguous one as unknown', async () => {
+  it('broadcastRaw throws a definitive rejection, accepts "already known", and reports an ambiguous answer as unknown', async () => {
     let answer: unknown = rpcFailure(-32000, 'nonce too low')
     mockRpc({
       eth_chainId: `0x${base.id.toString(16)}`,
@@ -278,7 +284,16 @@ describe('sign and broadcastRaw', () => {
     const { raw } = await sign({ ...REQUEST, nonce: 3 })
     await expect(broadcastRaw(raw)).rejects.toBeInstanceOf(InvalidInputRpcError)
     answer = rpcFailure(-32000, 'already known')
-    expect(await broadcastRaw(raw)).toEqual({ broadcastUnknown: true })
+    expect(await broadcastRaw(raw)).toEqual({})
+    for (const misleading of [
+      'nonce already known',
+      'already known in a failed cache',
+      'transaction already imported into failed cache',
+      `already known: ${'0x'.padEnd(66, '0')}`
+    ]) {
+      answer = rpcFailure(-32000, misleading)
+      await expect(broadcastRaw(raw)).rejects.toBeInstanceOf(RpcError)
+    }
     answer = PROBE
     expect(await broadcastRaw(raw)).toEqual({ broadcastUnknown: true })
     answer = new Error('rpc timeout after broadcast')

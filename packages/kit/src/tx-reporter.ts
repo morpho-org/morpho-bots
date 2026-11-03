@@ -3,7 +3,6 @@ import type { KernelActivity, Notice } from '@repo/kernel'
 import { parseIntentId } from '@repo/controller'
 
 import type { Logger } from './logger'
-import type { SignedFees } from './transaction-kernel'
 
 /** An act that ended without a broadcast, which each bot logs under its own event. */
 export type NotSent = Readonly<{
@@ -33,14 +32,15 @@ export const INTENT_END_NOTICES: ReadonlySet<Notice> = new Set<Notice>([
 
 /**
  * Logs each kernel transaction as the `tx.*` events: `tx.sent`, `tx.bumped`,
- * `tx.broadcast_unknown`, `tx.submit_failed`, `tx.included`, `tx.reverted` and `tx.dropped`, and
- * each kernel alarm as `kernel.alarm`.
+ * `tx.broadcast_unknown`, `tx.submit_failed`, `tx.included` for each successful receipt whatever
+ * the act's outcome, `tx.reverted`, `tx.cancelled` for an act cancelled before anything of it ran,
+ * and `tx.dropped`, each kernel alarm as `kernel.alarm`, and the kernel leaving `starting` as
+ * `kernel.running`. Each distinct outcome of a hash's receipt is logged once: a reorg that lands
+ * the same outcome again is not, a changed one is.
  */
 export const createTxReporter = (
   deps: Readonly<{
     logger: Logger
-    /** The fees a transaction bids, when the kernel that signed it still remembers them. */
-    feesOf?: ((hash: string) => SignedFees | undefined) | undefined
     reportNotSent: (fields: NotSent) => void
     count?: (counter: TxCounter) => void
   }>
@@ -48,14 +48,25 @@ export const createTxReporter = (
   const { logger } = deps
   /** Each intent's broadcast transactions, hash to nonce, until the intent ends. */
   const sent = new Map<string, Map<string, number>>()
+  /** Each receipt outcome logged, as `hash:success`, until its nonce record is final. */
+  const included = new Set<string>()
+  const outcomeOf = (hash: string, success: boolean) => `${hash}:${success}`
+  const forget = (hashes: readonly string[]) => {
+    for (const hash of hashes)
+      for (const success of [true, false]) included.delete(outcomeOf(hash, success))
+  }
 
   const reportSent = (activity: Extract<KernelActivity, { type: 'sent' }>) => {
+    const fees = {
+      maxFeePerGasWei: activity.maxFeePerGas,
+      priorityFeePerGasWei: activity.maxPriorityFeePerGas
+    }
     const fields = {
       id: keyOf(activity.intentId),
       intentId: activity.intentId,
       nonce: activity.nonce,
       txHash: activity.hash,
-      ...deps.feesOf?.(activity.hash),
+      ...fees,
       ...(activity.kind === 'step' ? {} : { kind: activity.kind })
     }
     if (activity.status === 'rejected' || activity.status === 'withheld') {
@@ -80,7 +91,7 @@ export const createTxReporter = (
       oldHash: replaced,
       newHash: activity.hash,
       attempt: earlier.length,
-      ...deps.feesOf?.(activity.hash)
+      ...fees
     })
   }
 
@@ -90,17 +101,13 @@ export const createTxReporter = (
     const id = keyOf(notice.intentId)
     const hashes = sent.get(notice.intentId)
     sent.delete(notice.intentId)
-    for (const { hash, block } of notice.included ?? []) {
-      const fields = { id, nonce: hashes?.get(hash) ?? null, txHash: hash, blockNumber: block }
-      if (notice.notice === 'settled') logger.info('tx.included', fields)
-      else logger.warn('tx.reverted', { ...fields, notice: notice.notice })
-    }
     if (notice.notice === 'settled' || (notice.included ?? []).length > 0) return
     const [first] = hashes ?? []
     const reason = notice.reason ?? null
     if (!first)
       return deps.reportNotSent({ id, intentId: notice.intentId, notice: notice.notice, reason })
-    logger.warn('tx.dropped', {
+    const cancelled = 'code' in notice && notice.code === 'cancelled'
+    logger.warn(cancelled ? 'tx.cancelled' : 'tx.dropped', {
       id,
       intentId: notice.intentId,
       nonce: first[1],
@@ -110,11 +117,28 @@ export const createTxReporter = (
     })
   }
 
+  const reportIncluded = (inclusion: Extract<KernelActivity, { type: 'included' }>) => {
+    const outcome = outcomeOf(inclusion.hash, inclusion.success)
+    if (included.has(outcome)) return
+    included.add(outcome)
+    const fields = {
+      id: keyOf(inclusion.intentId),
+      nonce: sent.get(inclusion.intentId)?.get(inclusion.hash) ?? null,
+      txHash: inclusion.hash,
+      blockNumber: inclusion.block
+    }
+    if (inclusion.success) logger.info('tx.included', fields)
+    else logger.warn('tx.reverted', { ...fields, notice: null })
+  }
+
   /** One kernel transition's activity, in order. */
   return (transition: readonly KernelActivity[]) => {
     for (const activity of transition) {
       if (activity.type === 'sent') reportSent(activity)
+      if (activity.type === 'included' && parseIntentId(activity.intentId)) reportIncluded(activity)
       if (activity.type === 'alarm') logger.error('kernel.alarm', { reason: activity.reason })
+      if (activity.type === 'running') logger.info('kernel.running')
+      if (activity.type === 'final') forget(activity.hashes)
       if (activity.type === 'notice' && parseIntentId(activity.intentId)) reportEnd(activity)
     }
   }

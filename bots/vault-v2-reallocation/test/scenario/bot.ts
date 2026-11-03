@@ -7,6 +7,7 @@ import { transactionKernelConfig } from '@repo/kit'
 import { vaultV2ReallocationValidator } from '@repo/validators'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { getAddress, pad } from 'viem'
+import { base } from 'viem/chains'
 
 import type { Reallocation, Strategy } from '../../src/strategies'
 import type { CapState, VaultV2Data, VaultV2Result } from '../../src/vault-data'
@@ -178,13 +179,13 @@ export const startBot = async (
     chainId: 8453,
     targets: vaults,
     maxSpendWei: MAX_SPEND_WEI,
-    stuckBlocks: 5,
+    stuckMs: 10_000,
     maxEvidenceAgeBlocks: 64
   }
   const bot = await startReallocator({
     journal: parameters.journal ?? discardingJournal,
     kernel: {
-      config: transactionKernelConfig(limits, ACCOUNT, validator),
+      config: transactionKernelConfig(limits, base, ACCOUNT, validator),
       store,
       chain,
       effects: chain.effects,
@@ -233,15 +234,12 @@ export const startBot = async (
           ? { status: 'revert', reason: 'AbsoluteCapExceeded' }
           : { status: 'ok' }
       },
-      dryRun: parameters.dryRun ?? false,
-      validForMs: 60_000,
-      now: parameters.now ?? Date.now
+      dryRun: parameters.dryRun ?? false
     },
     intervalMs: parameters.intervalMs ?? 20,
     backoff: { baseBlocks: 1, maxBlocks: 4 },
     runId: parameters.runId ?? 'run',
     maxReservations: 4,
-    feesOf: () => ({ maxFeePerGasWei: 7n, priorityFeePerGasWei: 3n }),
     logger: recordingLogger(lines),
     ...(parameters.now && { now: parameters.now })
   })

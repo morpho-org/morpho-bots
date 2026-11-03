@@ -130,7 +130,58 @@ type Format4 = Omit<Format3, 'header' | 'nonces'> & {
   >
 }
 
-type ShippedFormats = { 2: Format2; 3: Format3; 4: Format4 }
+type Nonce4 = Format4['nonces'][number]
+type Candidate4 = Nonce4['candidates'][number]
+
+type Format5 = Omit<Format4, 'header' | 'nonces'> & {
+  header: { format: 5; chainId: number; account: string; seq: number }
+  nonces: Record<
+    number,
+    Omit<Nonce4, 'candidates'> & {
+      candidates: (Omit<Candidate4, 'authority'> & {
+        authority?: {
+          evidence: readonly {
+            id: string
+            version: string
+            basis: { block: number; blockHash: string } | { observedAt: number }
+          }[]
+          decision?: Readonly<Record<string, string | number | boolean>>
+        }
+      })[]
+    }
+  >
+}
+
+type Nonce5 = Format5['nonces'][number]
+type Candidate5 = Nonce5['candidates'][number]
+
+type Entry5 = Format5['entries'][string]
+
+type Format6 = Omit<Format5, 'header' | 'entries' | 'nonces'> & {
+  header: { format: 6; chainId: number; account: string; seq: number }
+  entries: Record<
+    string,
+    Omit<Entry5, 'creators' | 'deadCreators' | 'neutralizing'> & {
+      creators: number[]
+      deadCreators: number[]
+      neutralizing?: { nonce: number }
+    }
+  >
+  nonces: Record<
+    number,
+    Omit<Nonce5, 'candidates' | 'unknownSince'> & {
+      candidates: (Candidate5 & {
+        maxFeePerGas: bigint
+        maxPriorityFeePerGas: bigint
+        gas: bigint
+        sendHead: number
+        unknownSince?: number
+      })[]
+    }
+  >
+}
+
+type ShippedFormats = { 2: Format2; 3: Format3; 4: Format4; 5: Format5; 6: Format6 }
 
 describe('the durable ledger format', () => {
   it('names the record shape it writes, so a shape change cannot ship under an old format', () => {

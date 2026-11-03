@@ -8,6 +8,7 @@ import type {
   KernelEvent,
   KernelRequest,
   PlanInput,
+  SignedBid,
   TxPayload,
   TypedPayload,
   Validator
@@ -208,6 +209,13 @@ const subject = (payload: TxPayload) => {
 }
 
 const nameOf = (payload: TxPayload) => fnOf(payload) ?? (payload.data === '0x' ? 'fill' : 'opaque')
+
+/** The harness signer bids its replacement level per gas unit, so each replacement outbids the last. */
+export const bidOf = ({ feeLevel }: { feeLevel: number }): SignedBid => ({
+  maxFeePerGas: BigInt(feeLevel),
+  maxPriorityFeePerGas: BigInt(feeLevel),
+  gas: 1n
+})
 
 export const txHash = (payload: TxPayload, nonce: number, feeLevel: number) =>
   `0x${nameOf(payload)}:${subject(payload)}:n${nonce}:f${feeLevel}`

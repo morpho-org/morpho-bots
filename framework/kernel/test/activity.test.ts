@@ -31,6 +31,10 @@ const shape = (activity: readonly KernelActivity[]) =>
         return `notice ${a.intentId} ${a.notice}`
       case 'alarm':
         return `alarm ${a.reason}`
+      case 'final':
+        return `final ${a.nonce}`
+      case 'running':
+        return 'running'
       default: {
         const unhandled: never = a
         throw new Error(`unhandled activity ${JSON.stringify(unhandled)}`)
@@ -39,6 +43,26 @@ const shape = (activity: readonly KernelActivity[]) =>
   })
 
 describe('activity', () => {
+  it('names a fresh enrollment running once its nonce at safe matches latest and its first flush lands', () => {
+    const h = new Harness()
+    h.boot('enrolling', null)
+    h.head(1)
+    const nonceAt = (safe: number) =>
+      h.send({ type: 'NonceAt', block: 1, blockHash: h.hash(1), latest: 3, pending: 3, safe })
+    nonceAt(2)
+    expect(shape(h.activity)).toEqual([])
+    const commands = nonceAt(3)
+    expect(shape(h.activity)).toEqual([])
+    expect(commands.filter(c => c.type === 'flush').length).toBe(1)
+    h.flush()
+    expect(shape(h.activity)).toEqual(['running'])
+    h.crash()
+    h.boot()
+    h.head(2)
+    h.send({ type: 'NonceAt', block: 2, blockHash: h.hash(2), latest: 3, pending: 3, safe: 2 })
+    expect(shape(h.activity)).toEqual(['running', 'running'])
+  })
+
   it('a liquidation names its send, then its inclusion, then its settlement', () => {
     const h = new Harness().start()
     h.send({ type: 'Submit', plan: liquidationPlan('liq') })
@@ -46,6 +70,7 @@ describe('activity', () => {
     h.head()
     h.mine(h.candidate('0xexec').hash)
     expect(shape(h.activity)).toEqual([
+      'running',
       'notice liq admitted',
       'sent liq#0 step accepted',
       'included liq#0',
@@ -94,8 +119,8 @@ describe('activity', () => {
     h.mine(published)
     const settled = h.commands('notify').find(c => c.notice === 'settled')
     expect(settled?.included).toEqual([
-      { step: 0, hash: ratified, block: 6 },
-      { step: 1, hash: published, block: h.block }
+      { step: 0, hash: ratified, block: 6, success: true },
+      { step: 1, hash: published, block: h.block, success: true }
     ])
     expect(
       h.activity.flatMap(a => (a.type === 'included' ? [`${a.step}@${a.block}`] : []))
@@ -142,6 +167,8 @@ describe('activity', () => {
       'entry live>revoking',
       expect.stringMatching(/^sent recovery:neutralizer:\S+#0 neutralizer accepted$/),
       expect.stringMatching(/^included recovery:neutralizer:/),
+      'final 0',
+      'final 1',
       'entry revoking>retired'
     ])
   })
@@ -185,8 +212,9 @@ describe('activity', () => {
     h.drive()
     h.head(h.block + 1, h.block + 1)
     h.mine(h.candidate('0xexec').hash, { status: 'reverted' })
-    expect(shape(h.activity).slice(-3)).toEqual([
+    expect(shape(h.activity).slice(-4)).toEqual([
       'included liq#0',
+      'final 0',
       'notice liq compensating',
       'notice liq compensated'
     ])
@@ -198,6 +226,7 @@ describe('activity', () => {
     h.sign()
     h.send({ type: 'EffectFailed', request: h.pending('materialize')[0]!.request })
     expect(shape(h.activity)).toEqual([
+      'running',
       'entry ->intended',
       'notice q admitted',
       'entry intended>signed',
@@ -229,6 +258,7 @@ describe('activity', () => {
     h.flush()
     h.release('unknown')
     expect(shape(h.activity)).toEqual([
+      'running',
       'entry ->intended',
       'notice q admitted',
       'entry intended>exposed',

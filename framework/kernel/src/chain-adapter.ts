@@ -1,9 +1,13 @@
-import type { Hash, Id, KernelConfig, KernelEvent, KernelState, Log } from './types'
+import type { KernelHostOptions } from './host'
+import type { Hash, Id, KernelEvent, KernelState, Log } from './types'
 
 import { pollSet } from './kernel'
 
 /** Nonce lookups bisect history, so each poll runs only this many, after every other read. */
 const LOOKUPS_PER_POLL = 4
+
+/** Header reads one walk keeps in flight: a fast chain's poll gap or first window spans many blocks. */
+const HEADER_READS_AT_ONCE = 32
 
 /** A `Reorg` below every height: the kernel drops all evidence and re-learns it from the chain. */
 const NO_SURVIVING_HEIGHT = -1
@@ -19,9 +23,15 @@ type ChainEvidence = {
 
 /** The kernel's own chain reads. They never wait on the bot's, and every read at a block is pinned by its hash. */
 export type KernelChain = {
-  latest(): Promise<{ head: Block; finalized: { number: number; timestamp: bigint } }>
+  /** `finalized` is `null` when the chain does not serve the tag the kernel's finality follows. */
+  latest(): Promise<{ head: Block; finalized: { number: number; timestamp: bigint } | null }>
   block(number: number): Promise<Block>
   nonceAt(at: Block): Promise<{ latest: number; pending: number }>
+  /**
+   * The chain's `safe` block, whatever finality the kernel follows: a fresh enrollment waits on it.
+   * `null` when the chain serves no `safe` tag; a read that merely failed rejects.
+   */
+  safe(): Promise<Block | null>
   /** The signing account's code at the latest block, `0x` for a plain account. */
   accountCode(): Promise<string>
   receipt(hash: Hash): Promise<ChainEvidence | null>
@@ -37,14 +47,10 @@ type ChainRequest = { type: 'poll' } | { type: 'findNonceTx'; nonce: number }
 /** How the adapter reaches the kernel: it writes chain events and reads the kernel's current state. */
 type ChainPort = { signal: AbortSignal; write(event: KernelEvent): void; state(): KernelState }
 
-type ChainAdapterOptions = {
-  chain: KernelChain
-  config: KernelConfig
-  effectTimeoutMs: number
-  /** How many delivered blocks are kept to find a fork point; a deeper reorg halts the kernel. */
-  reorgDepth: number
-  onError: (source: string, error: unknown) => void
-}
+type ChainAdapterOptions = Pick<
+  KernelHostOptions,
+  'chain' | 'config' | 'effectTimeoutMs' | 'reorgDepth' | 'onError'
+>
 
 /**
  * The kernel's chain source: follows the head, rolls back to a fork before it delivers any block on
@@ -61,7 +67,8 @@ export const createChainAdapter = (options: ChainAdapterOptions) => {
   const dispatch = (event: KernelEvent) => port?.write(event)
   const state = () => port!.state()
 
-  const delivered = new Map<number, Block>()
+  /** Blocks proved to lie on the delivered branch. */
+  const retained = new Map<number, Block>()
   let tip: Block | undefined
   /** Bumped by every evidence reset; a read that began under an older one delivers nothing. */
   let generation = 0
@@ -69,6 +76,10 @@ export const createChainAdapter = (options: ChainAdapterOptions) => {
   const lookups = new Set<number>()
   /** The last finalized block seen; a change to it is a finality violation the kernel cannot see once its header is pruned. */
   let anchor: Block | undefined
+  /** Whether finality is held below the retained window, so its alarm is raised once. */
+  let holding = false
+  /** Whether the chain stopped serving the finality tag while running, so its alarm is raised once. */
+  let unserved = false
 
   /**
    * A chain read that outlives the effect timeout is abandoned, so one hung call never stops the
@@ -99,7 +110,7 @@ export const createChainAdapter = (options: ChainAdapterOptions) => {
   const forgetAllEvidence = (reason: string) => {
     halt(reason)
     dispatch({ type: 'Reorg', fork: NO_SURVIVING_HEIGHT })
-    delivered.clear()
+    retained.clear()
     tip = undefined
     generation++
   }
@@ -116,23 +127,27 @@ export const createChainAdapter = (options: ChainAdapterOptions) => {
   }
 
   /**
-   * The anchor moves only to a block proved to lie on the branch just delivered, and finality reaches
-   * the kernel only once it has: a failed or forked read leaves both where they were, to retry.
+   * The anchor moves only to a retained block, proved to lie on the branch just delivered, and
+   * finality reaches the kernel only once it has. A finalized block below the retained window, new
+   * or stalled, holds both where they were, with one alarm, until finality comes back inside it.
    */
-  const advanceAnchor = async (finalized: { number: number; timestamp: bigint }) => {
-    if (!tip || finalized.number <= (anchor?.number ?? -1) || finalized.number > tip.number) return
-    const candidate = delivered.get(finalized.number) ?? (await linkedAt(finalized.number))
+  const advanceAnchor = (finalized: { number: number; timestamp: bigint }) => {
+    if (!tip) return
+    if (finalized.number <= tip.number - options.reorgDepth) {
+      if (!holding)
+        dispatch({
+          type: 'Alarm',
+          reason: `finality is held: the finalized block lags the head past the ${options.reorgDepth}-block reorg window`
+        })
+      holding = true
+      return
+    }
+    holding = false
+    if (finalized.number <= (anchor?.number ?? -1) || finalized.number > tip.number) return
+    const candidate = retained.get(finalized.number)
     if (!candidate) return
     anchor = candidate
     deliverHead(tip, finalized)
-  }
-
-  /** The block at `number` below the retained window, reached by parent links from its oldest block. */
-  const linkedAt = async (number: number) => {
-    const oldest = delivered.get(Math.min(...delivered.keys()))
-    if (!oldest) return undefined
-    const linked = await ancestry(oldest, first => first.number <= number, number)
-    return linked?.[0]?.number === number ? linked[0] : undefined
   }
 
   /**
@@ -141,16 +156,16 @@ export const createChainAdapter = (options: ChainAdapterOptions) => {
    */
   const vouchedAt = async (number: number) => {
     if (!tip || number > tip.number) return undefined
-    const hash = delivered.get(number)?.hash ?? (await timed(() => chain.block(number))).hash
+    const hash = retained.get(number)?.hash ?? (await timed(() => chain.block(number))).hash
     if (number <= (anchor?.number ?? -1) && !(await anchorHolds())) return undefined
     return hash
   }
 
   /** Delivers `block` as the head, with finality no higher than the anchor proved on its branch. */
   const deliverHead = (block: Block, finalized: { number: number; timestamp: bigint }) => {
-    delivered.set(block.number, block)
-    for (const number of delivered.keys())
-      if (number <= block.number - options.reorgDepth) delivered.delete(number)
+    retained.set(block.number, block)
+    for (const number of retained.keys())
+      if (number <= block.number - options.reorgDepth) retained.delete(number)
     tip = block
     const final = Math.min(finalized.number, block.number, anchor?.number ?? -1)
     const finalBlock =
@@ -167,7 +182,7 @@ export const createChainAdapter = (options: ChainAdapterOptions) => {
 
   /** Rolls the kernel and the adapter back to `fork`; reads that began before it deliver nothing. */
   const rollBack = (fork: number) => {
-    for (const number of delivered.keys()) if (number > fork) delivered.delete(number)
+    for (const number of retained.keys()) if (number > fork) retained.delete(number)
     generation++
     dispatch({ type: 'Reorg', fork })
   }
@@ -176,60 +191,101 @@ export const createChainAdapter = (options: ChainAdapterOptions) => {
   const refreshFinality = (finalized: { number: number; timestamp: bigint }) =>
     advanceAnchor(finalized)
 
-  /** The hash this adapter knows at `number`, from a delivered block or its delivered child. */
+  /** The hash this adapter knows at `number`, from a retained block or its retained child. */
   const knownHash = (number: number) =>
-    delivered.get(number)?.hash ?? delivered.get(number + 1)?.parentHash
+    retained.get(number)?.hash ?? retained.get(number + 1)?.parentHash
 
-  /** Fetches `block`'s ancestors down to `floor`, each checked against the link it continues. */
-  const ancestry = async (block: Block, stop: (oldest: Block) => boolean, floor: number) => {
-    const chainOf = [block]
-    while (!stop(chainOf[0]!)) {
-      const parent = chainOf[0]!.number - 1
-      if (parent < floor) return undefined
-      const fetched = await timed(() => chain.block(parent))
-      if (fetched.hash !== chainOf[0]!.parentHash)
-        throw new Error('the chain source changed forks while the adapter walked back')
-      chainOf.unshift(fetched)
+  /**
+   * Fetches `block`'s ancestors down to `floor`, oldest first, each checked against the link it
+   * continues. Reads run {@link HEADER_READS_AT_ONCE} at a time, none below `expected` until the
+   * walk passes it, so a walk that stops where expected reads nothing past it.
+   */
+  const ancestry = async (
+    block: Block,
+    stop: (oldest: Block) => boolean,
+    floor: number,
+    expected = floor
+  ) => {
+    const walked = [block]
+    const oldest = () => walked.at(-1)!
+    while (!stop(oldest())) {
+      const top = oldest().number - 1
+      if (top < floor) return undefined
+      const bottom = Math.max(top - HEADER_READS_AT_ONCE + 1, top >= expected ? expected : floor)
+      const parents = await Promise.all(
+        Array.from({ length: top - bottom + 1 }, (_, i) => timed(() => chain.block(top - i)))
+      )
+      for (const parent of parents) {
+        if (stop(oldest())) break
+        if (parent.hash !== oldest().parentHash)
+          throw new Error('the chain source changed forks while the adapter walked back')
+        walked.push(parent)
+      }
     }
-    return chainOf
+    return walked.toReversed()
+  }
+
+  /**
+   * A chain that serves no tag for the kernel's finality refuses a kernel that has not started; one
+   * that stops serving it while running raises one alarm, and no head moves until it serves it again.
+   */
+  const unservedFinality = () => {
+    const reason = 'the chain does not serve the finality tag the kernel follows'
+    if (!tip) return dispatch({ type: 'Refuse', reason })
+    if (!unserved) dispatch({ type: 'Alarm', reason })
+    unserved = true
   }
 
   /**
    * Delivers every block from the last one delivered to the chain's head, each linked to the one
-   * before it, rolling back to the fork first. The first poll delivers the window above finality.
+   * before it, rolling back to the fork first. The first poll links the window above finality and
+   * delivers only the blocks a simulation or fact may still be read at.
    * A head behind the tip rolls back to it unless the tip still exists. A fork older than the
    * retained blocks drops all evidence, since nothing proves which of it survived.
    */
   const followHead = async () => {
     const { head, finalized } = await timed(() => chain.latest())
+    if (!finalized) return unservedFinality()
+    unserved = false
     if (!(await anchorHolds())) return
     if (!tip) {
+      const lag = head.number - finalized.number
+      if (lag >= options.reorgDepth)
+        dispatch({
+          type: 'Refuse',
+          reason: `the finalized block lags the head by ${lag} blocks, past the ${options.reorgDepth}-block reorg window`
+        })
       const floor = Math.max(finalized.number, head.number - options.reorgDepth + 1, 0)
       const window = await ancestry(head, oldest => oldest.number <= floor, floor)
-      for (const block of window ?? [head]) deliverHead(block, finalized)
+      const { maxSimLagBlocks, maxEvidenceAgeBlocks } = options.config
+      const usable = head.number - Math.max(maxSimLagBlocks, maxEvidenceAgeBlocks)
+      for (const block of window ?? [head])
+        if (block.number < usable) retained.set(block.number, block)
+        else deliverHead(block, finalized)
       return advanceAnchor(finalized)
     }
     if (head.number < tip.number) {
       const height = tip.number
       const ours = await timed(() => chain.block(height)).catch(() => undefined)
       if (ours?.hash === tip.hash) return refreshFinality(finalized)
-    } else if (delivered.get(head.number)?.hash === head.hash) return refreshFinality(finalized)
+    } else if (retained.get(head.number)?.hash === head.hash) return refreshFinality(finalized)
     if (knownHash(head.number) === head.hash) {
       rollBack(head.number)
       deliverHead(head, finalized)
       return advanceAnchor(finalized)
     }
-    const oldest = Math.min(...delivered.keys())
+    const oldest = Math.min(...retained.keys())
     const fresh = await ancestry(
       head,
       first => knownHash(first.number - 1) === first.parentHash,
-      oldest
+      oldest,
+      tip.number + 1
     )
     if (!fresh) return forgetAllEvidence('reorg deeper than the adapter retains')
     const fork = fresh[0]!.number - 1
     if (fork < tip.number) rollBack(fork)
     for (const block of fresh) deliverHead(block, finalized)
-    await advanceAnchor(finalized)
+    advanceAnchor(finalized)
   }
 
   /**
@@ -279,6 +335,26 @@ export const createChainAdapter = (options: ChainAdapterOptions) => {
     }
   }
 
+  /**
+   * The account's nonces at `at`, and while the kernel holds none, its nonce at the chain's `safe`
+   * block with the higher of the two pending counts; a chain that serves no `safe` tag is refused.
+   */
+  const readNonces = async (at: Block, current: Current) => {
+    const nonce = await attempt('nonceAt', () => chain.nonceAt(at))
+    if (!nonce || !current() || state().nextNonce !== undefined) return nonce
+    const safe = await attempt('safe', () => chain.safe())
+    if (safe === null)
+      dispatch({
+        type: 'Refuse',
+        reason: 'the chain does not serve the safe tag, which a fresh enrollment waits on'
+      })
+    const atSafe =
+      safe && current() ? await attempt('nonceAt', () => chain.nonceAt(safe)) : undefined
+    return atSafe
+      ? { ...nonce, safe: atSafe.latest, pending: Math.max(nonce.pending, atSafe.pending) }
+      : nonce
+  }
+
   /** Reads pinned to one tip; they stop as soon as that tip is no longer the one delivered. */
   const readAtTip = async () => {
     const at = tip
@@ -286,7 +362,7 @@ export const createChainAdapter = (options: ChainAdapterOptions) => {
     const began = generation
     const current = () => tip === at && generation === began && !stopped()
     const pinned = { block: at.number, blockHash: at.hash }
-    const nonce = await attempt('nonceAt', () => chain.nonceAt(at))
+    const nonce = await readNonces(at, current)
     if (!current()) return
     if (nonce) dispatch({ type: 'NonceAt', ...pinned, ...nonce })
     const watched = pollSet(state())

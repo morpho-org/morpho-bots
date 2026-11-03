@@ -1,10 +1,21 @@
-import { getAddress, type Hex } from 'viem'
+import {
+  createClient,
+  custom,
+  encodeFunctionResult,
+  getAddress,
+  type Hex,
+  multicall3Abi
+} from 'viem'
 import { describe, expect, it } from 'vitest'
 
 import type { MarketParams } from '../../src/market'
 import type { MarketParamsResolver } from '../../src/state/market-params'
 
-import { createMarketParamsResolver } from '../../src/state/market-params'
+import { MarketParamsReadError } from '../../src/errors'
+import {
+  createMarketParamsResolver,
+  multicallIdToMarketParams
+} from '../../src/state/market-params'
 
 const ID_A: Hex = `0x${'aa'.repeat(32)}`
 const ID_B: Hex = `0x${'bb'.repeat(32)}`
@@ -71,5 +82,22 @@ describe('createMarketParamsResolver', () => {
     expect(out.has(ID_A)).toBe(true)
     expect(out.has(ID_B)).toBe(false)
     expect(out.size).toBe(1)
+  })
+})
+
+describe('multicallIdToMarketParams', () => {
+  it('throws when a read failed, rather than leave its market out of discovery', async () => {
+    const client = createClient({
+      transport: custom({
+        request: async () =>
+          encodeFunctionResult({
+            abi: multicall3Abi,
+            functionName: 'aggregate3',
+            result: [{ success: false, returnData: '0x' }]
+          })
+      })
+    })
+    const read = multicallIdToMarketParams(client, getAddress(`0x${'22'.repeat(20)}`))
+    await expect(read([ID_A])).rejects.toBeInstanceOf(MarketParamsReadError)
   })
 })

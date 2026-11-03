@@ -1,11 +1,14 @@
+import type { TxBid } from '@repo/kernel'
 import type { Hex, LocalAccount } from 'viem'
 
+import { mulDivDown } from '@repo/utils'
 import {
   createPublicClient,
   custom,
   http,
   HttpRequestError,
   InternalRpcError,
+  parseGwei,
   RpcError,
   serializeTransaction
 } from 'viem'
@@ -14,6 +17,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type { Signer } from '../src/signer'
 
 import { createKernelEffects } from '../src/kernel-effects'
+import { NONCE_FILL_MAX_GAS } from '../src/policy'
 
 const raw: Hex = serializeTransaction(
   {
@@ -38,7 +42,6 @@ const effectsBroadcasting = (failure: unknown) =>
       broadcastRaw: () => Promise.reject(failure)
     } as unknown as Signer,
     maxFeePerGasWei: 1n,
-    priorityFeePerGasWei: 1n,
     maxGasLimit: 1n,
     materialize: () => Promise.reject(new Error('none'))
   })
@@ -73,6 +76,21 @@ describe('kernel broadcasts', () => {
     ])
       expect(await effectsBroadcasting(ambiguous).broadcast(raw, guard)).toBe('unknown')
   })
+
+  it('reads only the whole "already known" answer as accepted', async () => {
+    expect(await effectsBroadcasting(answer(-32000, 'already known')).broadcast(raw, guard)).toBe(
+      'accepted'
+    )
+    for (const misleading of [
+      'nonce already known',
+      'already known in a failed cache',
+      'transaction already imported into failed cache',
+      `already known: ${'0x'.padEnd(66, '0')}`
+    ])
+      expect(await effectsBroadcasting(answer(-32000, misleading)).broadcast(raw, guard)).toBe(
+        'unknown'
+      )
+  })
 })
 
 describe('kernel signing', () => {
@@ -85,7 +103,6 @@ describe('kernel signing', () => {
       } as unknown as Signer,
       typedSigner: { signTypedData } as unknown as LocalAccount,
       maxFeePerGasWei: 1n,
-      priorityFeePerGasWei: 1n,
       maxGasLimit: 1n,
       materialize: () => Promise.reject(new Error('none'))
     })
@@ -155,12 +172,27 @@ describe('kernel transaction signing', () => {
         broadcastRaw
       } as unknown as Signer,
       maxFeePerGasWei,
-      priorityFeePerGasWei: 2n,
       maxGasLimit,
       materialize: () => Promise.reject(new Error('none'))
     })
     return { effects, sign, broadcastRaw }
   }
+
+  const payload = { kind: 'tx' as const, to: TO, data: '0x', value: 0n }
+  /** A step under a fee ceiling of 1,000 wei per gas, whose step cap is 889. */
+  const bid = (overrides: Partial<TxBid> = {}): TxBid => ({
+    nonce: 7,
+    level: 1,
+    kind: 'step',
+    fee: 500n * GAS,
+    recoveryFee: 1_000n * NONCE_FILL_MAX_GAS,
+    ...overrides
+  })
+  const fill = (overrides: Partial<TxBid>) => bid({ kind: 'fill', fee: 1_000n * GAS, ...overrides })
+  const outbid = (maxFeePerGas: bigint, maxPriorityFeePerGas: bigint) => ({
+    outbid: { maxFeePerGas, maxPriorityFeePerGas },
+    level: 2
+  })
 
   it("leaves the kernel's guard to the signer, which asks it only once it is about to sign", async () => {
     const { effects, sign } = signing()
@@ -172,78 +204,31 @@ describe('kernel transaction signing', () => {
         ? Promise.resolve({ nonce: request.nonce, txHash: '0xaa', raw: '0xbb', gas: GAS })
         : Promise.reject(new Error('withdrawn'))
     })
-    const payload = { kind: 'tx' as const, to: TO, data: '0x', value: 0n }
-    await expect(
-      effects.signTx(payload, { nonce: 7, fee: 500n * GAS, level: 1 }, { ...guard, mayAct })
-    ).rejects.toThrow('withdrawn')
+    await expect(effects.signTx(payload, bid(), { ...guard, mayAct })).rejects.toThrow('withdrawn')
     expect(askedBeforeSigner).toBe(0)
     expect(mayAct).toHaveBeenCalledOnce()
   })
 
   it('refuses to sign a payload carrying value', async () => {
     const { effects, sign } = signing()
-    await expect(
-      effects.signTx(
-        { kind: 'tx' as const, to: TO, data: '0x', value: 1n },
-        { nonce: 0, fee: 1_000n * GAS, level: 1 },
-        guard
-      )
-    ).rejects.toThrow('the kernel signer sends no value')
+    await expect(effects.signTx({ ...payload, value: 1n }, bid(), guard)).rejects.toThrow(
+      'the kernel signer sends no value'
+    )
     expect(sign).not.toHaveBeenCalled()
   })
 
-  it('bids a first candidate from the base fee and a replacement of unknown fees at the full ceiling', async () => {
+  it('bids a first candidate from the base fee and reports what it signed', async () => {
     const { effects, sign } = signing()
-    const payload = { kind: 'tx' as const, to: TO, data: '0x', value: 0n }
-    await effects.signTx(payload, { nonce: 7, fee: 500n * GAS, level: 1 }, guard)
-    await effects.signTx(payload, { nonce: 8, fee: 500n * GAS, level: 2 }, guard)
+    expect(await effects.signTx(payload, bid(), guard)).toMatchObject({
+      bid: { maxFeePerGas: 145n, maxPriorityFeePerGas: 125n, gas: 120n }
+    })
     expect(sign.mock.calls.map(([request]) => request)).toStrictEqual([
       {
         to: TO,
         data: '0x',
         value: 0n,
-        maxFeePerGas: 22n,
-        maxPriorityFeePerGas: 2n,
-        nonce: 7,
-        gas: 120n,
-        mayAct: expect.any(Function)
-      },
-      {
-        to: TO,
-        data: '0x',
-        value: 0n,
-        maxFeePerGas: 500n,
-        maxPriorityFeePerGas: 500n,
-        nonce: 8,
-        gas: GAS,
-        mayAct: expect.any(Function)
-      }
-    ])
-  })
-
-  it("outbids the candidate it replaces when that candidate's fees are known", async () => {
-    const { effects, sign } = signing()
-    const payload = { kind: 'tx' as const, to: TO, data: '0x', value: 0n }
-    const first = await effects.signTx(payload, { nonce: 7, fee: 500n * GAS, level: 1 }, guard)
-    await effects.broadcast(first.raw, guard)
-    await effects.signTx(payload, { nonce: 7, fee: 500n * GAS, level: 2 }, guard)
-    expect(sign.mock.calls.map(([request]) => request)).toStrictEqual([
-      {
-        to: TO,
-        data: '0x',
-        value: 0n,
-        maxFeePerGas: 22n,
-        maxPriorityFeePerGas: 2n,
-        nonce: 7,
-        gas: 120n,
-        mayAct: expect.any(Function)
-      },
-      {
-        to: TO,
-        data: '0x',
-        value: 0n,
-        maxFeePerGas: 24n,
-        maxPriorityFeePerGas: 3n,
+        maxFeePerGas: 145n,
+        maxPriorityFeePerGas: 125n,
         nonce: 7,
         gas: 120n,
         mayAct: expect.any(Function)
@@ -251,59 +236,85 @@ describe('kernel transaction signing', () => {
     ])
   })
 
-  it('refuses a replacement that cannot bump known fees within the same ceiling', async () => {
+  it('outbids the highest fees recorded at the nonce', async () => {
     const { effects, sign } = signing()
-    const payload = { kind: 'tx' as const, to: TO, data: '0x', value: 0n }
-    const first = await effects.signTx(payload, { nonce: 7, fee: 22n * GAS, level: 1 }, guard)
-    await effects.broadcast(first.raw, guard)
-    await expect(
-      effects.signTx(payload, { nonce: 7, fee: 22n * GAS, level: 2 }, guard)
-    ).rejects.toThrow('cannot outbid the known candidate')
-    expect(sign).toHaveBeenCalledOnce()
-  })
-
-  it('refuses a replacement below the known bid when its current per-gas ceiling falls', async () => {
-    const { effects, sign } = signing()
-    const payload = { kind: 'tx' as const, to: TO, data: '0x', value: 0n }
-    const first = await effects.signTx(payload, { nonce: 7, fee: 500n * GAS, level: 1 }, guard)
-    await effects.broadcast(first.raw, guard)
-    await expect(
-      effects.signTx(payload, { nonce: 7, fee: 20n * GAS, level: 2 }, guard)
-    ).rejects.toThrow('cannot outbid the known candidate')
-    expect(sign).toHaveBeenCalledOnce()
-  })
-
-  it('caps optional headroom when the base fee rises between a known bid and its replacement', async () => {
-    const { effects, sign } = signing(100n, GAS, 1_000n, [10n, 60n])
-    const payload = { kind: 'tx' as const, to: TO, data: '0x', value: 0n }
-    const first = await effects.signTx(payload, { nonce: 7, fee: 100n * GAS, level: 1 }, guard)
-    await effects.broadcast(first.raw, guard)
-    await effects.signTx(payload, { nonce: 7, fee: 100n * GAS, level: 2 }, guard)
-    expect(sign).toHaveBeenLastCalledWith(
-      expect.objectContaining({ maxFeePerGas: 100n, maxPriorityFeePerGas: 3n })
+    await effects.signTx(payload, bid(outbid(22n, 2n)), guard)
+    expect(sign).toHaveBeenCalledWith(
+      expect.objectContaining({ maxFeePerGas: 24n, maxPriorityFeePerGas: 3n, nonce: 7 })
     )
   })
 
-  it('does not remember a signed bid that dispatch withdraws before broadcast', async () => {
-    const { effects, sign, broadcastRaw } = signing()
-    const payload = { kind: 'tx' as const, to: TO, data: '0x', value: 0n }
-    const first = await effects.signTx(payload, { nonce: 7, fee: 500n * GAS, level: 1 }, guard)
-    await expect(effects.broadcast(first.raw, { ...guard, mayAct: () => false })).rejects.toThrow(
-      'withdrawn'
+  it('stops a step one bump below the fee ceiling, where a fill can still outbid it', async () => {
+    const { effects, sign } = signing()
+    expect(await effects.signTx(payload, bid(outbid(889n, 2n)), guard)).toBe('capped')
+    expect(sign).not.toHaveBeenCalled()
+    await effects.signTx(payload, fill(outbid(889n, 2n)), guard)
+    expect(sign).toHaveBeenCalledWith(expect.objectContaining({ maxFeePerGas: 1_000n }))
+  })
+
+  it('funds a replacement fill at the fee ceiling even when its estimate reaches the fill gas bound', async () => {
+    const { effects, sign } = signing(1_000n, NONCE_FILL_MAX_GAS)
+    const fillPayload = { ...payload, to: FROM }
+    await effects.signTx(
+      fillPayload,
+      fill({ ...outbid(889n, 2n), fee: 1_000n * NONCE_FILL_MAX_GAS }),
+      guard
     )
-    await effects.signTx(payload, { nonce: 7, fee: 500n * GAS, level: 2 }, guard)
-    expect(broadcastRaw).not.toHaveBeenCalled()
-    expect(sign).toHaveBeenLastCalledWith(
-      expect.objectContaining({ maxFeePerGas: 500n, maxPriorityFeePerGas: 500n })
+    expect(sign).toHaveBeenCalledWith(
+      expect.objectContaining({ maxFeePerGas: 1_000n, gas: NONCE_FILL_MAX_GAS })
+    )
+  })
+
+  it('caps a fill at the fee ceiling', async () => {
+    const { effects, sign } = signing()
+    expect(await effects.signTx(payload, fill(outbid(1_000n, 2n)), guard)).toBe('capped')
+    expect(sign).not.toHaveBeenCalled()
+  })
+
+  it('caps a replacement at its own spend bound', async () => {
+    const { effects, sign } = signing()
+    expect(await effects.signTx(payload, bid({ ...outbid(22n, 2n), fee: 22n * GAS }), guard)).toBe(
+      'capped'
+    )
+    expect(sign).not.toHaveBeenCalled()
+  })
+
+  it('clamps a first step bid under a high base fee to the step cap the recovery bound sets', async () => {
+    const { effects, sign } = signing(1_000n, GAS, 1_000n, [60n])
+    await effects.signTx(payload, bid({ recoveryFee: 50n * NONCE_FILL_MAX_GAS }), guard)
+    expect(sign).toHaveBeenCalledWith(
+      expect.objectContaining({ maxFeePerGas: 45n, maxPriorityFeePerGas: 12n })
+    )
+  })
+
+  it('caps optional headroom at the step cap when the base fee rises', async () => {
+    const { effects, sign } = signing(100n, GAS, 1_000n, [60n])
+    await effects.signTx(payload, bid(outbid(22n, 2n)), guard)
+    expect(sign).toHaveBeenCalledWith(
+      expect.objectContaining({ maxFeePerGas: 89n, maxPriorityFeePerGas: 3n })
     )
   })
 
   it('pads estimated gas by 20% and caps that headroom at the candidate spend ceiling', async () => {
     const { effects, sign } = signing()
-    const payload = { kind: 'tx' as const, to: TO, data: '0x', value: 0n }
-    await effects.signTx(payload, { nonce: 7, fee: 2_300n, level: 1 }, guard)
-    expect(sign).toHaveBeenCalledWith(expect.objectContaining({ gas: 104n, maxFeePerGas: 22n }))
-    expect(104n * 22n <= 2_300n).toBe(true)
+    await effects.signTx(payload, bid({ fee: 2_300n }), guard)
+    expect(sign).toHaveBeenCalledWith(expect.objectContaining({ gas: 100n, maxFeePerGas: 23n }))
+  })
+
+  it('re-bids a stuck first step under a 0.5 gwei ceiling', async () => {
+    const ceiling = parseGwei('0.5')
+    const { effects } = signing(ceiling)
+    const step = bid({ fee: ceiling * GAS, recoveryFee: ceiling * NONCE_FILL_MAX_GAS })
+    const first = await effects.signTx(payload, step, guard)
+    if (typeof first === 'string') throw new Error(`first bid ${first}`)
+    const rebid = await effects.signTx(
+      payload,
+      { ...step, ...outbid(first.bid.maxFeePerGas, first.bid.maxPriorityFeePerGas) },
+      guard
+    )
+    expect(rebid).toMatchObject({
+      bid: { maxPriorityFeePerGas: mulDivDown(first.bid.maxPriorityFeePerGas, 1125n, 1000n) }
+    })
   })
 
   it.each([
@@ -317,21 +328,13 @@ describe('kernel transaction signing', () => {
     }
   ])('caps gas padding at $name limit', async ({ to, estimatedGas, maxGasLimit, expected }) => {
     const { effects, sign } = signing(1_000n, estimatedGas, maxGasLimit)
-    await effects.signTx(
-      { kind: 'tx', to, data: '0x', value: 0n },
-      { nonce: 7, fee: 500n * estimatedGas, level: 1 },
-      guard
-    )
+    await effects.signTx({ ...payload, to }, bid({ fee: 500n * estimatedGas }), guard)
     expect(sign).toHaveBeenCalledWith(expect.objectContaining({ gas: expected }))
   })
 
   it('keeps an estimate exactly at the signer policy gas limit', async () => {
     const { effects, sign } = signing(1_000n, GAS, GAS)
-    await effects.signTx(
-      { kind: 'tx', to: TO, data: '0x', value: 0n },
-      { nonce: 7, fee: 500n * GAS, level: 1 },
-      guard
-    )
+    await effects.signTx(payload, bid(), guard)
     expect(sign).toHaveBeenCalledWith(expect.objectContaining({ gas: GAS }))
   })
 
@@ -344,13 +347,9 @@ describe('kernel transaction signing', () => {
     { name: 'the configured per-gas ceiling is zero', maxFeePerGasWei: 0n, fee: 1_000n * GAS }
   ])('refuses to sign when $name', async ({ maxFeePerGasWei, fee }) => {
     const { effects, sign } = signing(maxFeePerGasWei)
-    await expect(
-      effects.signTx(
-        { kind: 'tx', to: TO, data: '0x', value: 0n },
-        { nonce: 7, fee, level: 1 },
-        guard
-      )
-    ).rejects.toThrow('cannot fund a positive per-gas bid')
+    await expect(effects.signTx(payload, bid({ fee }), guard)).rejects.toThrow(
+      'cannot fund a positive per-gas bid'
+    )
     expect(sign).not.toHaveBeenCalled()
   })
 })

@@ -25,27 +25,34 @@ const copyPackage = () => {
 
 const dir = copyPackage()
 try {
-  const original = readFileSync(path.join(dir, REDUCER), 'utf8')
+  const originals = new Map<string, string>()
+  const originalOf = (file: string) => {
+    if (!originals.has(file)) originals.set(file, readFileSync(path.join(dir, file), 'utf8'))
+    return originals.get(file)!
+  }
   if (!runTraces(dir)) throw new Error('the traces fail without any mutation')
   const survivors: string[] = []
   const apply = (text: string, edit: Readonly<{ find: string; replace: string }>) =>
     text.split(edit.find).length === 2 ? text.replace(edit.find, edit.replace) : undefined
-  const caughtWith = (text: string) => {
-    writeFileSync(path.join(dir, REDUCER), text)
-    return !runTraces(dir)
+  const caughtWith = (file: string, text: string) => {
+    writeFileSync(path.join(dir, file), text)
+    const caught = !runTraces(dir)
+    writeFileSync(path.join(dir, file), originalOf(file))
+    return caught
   }
   const only = process.env.MUTATION
   const chosen = MUTATIONS.filter(({ id }) => only === undefined || id === only)
   for (const mutation of chosen) {
-    const mutated = apply(original, mutation)
+    const file = mutation.file ?? REDUCER
+    const mutated = apply(originalOf(file), mutation)
     const cover = mutation.coveredBy
     const covered = cover && mutated !== undefined ? apply(mutated, cover) : undefined
     if (mutated === undefined || (cover && covered === undefined)) {
       console.log(`UNMATCHED ${mutation.id}`)
       survivors.push(mutation.id)
-    } else if (caughtWith(mutated)) {
+    } else if (caughtWith(file, mutated)) {
       console.log(`caught   ${mutation.id}`)
-    } else if (covered !== undefined && caughtWith(covered)) {
+    } else if (covered !== undefined && caughtWith(file, covered)) {
       console.log(`covered  ${mutation.id}`)
     } else {
       console.log(`SURVIVED ${mutation.id}`)

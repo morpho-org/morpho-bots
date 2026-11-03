@@ -1,18 +1,21 @@
 import { describe, expect, it } from 'vitest'
 
-import type { TxPayload } from '../src'
+import type { SignedTx, TxBid, TxPayload } from '../src'
 
 import { FakeChain, MemoryStore } from '../src/testing'
 
 const payload: TxPayload = { kind: 'tx', to: '0x1', data: '0x', value: 0n }
 const guard = { signal: AbortSignal.timeout(1_000), mayAct: () => true }
+const bid = (nonce: number): TxBid => ({ nonce, level: 1, kind: 'step', fee: 1n, recoveryFee: 1n })
+const signTx = async (chain: FakeChain, nonce: number) =>
+  (await chain.effects.signTx(payload, bid(nonce), guard)) as SignedTx
 
 describe('the scenario fake chain', () => {
   it('mines broadcast transactions in nonce order and reports what onMined decides', async () => {
     const chain = new FakeChain()
     chain.onMined = (_payload, block) => (block === 2 ? 'reverted' : 'success')
-    const first = await chain.effects.signTx(payload, { nonce: 0, level: 0, fee: 0n }, guard)
-    const second = await chain.effects.signTx(payload, { nonce: 1, level: 0, fee: 0n }, guard)
+    const first = await signTx(chain, 0)
+    const second = await signTx(chain, 1)
     expect(await chain.effects.broadcast(second.raw, guard)).toBe('accepted')
     expect(await chain.effects.broadcast(first.raw, guard)).toBe('accepted')
     expect(await chain.nonceAt()).toEqual({ latest: 0, pending: 2 })
@@ -31,20 +34,14 @@ describe('the scenario fake chain', () => {
     const chain = new FakeChain()
     const held = chain.holdSigning()
     let signed = false
-    const signing = chain.effects
-      .signTx(payload, { nonce: 0, level: 0, fee: 0n }, guard)
-      .then(() => (signed = true))
+    const signing = signTx(chain, 0).then(() => (signed = true))
     await Promise.resolve()
     expect(signed).toBe(false)
     held.open()
     await signing
     expect(chain.signed).toHaveLength(1)
     await expect(
-      chain.effects.signTx(
-        payload,
-        { nonce: 1, level: 0, fee: 0n },
-        { ...guard, mayAct: () => false }
-      )
+      chain.effects.signTx(payload, bid(1), { ...guard, mayAct: () => false })
     ).rejects.toThrow('withdrawn before signing')
   })
 })

@@ -24,6 +24,7 @@ RUN corepack install
 
 # All members' package.json are needed for pnpm to resolve the `workspace:*` links.
 COPY --chown=node:node packages ./packages
+COPY --chown=node:node framework ./framework
 COPY --chown=node:node bots ./bots
 RUN pnpm install --frozen-lockfile
 

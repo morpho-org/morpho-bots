@@ -1,4 +1,4 @@
-import type { Authority, DecisionRecord, DurableLedger, Fact } from './types'
+import type { Authority, Candidate, DecisionRecord, DurableLedger, Fact, SignedBid } from './types'
 
 import { isObject, LEDGER_FORMAT, storedText } from './durable'
 import { HELD_STATES } from './types'
@@ -14,9 +14,17 @@ export const sameAddress = (a: string, b: string) => a.toLowerCase() === b.toLow
 const isNat = (v: unknown) => Number.isSafeInteger(v) && (v as number) >= 0
 const isAmount = (v: unknown) => typeof v === 'bigint' && v >= 0n
 const isStrings = (v: unknown) => Array.isArray(v) && v.every(x => typeof x === 'string')
+const isNats = (v: unknown) => Array.isArray(v) && v.every(isNat)
 const isResources = (v: unknown) => isObject(v) && Object.values(v).every(isAmount)
 const oneOf = (v: unknown, options: readonly string[]) =>
   typeof v === 'string' && options.includes(v)
+
+/** A bid signed within a native spend ceiling of `fee`, with a positive gas limit. */
+const isSignedBid = (v: unknown, fee: bigint): v is SignedBid => {
+  if (!isObject(v) || ![v.maxFeePerGas, v.maxPriorityFeePerGas, v.gas].every(isAmount)) return false
+  const { maxFeePerGas, maxPriorityFeePerGas, gas } = v as SignedBid
+  return gas > 0n && maxPriorityFeePerGas <= maxFeePerGas && gas * maxFeePerGas <= fee
+}
 
 const txPayload: Check = (v, at) => {
   if (!isObject(v) || v.kind !== 'tx' || typeof v.to !== 'string' || !isAmount(v.value))
@@ -73,7 +81,7 @@ const entry = (v: unknown, id: string): string | undefined => {
       : `${at} has no creating payload`) ??
     firstBroken([
       [typeof v.intentId === 'string' && typeof v.validator === 'string', `${at} has no origin`],
-      [isStrings(v.creators) && isStrings(v.deadCreators), `${at} has malformed creators`],
+      [isNats(v.creators) && isNats(v.deadCreators), `${at} has malformed creators`],
       [
         typeof v.compensate === 'boolean' && Number.isFinite(v.affirmedBy),
         `${at} has malformed obligations`
@@ -83,7 +91,7 @@ const entry = (v: unknown, id: string): string | undefined => {
         `${at} has a malformed prior state`
       ],
       [
-        n === undefined || (isObject(n) && isNat(n.nonce) && typeof n.hash === 'string'),
+        n === undefined || (isObject(n) && isNat(n.nonce)),
         `${at} has a malformed neutralizer reference`
       ],
       [
@@ -164,6 +172,12 @@ const isPlainList = (v: unknown): v is unknown[] =>
   Object.getPrototypeOf(v) === Array.prototype &&
   Reflect.ownKeys(v).every((key, i) => key === (i < v.length ? String(i) : 'length'))
 
+const isFactBasis = (basis: unknown) =>
+  isObject(basis) &&
+  ('block' in basis
+    ? isNat(basis.block) && typeof basis.blockHash === 'string' && !('observedAt' in basis)
+    : isNat(basis.observedAt) && !('blockHash' in basis))
+
 /**
  * Why a plan's evidence and decision record cannot be stored and read back, or undefined. A fact
  * with no basis passes: a recorded authority authorizes nothing again, so the ledger keeps loading.
@@ -175,11 +189,8 @@ export const authorityDefect = (evidence: unknown, decision: unknown): string | 
       if (!isObject(fact) || typeof fact.id !== 'string' || typeof fact.version !== 'string')
         return 'evidence names no fact'
       const { basis } = fact
-      if (
-        basis !== undefined &&
-        !(isObject(basis) && isNat(basis.block) && typeof basis.blockHash === 'string')
-      )
-        return 'evidence basis is not a block'
+      if (basis !== undefined && !isFactBasis(basis))
+        return 'evidence basis is neither a block nor an observation time'
     }
   }
   if (decision !== undefined) {
@@ -233,19 +244,23 @@ const candidate = (v: unknown, at: string): string | undefined => {
       [
         isNat(v.feeLevel) &&
           isAmount(v.fee) &&
-          oneOf(v.sent, ['unsent', 'accepted', 'unknown', 'rejected', 'withheld']),
+          oneOf(v.sent, ['unsent', 'accepted', 'unknown', 'rejected', 'withheld']) &&
+          (v.unknownSince === undefined || isNat(v.unknownSince)),
         `${at} has a malformed send status`
+      ],
+      [
+        isNat(v.sendHead) && isAmount(v.fee) && isSignedBid(v, v.fee as bigint),
+        `${at} has a malformed signed bid`
       ]
     ])
   )
 }
 
-/** Checks every nonce record and returns where each candidate hash is recorded. */
-const nonceRecords = (
+const nonceRecordsDefect = (
   nonces: Record<string, unknown>,
   nextNonce: unknown
-): Map<string, number> | string => {
-  const hashes = new Map<string, number>()
+): string | undefined => {
+  const hashes = new Set<string>()
   for (const [key, record] of Object.entries(nonces)) {
     if (!isObject(record) || String(record.nonce) !== key || !isNat(record.nonce)) {
       return `nonce record ${key} is stored under another nonce`
@@ -258,10 +273,6 @@ const nonceRecords = (
       ],
       [Array.isArray(record.candidates), `nonce record ${key} has no candidates list`],
       [
-        record.unknownSince === undefined || isNat(record.unknownSince),
-        `nonce record ${key} has a malformed latch age`
-      ],
-      [
         record.foreign === undefined || record.foreign === true,
         `nonce record ${key} has a malformed foreign flag`
       ]
@@ -272,10 +283,19 @@ const nonceRecords = (
       if (malformed) return malformed
       const hash = (c as { hash: string }).hash
       if (hashes.has(hash)) return `candidate ${hash} is recorded twice`
-      hashes.set(hash, nonce)
+      hashes.add(hash)
     }
   }
-  return hashes
+  return undefined
+}
+
+/** A revoking entry names the nonce whose candidates retire it; one withheld there never left. */
+const neutralizingDefect = (e: unknown, id: string, nonces: Record<string, unknown>) => {
+  const n = (e as { neutralizing?: { nonce: number } }).neutralizing
+  const record = n && (nonces[n.nonce] as { candidates: Candidate[] } | undefined)
+  return n && !record?.candidates.some(c => c.sent !== 'withheld' && c.retires.includes(id))
+    ? `entry ${id} names a neutralizing nonce no unwithheld candidate retires it at`
+    : undefined
 }
 
 const submission = (sid: string, sub: unknown) =>
@@ -304,7 +324,7 @@ export const validateLedger = (
         sameAddress(header.account, expected.account),
       'bound to another chain or account'
     ],
-    [isNat(header.seq), 'bad sequence number'],
+    [isNat(header.seq) && header.seq !== 0, 'bad sequence number'],
     [v.nextNonce === null || isNat(v.nextNonce), 'bad next nonce'],
     [isNat(v.evidenceFloor), 'bad evidence floor'],
     [[entries, nonces, submissions, watermarks, releases].every(isObject), 'missing sections']
@@ -315,14 +335,11 @@ export const validateLedger = (
   )
   const inherited = keys.find(key => key in Object.prototype)
   if (inherited !== undefined) return fail(`record ${inherited} names an inherited property`)
-  const hashes = nonceRecords(nonces as Record<string, unknown>, v.nextNonce)
-  if (typeof hashes === 'string') return fail(hashes)
+  const records = nonceRecordsDefect(nonces as Record<string, unknown>, v.nextNonce)
+  if (records) return fail(records)
   for (const [id, e] of Object.entries(entries as Record<string, unknown>)) {
-    const bad = entry(e, id)
+    const bad = entry(e, id) ?? neutralizingDefect(e, id, nonces as Record<string, unknown>)
     if (bad) return fail(bad)
-    const n = (e as { neutralizing?: { nonce: number; hash: string } }).neutralizing
-    if (n && hashes.get(n.hash) !== n.nonce)
-      return fail(`entry ${id} names a neutralizing candidate that is not recorded`)
   }
   for (const [sid, sub] of Object.entries(submissions as Record<string, unknown>)) {
     const bad = submission(sid, sub)

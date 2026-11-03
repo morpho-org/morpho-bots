@@ -2,23 +2,20 @@ import type { KernelEffects } from '@repo/kernel'
 import type { Client, Hex, LocalAccount, TypedDataDefinition } from 'viem'
 
 import { bigintMin, mulDivUp } from '@repo/utils'
-import { BaseError, getAddress, isAddressEqual, parseTransaction, RpcError } from 'viem'
+import { BaseError, getAddress, isAddressEqual, RpcError } from 'viem'
 import { estimateGas } from 'viem/actions'
 
 import type { Signer } from './signer'
 
 import { FeeLimitError, SignWithdrawnError } from './errors'
-import { bumpFees, initialFees } from './fee-policy'
+import { bumpFees, feeCeiling, initialFees, stepCap } from './fee-policy'
 import { callAt } from './kernel-chain'
 import { NONCE_FILL_MAX_GAS } from './policy'
 import { isCallRevert } from './revert.utils'
+import { isAlreadyKnown } from './signer'
 
-/** How many nonces back a candidate's fees are kept to price its replacement. */
-const REMEMBERED_NONCES = 64
 const GAS_HEADROOM_NUMERATOR = 120n
 const GAS_HEADROOM_DENOMINATOR = 100n
-
-type Fees = { maxFeePerGas: bigint; maxPriorityFeePerGas: bigint }
 
 /**
  * A node's own refusal to pool these bytes, which no earlier send of them can have changed. Error
@@ -33,18 +30,16 @@ const refusedAdmission = (error: unknown) =>
   error.walk(e => e instanceof RpcError && ADMISSION_REFUSAL.test(e.details)) !== null
 
 /**
- * The kernel's effects over a kit {@link Signer}: simulations pinned to the kernel's block,
- * signing through the signer's policy, and broadcasts to its one endpoint. Building a dependent
- * step's payload is the bot's.
+ * The kernel's effects over a kit {@link Signer}. A bid stays within its spend bound and under
+ * {@link feeCeiling}, a step's under {@link stepCap}; a replacement bumps `outbid` or is `capped`.
  */
 export const createKernelEffects = (options: {
   client: Client
   signer: Signer
   /** Signs the kernel's typed data; the account the signer sends from when omitted. */
   typedSigner?: LocalAccount
-  /** The bot's policy ceiling on one gas unit, and the tip a first candidate bids. */
+  /** The bot's policy ceiling on one gas unit. */
   maxFeePerGasWei: bigint
-  priorityFeePerGasWei: bigint
   /** The signer's gas-limit ceiling for an ordinary payload. */
   maxGasLimit: bigint
   materialize: KernelEffects['materialize']
@@ -52,31 +47,6 @@ export const createKernelEffects = (options: {
   const { client, signer } = options
   const from = signer.account.address
   const typedSigner = options.typedSigner ?? (signer.account as LocalAccount)
-  const priced = new Map<number, Fees>()
-
-  const remember = (nonce: number, fees: Fees) => {
-    priced.set(nonce, fees)
-    for (const known of priced.keys()) if (known < nonce - REMEMBERED_NONCES) priced.delete(known)
-  }
-
-  /**
-   * A first candidate bids {@link initialFees}, and a replacement outbids the candidate it
-   * replaces. When that candidate's fees are unknown after a restart, the replacement bids the
-   * ceiling in full. A known candidate that cannot be outbid within the ceiling is not replaced.
-   */
-  const feesFor = async (nonce: number, level: number, ceiling: bigint): Promise<Fees> => {
-    const baseFee = await signer.getBaseFee()
-    if (level === 1)
-      return initialFees(baseFee, ceiling, bigintMin(ceiling, options.priorityFeePerGasWei))
-    const previous = priced.get(nonce)
-    if (!previous) return { maxFeePerGas: ceiling, maxPriorityFeePerGas: ceiling }
-    const bumped = bumpFees({ ...previous, baseFee, maxFeePerGasWei: ceiling })
-    if (bumped.kind === 'drop')
-      throw new FeeLimitError(
-        'replacement cannot outbid the known candidate within its fee ceiling'
-      )
-    return bumped.fees
-  }
 
   return {
     materialize: options.materialize,
@@ -95,7 +65,7 @@ export const createKernelEffects = (options: {
         throw error
       }
     },
-    signTx: async (payload, { nonce, fee, level }, guard) => {
+    signTx: async (payload, { nonce, kind, fee, recoveryFee, outbid }, guard) => {
       if (payload.value !== 0n) throw new Error('the kernel signer sends no value')
       const request = {
         to: getAddress(payload.to),
@@ -104,10 +74,19 @@ export const createKernelEffects = (options: {
       }
       const estimatedGas = await estimateGas(client, { account: from, ...request })
       guard.signal.throwIfAborted()
-      const ceiling = bigintMin(options.maxFeePerGasWei, fee / estimatedGas)
-      if (ceiling === 0n)
-        throw new FeeLimitError('the fee ceiling cannot fund a positive per-gas bid')
-      const fees = await feesFor(nonce, level, ceiling)
+      const ceiling = feeCeiling(options.maxFeePerGasWei, recoveryFee)
+      const perGas = bigintMin(kind === 'step' ? stepCap(ceiling) : ceiling, fee / estimatedGas)
+      const baseFee = await signer.getBaseFee()
+      let fees: { maxFeePerGas: bigint; maxPriorityFeePerGas: bigint }
+      if (outbid) {
+        const bumped = bumpFees({ ...outbid, baseFee, maxFeePerGasWei: perGas })
+        if (bumped.kind === 'drop') return 'capped'
+        fees = bumped.fees
+      } else {
+        if (perGas <= 0n)
+          throw new FeeLimitError('the fee ceiling cannot fund a positive per-gas bid')
+        fees = initialFees(baseFee, perGas)
+      }
       const paddedGas = mulDivUp(estimatedGas, GAS_HEADROOM_NUMERATOR, GAS_HEADROOM_DENOMINATOR)
       const policyGasLimit = isAddressEqual(request.to, from)
         ? NONCE_FILL_MAX_GAS
@@ -119,7 +98,7 @@ export const createKernelEffects = (options: {
         throw new FeeLimitError('the fee ceiling cannot fund the estimated gas')
       const mayAct = () => guard.mayAct()
       const { txHash, raw } = await signer.sign({ ...request, ...fees, nonce, gas, mayAct })
-      return { hash: txHash, raw }
+      return { hash: txHash, raw, bid: { ...fees, gas } }
     },
     signTyped: async (payload, guard) => {
       if (!guard.mayAct()) throw new SignWithdrawnError()
@@ -128,22 +107,10 @@ export const createKernelEffects = (options: {
     broadcast: async (raw, guard) => {
       if (!guard.mayAct()) throw new Error('the dispatch was withdrawn before sending')
       try {
-        const transaction = parseTransaction(raw as Hex)
-        if (
-          transaction.type !== 'eip1559' ||
-          transaction.nonce === undefined ||
-          transaction.maxFeePerGas === undefined ||
-          transaction.maxPriorityFeePerGas === undefined
-        )
-          throw new Error('the kernel signer produced a transaction without EIP-1559 fees')
-        const broadcast = signer.broadcastRaw(raw as Hex)
-        remember(transaction.nonce, {
-          maxFeePerGas: transaction.maxFeePerGas,
-          maxPriorityFeePerGas: transaction.maxPriorityFeePerGas
-        })
-        const { broadcastUnknown } = await broadcast
+        const { broadcastUnknown } = await signer.broadcastRaw(raw as Hex)
         return broadcastUnknown ? 'unknown' : 'accepted'
       } catch (error) {
+        if (isAlreadyKnown(error)) return 'accepted'
         return refusedAdmission(error) ? 'rejected' : 'unknown'
       }
     },

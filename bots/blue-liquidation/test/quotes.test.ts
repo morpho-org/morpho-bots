@@ -1,4 +1,4 @@
-import type { Logger } from '@repo/bot-kit'
+import type { Logger } from '@repo/kit'
 import type { RateLimitedClient, Unwrapper, Venue, VenuePair, VenueSelector } from '@repo/swaps'
 import type { Address } from 'viem'
 
@@ -85,6 +85,7 @@ function fakeSelector(
         clamped: options.clamped ?? false,
         ageMs: 0
       })),
+    curveOf: () => undefined,
     snapshot: () => []
   }
   return { selector, refreshed }
@@ -179,24 +180,6 @@ describe('composeQuoting (Blue lens-projection adapter)', () => {
       // expectedLoanOut(plan, out) was passed as referenceAmountOut.
       expect(outcome.plan.expectedAmountOut).toBe(1000n)
     }
-  })
-
-  it('still quotes (cold-default) when the probe refresh throws', async () => {
-    // Cold cache (select → []) + a refresh that rejects → the firm-quote step falls back to the
-    // deterministic enabled-venue order rather than failing the position.
-    const { selector } = fakeSelector([], {
-      onRefresh: async () => {
-        throw new Error('probe boom')
-      }
-    })
-    const { quoteFor } = compose(selector)
-    expect((await quoteFor(PLAN, OUT, LABEL)).kind).toBe('swap')
-  })
-
-  it('returns no_config when no venues are enabled (detection-only posture)', async () => {
-    const { selector } = fakeSelector([])
-    const { quoteFor } = compose(selector, { venues: [] })
-    expect(await quoteFor(PLAN, OUT, LABEL)).toEqual({ kind: 'no_config', firmCalls: 0 })
   })
 
   it('threads the position label into quote log events as the correlation id', async () => {

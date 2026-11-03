@@ -1,15 +1,17 @@
-import type { LogLevel } from '@repo/bot-kit'
+import type { Finality, LogLevel } from '@repo/kit'
 import type { Venue } from '@repo/swaps'
 import type { Address, Chain, Hex } from 'viem'
 
 import { Executor } from '@repo/contracts'
+import { parseFinality } from '@repo/kit'
 import { tryCatch } from '@repo/utils'
-import { defineChain, getAddress, isAddress, isHex, parseGwei } from 'viem'
+import { defineChain, getAddress, isAddress, isHex } from 'viem'
 import { base } from 'viem/chains'
 
-// Swap venues are no longer a per-collateral config file: candidates come from the Morpho GraphQL
-// API (listed markets only), and the enabled venues are inferred from which venue API keys are
-// present in env. The 0x/1inch/LiFi quoting adapters + the venue selector live in `@repo/swaps`.
+import { parseMaxFeeGwei } from './fee'
+
+// Enabled venues are inferred from which venue API keys are present in env. The 0x/1inch/LiFi quoting
+// adapters + the venue selector live in `@repo/swaps`.
 const ZEROX_API_KEY_ENV = 'ZEROX_API_KEY'
 const ONEINCH_API_KEY_ENV = 'ONEINCH_API_KEY'
 const LIFI_API_KEY_ENV = 'LIFI_API_KEY'
@@ -23,10 +25,19 @@ const robinhood = defineChain({
   name: 'Robinhood',
   nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 },
   rpcUrls: { default: { http: ['https://rpc.mainnet.chain.robinhood.com'] } },
+  blockTime: 100,
   contracts: { multicall3: { address: '0xcA11bde05977b3631167028862bE2a173976CA11' } }
 })
 
-export type ChainConfig = { chain: Chain; morpho: Address }
+export type ChainConfig = {
+  chain: Chain
+  morpho: Address
+  /** How long a world read authorizes acts: above this chain's slowest healthy read cadence. */
+  worldValidMs: number
+}
+
+/** Twice the longest gap between landed world reads on Base or Robinhood in a day of production. */
+const WORLD_VALID_MS = 30_000
 
 // Chains this bot supports, with the Morpho Blue singleton address per chain. The chain map is the
 // one place a new chain is wired (add its `chain` + `morpho` here). Unlike Midnight, the Blue
@@ -39,23 +50,24 @@ export type ChainConfig = { chain: Chain; morpho: Address }
 const CHAIN_MAP: Record<number, ChainConfig> = {
   [base.id]: {
     chain: base,
-    morpho: getAddress('0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb')
+    morpho: getAddress('0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb'),
+    worldValidMs: WORLD_VALID_MS
   },
   [robinhood.id]: {
     chain: robinhood,
-    morpho: getAddress('0x9D53d5E3bd5E8d4Cbfa6DB1ca238AEA02E651010')
+    morpho: getAddress('0x9D53d5E3bd5E8d4Cbfa6DB1ca238AEA02E651010'),
+    worldValidMs: WORLD_VALID_MS
   }
 }
 
 const LOG_LEVELS = ['debug', 'info', 'warn', 'error'] as const
-const DEFAULT_MAX_FEE_GWEI = '300'
 const PRIVATE_KEY_HEX_LENGTH = 66 // '0x' + 32 bytes
 
-// Borrower-candidate discovery defaults (the Morpho GraphQL API's `marketPositions` query). The URL
-// is a public, unauthenticated endpoint, so it is safe to default in code (override via env
-// per-env). The health-factor cutoff is intentionally tight — the lens re-checks everything
-// onchain, so it only tunes coverage/volume.
-const DEFAULT_MORPHO_API_URL = 'https://api.morpho.org/graphql'
+// The Morpho partner API; it requires a key (`MORPHO_API_KEY`), which Morpho issues on request. The
+// health-factor cutoff is intentionally tight — the lens re-checks everything onchain, so it only
+// tunes coverage/volume.
+const DEFAULT_CANDIDATES_API_URL =
+  'https://private.api.morpho.org/liquidation-bot/blue/liquidation-candidates'
 const DEFAULT_HEALTH_FACTOR_LTE = 1.02
 
 // Quoting tunables, all optional with safe defaults so existing deployments are unaffected.
@@ -70,10 +82,6 @@ const DEFAULT_MAX_ROUTE_IMPACT_BPS = 500 // reject an aggregator route >5% below
 const DEFAULT_PENDLE_SLIPPAGE_BPS = 50
 const DEFAULT_BACKOFF_BASE_BLOCKS = 2n
 const DEFAULT_BACKOFF_MAX_BLOCKS = 64n
-// Opt-in per-position cooldown (ms) after a liquidation attempt fails to produce a submittable tx
-// (no route / quote failure / sim revert). 0 disables it — the default, so existing deployments
-// re-attempt every tick as before.
-const DEFAULT_POSITION_LIQUIDATION_COOLDOWN_MS = 0
 
 // Venue-probing defaults. The probe uses an ISOLATED rps budget (see index.ts) so its bursts never
 // queue ahead of a time-sensitive firm quote. `PROBE_STALE_MS` caps probe cadence per pair; a pair is
@@ -110,15 +118,17 @@ export type QuotingConfig = {
 }
 
 /**
- * Borrower-candidate discovery: the Morpho GraphQL endpoint and the health-factor cutoff for its
- * `marketPositions` query. Discovery is over-inclusive by design — the onchain lens is the source
+ * Borrower-candidate discovery: the Morpho API's blue liquidation-candidates endpoint and its
+ * health-factor cutoff. Discovery is over-inclusive by design — the onchain lens is the source
  * of truth — so these only tune coverage/volume, never correctness.
  */
 export type DiscoveryConfig = {
-  /** Fully-qualified GraphQL endpoint. Validated as a URL at load (fail-loud). */
+  /** Fully-qualified liquidation-candidates endpoint. Validated as a URL at load (fail-loud). */
   apiUrl: string
+  /** Sent as `x-api-key`; the endpoint rejects requests without one. */
+  apiKey: string
   /**
-   * Health-factor cutoff sent as `healthFactor_lte`: positions with HF at or below this are
+   * Health-factor cutoff sent as `health_factor_lte`: positions with HF at or below this are
    * returned. Min-bounded at 1.0 (throws below) so a misconfig can't drop soon-to-be-liquidatable
    * positions from the candidate set.
    */
@@ -140,6 +150,11 @@ export type VenueConfig = {
   excludeCollaterals: Address[]
 }
 
+export type KernelStoreConfig = {
+  stateDirectory: string
+  enrollment: 'enrolling' | 'enrolled'
+}
+
 /**
  * Venue-probing knobs. The probe fetches indicative quotes across enabled venues at each log-scaled
  * `ladderSizes` rung, caches the per-venue rate curve for the pair for `staleMs`, and runs on its own
@@ -154,26 +169,24 @@ export type ProbeConfig = {
 
 export type Config = {
   chainId: number
+  finality: Finality
   chain: Chain
   morpho: Address
+  worldValidMs: number
   rpcUrl: string
   rpcUrlFallback: string | undefined
   liquidatorPrivateKey: Hex
   executooorAddress: Address
-  /** Borrower-candidate discovery (the Morpho GraphQL `marketPositions` query). */
+  /** Borrower-candidate discovery (the Morpho API's blue liquidation-candidates endpoint). */
   discovery: DiscoveryConfig
   /** Enabled venues + global routing knobs. */
   venues: VenueConfig
   /** Venue-probing knobs. */
   probe: ProbeConfig
   quoting: QuotingConfig
-  /**
-   * Opt-in cooldown window (ms) before re-attempting a position whose last liquidation attempt failed
-   * to produce a submittable tx. 0 disables it (re-attempt every tick). See
-   * `POSITION_LIQUIDATION_COOLDOWN_MS`.
-   */
-  positionCooldownMs: number
-  maxFeeWei: bigint
+  /** Where the kernel keeps the account's ledger. */
+  kernel: KernelStoreConfig
+  maxFeePerGasWei: bigint
   logLevel: LogLevel
 }
 
@@ -281,6 +294,26 @@ function addressListEnv(env: Env, name: string): Address[] {
 }
 
 /**
+ * `KERNEL_STATE_DIR` holds the kernel's ledger and must survive a restart. `KERNEL_ENROLLMENT` is
+ * `enrolling` for the first start of a fresh account and `enrolled` for every later one.
+ */
+function kernelConfig(env: Env): KernelStoreConfig {
+  const stateDirectory = required(env, 'KERNEL_STATE_DIR').trim()
+  const enrollment = required(env, 'KERNEL_ENROLLMENT').trim()
+  if (enrollment !== 'enrolling' && enrollment !== 'enrolled') {
+    throw new Error(
+      `KERNEL_ENROLLMENT must be "enrolling" or "enrolled", got: ${env.KERNEL_ENROLLMENT}`
+    )
+  }
+  if (env.POSITION_LIQUIDATION_COOLDOWN_MS?.trim()) {
+    throw new Error(
+      'POSITION_LIQUIDATION_COOLDOWN_MS is no longer supported; failed positions back off by block'
+    )
+  }
+  return { stateDirectory, enrollment }
+}
+
+/**
  * Reads the full env table into a typed, validated {@link Config}. Throws on any missing
  * required var, malformed value, or unknown `CHAIN_ID` — the bot must fail loud at startup
  * rather than run half-configured. Onchain checks (that `EXECUTOOOR_ADDRESS` and the Morpho
@@ -303,6 +336,13 @@ export function loadConfig(
   if (!chainConfig) {
     const supported = Object.keys(chainMap).join(', ') || '(none configured)'
     throw new Error(`Unsupported CHAIN_ID ${chainId}; supported chain ids: ${supported}`)
+  }
+  const finalityName = `FINALITY_${chainId}`
+  const finality = parseFinality(required(env, finalityName).trim())
+  if (finality === undefined) {
+    throw new Error(
+      `${finalityName} must be safe, finalized, or a positive block depth, got: ${env[finalityName]}`
+    )
   }
 
   const rpcUrl = required(env, 'RPC_URL')
@@ -332,9 +372,11 @@ export function loadConfig(
     throw new Error(`LOG_LEVEL must be one of ${LOG_LEVELS.join(', ')}, got: ${env.LOG_LEVEL}`)
   }
 
-  const maxFeeGwei = env.MAX_FEE_GWEI?.trim() || DEFAULT_MAX_FEE_GWEI
-  if (!/^\d+(\.\d+)?$/.test(maxFeeGwei) || Number(maxFeeGwei) <= 0) {
-    throw new Error(`MAX_FEE_GWEI must be a positive number, got: ${env.MAX_FEE_GWEI}`)
+  const maxFeePerGasWei = parseMaxFeeGwei(required(env, 'MAX_FEE_GWEI'))
+  if (maxFeePerGasWei === undefined) {
+    throw new Error(
+      `MAX_FEE_GWEI must be a gwei amount of at least one wei, got: ${env.MAX_FEE_GWEI}`
+    )
   }
 
   // Enabled venues are inferred from which venue API keys are present — there is no per-collateral
@@ -400,21 +442,27 @@ export function loadConfig(
     backoffMaxBlocks: bigintEnv(env, 'BACKOFF_MAX_BLOCKS', DEFAULT_BACKOFF_MAX_BLOCKS)
   }
 
-  // Borrower-candidate discovery endpoint. Default to the public Morpho GraphQL API; fail loud at
-  // startup on a malformed override rather than at the first tick's fetch.
-  const apiUrl = env.MORPHO_API_URL?.trim() || DEFAULT_MORPHO_API_URL
-  if (tryCatch(() => new URL(apiUrl)).error) {
-    throw new Error(`MORPHO_API_URL is not a valid URL: ${apiUrl}`)
+  // Fail loud at startup rather than at the first tick's fetch. The value is left out of the error
+  // because the URL may embed credentials.
+  const apiUrl = env.LIQUIDATION_CANDIDATES_API_URL?.trim() || DEFAULT_CANDIDATES_API_URL
+  const parsedApiUrl = tryCatch(() => new URL(apiUrl))
+  if (parsedApiUrl.error) throw new Error('LIQUIDATION_CANDIDATES_API_URL is not a valid URL')
+  // The request carries MORPHO_API_KEY, which must not cross the wire in plaintext.
+  if (parsedApiUrl.data.protocol !== 'https:') {
+    throw new Error('LIQUIDATION_CANDIDATES_API_URL must use https')
   }
   const discovery: DiscoveryConfig = {
     apiUrl,
+    apiKey: required(env, 'MORPHO_API_KEY').trim(),
     healthFactorLte: numberEnv(env, 'HEALTH_FACTOR_LTE', DEFAULT_HEALTH_FACTOR_LTE, { min: 1 })
   }
 
   return {
     chainId,
+    finality,
     chain: chainConfig.chain,
     morpho: chainConfig.morpho,
+    worldValidMs: chainConfig.worldValidMs,
     rpcUrl,
     rpcUrlFallback: env.RPC_URL_FALLBACK?.trim() || undefined,
     liquidatorPrivateKey,
@@ -423,13 +471,8 @@ export function loadConfig(
     venues,
     probe,
     quoting,
-    positionCooldownMs: intEnv(
-      env,
-      'POSITION_LIQUIDATION_COOLDOWN_MS',
-      DEFAULT_POSITION_LIQUIDATION_COOLDOWN_MS,
-      { min: 0 }
-    ),
-    maxFeeWei: parseGwei(maxFeeGwei),
+    kernel: kernelConfig(env),
+    maxFeePerGasWei,
     logLevel
   }
 }

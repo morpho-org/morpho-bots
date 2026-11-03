@@ -16,6 +16,8 @@ type Chain = {
   blockTransactions?: (n: number) => { hash: Hex; from: string; nonce: Hex }[]
   receiptBlockHash?: Hex
   pendingHead?: boolean
+  /** How the node answers the `safe` tag, when it does not serve it as a block. */
+  safe?: 'rejects the tag' | 'has no block' | 'is down'
 }
 
 const chainOf = (fake: Chain = {}) => {
@@ -37,6 +39,10 @@ const chainOf = (fake: Chain = {}) => {
         return numberToHex(Number(BigInt(params?.[1] as Hex)) >= MINED_IN ? 1 : 0)
       case 'eth_getBlockByNumber': {
         const tag = params?.[0] as string
+        if (tag === 'safe' && fake.safe === 'rejects the tag')
+          throw Object.assign(new Error('invalid block tag'), { code: -32602 })
+        if (tag === 'safe' && fake.safe === 'has no block') return null
+        if (tag === 'safe' && fake.safe === 'is down') throw new Error('connection reset')
         return block(
           tag === 'latest' ? HEAD : tag === 'safe' ? HEAD - 2 : Number(BigInt(tag)),
           Boolean(params?.[1])
@@ -68,6 +74,19 @@ describe('createKernelChain', () => {
       head: { number: HEAD, hash: hashOf(HEAD), parentHash: hashOf(HEAD - 1), timestamp: 1_010n },
       finalized: { number: HEAD - 2, timestamp: 1_008n }
     })
+  })
+
+  it('reads the safe block, or none from a node that does not serve the tag', async () => {
+    expect((await chainOf().safe())?.number).toBe(HEAD - 2)
+    expect(await chainOf({ safe: 'rejects the tag' }).safe()).toBeNull()
+    expect(await chainOf({ safe: 'has no block' }).safe()).toBeNull()
+    await expect(chainOf({ safe: 'is down' }).safe()).rejects.toThrow()
+  })
+
+  it('reads no finalized block from a node that does not serve the finality tag, and fails on one that is down', async () => {
+    expect((await chainOf({ safe: 'rejects the tag' }).latest()).finalized).toBeNull()
+    expect((await chainOf({ safe: 'has no block' }).latest()).finalized).toBeNull()
+    await expect(chainOf({ safe: 'is down' }).latest()).rejects.toThrow()
   })
 
   it('refuses a pending block rather than reading it as the head', async () => {

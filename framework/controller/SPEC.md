@@ -63,9 +63,12 @@ not observe.
   found it ("reports the expiry of a key read as gone, implied gone, or projected gone"), and none
   when that read named none ("reports no expiry for an absence whose read named none").
 - `basis` is the chain read's `{ block, blockHash }` ("carries a chain read basis into the fact, so
-  the kernel can refuse orphaned evidence"). A basis that is not an object with a non-negative safe
-  integer `block` and a string `blockHash` throws `EvidenceDefectError` ("refuses a key read at a
-  basis that names no block").
+  the kernel can refuse orphaned evidence"), or an offchain read's `{ observedAt }`, the time it
+  was observed, which the kernel holds to its version and expiry only (kernel SPEC §4.4; "carries
+  an offchain read basis into the fact as the time it was observed"). A basis that is neither an
+  object with a non-negative safe integer `block` and a string `blockHash`, nor one with no `block`
+  and a non-negative safe integer `observedAt`, throws `EvidenceDefectError` ("refuses a key read
+  at a basis that names no block or observation time").
 
 A reading is identified by object identity: `act` and `advance` accept only a reading `factOf`
 made, from a node registered with their domain ("refuses a reading factOf did not make from one of
@@ -77,12 +80,21 @@ its own facts").
 supersedes?, maxSpendWei?, decision? })` builds a `PlanInput`:
 
 - `evidence` is every reading's `fact`, in the order given ("rests on every fact it read, in
-  order"). `restsOn` must name at least one ("refuses to rest on no fact").
-- `basisBlock` is the greatest of `readAt` and every fact's block ("is based at the latest block
-  of its facts and of anything else it read").
+  order"). `restsOn` must name at least one ("refuses to rest on no fact"), and at least one chain
+  fact, which anchors the basis the kernel judges own effects and stages by; offchain facts alone
+  throw `EvidenceDefectError`, whatever `readAt` says ("refuses to rest on offchain facts alone"),
+  as does an offchain reading with no expiry, whatever else bounds the act ("refuses an offchain
+  fact with no expiry, whatever else bounds the act").
+- `basisBlock` is the greatest of `readAt` and every chain fact's block ("is based at the latest
+  block of its facts and of anything else it read"; "rests on an offchain fact beside a chain fact,
+  based at the chain fact alone").
 - `notAfter` is the least of `validUntil` and every fact's expiry ("stops at the earliest of its own
   validity and every fact it read"). Grounds naming no deadline at all throw `EvidenceDefectError`
-  ("refuses grounds that name no deadline"), so a plan on an unbounded fact needs a `validUntil`.
+  ("refuses grounds that name no deadline"), so a plan on an unbounded fact needs a `validUntil`;
+  one whose facts expire needs none.
+- `validUntil` also reaches the kernel on its own, on the plan and on each stage's `Advance`, so a
+  refreshed observation never extends the deadline past it (kernel SPEC §4.4) ("hands the kernel
+  its own validity apart, so refreshed evidence never outlives it").
 - `conflicts` is mandatory, and left off the plan when it names nothing, which the kernel reads the
   same as none ("names its conflicts as given, and none when they name nothing").
 - `submissionId`, `supersedes`, `maxSpendWei` and `decision` pass through ("passes its submission
@@ -98,8 +110,9 @@ every other kernel check: policy, validators, conflicts, lifecycle, capacity, ba
 
 ### 2.5 `advance`
 
-`advance(domain, { intentId, stage, restsOn, readAt? })` builds `Advance{intentId, stage,
-basisBlock, evidence, notAfter}` by the rules of §2.3 ("rests on its stage facts, based after the
+`advance(domain, { intentId, stage, restsOn, readAt?, validUntil? })` builds `Advance{intentId,
+stage, basisBlock, evidence, notAfter, validUntil?}` by the rules of §2.3 ("rests on its stage
+facts, based after the
 plan its stage continues"), so `readAt` set to the plan's last inclusion bases the advance after
 the effect its stage continues.
 
@@ -108,17 +121,30 @@ the effect its stage continues.
 `declareView(g, id, state)` is a map over the kernel's state; `defineBot` declares it as
 `kernel.view`. `viewOf(state)` is pure:
 
-- `busy` is every key, sorted, that an intent id names on an unresolved nonce record's candidate,
-  an executing plan, or an unretired entry, `revoking` and adopted ones included ("holds a key busy
-  on every entry that carries risk, revoking and adopted ones included"; "holds a key busy on an
-  unresolved send or an executing plan, and reserves each once"). An intent id that does not parse
+- `busy` is every key, sorted, that an intent id names on a nonce record's candidate until the
+  record is pruned at finality, an executing plan, or an unretired entry, `revoking` and adopted
+  ones included ("holds a key busy on every entry that carries risk, revoking and adopted ones
+  included"; "holds a key busy on a send until its record is pruned, or an executing plan, and
+  reserves each once"). An intent id that does not parse
   (§1), the kernel's own recovery plans included, names no key and holds none busy.
-- `numReservations` is the number of unresolved nonce records plus the executing plans no nonce
-  record names at all, so a plan whose transaction is pending is counted once ("holds a key busy on
-  an unresolved send or an executing plan, and reserves each once").
+- `numReservations` is the number of unresolved nonce records plus the executing plans whose
+  current transaction does not occupy a recorded nonce (kernel SPEC §7, `occupiesNonce`). A
+  transaction is counted once, through its nonce or its plan, recovery included, and a plan's next
+  transaction is counted again once its earlier one resolves ("holds a key busy on a send until its
+  record is pruned, or an executing plan, and reserves each once", "reserves a recovery plan bidding
+  at a recorded nonce only through that nonce", "reserves a plan's next transaction once its earlier
+  one resolves, until and after finality").
 - `acceptingNewWork` is true only while the kernel is `running` and not latched ("accepts new work
   only while running and not latched on an unresolved send").
 - `conflictMarks` is the kernel's own (kernel SPEC §4.4) (untested).
+- `oldestPendingMs` is how long the oldest unresolved nonce record has been held, in the kernel's
+  clock, and 0 with none; a restart dates every record anew. `pendingAtCeiling` counts the
+  unresolved nonces waiting at the fee ceiling (kernel SPEC §6, `waitsAtCeiling`), and
+  `waitingMaxFeePerGas` is the highest max fee per gas signed and not withheld at the lowest of
+  them: what the base fee must fall below for its bytes to land. `pendingFields(view)` gives them as
+  the `tick.end` fields `oldestPendingMs`, `pendingAtCeiling` and `waitingMaxFeePerGasWei`, null with
+  none, which every kernel bot logs ("reports how long the oldest nonce has waited, and the fee a
+  nonce at the ceiling signed").
 
 `isBusy(view, key)` reads `busy`, and is false with no view ("holds a key busy on every entry that
 carries risk, revoking and adopted ones included" reads it through `isBusy`; no view is untested).
@@ -142,15 +168,19 @@ blocks").
     whether or not its ticket is still outstanding in the family: backoff is independent of whether
     the answer's ticket is still current ("backoff is independent of whether the answer's ticket is
     still current");
-  - a kernel notice `refused`, `abandoned`, `compensating` or `failed` whose intent id parses (§1),
+  - a kernel notice `refused`, `abandoned`, `compensated` or `failed` whose intent id parses (§1),
     at the key and task it names, except: a refusal whose code is `evidence_expired`,
     `evidence_too_old`, `evidence_predates_own_effect` or `decision_predates_own_effect`, which a
     fresh read may pass and which sets no backoff ("waits out no backoff for an act refused on
-    stale evidence" covers all but `evidence_too_old`); and an `abandoned` or `compensating` notice for an intent id of another run,
-    which ended because that run stopped ("backs off an earlier run's act that failed, but not one
-    it abandoned or a restart withdrew"). An intent id naming no task backs the key off under the
-    untasked slot, which every task of the key heeds ("backs off only the task whose act the
-    kernel ended unsettled").
+    stale evidence" covers all but `evidence_too_old`); a terminal notice whose code is
+    `cancelled`, an act a cancel ended before anything of it ran ("backs off no act cancelled
+    before anything of it ran, but one whose original won after a cancel"); and an `abandoned` or
+    `compensated` notice for an intent id of another run, which ended because that run stopped
+    ("backs off an earlier run's act that failed, but not one it abandoned or a restart withdrew").
+    A `compensating` notice sets none: only the act's terminal notice says whether it was merely
+    cancelled, so its failure is counted there. An intent id naming no task backs the key off
+    under the untasked slot, which every task of the key heeds ("backs off only the task whose act
+    the kernel ended unsettled").
 - A `settled` notice clears the entry at its intent id's key and task, and only that one ("keeps
   each task of a key on its own backoff, and a settlement clears only its own").
 - `isBackedOff(backoff, key, task)` is whether the task's own entry or the key's untasked entry
@@ -168,7 +198,10 @@ contract (`docs/CONVENTIONS.md`), so none is pinned (untested).
 prepare })` declares, in the scope `id`: `${id}.requests`, which the kernel takes; `${id}.prepared`;
 the backoff fold `${id}.backoff` (§4); the family fold `id` with `${id}.prepare` and `${id}.events`;
 and the preparation effect `${id}.preparation`. It returns `state`, `events`, `backoff`, `requests`
-and `prepared` (untested).
+and `prepared` (untested). `facts` is one fact node or a list of them, each read at the family's
+key; every act rests on all of them, so "its fact" below means each of its facts, and "its
+reading" the reading of each ("rests on both, based at the chain fact, and holds until the earlier
+expiry").
 
 Refused when built: a second family on the same kernel (§9); `prepare.timeoutMs` that is not a
 whole number of milliseconds from 1 to 2³¹ − 1 ("is refused at build without a timeout it can arm");
@@ -248,14 +281,16 @@ prepared").
 ### 5.4 Preparation and its answer
 
 A preparation request is `{ id: ticket, key, task, seq, version, input }`: `version` the key's fact
-version and `input` the key's input value, both captured in the decision that asked. The family
-keeps the key's `FactReading`, its input fingerprint, its task and the task's conflicts beside the
+versions, joined in the family's order, and `input` the key's input value, both captured in the
+decision that asked. The family keeps the key's `FactReading`s, its input fingerprint, its task and the task's conflicts beside the
 ticket. The effect names each request by its ticket and sequences by `seq` ("stamps the adapter
 outcome itself and keeps evidence from its own captured reading" shows the reading kept beside the
 ticket; the request's `input` is untested).
 
-The handler gets `{ signal }` and returns a `PrepareOutcome`: `{ ok: true, steps, validUntil }` or
-`{ ok: false, reason, backoff }`. The runtime stamps the outcome with the request's `id`, `key`,
+The handler gets `{ signal }` and returns a `PrepareOutcome`: `{ ok: true, steps, validUntil? }` or
+`{ ok: false, reason, backoff }`. The act holds while every fact it rests on does; `validUntil` only
+shortens that, for a preparation that read something no fact carries ("is submitted to hold until
+its fact expires"). The runtime stamps the outcome with the request's `id`, `key`,
 `task` and `version` before writing it to `${id}.prepared`, whatever the handler put in it ("stamps
 the adapter outcome itself and keeps evidence from its own captured reading").
 
@@ -283,8 +318,8 @@ and expiry come from that reading, never from a later read of the same key, even
 The kernel therefore refuses it once the block it was read at is orphaned, and admits it when the
 fact was only read again at a newer canonical block ("rests on the read it was prepared from, so
 the kernel refuses it once that block is orphaned"; "still goes once its fact was only read again
-at a newer canonical block"). The plan is `act(domain, { intentId, steps, restsOn: [reading],
-validUntil, conflicts, decision: { key, priority, prepared: ticket } })`, with the conflicts the
+at a newer canonical block"). The plan is `act(domain, { intentId, steps, restsOn: readings,
+validUntil?, conflicts, decision: { key, priority, prepared: ticket } })`, with the conflicts the
 task declared when the preparation was asked.
 
 `act.submitted` means the family sent `Submit`, not that the kernel admitted it. The family holds the
@@ -297,10 +332,10 @@ that never answers; the hold until the first notice is untested).
 Every reason a ready act is discarded is one of two ordered checks, each taken at the first reason
 that holds:
 
-| When                              | Order                                                                                                                                                                          |
-| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| every decision (`heldDrop`)       | `preparation_expired` (`validUntil ≤ now`), `not_candidate`, `policy_rejected`, `task_changed` (another name, or the same name with other conflicts)                           |
-| as it is submitted (`submitDrop`) | `fact_unavailable` (no reading now), `fact_unbounded` (the captured reading has no expiry), `fact_expired` (captured expiry `≤ now`), `fact_changed` (the version now differs) |
+| When                              | Order                                                                                                                                                                                                         |
+| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| every decision (`heldDrop`)       | `preparation_expired` (a `validUntil` `≤ now`), `fact_expired` (a captured expiry `≤ now`), `not_candidate`, `policy_rejected`, `task_changed` (another name, or the same name with other conflicts)          |
+| as it is submitted (`submitDrop`) | `fact_unavailable` (a fact has no reading now), `fact_unbounded` (no captured reading, or an offchain one, has an expiry), `fact_expired` (a captured expiry `≤ now`), `fact_changed` (a version now differs) |
 
 Each logs `act.dropped` `{ id, task, reason }`, and `fact_unbounded` also names its `fact`. A task
 that keeps its name but declares other conflicts is `task_changed`, so an act always carries the
@@ -308,7 +343,8 @@ conflicts it was prepared under ("drops the old ready act and submits only a pre
 task"; "drops a ready act whose task keeps its name but changes its conflicts"; "drops an answer
 whose captured version no longer matches the current fact"; "drops an act on a fact with no expiry,
 naming it, until its inputs change"; "drops an act whose fact expired, and prepares none on it after
-a failed read").
+a failed read"; "drops a prepared act once the offchain fact changes version"; "drops an act whose
+offchain fact has no expiry, naming the facts").
 
 ### 5.6 Declines and stale holds
 
@@ -319,16 +355,17 @@ too. A decline is forgotten once the fingerprint differs from the current one, a
 ticket's answer records none.
 
 A stale hold is set when the kernel refuses a submitted act with a stale-evidence code (§4), keyed by
-the reading the act rested on: version, block hash and expiry. The task is not prepared again until
-the fact's reading differs, by a new version, block hash or expiry, or by the fact becoming
+the readings the act rested on: each one's version, block hash (or observation time) and expiry.
+The task is not prepared again until a fact's reading differs, by any of those, or by a fact becoming
 unavailable in between; it sets no backoff ("is prepared again on the next read of its fact, not
 before, and backs nothing off" shows a new expiry).
 
 ### 5.7 Own effects
 
-A task is not prepared while its fact was read at a block below the view's `conflictMarks` entry
-for any id the task reads or writes ("is not prepared until its fact is read at or after that
-effect"). The kernel would refuse the act as predating our own effect (kernel SPEC §4.4), so the
+A task is not prepared while a chain fact of it was read at a block below the view's
+`conflictMarks` entry for any id the task reads or writes ("is not prepared until its fact is read
+at or after that effect"); an offchain fact has no block and never holds it ("is held for its chain
+fact predating our own effect, never for its offchain one"). The kernel would refuse the act as predating our own effect (kernel SPEC §4.4), so the
 runtime waits for the next read at or after that block instead of submitting and backing off.
 
 ### 5.8 Logs
@@ -382,9 +419,10 @@ be written raw instead (review).
   integer"). A `complete` or `carried` write expires no later than `validForMs` after the read
   started, keeping its own expiry when that comes first ("expires each read validForMs after the
   read started, not after it landed"; "keeps a %s read its own expiry when that comes first" for each of "complete", "carried"); a failed write is passed as is.
-  With `at: 'head'`, a read is requested at every kernel head and skipped when the kernel's head no
-  longer has that number and hash when the read starts ("skips a queued head the kernel replaced at
-  the same height"), so a newer head's read always lands last ("lands a newer head last even when an
+  With `at: 'head'`, a read is requested at every kernel head, a newer head replaces the one still
+  waiting, so a burst of heads reads only its newest ("reads only the newest of a burst of heads,
+  past its queue bound"), and a read is skipped when the kernel's head no longer has that number
+  and hash when the read starts ("skips a queued head the kernel replaced at the same height"), so a newer head's read always lands last ("lands a newer head last even when an
   older read is slower"). With `at: { everyMs }`, the fold `${level}.interval` emits `${level}.due`
   on the first head delivered once the last read landed and `everyMs` has passed since it started;
   the read then runs at the kernel's current head. A throw from `read` fails the graph, as any
@@ -412,8 +450,8 @@ a kernel the bot hosts raw"; "refuses a second family named to the kernel direct
 `declareWorkflow(g, id, { domain, state, facts, requests })` is the fold `id` with `${id}.events`,
 watching the kernel's state and every fact node named. For each executing plan parked
 `awaiting-advance`, it sends one `Advance` when every fact the plan's evidence names reads now, from
-a node in `facts`, at the version the plan was decided on, with an expiry, at a block at or after the
-plan's last inclusion; the advance is based at or after that inclusion and carries the plan's
+a node in `facts`, at the version the plan was decided on, with an expiry, and, for a chain fact,
+at a block at or after the plan's last inclusion; the advance is based at or after that inclusion and carries the plan's
 `decision`
 ("advances a parked stage once its decision reads the same after its own inclusion"). The same
 evidence, by stage and by each fact's version, basis and expiry, is never sent twice for one plan; a

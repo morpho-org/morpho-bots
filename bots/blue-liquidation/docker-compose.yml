@@ -1,14 +1,24 @@
-# Runs the per-chain blue-liquidation bots. Borrower candidates come from the Morpho GraphQL API
-# (MORPHO_API_URL, public by default), so there is no indexer or database to run. The bots' build
-# context is the repo root so the pnpm workspace (packages/*) resolves — see Dockerfile. Set the
-# chainId-suffixed RPCs (RPC_URL_8453, RPC_URL_4663) and a LIQUIDATOR_PRIVATE_KEY.
+# Runs the per-chain blue-liquidation bots. Borrower candidates come from the Morpho API, so there is
+# no indexer or database to run. The bots' build context is the repo root so the pnpm workspace
+# (packages/*) resolves — see Dockerfile. Set the chainId-suffixed RPCs (RPC_URL_8453, RPC_URL_4663),
+# a LIQUIDATOR_PRIVATE_KEY and a MORPHO_API_KEY (a Morpho partner API key). MAX_FEE_GWEI,
+# FINALITY_<id> and KERNEL_ENROLLMENT_<id> have no default: the bot refuses to start without them.
+# KERNEL_ENROLLMENT_<id> is `enrolling` on a chain's first start and `enrolled` after, so a lost
+# volume refuses to start instead of starting blank. Build with BUILD_REVISION=$(git rev-parse HEAD)
+# so the journal names the source it ran.
 services:
   bot-base:
     build:
       context: ../..
       dockerfile: bots/blue-liquidation/Dockerfile
+      args:
+        BUILD_REVISION: ${BUILD_REVISION:?set BUILD_REVISION=$(git rev-parse HEAD)}
     environment:
       CHAIN_ID: '8453'
+      FINALITY_8453: ${FINALITY_8453:?set FINALITY_8453}
+      KERNEL_STATE_DIR: /repo/state
+      KERNEL_ENROLLMENT: ${KERNEL_ENROLLMENT_8453:?set KERNEL_ENROLLMENT_8453}
+      MAX_FEE_GWEI: ${MAX_FEE_GWEI:?set MAX_FEE_GWEI}
       RPC_URL: ${RPC_URL_8453:?set RPC_URL_8453}
       LIQUIDATOR_PRIVATE_KEY: ${LIQUIDATOR_PRIVATE_KEY:?set LIQUIDATOR_PRIVATE_KEY}
       EXECUTOOOR_ADDRESS: ${EXECUTOOOR_ADDRESS:-}
@@ -19,7 +29,8 @@ services:
       LIFI_API_KEY: ${LIFI_API_KEY:-}
       ENABLE_LIFI: ${ENABLE_LIFI:-}
       ALLOW_DETECTION_ONLY: ${ALLOW_DETECTION_ONLY:-}
-      MORPHO_API_URL: ${MORPHO_API_URL:-}
+      MORPHO_API_KEY: ${MORPHO_API_KEY:?set MORPHO_API_KEY}
+      LIQUIDATION_CANDIDATES_API_URL: ${LIQUIDATION_CANDIDATES_API_URL:-}
       HEALTH_FACTOR_LTE: ${HEALTH_FACTOR_LTE:-}
       LOG_LEVEL: ${LOG_LEVEL:-info}
       # Optional BetterStack log shipping (in-process loglayer transport). Empty = disabled; the bot
@@ -27,6 +38,8 @@ services:
       BETTERSTACK_SOURCE_TOKEN: ${BETTERSTACK_SOURCE_TOKEN:-}
       BETTERSTACK_INGESTING_HOST: ${BETTERSTACK_INGESTING_HOST:-}
       BETTERSTACK_HEARTBEAT_URL: ${BETTERSTACK_HEARTBEAT_URL_8453:-}
+    volumes:
+      - bot-base-state:/repo/state
     restart: unless-stopped
 
   # Robinhood launches DETECTION-ONLY by default (ALLOW_DETECTION_ONLY_4663 defaults true, no venue
@@ -38,8 +51,14 @@ services:
     build:
       context: ../..
       dockerfile: bots/blue-liquidation/Dockerfile
+      args:
+        BUILD_REVISION: ${BUILD_REVISION:?set BUILD_REVISION=$(git rev-parse HEAD)}
     environment:
       CHAIN_ID: '4663'
+      FINALITY_4663: ${FINALITY_4663:?set FINALITY_4663}
+      KERNEL_STATE_DIR: /repo/state
+      KERNEL_ENROLLMENT: ${KERNEL_ENROLLMENT_4663:?set KERNEL_ENROLLMENT_4663}
+      MAX_FEE_GWEI: ${MAX_FEE_GWEI:?set MAX_FEE_GWEI}
       RPC_URL: ${RPC_URL_4663:-https://rpc.mainnet.chain.robinhood.com}
       LIQUIDATOR_PRIVATE_KEY: ${LIQUIDATOR_PRIVATE_KEY:?set LIQUIDATOR_PRIVATE_KEY}
       EXECUTOOOR_ADDRESS: ${EXECUTOOOR_ADDRESS:-}
@@ -48,7 +67,8 @@ services:
       LIFI_API_KEY: ${LIFI_API_KEY_4663:-}
       ENABLE_LIFI: ${ENABLE_LIFI_4663:-}
       ALLOW_DETECTION_ONLY: ${ALLOW_DETECTION_ONLY_4663:-true}
-      MORPHO_API_URL: ${MORPHO_API_URL:-}
+      MORPHO_API_KEY: ${MORPHO_API_KEY:?set MORPHO_API_KEY}
+      LIQUIDATION_CANDIDATES_API_URL: ${LIQUIDATION_CANDIDATES_API_URL:-}
       HEALTH_FACTOR_LTE: ${HEALTH_FACTOR_LTE:-}
       LOG_LEVEL: ${LOG_LEVEL:-info}
       # Optional BetterStack log shipping (in-process loglayer transport). Empty = disabled; both blue
@@ -56,4 +76,10 @@ services:
       BETTERSTACK_SOURCE_TOKEN: ${BETTERSTACK_SOURCE_TOKEN:-}
       BETTERSTACK_INGESTING_HOST: ${BETTERSTACK_INGESTING_HOST:-}
       BETTERSTACK_HEARTBEAT_URL: ${BETTERSTACK_HEARTBEAT_URL_4663:-}
+    volumes:
+      - bot-robinhood-state:/repo/state
     restart: unless-stopped
+
+volumes:
+  bot-base-state:
+  bot-robinhood-state:

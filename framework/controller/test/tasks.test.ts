@@ -33,7 +33,8 @@ const family = (
   timeoutMs = 60_000,
   maxReservations = 4,
   runId = 'run',
-  concurrency = 2
+  concurrency = 2,
+  quoted = false
 ) => {
   const asked: {
     id: string
@@ -54,6 +55,8 @@ const family = (
       const candidates = keyedMap(g, 'candidates', positions, ({ bid }) => ({ bid }))
       const domain = kernelDomain('tasks')
       const facts = domain.fact(keyedMap(g, 'facts', positions, ({ bid }) => factValue(bid)))
+      const quoteWrites = g.occurrences<KeyedWrite<string>>('quotes.writes')
+      const quotes = domain.fact(keyedLevel(g, 'quotes', quoteWrites))
       const activity = g.occurrences<readonly KernelActivity[]>('kernel.activity')
       const heads = g.occurrences<KernelHead>('kernel.heads')
       const stand = {
@@ -71,12 +74,23 @@ const family = (
         start: async () => {},
         requestsFrom: () => {}
       }
-      return { writes, positions, candidates, facts, kernel, view, activity, heads }
+      return {
+        writes,
+        quoteWrites,
+        positions,
+        candidates,
+        facts,
+        quotes,
+        kernel,
+        view,
+        activity,
+        heads
+      }
     })
     const acts = tasks.each(b, 'acts', {
       kernel: raw.kernel,
       candidates: raw.candidates,
-      facts: raw.facts,
+      facts: quoted ? [raw.facts, raw.quotes] : raw.facts,
       inputs: raw.positions,
       runId,
       maxReservations,
@@ -124,10 +138,24 @@ const family = (
       ...(expiry !== null && { expiry }),
       ...(Object.keys(entries).length === 0 && { empty: true })
     })
+  const quote = (entries: Record<string, string>, observedAt: number, expiry = 60_000) =>
+    runner.push(nodes.quoteWrites, {
+      coverage: 'carried',
+      entries,
+      basis: { observedAt },
+      expiry
+    })
   const fail = () => runner.push(nodes.writes, { coverage: 'failed', reason: 'read' })
   const acceptingNewWork = (on: boolean) =>
     runner.push(nodes.view, {
-      value: { busy: [], numReservations: 0, acceptingNewWork: on, conflictMarks: {} },
+      value: {
+        busy: [],
+        numReservations: 0,
+        acceptingNewWork: on,
+        conflictMarks: {},
+        oldestPendingMs: 0,
+        pendingAtCeiling: 0
+      },
       basis: 'test'
     })
   const settle = () => new Promise(resolve => setImmediate(resolve))
@@ -150,6 +178,7 @@ const family = (
     events,
     clock,
     write,
+    quote,
     fail,
     acceptingNewWork,
     answer,
@@ -219,7 +248,14 @@ describe('a key after our own effect on what it writes', () => {
   it('is not prepared until its fact is read at or after that effect', async () => {
     const bot = family(PER_KEY)
     bot.runner.push(bot.nodes.view, {
-      value: { busy: [], numReservations: 0, acceptingNewWork: true, conflictMarks: { a: 5 } },
+      value: {
+        busy: [],
+        numReservations: 0,
+        acceptingNewWork: true,
+        conflictMarks: { a: 5 },
+        oldestPendingMs: 0,
+        pendingAtCeiling: 0
+      },
       basis: 'test'
     })
     bot.write({ a: { bid: 1n }, b: { bid: 1n } }, 60_000, 4)
@@ -228,6 +264,95 @@ describe('a key after our own effect on what it writes', () => {
     expect(bot.asked.map(entry => entry.key)).toStrictEqual(['b', 'a'])
     await bot.answer('a')
     await bot.answer('b')
+    await bot.runner.abandon()
+  })
+})
+
+describe('an act on a chain fact and an offchain fact', () => {
+  const quotedFamily = () => family(PER_KEY, undefined, 60_000, 4, 'run', 2, true)
+
+  it('rests on both, based at the chain fact, and holds until the earlier expiry', async () => {
+    const bot = quotedFamily()
+    bot.acceptingNewWork(true)
+    bot.write({ a: { bid: 1n } }, 60_000, 3)
+    expect(bot.asked).toStrictEqual([])
+    bot.quote({ a: 'route1' }, 10, 30_000)
+    await bot.answer('a', { ok: true, steps: STEPS })
+    const [submitted] = bot.submits
+    expect(submitted?.type).toBe('Submit')
+    if (submitted?.type === 'Submit') {
+      expect(submitted.plan.evidence?.map(fact => fact.basis)).toStrictEqual([
+        { block: 3, blockHash: '0x3' },
+        { observedAt: 10 }
+      ])
+      expect(submitted.plan.basisBlock).toBe(3)
+      expect(submitted.plan.notAfter).toBe(30_000)
+    }
+    await bot.runner.abandon()
+  })
+
+  it('drops a prepared act once the offchain fact changes version', async () => {
+    const bot = quotedFamily()
+    bot.acceptingNewWork(true)
+    bot.write({ a: { bid: 1n } })
+    bot.quote({ a: 'route1' }, 10)
+    bot.quote({ a: 'route2' }, 20)
+    await bot.answer('a', { ok: true, steps: STEPS })
+    expect(bot.submits).toStrictEqual([])
+    expect(bot.asked.map(entry => entry.key)).toStrictEqual(['a'])
+    await bot.answer('a', { ok: true, steps: STEPS })
+    expect(bot.events('act.submitted').map(fields => fields?.id)).toStrictEqual(['a'])
+    await bot.runner.abandon()
+  })
+
+  it('drops an act whose offchain fact has no expiry, naming the facts', async () => {
+    const bot = quotedFamily()
+    bot.acceptingNewWork(true)
+    bot.write({ a: { bid: 1n } })
+    bot.runner.push(bot.nodes.quoteWrites, {
+      coverage: 'carried',
+      entries: { a: 'route1' },
+      basis: { observedAt: 10 }
+    })
+    await bot.answer('a', { ok: true, steps: STEPS })
+    expect(bot.events('act.dropped')).toStrictEqual([
+      { id: 'a', task: 'act', reason: 'fact_unbounded', fact: 'facts/a+quotes/a' }
+    ])
+    expect(bot.submits).toStrictEqual([])
+    await bot.runner.abandon()
+  })
+
+  it('is held for its chain fact predating our own effect, never for its offchain one', async () => {
+    const bot = quotedFamily()
+    bot.runner.push(bot.nodes.view, {
+      value: {
+        busy: [],
+        numReservations: 0,
+        acceptingNewWork: true,
+        conflictMarks: { a: 5 },
+        oldestPendingMs: 0,
+        pendingAtCeiling: 0
+      },
+      basis: 'test'
+    })
+    bot.quote({ a: 'route1' }, 0)
+    bot.write({ a: { bid: 1n } }, 60_000, 4)
+    expect(bot.asked).toStrictEqual([])
+    bot.write({ a: { bid: 1n } }, 60_000, 5)
+    expect(bot.asked.map(entry => entry.key)).toStrictEqual(['a'])
+    await bot.answer('a')
+    await bot.runner.abandon()
+  })
+})
+
+describe('a preparation without its own validity', () => {
+  it('is submitted to hold until its fact expires', async () => {
+    const bot = family(PER_KEY)
+    bot.acceptingNewWork(true)
+    bot.write({ a: { bid: 1n } }, 45_000)
+    await bot.answer('a', { ok: true, steps: STEPS })
+    const [submitted] = bot.submits
+    expect(submitted?.type === 'Submit' && submitted.plan.notAfter).toBe(45_000)
     await bot.runner.abandon()
   })
 })
@@ -479,7 +604,14 @@ describe('a prepared act whose key backs off after an act the bot wrote raw', ()
     bot.write({ a: { bid: 1n } })
     const [prepared] = bot.asked
     bot.runner.push(bot.nodes.view, {
-      value: { busy: ['a'], numReservations: 1, acceptingNewWork: true, conflictMarks: {} },
+      value: {
+        busy: ['a'],
+        numReservations: 1,
+        acceptingNewWork: true,
+        conflictMarks: {},
+        oldestPendingMs: 0,
+        pendingAtCeiling: 0
+      },
       basis: 'test'
     })
     await bot.answer('a')
@@ -494,7 +626,14 @@ describe('a prepared act whose key backs off after an act the bot wrote raw', ()
       {
         node: bot.nodes.view,
         value: {
-          value: { busy: [], numReservations: 0, acceptingNewWork: true, conflictMarks: {} },
+          value: {
+            busy: [],
+            numReservations: 0,
+            acceptingNewWork: true,
+            conflictMarks: {},
+            oldestPendingMs: 0,
+            pendingAtCeiling: 0
+          },
           basis: 'test'
         }
       }
@@ -516,7 +655,7 @@ describe('an owned preparation', () => {
     const answer = {
       id: asked.id,
       key: 'a',
-      version: asked.reading.fact.version,
+      version: asked.readings[0]!.fact.version,
       ok: true,
       validUntil: 60_000,
       steps: STEPS
@@ -560,12 +699,12 @@ describe('an owned preparation', () => {
       id: captured.id,
       key: 'a',
       task: 'act',
-      version: captured.reading.fact.version
+      version: captured.readings[0]!.fact.version
     })
     const [submitted] = bot.submits
     expect(submitted?.type).toBe('Submit')
     if (submitted?.type === 'Submit') {
-      expect(submitted.plan.evidence).toStrictEqual([captured.reading.fact])
+      expect(submitted.plan.evidence).toStrictEqual([captured.readings[0]!.fact])
       expect(submitted.plan.basisBlock).toBe(0)
       expect(submitted.plan.decision).toStrictEqual({
         key: 'a',

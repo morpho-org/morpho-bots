@@ -21,6 +21,28 @@ export class PolicyViolationError extends Error {
   }
 }
 
+/** A chain declares no block time, so a time bound cannot be converted to its blocks. */
+export class MissingBlockTimeError extends Error {
+  constructor(readonly chainId: number) {
+    super(`chain ${chainId} declares no block time`)
+    this.name = 'MissingBlockTimeError'
+  }
+}
+
+/** A finality depth the kernel's reorg window cannot reach, so finality would never advance. */
+export class FinalityBeyondWindowError extends Error {
+  constructor(
+    readonly chainId: number,
+    readonly depth: number,
+    readonly window: number
+  ) {
+    super(
+      `chain ${chainId}: a finality depth of ${depth} blocks reaches past the ${window}-block reorg window; choose a depth below ${window}`
+    )
+    this.name = 'FinalityBeyondWindowError'
+  }
+}
+
 /** The kernel's signing guard refused: what the signature would authorize no longer holds. */
 export class SignWithdrawnError extends Error {
   constructor() {

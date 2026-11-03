@@ -1,0 +1,29 @@
+replicas: 1
+
+image:
+  repository: ''
+  # Accepts an immutable tag or a tag@sha256 digest reference.
+  tag: ''
+  pullPolicy: IfNotPresent
+
+serviceAccount:
+  name: ''
+  roleArn: ''
+
+# The extracted runtime secret must hold RPC_URL, optional RPC_URL_FALLBACK, and
+# RESOLVER_PRIVATE_KEY unless READONLY.
+runtimeSecret:
+  key: ''
+  refreshInterval: 5m
+
+# Non-secret settings: CHAIN_ID, READONLY, and SIMULATION_CALLER_ADDRESS (required when READONLY).
+env: []
+
+terminationGracePeriodSeconds: 30
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    memory: 512Mi

@@ -145,4 +145,23 @@ describe('createRateLimitedClient', () => {
     expect(err?.reason).toBe('api_error')
     expect(err?.message).toContain('HTML')
   })
+
+  it.each([403, 503])(
+    'names only the venue, status and path of a failed HTTP %i, never the host, query or key',
+    async status => {
+      const client = fastClient(async () => new Response('secret-bearing body', { status }), {
+        maxRetries: 0,
+        apiKeys: { '1inch': 'SECRET-KEY' }
+      })
+      const err = await client
+        .getJson({
+          venue: '1inch',
+          url: 'https://user:pw@api.1inch.test/swap/v6.0/8453/quote',
+          searchParams: { src: '0xabc', apiKey: 'SECRET-QUERY' }
+        })
+        .catch(e => e as QuoteError)
+      expect(err).toBeInstanceOf(QuoteError)
+      expect((err as QuoteError).message).toBe(`1inch HTTP ${status} (/swap/v6.0/8453/quote)`)
+    }
+  )
 })

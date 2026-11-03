@@ -6,20 +6,23 @@ import { multicall } from 'viem/actions'
 
 import type { MarketParams } from '../market'
 
+import { MarketParamsReadError } from '../errors'
+
 // Canonical Multicall3, deployed at the same address on Base and every other chain. Passed
 // explicitly so the fetcher doesn't depend on viem inferring it from the (chain-erased) client type.
 const MULTICALL3 = '0xcA11bde05977b3631167028862bE2a173976CA11' as const
 
 /** Resolves a batch of market ids to their immutable {@link MarketParams}. Ids that don't resolve
- * (e.g. a non-existent market) are simply absent from the returned map. */
+ * (e.g. a non-existent market) are simply absent from the returned map; a read that failed throws. */
 export type MarketParamsResolver = (ids: readonly Hex[]) => Promise<Map<Hex, MarketParams>>
 
 /**
  * Onchain fetcher: reads `idToMarketParams(id)` from the Morpho singleton for a batch of ids in one
  * Multicall3 `aggregate3`. Blue stores every market's immutable params keyed by id, so this recovers
  * `(loanToken, collateralToken, oracle, irm, lltv)` authoritatively from the API's marketId alone.
- * `allowFailure` keeps one bad id from sinking the batch; a zero `loanToken` (unknown id) is treated
- * as unresolved.
+ * A zero `loanToken` (unknown id) is unresolved; a read that failed is not an answer about the id,
+ * so it throws rather than leave a market's positions out of discovery.
+ * @throws MarketParamsReadError - when any id's read failed.
  */
 export function multicallIdToMarketParams(client: Client, morpho: Address): MarketParamsResolver {
   return async ids => {
@@ -38,9 +41,11 @@ export function multicallIdToMarketParams(client: Client, morpho: Address): Mark
           }) as const
       )
     })
+    const unread = ids.filter((_, i) => results[i]?.status !== 'success')
+    if (unread.length > 0) throw new MarketParamsReadError(unread.length)
     ids.forEach((id, i) => {
       const r = results[i]
-      if (!r || r.status !== 'success') return
+      if (r?.status !== 'success') return
       const p = r.result
       if (!isNonZeroAddress(p.loanToken)) return // unknown id → zeroed params; skip
       out.set(id, {

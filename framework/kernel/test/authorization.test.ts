@@ -4,6 +4,7 @@ import type { KernelConfig, OkValidatorReading, PlanInput, TxPayload, Validator 
 
 import { argsOf, encodeCall, fnOf } from './codec'
 import {
+  bidOf,
   cancel,
   ecrecoverPlan,
   FEE,
@@ -415,7 +416,13 @@ describe('checks before every irreversible act', () => {
     const [stale] = h.pending('sign')
     h.send({ type: 'Submit', plan: liquidationPlan('next', { supersedes: 'liq' }) })
     expect(h.state.slot).toBeUndefined()
-    h.send({ type: 'Signed', request: stale!.request, hash: '0xexec:liq', raw: 'raw(0xexec:liq)' })
+    h.send({
+      type: 'Signed',
+      request: stale!.request,
+      hash: '0xexec:liq',
+      raw: 'raw(0xexec:liq)',
+      bid: bidOf({ feeLevel: 1 })
+    })
     expect(h.candidates().filter(c => c.intentId === 'liq')).toEqual([])
     expect(h.commands('broadcast')).toHaveLength(0)
     expect(h.state.nextNonce).toBe(0)
@@ -785,9 +792,21 @@ describe('what a plan read and what its own effect changed', () => {
       'authority does not read back from the ledger as itself'
     ],
     [
-      'evidence that names no block',
+      'evidence that names no basis',
       { evidence: [{ id: 'f', version: 'v' }] },
-      'evidence names no block'
+      'evidence names no basis'
+    ],
+    [
+      'evidence whose basis is neither a block nor an observation time',
+      { evidence: [{ id: 'f', version: 'v', basis: { observedAt: -1 } }] },
+      'evidence basis is neither a block nor an observation time'
+    ],
+    [
+      'evidence whose basis is both a block and an observation time',
+      {
+        evidence: [{ id: 'f', version: 'v', basis: { block: 1, blockHash: '0x1', observedAt: 1 } }]
+      },
+      'evidence basis is neither a block nor an observation time'
     ],
     [
       'evidence that shadows the methods the kernel reads it with',

@@ -8,7 +8,8 @@ import { BaseError } from 'viem'
 import type { Finality } from './kernel-chain'
 import type { BotLogger } from './logger'
 
-import { FeeLimitError, NoCommitmentsError } from './errors'
+import { FeeLimitError, FinalityBeyondWindowError, NoCommitmentsError } from './errors'
+import { blocksFor } from './fee-policy'
 import { createKernelChain } from './kernel-chain'
 import { createKernelEffects } from './kernel-effects'
 import { DEFAULT_MAX_DATA_BYTES } from './policy'
@@ -19,17 +20,21 @@ import { createAccountSigner } from './signer'
  * resolves, and one per act not yet at a nonce, each the per-transaction spend ceiling.
  */
 export const TRANSACTION_KERNEL_RESERVATIONS = 4
-const POLL_MS = 1_000
-const REORG_DEPTH = 64
-const MAX_SIM_LAG_BLOCKS = 3
-const LATCH_BOUND_BLOCKS = 100
+const POLL_MS = 2_000
+/** How far below the head blocks are retained; finality must lag less, or the kernel holds it. */
+const REORG_WINDOW_MS = 5 * 60_000
+/** Mainnet's `finalized` block lags 64 to 95 blocks, so a 12s chain still keeps it inside. */
+const MIN_REORG_DEPTH_BLOCKS = 128
+/** How old a simulation may be at the head, though never under 3 blocks on a slow chain. */
+const MAX_SIM_LAG_MS = 6_000
+const MIN_SIM_LAG_BLOCKS = 3
+/** How long a nonce may stay uncertain before the kernel recovers, converted to each chain's blocks. */
+const LATCH_BOUND_MS = 200_000
 const RECOVERY_BOUND_MS = 15 * 60_000
 const MAX_RECOVERY_ATTEMPTS = 3
 const MAX_DISPATCH_LAG_MS = 10_000
 /** Nothing a transaction-only bot signs creates a commitment, so nothing is ever stale-revoked. */
 const REVOKE_AFTER_STALE_MS = 60 * 60_000
-/** How many signed transactions' fees are remembered for their `tx.sent` line. */
-const REMEMBERED_FEES = 256
 const URL = /\b[a-z][a-z\d+.-]*:\/\/\S+/giu
 
 /** A kernel log reason that cannot copy an arbitrary error message or credentialed URL. */
@@ -42,9 +47,6 @@ const kernelErrorReason = (error: unknown): string =>
         ? error.name
         : 'UnknownError'
 
-/** What one signed transaction bids, per gas unit. */
-export type SignedFees = Readonly<{ maxFeePerGasWei: bigint; priorityFeePerGasWei: bigint }>
-
 export type TransactionKernelLimits = Readonly<{
   chainId: number
   targets: readonly Address[]
@@ -53,9 +55,8 @@ export type TransactionKernelLimits = Readonly<{
   maxFeePerGasWei: bigint
   maxSpendWei: bigint
   maxGasLimit: bigint
-  priorityFeePerGasWei: bigint
-  /** Blocks without inclusion before the kernel replaces a candidate. */
-  stuckBlocks: number
+  /** How long a transaction may wait for inclusion before its nonce is stuck; see {@link blocksFor}. */
+  stuckMs: number
   /** How far below head a fact may have been read: see `KernelConfig.maxEvidenceAgeBlocks`. */
   maxEvidenceAgeBlocks: number
 }>
@@ -73,8 +74,9 @@ export type TransactionKernelOptions = Omit<
 export const transactionKernelConfig = (
   limits: Pick<
     TransactionKernelLimits,
-    'chainId' | 'targets' | 'maxSpendWei' | 'stuckBlocks' | 'maxEvidenceAgeBlocks'
+    'chainId' | 'targets' | 'maxSpendWei' | 'stuckMs' | 'maxEvidenceAgeBlocks'
   >,
+  chain: Pick<Chain, 'id' | 'blockTime'>,
   account: Address,
   validator: Validator
 ): KernelConfig => ({
@@ -86,10 +88,10 @@ export const transactionKernelConfig = (
   observedResources: [],
   feeReserve: limits.maxSpendWei,
   feePolicy: () => limits.maxSpendWei,
-  maxSimLagBlocks: MAX_SIM_LAG_BLOCKS,
+  maxSimLagBlocks: blocksFor(MAX_SIM_LAG_MS, chain, MIN_SIM_LAG_BLOCKS),
   maxEvidenceAgeBlocks: limits.maxEvidenceAgeBlocks,
-  stuckBlocks: limits.stuckBlocks,
-  latchBoundBlocks: LATCH_BOUND_BLOCKS,
+  stuckBlocks: blocksFor(limits.stuckMs, chain),
+  latchBoundBlocks: blocksFor(LATCH_BOUND_MS, chain),
   recoveryBoundMs: RECOVERY_BOUND_MS,
   revokeAfterStaleMs: REVOKE_AFTER_STALE_MS,
   maxRecoveryAttempts: MAX_RECOVERY_ATTEMPTS,
@@ -114,14 +116,13 @@ export const transactionKernelSpec = (parameters: {
   effectTimeoutMs: number
   finality: Finality
   logger: BotLogger
-}): Readonly<{
-  live: TransactionKernelOptions
-  /** The fees a transaction this kernel signed bids, while it is among the last few signed. */
-  feesOf: (hash: string) => SignedFees | undefined
-}> => {
+}): Readonly<{ live: TransactionKernelOptions }> => {
   const { limits, account, client, logger } = parameters
-  const fees = new Map<string, SignedFees>()
-  const policySigner = createAccountSigner({
+  const reorgDepth = blocksFor(REORG_WINDOW_MS, parameters.chain, MIN_REORG_DEPTH_BLOCKS)
+  const { finality } = parameters
+  if (typeof finality === 'object' && finality.depth >= reorgDepth)
+    throw new FinalityBeyondWindowError(limits.chainId, finality.depth, reorgDepth)
+  const signer = createAccountSigner({
     account,
     chain: parameters.chain,
     rpcUrl: parameters.rpcUrl,
@@ -137,20 +138,13 @@ export const transactionKernelSpec = (parameters: {
     },
     logger
   })
-  const signer: typeof policySigner = {
-    ...policySigner,
-    sign: async request => {
-      const signed = await policySigner.sign(request)
-      fees.set(signed.txHash, {
-        maxFeePerGasWei: request.maxFeePerGas,
-        priorityFeePerGasWei: request.maxPriorityFeePerGas
-      })
-      for (const hash of fees.keys()) if (fees.size > REMEMBERED_FEES) fees.delete(hash)
-      return signed
-    }
-  }
   const live: TransactionKernelOptions = {
-    config: transactionKernelConfig(limits, account.address, parameters.validator),
+    config: transactionKernelConfig(
+      limits,
+      parameters.chain,
+      account.address,
+      parameters.validator
+    ),
     store: createLedgerStore(
       join(
         parameters.stateDirectory,
@@ -167,14 +161,13 @@ export const transactionKernelSpec = (parameters: {
       client,
       signer,
       maxFeePerGasWei: limits.maxFeePerGasWei,
-      priorityFeePerGasWei: limits.priorityFeePerGasWei,
       maxGasLimit: limits.maxGasLimit,
       materialize: () => Promise.reject(new NoCommitmentsError([]))
     }),
     enrollment: parameters.enrollment,
     pollMs: POLL_MS,
     effectTimeoutMs: parameters.effectTimeoutMs,
-    reorgDepth: REORG_DEPTH,
+    reorgDepth,
     onError: (source, error) =>
       logger.warn('kernel.error', {
         source,
@@ -182,5 +175,5 @@ export const transactionKernelSpec = (parameters: {
         reason: kernelErrorReason(error)
       })
   }
-  return { live, feesOf: hash => fees.get(hash) }
+  return { live }
 }

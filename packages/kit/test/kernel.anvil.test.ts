@@ -1,4 +1,14 @@
-import type { Authored, Block, KernelConfig, LedgerStore, PlanInput, Validator } from '@repo/kernel'
+import type {
+  Authored,
+  Block,
+  KernelConfig,
+  KernelEffects,
+  LedgerStore,
+  PlanInput,
+  SignedTx,
+  TxBid,
+  Validator
+} from '@repo/kernel'
 import type { ChildProcess } from 'node:child_process'
 import type { Hex } from 'viem'
 
@@ -12,6 +22,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
 import { createKernelChain } from '../src/kernel-chain'
 import { createKernelEffects } from '../src/kernel-effects'
+import { NONCE_FILL_MAX_GAS } from '../src/policy'
 import { createAccountSigner } from '../src/signer'
 
 // 8551 is this suite's slot in the repo-wide anvil port registry (bots/blue-liquidation/test/fork/harness.ts).
@@ -61,7 +72,6 @@ const kernelFor = (key: Hex) => {
     client,
     signer,
     maxFeePerGasWei: MAX_FEE,
-    priorityFeePerGasWei: parseGwei('1'),
     maxGasLimit: 100_000n,
     materialize: () => Promise.reject(new Error('nothing to materialize'))
   })
@@ -77,6 +87,28 @@ const until = async (done: () => boolean | Promise<boolean>, what: string) => {
 }
 
 const payload = { kind: 'tx' as const, to: SINK, data: '0x01', value: 0n }
+const SPEND = MAX_FEE * NONCE_FILL_MAX_GAS
+const bid = (nonce: number, overrides: Partial<TxBid> = {}): TxBid => ({
+  nonce,
+  level: 1,
+  kind: 'step',
+  fee: SPEND,
+  recoveryFee: SPEND,
+  ...overrides
+})
+const signTx = async (
+  effects: KernelEffects,
+  terms: TxBid,
+  guard: Parameters<KernelEffects['signTx']>[2]
+) => {
+  const signed = await effects.signTx(payload, terms, guard)
+  if (signed === 'capped') throw new Error('capped')
+  return signed
+}
+const outbidding = ({ bid: { maxFeePerGas, maxPriorityFeePerGas } }: SignedTx) => ({
+  level: 2,
+  outbid: { maxFeePerGas, maxPriorityFeePerGas }
+})
 const open = () => new AbortController().signal
 const guard = (mayAct: boolean) => ({ signal: open(), mayAct: () => mayAct })
 
@@ -107,7 +139,7 @@ describe.skipIf(!hasAnvil)(
     it('reads finality a fixed depth below the head, and blocks with their parent links', async () => {
       const { chain } = kernelFor(KEYS[0]!)
       const { head, finalized } = await chain.latest()
-      expect(finalized.number).toBe(head.number - 2)
+      expect(finalized?.number).toBe(head.number - 2)
       const parent = await chain.block(head.number - 1)
       expect(head.parentHash).toBe(parent.hash)
       expect(await chain.accountCode()).toBe('0x')
@@ -126,8 +158,8 @@ describe.skipIf(!hasAnvil)(
         tagged.latest(),
         client.getBlock({ blockTag: 'safe' })
       ])
-      expect(finalized.number).toBe(Number(safe.number))
-      expect(finalized.number <= head.number).toBe(true)
+      expect(finalized?.number).toBe(Number(safe.number))
+      expect(finalized!.number <= head.number).toBe(true)
       expect(() =>
         createKernelChain({ client, account: account.address, finality: { depth: -1 }, commitment })
       ).toThrow('finality must be safe, finalized, or a non-negative integer depth')
@@ -152,14 +184,13 @@ describe.skipIf(!hasAnvil)(
 
     it('outbids its own candidate on a replacement, within the spend ceiling', async () => {
       const { effects } = kernelFor(KEYS[1]!)
-      const spend = MAX_FEE * 100_000n
-      const first = await effects.signTx(payload, { nonce: 0, fee: spend, level: 1 }, guard(true))
+      const first = await signTx(effects, bid(0), guard(true))
       expect(await effects.broadcast(first.raw, guard(true))).toBe('accepted')
-      const second = await effects.signTx(payload, { nonce: 0, fee: spend, level: 2 }, guard(true))
+      const second = await signTx(effects, bid(0, outbidding(first)), guard(true))
       const [a, b] = [parseTransaction(first.raw as Hex), parseTransaction(second.raw as Hex)]
       expect(b.maxPriorityFeePerGas! > a.maxPriorityFeePerGas!).toBe(true)
       expect(b.maxFeePerGas! > a.maxFeePerGas!).toBe(true)
-      expect(b.gas! * b.maxFeePerGas! <= spend).toBe(true)
+      expect(b.gas! * b.maxFeePerGas! <= SPEND).toBe(true)
       expect(await effects.broadcast(second.raw, guard(true))).toBe('accepted')
       await client.mine({ blocks: 1 })
       expect((await client.getTransactionReceipt({ hash: second.hash as Hex })).status).toBe(
@@ -167,26 +198,17 @@ describe.skipIf(!hasAnvil)(
       )
     })
 
-    it('outbids a pending candidate whose fees it never saw, as after a restart', async () => {
+    it('outbids a pending candidate from its recorded fees alone, as after a restart', async () => {
       const before = kernelFor(KEYS[2]!)
-      const spend = MAX_FEE * 100_000n
-      const first = await before.effects.signTx(
-        payload,
-        { nonce: 0, fee: spend, level: 1 },
-        guard(true)
-      )
+      const first = await signTx(before.effects, bid(0), guard(true))
       expect(await before.effects.broadcast(first.raw, guard(true))).toBe('accepted')
       const restarted = kernelFor(KEYS[2]!)
-      const second = await restarted.effects.signTx(
-        payload,
-        { nonce: 0, fee: spend, level: 2 },
-        guard(true)
-      )
+      const second = await signTx(restarted.effects, bid(0, outbidding(first)), guard(true))
       // geth refuses a replacement that does not raise both fees by 10% (txpool `PriceBump`).
       const [a, b] = [parseTransaction(first.raw as Hex), parseTransaction(second.raw as Hex)]
       expect(b.maxPriorityFeePerGas! * 10n >= a.maxPriorityFeePerGas! * 11n).toBe(true)
       expect(b.maxFeePerGas! * 10n >= a.maxFeePerGas! * 11n).toBe(true)
-      expect(b.gas! * b.maxFeePerGas! <= spend).toBe(true)
+      expect(b.gas! * b.maxFeePerGas! <= SPEND).toBe(true)
       expect(await restarted.effects.broadcast(second.raw, guard(true))).toBe('accepted')
       await client.mine({ blocks: 1 })
       expect((await client.getTransactionReceipt({ hash: second.hash as Hex })).status).toBe(
@@ -196,31 +218,23 @@ describe.skipIf(!hasAnvil)(
 
     it('sends nothing once dispatch is withdrawn, rejects a stale bid, and refuses a zero ceiling', async () => {
       const { effects, account } = kernelFor(KEYS[4]!)
-      const fee = MAX_FEE * 100_000n
-      await expect(
-        effects.signTx(payload, { nonce: 0, fee, level: 1 }, guard(false))
-      ).rejects.toThrow('withdrawn')
-      const signed = await effects.signTx(payload, { nonce: 0, fee, level: 1 }, guard(true))
+      await expect(effects.signTx(payload, bid(0), guard(false))).rejects.toThrow('withdrawn')
+      const signed = await signTx(effects, bid(0), guard(true))
       await expect(effects.broadcast(signed.raw, guard(false))).rejects.toThrow('withdrawn')
       expect(
         await client.getTransactionCount({ address: account.address, blockTag: 'pending' })
       ).toBe(0)
-      const stale = await effects.signTx(
-        payload,
-        { nonce: 0, fee: 100_000n, level: 1 },
-        guard(true)
-      )
+      const stale = await signTx(effects, bid(0, { fee: 100_000n }), guard(true))
       expect(await effects.broadcast(stale.raw, guard(true))).toBe('rejected')
-      await expect(
-        effects.signTx(payload, { nonce: 0, fee: 1n, level: 1 }, guard(true))
-      ).rejects.toThrow('cannot fund a positive per-gas bid')
+      await expect(effects.signTx(payload, bid(0, { fee: 1n }), guard(true))).rejects.toThrow(
+        'cannot fund a positive per-gas bid'
+      )
     })
 
     it('finds the transaction that consumed a nonce, and nothing for a nonce still unused', async () => {
       const { chain, effects } = kernelFor(KEYS[3]!)
-      const fee = MAX_FEE * 100_000n
       for (const nonce of [0, 1, 2]) {
-        const signed = await effects.signTx(payload, { nonce, fee, level: 1 }, guard(true))
+        const signed = await signTx(effects, bid(nonce), guard(true))
         await effects.broadcast(signed.raw, guard(true))
         await client.mine({ blocks: 2 })
       }

@@ -3,14 +3,60 @@ type Edit = Readonly<{ find: string; replace: string }>
 type Cover = Edit & Readonly<{ why: string }>
 
 /**
- * Single-guard mutations of the reducer. Each removes or weakens one check the specification relies
- * on, and the traces must fail for every one of them, except a guard another one already enforces.
- * That one names its cover, and the traces must fail once both are disabled. Every `find` must match
- * `src/kernel.ts` exactly once.
+ * Single-guard mutations of the reducer, or of the source `file` names. Each removes or weakens one
+ * check the specification relies on, and the traces must fail for every one of them, except a guard
+ * another one already enforces. That one names its cover, and the traces must fail once both are
+ * disabled. Every `find` must match its file, `src/kernel.ts` by default, exactly once.
  */
-type Mutation = Edit & Readonly<{ id: string; coveredBy?: Cover }>
+type Mutation = Edit & Readonly<{ id: string; file?: string; coveredBy?: Cover }>
 
 export const MUTATIONS: readonly Mutation[] = [
+  {
+    id: 'a chain refused at start runs anyway',
+    find: "if (s.lifecycle.kind === 'starting') stop(s, out, 'refused', event.reason)",
+    replace: ''
+  },
+  {
+    id: 'the adapter starts on finality lagging past its window',
+    file: 'src/chain-adapter.ts',
+    find: 'if (lag >= options.reorgDepth)',
+    replace: 'if (false)'
+  },
+  {
+    id: 'finality below the window is not held',
+    file: 'src/chain-adapter.ts',
+    find: 'if (finalized.number <= tip.number - options.reorgDepth) {',
+    replace: 'if (false) {'
+  },
+  {
+    id: 'an unserved finality tag is retried forever',
+    file: 'src/chain-adapter.ts',
+    find: "if (!tip) return dispatch({ type: 'Refuse', reason })",
+    replace: ''
+  },
+  {
+    id: 'a chain without a safe tag leaves enrollment waiting',
+    file: 'src/chain-adapter.ts',
+    find: 'if (safe === null)',
+    replace: 'if (false)'
+  },
+  {
+    id: 'held finality alarms on every poll',
+    file: 'src/chain-adapter.ts',
+    find: 'if (!holding)',
+    replace: 'if (true)'
+  },
+  {
+    id: 'held finality never clears its alarm',
+    file: 'src/chain-adapter.ts',
+    find: '    holding = false\n',
+    replace: ''
+  },
+  {
+    id: 'a fresh start takes a nonce that is not final',
+    find: 'if (event.safe !== event.latest) return',
+    replace: ''
+  },
   {
     id: 'finality ignores canonicality',
     find: 'e.block <= s.finalized.number && canonical(s, e)',
@@ -99,18 +145,18 @@ export const MUTATIONS: readonly Mutation[] = [
   },
   {
     id: 'a neutral act stays bound to its evidence after commit',
-    find: '    if (!PRE_COMMIT.has(plan.phase) && !riskIncreasing(plan)) return undefined\n',
+    find: '    if (!biddingUncommitted(plan) && !riskIncreasing(plan)) return undefined\n',
     replace: ''
   },
   {
     id: 'a risk-increasing act escapes its evidence after commit',
-    find: 'if (!PRE_COMMIT.has(plan.phase) && !riskIncreasing(plan)) return undefined',
-    replace: 'if (!PRE_COMMIT.has(plan.phase)) return undefined'
+    find: 'if (!biddingUncommitted(plan) && !riskIncreasing(plan)) return undefined',
+    replace: 'if (!biddingUncommitted(plan)) return undefined'
   },
   {
     id: 'a failed plan keeps its outstanding requests',
-    find: '      releaseSlot(s, Number(n))\n    }\n    plan.reason = reason',
-    replace: '    }\n    plan.reason = reason'
+    find: '    withdraw(s, plan)\n    plan.reason = reason',
+    replace: '    plan.reason = reason'
   },
   {
     id: 'an expired intent stays authorized',
@@ -209,8 +255,8 @@ export const MUTATIONS: readonly Mutation[] = [
   },
   {
     id: 'a candidate does not carry the ids its plan writes',
-    find: '        writes: writesOf(plan),\n',
-    replace: '        writes: [],\n'
+    find: '      writes: writesOf(plan),\n',
+    replace: '      writes: [],\n'
   },
   {
     id: 'a release leaves the ids its plan writes unmarked',
@@ -244,8 +290,8 @@ export const MUTATIONS: readonly Mutation[] = [
   },
   {
     id: 'a release owes no mark until it is answered',
-    find: '    } else s.releases[plan.intentId] = releaseOf(s, plan)\n',
-    replace: '    }\n'
+    find: '    else s.releases[plan.intentId] = releaseOf(s, plan)\n',
+    replace: ''
   },
   {
     id: 'a conflict mark is not persisted',
@@ -315,8 +361,8 @@ export const MUTATIONS: readonly Mutation[] = [
   },
   {
     id: 'a timed-out broadcast counts as rejected',
-    find: "found[1].sent = 'unknown'",
-    replace: "found[1].sent = 'rejected'"
+    find: 'if (found && answerable(found[1])) markUnknown(s, found[1])',
+    replace: "if (found && answerable(found[1])) found[1].sent = 'rejected'"
   },
   {
     id: 'dispatch ignores an orphaned simulation',
@@ -341,18 +387,18 @@ export const MUTATIONS: readonly Mutation[] = [
   },
   {
     id: 'recovery ignores its attempt bound',
-    find: 'if (entry.recoveryAttempts >= config.maxRecoveryAttempts) return markStuck(s, out, entry)',
+    find: '      if (!continued && entry.recoveryAttempts >= config.maxRecoveryAttempts)\n        return markStuck(s, out, entry)\n',
     replace: ''
   },
   {
-    id: 'a stuck nonce is never filled',
-    find: '(s.head?.number ?? 0) - record.lastActionHead >= config.stuckBlocks',
-    replace: 'false'
+    id: 'a stuck nonce is never bid again',
+    find: 'if (s.head.number - sent < config.stuckBlocks) continue',
+    replace: 'continue'
   },
   {
     id: 'a failed recovery fill retries without a later head',
-    find: 'if (record.failedFillHead !== undefined && (s.head?.number ?? 0) <= record.failedFillHead)',
-    replace: 'if (false)'
+    find: 'record.failedFillHead !== undefined && (s.head?.number ?? 0) <= record.failedFillHead',
+    replace: 'false'
   },
   {
     id: 'the reducer keeps references to its caller’s event',
@@ -389,8 +435,8 @@ export const MUTATIONS: readonly Mutation[] = [
     find: 'if (text === s.lastDurable && !awaited) return',
     replace: 'if (text === s.lastDurable) return',
     coveredBy: {
-      find: '    } else s.releases[plan.intentId] = releaseOf(s, plan)\n',
-      replace: '    }\n',
+      find: '    else s.releases[plan.intentId] = releaseOf(s, plan)\n',
+      replace: '',
       why: 'a release records the conflict ids it owes, so its commit changes the ledger whenever a head has marked the last one'
     }
   },
@@ -401,7 +447,7 @@ export const MUTATIONS: readonly Mutation[] = [
   },
   {
     id: 'admission accepts a malformed basis or expiry',
-    find: 'if (!isBlockOrTime(input.basisBlock) || !isBlockOrTime(input.notAfter))',
+    find: 'if (![input.basisBlock, input.notAfter, input.validUntil ?? 0].every(isBlockOrTime))',
     replace: 'if (false)'
   },
   {
@@ -486,13 +532,13 @@ export const MUTATIONS: readonly Mutation[] = [
   },
   {
     id: 'an observed expiry never lowers a deadline',
-    find: 'plan.notAfter = refreshed ?? Math.min(plan.notAfter, ...seen)',
-    replace: 'plan.notAfter = refreshed ?? plan.notAfter'
+    find: '          ? Math.min(plan.notAfter, ...seen)',
+    replace: '          ? plan.notAfter'
   },
   {
     id: 'an observed expiry relaxes a deadline',
-    find: 'plan.notAfter = refreshed ?? Math.min(plan.notAfter, ...seen)',
-    replace: 'plan.notAfter = refreshed ?? Math.max(plan.notAfter, ...seen)'
+    find: '          ? Math.min(plan.notAfter, ...seen)',
+    replace: '          ? Math.max(plan.notAfter, ...seen)'
   },
   {
     id: 'an observed expiry lowers the deadline of a plan not resting on it',
@@ -511,13 +557,13 @@ export const MUTATIONS: readonly Mutation[] = [
   },
   {
     id: 'a new plan ignores the expiries observed with it',
-    find: 'notAfter: withDeadline(s, input.notAfter, input.evidence),',
-    replace: 'notAfter: input.notAfter,'
+    find: 'notAfter: withDeadline(s, Math.min(input.notAfter, input.validUntil ?? NEVER), input.evidence),',
+    replace: 'notAfter: Math.min(input.notAfter, input.validUntil ?? NEVER),'
   },
   {
     id: 'a new stage ignores the expiries observed with it',
-    find: 'notAfter: withDeadline(s, event.notAfter, event.evidence),',
-    replace: 'notAfter: event.notAfter,'
+    find: 'notAfter: withDeadline(s, Math.min(event.notAfter, validUntil ?? NEVER), event.evidence),',
+    replace: 'notAfter: Math.min(event.notAfter, validUntil ?? NEVER),'
   },
   {
     id: 'a fact read below the evidence floor is admitted',
@@ -557,7 +603,12 @@ export const MUTATIONS: readonly Mutation[] = [
   {
     id: 'a plan that parks past its deadline waits for an advance',
     find: '      return lapsed ? failPlan(s, out, plan, lapsed) : undefined',
-    replace: '      return void lapsed'
+    replace: '      return void lapsed',
+    coveredBy: {
+      find: '      if (reason && occupiesNonce(s, plan)) cancel(s, out, plan, reason)\n',
+      replace: '      if (reason && occupiesNonce(s, plan)) void 0\n',
+      why: 'the clock cancels a step waiting in include at its deadline, before it can park'
+    }
   },
   {
     id: 'an advance revives a plan parked past its deadline',
@@ -586,9 +637,9 @@ export const MUTATIONS: readonly Mutation[] = [
     replace: ''
   },
   {
-    id: 'an equal re-read revives a parked plan past its deadline',
-    find: "(plan.phase === 'awaiting-advance' && s.now < plan.notAfter)",
-    replace: "plan.phase === 'awaiting-advance'"
+    id: 'an equal re-read revives a resting plan past its deadline',
+    find: "(plan.phase === 'include' || plan.phase === 'awaiting-advance') && s.now < plan.notAfter",
+    replace: "plan.phase === 'include' || plan.phase === 'awaiting-advance'"
   },
   {
     id: 'a changed re-read keeps a resting plan alive',
@@ -597,12 +648,192 @@ export const MUTATIONS: readonly Mutation[] = [
   },
   {
     id: 'the clock ends no plan at its deadline',
-    find: '      if (reason) failPlan(s, out, plan, reason)',
+    find: '      if (reason && occupiesNonce(s, plan)) cancel(s, out, plan, reason)\n      else if (reason) failPlan(s, out, plan, reason)',
     replace: '      void reason'
   },
   {
     id: 'a new deadline starts at the latest expiry',
     find: 'deadline = Math.min(deadline, seen.expiry)',
     replace: 'deadline = Math.max(deadline, seen.expiry)'
+  },
+  {
+    id: 'a plan bidding at its nonce reserves another fee',
+    find: 'const committed = occupiesNonce(state, plan) ? plan.cursor + 1 : plan.cursor',
+    replace: 'const committed = plan.cursor'
+  },
+  {
+    id: 'a plan bidding again at its nonce is superseded',
+    find: 'if (replaced && (occupiesNonce(s, replaced) || !biddingUncommitted(replaced)))',
+    replace: 'if (replaced && !biddingUncommitted(replaced))'
+  },
+  {
+    id: 'a resolved record is pruned before its plan reads the winner',
+    find: '((p.terms?.nonce === record.nonce && occupiesNonce(s, p)) ||',
+    replace: '(false ||',
+    coveredBy: {
+      find: '    progressPlans(s, out)\n    settleNonces(s)',
+      replace: '    settleNonces(s)',
+      why: 'plans read their winners before the records are settled, in the same transition'
+    }
+  },
+  {
+    id: 'a stop ends clean with a plan out at its nonce',
+    find: "Object.values(s.plans).some(p => p.status === 'executing' && occupiesNonce(s, p))",
+    replace: 'false',
+    coveredBy: {
+      find: 'const openNonces = Object.keys(s.nonces).length > 0',
+      replace: 'const openNonces = false',
+      why: 'a plan out at a nonce keeps that nonce record open'
+    }
+  },
+  {
+    id: 'a re-bid escapes its decision deadline',
+    find: 'if (plan.recovery || !biddingUncommitted(plan)) return undefined',
+    replace: 'if (plan.recovery || occupiesNonce(s, plan)) return undefined',
+    coveredBy: {
+      find: '      if (reason && occupiesNonce(s, plan)) cancel(s, out, plan, reason)\n',
+      replace: '      if (reason && occupiesNonce(s, plan)) void 0\n',
+      why: 'the clock cancels a plan out at its nonce at its deadline, before any re-bid'
+    }
+  },
+  {
+    id: 'a neutral re-bid escapes its evidence',
+    find: 'if (!biddingUncommitted(plan) && !riskIncreasing(plan)) return undefined',
+    replace: 'if (occupiesNonce(s, plan) && !riskIncreasing(plan)) return undefined'
+  },
+  {
+    id: 'a stop leaves a re-bid bidding',
+    find: "if (plan.status !== 'executing' || !biddingUncommitted(plan) || lifecycleAllows(s, plan))",
+    replace:
+      "if (plan.status !== 'executing' || occupiesNonce(s, plan) || lifecycleAllows(s, plan))",
+    coveredBy: {
+      find: '      cancel(s, out, step, `recovering: ${s.lifecycle.reason}`)\n',
+      replace: '',
+      why: 'a re-bid only runs at a stuck nonce, which recovery cancels the step at in the same transition'
+    }
+  },
+  {
+    id: 'a stop fails a plan waiting in include',
+    find: "if (plan.status !== 'executing' || !biddingUncommitted(plan) || lifecycleAllows(s, plan))",
+    replace: "if (plan.status !== 'executing' || lifecycleAllows(s, plan))"
+  },
+  {
+    id: 'a re-bid skips the checks of its first bid',
+    find: "  const rebid = (s: KernelState, out: Command[], plan: Plan) => {\n    plan.phase = 'ready'\n    advance(s, out, plan)",
+    replace:
+      "  const rebid = (s: KernelState, out: Command[], plan: Plan) => {\n    plan.phase = 'await-slot'"
+  },
+  {
+    id: 'a step bids before its predecessor executed',
+    find: "    if (!predecessorsExecuted(s, plan)) return 'ready'\n",
+    replace: '',
+    coveredBy: {
+      find: '      if (!predecessorsExecuted(s, plan)) return\n',
+      replace: '',
+      why: 'a step waiting on its predecessor never simulates, so never reaches the slot'
+    }
+  },
+  {
+    id: 'a covered unknown still counts as uncertain',
+    find: "  !record.candidates.some(d => d.feeLevel > c.feeLevel && d.sent === 'accepted')",
+    replace: '  true'
+  },
+  {
+    id: 'an uncertain nonce is re-sent more than once',
+    find: '!record.resent?.includes(c.hash)',
+    replace: 'true'
+  },
+  {
+    id: 'an uncertain nonce is bid over while its re-send is out',
+    find: '    if (sending(s, record)) return false\n',
+    replace: ''
+  },
+  {
+    id: 'a step re-bids while latched',
+    find: "step.phase === 'include' && !step.terms!.capped && !latched(s)",
+    replace: "step.phase === 'include' && !step.terms!.capped",
+    coveredBy: {
+      find: "return !plan.recovery && occupiesNonce(s, plan) && latched(s) ? 'include' : undefined",
+      replace: 'return undefined',
+      why: 'the slot holds a latched re-bid back too'
+    }
+  },
+  {
+    id: 'an acceptance keeps the age of an earlier uncertainty',
+    find: '    delete candidate.unknownSince\n',
+    replace: ''
+  },
+  {
+    id: 'the bytes of a recovery bid at a resolved nonce are handed off',
+    find: "    if (resent?.[0].resolution) return 'its nonce resolved'\n",
+    replace: ''
+  },
+  {
+    id: 'a step at its cap bids again',
+    find: '    plan.terms!.capped = true\n',
+    replace: ''
+  },
+  {
+    id: 'a plan waiting in ready bids before its resolved nonce settles it',
+    find: "      if (occupiesNonce(s, plan) && s.nonces[plan.terms!.nonce]!.resolution)\n        settleByWinner(s, out, plan)\n      else if (plan.phase === 'ready') advance(s, out, plan)",
+    replace:
+      "      if (plan.phase === 'ready') advance(s, out, plan)\n      else if (occupiesNonce(s, plan) && s.nonces[plan.terms!.nonce]!.resolution)\n        settleByWinner(s, out, plan)"
+  },
+  {
+    id: 'hand-off ignores the deadline of a plan its evidence does not bind',
+    find: '    expired(s, plan) ??\n    stillAuthorized(s, plan) ??',
+    replace: '    stillAuthorized(s, plan) ??'
+  },
+  {
+    id: 'a cancel whose step executed still ends cancelled',
+    find: '&& !plan.neutralized && included.length === 0)',
+    replace: '&& !plan.neutralized)'
+  },
+  {
+    id: 'a compensating notice says cancelled',
+    find: "    notify(out, plan.intentId, 'compensating', reason)\n",
+    replace:
+      "    emit(out, { type: 'notify', intentId: plan.intentId, notice: 'compensating', reason, ...(plan.cancelled && { code: 'cancelled' }) })\n"
+  },
+  {
+    id: 'the fee ceiling fails its recovery',
+    find: "    plan.terms!.capped = true\n    plan.phase = 'include'\n    if (!plan.recovery) return\n",
+    replace:
+      "    if (plan.recovery) return failPlan(s, out, plan, 'ceiling')\n    plan.terms!.capped = true\n    plan.phase = 'include'\n"
+  },
+  {
+    id: 'a rejected candidate re-sent at the ceiling stays rejected',
+    find: "candidate.sent === 'unsent' || candidate.sent === 'rejected'",
+    replace: "candidate.sent === 'unsent'"
+  },
+  {
+    id: 'a cancel whose compensation acted ends cancelled',
+    find: '    if (owner) owner.neutralized = true\n',
+    replace: ''
+  },
+  {
+    id: 'a refreshed observation outlives what the decision is valid until',
+    find: '          : Math.min(refreshed, plan.validUntil ?? NEVER)',
+    replace: '          : refreshed'
+  },
+  {
+    id: 'recovery fills a step it never cancelled',
+    find: '      cancel(s, out, step, `recovering: ${s.lifecycle.reason}`)\n',
+    replace: ''
+  },
+  {
+    id: 'an advance that names no validity drops the one its plan was decided with',
+    find: 'const validUntil = event.validUntil ?? plan.validUntil',
+    replace: 'const validUntil = event.validUntil'
+  },
+  {
+    id: 'a recovery bid rejected at its own nonce waits there forever',
+    find: '      if (rejectedOnly(record)) {\n        rebidRejected(s, out, record)\n        continue\n      }',
+    replace: '      if (rejectedOnly(record)) continue'
+  },
+  {
+    id: 'a restart revives the age of an unknown that was covered',
+    find: 'const aged = unknownSince !== undefined && uncovered(record, c)',
+    replace: 'const aged = unknownSince !== undefined'
   }
 ]

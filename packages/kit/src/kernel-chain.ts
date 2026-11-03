@@ -1,7 +1,15 @@
 import type { Block, KernelChain, Log } from '@repo/kernel'
 import type { Address, BlockTag, Client, Hex } from 'viem'
 
-import { hexToBigInt, isAddressEqual, numberToHex, TransactionReceiptNotFoundError } from 'viem'
+import {
+  BaseError,
+  BlockNotFoundError,
+  hexToBigInt,
+  InvalidParamsRpcError,
+  isAddressEqual,
+  numberToHex,
+  TransactionReceiptNotFoundError
+} from 'viem'
 import { getBlock, getBlockNumber, getCode, getTransactionReceipt } from 'viem/actions'
 
 /**
@@ -32,6 +40,11 @@ const toBlock = (block: {
     timestamp: block.timestamp
   }
 }
+
+/** A node that rejects a block tag as a parameter, or answers it with no block, does not serve it. */
+const servesNoTag = (error: unknown) =>
+  error instanceof BaseError &&
+  error.walk(e => e instanceof InvalidParamsRpcError || e instanceof BlockNotFoundError) !== null
 
 const toLogs = (logs: readonly { address: Hex; topics: readonly Hex[]; data: Hex }[]): Log[] =>
   logs.map(({ address, topics, data }) => ({ address, topics: [...topics], data }))
@@ -90,10 +103,20 @@ export const createKernelChain = (options: {
       )
     )
 
+  /** The block at `tag`, or `null` when the chain does not serve it. */
+  const tagged = async (tag: 'safe' | 'finalized') => {
+    try {
+      return toBlock(await getBlock(client, { blockTag: tag }))
+    } catch (error) {
+      if (servesNoTag(error)) return null
+      throw error
+    }
+  }
+
   const finalizedOf = async (head: Block) => {
     if (typeof finality === 'string') {
-      const block = toBlock(await getBlock(client, { blockTag: finality }))
-      return { number: block.number, timestamp: block.timestamp }
+      const block = await tagged(finality)
+      return block && { number: block.number, timestamp: block.timestamp }
     }
     const number = Math.max(0, head.number - finality.depth)
     const block = toBlock(await getBlock(client, { blockNumber: BigInt(number) }))
@@ -106,6 +129,7 @@ export const createKernelChain = (options: {
       return { head, finalized: await finalizedOf(head) }
     },
     block: async number => toBlock(await getBlock(client, { blockNumber: BigInt(number) })),
+    safe: () => tagged('safe'),
     nonceAt: async at => {
       const [latest, pending] = await Promise.all([
         client.request({

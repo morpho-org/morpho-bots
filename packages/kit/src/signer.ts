@@ -1,6 +1,6 @@
 import type { Account, Address, Chain, Hex, LocalAccount, Transport } from 'viem'
 
-import { createWalletClient, isAddressEqual, keccak256, RpcError } from 'viem'
+import { BaseError, createWalletClient, isAddressEqual, keccak256, RpcError } from 'viem'
 import { getBlock, prepareTransactionRequest, sendRawTransaction } from 'viem/actions'
 
 import type { Logger } from './logger'
@@ -10,7 +10,16 @@ import { PolicyViolationError, PreparedTransactionError, SignWithdrawnError } fr
 import { evaluatePolicy } from './policy'
 import { createHttpTransport } from './transport'
 
-const TRANSACTION_ALREADY_KNOWN = /already known|transaction already imported/i
+/**
+ * The whole of geth's and reth's answer when the pool already holds these exact bytes, which
+ * carries no hash: https://github.com/ethereum/go-ethereum/blob/master/core/txpool/errors.go
+ */
+const ALREADY_KNOWN = 'already known'
+
+/** The node already pools these exact bytes, which is acceptance of their hash. */
+export const isAlreadyKnown = (error: unknown) =>
+  error instanceof BaseError &&
+  error.walk(e => e instanceof RpcError && e.details === ALREADY_KNOWN) !== null
 
 /**
  * Prepares, policy-checks, and signs at an explicit nonce without broadcasting, so a caller can make
@@ -31,9 +40,9 @@ type SignTx = (request: {
 }) => Promise<{ nonce: number; txHash: Hex; raw: Hex; gas: bigint }>
 
 /**
- * Sends signed bytes to the primary endpoint only; anything that may have reached the pool is
- * `broadcastUnknown`, to reconcile by `keccak256(raw)`. A throw means the endpoint rejects the bytes
- * now, not that an earlier send of the same bytes never landed.
+ * Sends signed bytes to the primary endpoint only; "already known" is acceptance, and anything else
+ * that may have reached the pool is `broadcastUnknown`, to reconcile by `keccak256(raw)`. A throw
+ * means the endpoint rejects the bytes now, not that an earlier send of the same bytes never landed.
  */
 type BroadcastRaw = (raw: Hex) => Promise<{ broadcastUnknown?: true }>
 
@@ -138,7 +147,8 @@ export function createAccountSigner(options: {
       // The signed bytes are authoritative: a mismatched response is as ambiguous as a lost one.
       return responseHash === keccak256(raw) ? {} : { broadcastUnknown: true }
     } catch (error) {
-      if (error instanceof RpcError && !TRANSACTION_ALREADY_KNOWN.test(error.details)) throw error
+      if (isAlreadyKnown(error)) return {}
+      if (error instanceof RpcError) throw error
       return { broadcastUnknown: true }
     }
   }

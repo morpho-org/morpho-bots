@@ -10,7 +10,7 @@ import type {
 import { HELD_STATES } from './types'
 
 /** Any change to {@link DurableLedger}'s shape bumps this; a ledger in any other format is refused. */
-export const LEDGER_FORMAT = 4
+export const LEDGER_FORMAT = 6
 
 export const isHeld = (state: EntryState | undefined): state is HeldState =>
   HELD_STATES.some(held => held === state)
@@ -41,7 +41,6 @@ export const toDurable = (state: KernelState, config: KernelConfig): DurableLedg
     nonces[record.nonce] = {
       nonce: record.nonce,
       candidates: record.candidates,
-      ...(record.unknownSince === undefined ? {} : { unknownSince: record.unknownSince }),
       ...(record.foreign ? { foreign: true as const } : {})
     }
   }

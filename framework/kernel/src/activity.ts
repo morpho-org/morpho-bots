@@ -8,8 +8,10 @@ const sends = (before: KernelState, records: readonly NonceRecord[]): KernelActi
     record.candidates.flatMap(candidate => {
       const was = before.nonces[record.nonce]?.candidates.find(c => c.hash === candidate.hash)
       if (candidate.sent === 'unsent' || candidate.sent === (was?.sent ?? 'unsent')) return []
-      const { intentId, step, kind, hash, sent: status } = candidate
-      return [{ type: 'sent', intentId, step, kind, nonce: record.nonce, hash, status } as const]
+      const { intentId, step, kind, hash, sent: status, maxFeePerGas } = candidate
+      const fees = { maxFeePerGas, maxPriorityFeePerGas: candidate.maxPriorityFeePerGas }
+      const { nonce } = record
+      return [{ type: 'sent', intentId, step, kind, nonce, hash, status, ...fees } as const]
     })
   )
 
@@ -63,10 +65,20 @@ export const activityOf = (
     ...(restored ? [] : sends(before, [...Object.values(after.nonces), ...pruned.nonces])),
     ...releases(before, after, event),
     ...inclusions(before, [...Object.values(after.plans), ...pruned.plans]),
+    ...pruned.nonces.map(
+      (record): KernelActivity => ({
+        type: 'final',
+        nonce: record.nonce,
+        hashes: record.candidates.map(c => c.hash)
+      })
+    ),
     ...(restored ? [] : entries(before, after)),
     ...commands
       .filter(command => command.type === 'notify')
       .map(({ type: _, ...notice }): KernelActivity => ({ type: 'notice', ...notice })),
-    ...alarms.map((reason): KernelActivity => ({ type: 'alarm', reason }))
+    ...alarms.map((reason): KernelActivity => ({ type: 'alarm', reason })),
+    ...(before.lifecycle.kind === 'starting' && after.lifecycle.kind === 'running'
+      ? [{ type: 'running' } as const]
+      : [])
   ]
 }

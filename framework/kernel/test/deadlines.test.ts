@@ -191,11 +191,11 @@ describe('a shortened deadline at the signer and handoff guards', () => {
   })
 
   it.each([
-    ['neutral', (h: Harness) => liquidation(h, 'act', { notAfter: 10_000 }), 'sent'],
-    ['risk-increasing', increasing, 'withheld: evidence expired']
+    ['neutral', (h: Harness) => liquidation(h, 'act', { notAfter: 10_000 })],
+    ['risk-increasing', increasing]
   ] as const)(
-    'a %s act whose deadline falls and passes after commit is %s',
-    (_kind, plan, outcome) => {
+    'a %s act whose deadline falls and passes after commit is withheld and cancelled',
+    (_kind, plan) => {
       const h = new Harness().start()
       const kernel = createKernel(h.config)
       submit(h, plan(h))
@@ -203,19 +203,14 @@ describe('a shortened deadline at the signer and handoff guards', () => {
       h.sign()
       expect(h.state.plans.act?.phase).toBe('commit')
       observed(h, seen(1_000))
+      expect(kernel.withholds(h.state, 'act', 1_000)).toBe('evidence expired')
       h.tick(1_000)
-      const withheld = kernel.withholds(h.state, 'act', h.now)
       h.flush()
       h.broadcast()
-      const [candidate] = h.candidates()
-      if (outcome === 'sent') {
-        expect(withheld).toBeUndefined()
-        expect(candidate).toMatchObject({ sent: 'accepted' })
-      } else {
-        expect(withheld).toBe('evidence expired')
-        expect(candidate).toMatchObject({ sent: 'withheld' })
-        expect(h.lastReason('act')).toBe(outcome)
-      }
+      expect(h.candidates()).toMatchObject([{ sent: 'withheld' }])
+      expect(h.commands('broadcast')).toEqual([])
+      expect(h.notices('act')).toEqual(['admitted', 'compensating'])
+      expect(h.lastReason('act')).toBe('evidence expired')
     }
   )
 
@@ -256,9 +251,8 @@ describe('a shortened deadline at the signer and handoff guards', () => {
     h.sign()
     expect(h.state.plans.act?.phase).toBe('commit')
     observed(h, seen(1_000))
-    h.tick(1_000)
-    expect(kernel.withholds(h.state, 'act', h.now)).toBe('evidence expired')
-    expect(kernel.withholds(asRecovery(h), 'act', h.now)).toBeUndefined()
+    expect(kernel.withholds(h.state, 'act', 1_000)).toBe('evidence expired')
+    expect(kernel.withholds(asRecovery(h), 'act', 1_000)).toBeUndefined()
   })
 
   it('ends a risk-reducing plan at the deadline its evidence fell to', () => {

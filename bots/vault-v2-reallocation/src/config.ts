@@ -63,7 +63,7 @@ export type Config = {
   allowIdleReallocation: boolean
   /** Read, plan, and simulate as normal, but never submit — the operator ramp-up mode. */
   dryRun: boolean
-  /** Where the kernel keeps the account's ledger, and whether that ledger must already exist. */
+  /** Where the kernel keeps the account's ledger. */
   kernel: KernelStoreConfig
   maxFeePerGasWei: bigint
   logLevel: LogLevel

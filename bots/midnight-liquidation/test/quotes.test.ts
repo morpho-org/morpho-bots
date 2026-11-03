@@ -108,6 +108,7 @@ function fakeSelector(
         clamped: options.clamped ?? false,
         ageMs: 0
       })),
+    curveOf: () => undefined,
     snapshot: () => []
   }
   return { selector, refreshed }

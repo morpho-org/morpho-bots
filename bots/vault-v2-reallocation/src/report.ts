@@ -1,8 +1,8 @@
 import type { KernelView } from '@repo/controller'
 import type { Keyed } from '@repo/engine'
-import type { Logger, SignedFees } from '@repo/kit'
+import type { Logger } from '@repo/kit'
 
-import { isBusy } from '@repo/controller'
+import { isBusy, pendingFields } from '@repo/controller'
 import { createTxReporter } from '@repo/kit'
 
 import type { Decision, VaultReading } from './reallocation'
@@ -24,8 +24,6 @@ export const createReporter = (deps: {
   whitelist: readonly string[]
   /** Each vault's adapter as the startup checks resolved it. */
   adapters: Readonly<Record<string, string>>
-  /** The fees a transaction bids, when the kernel that signed it still remembers them. */
-  feesOf?: (hash: string) => SignedFees | undefined
   logger: Logger
 }) => {
   const { logger } = deps
@@ -87,13 +85,13 @@ export const createReporter = (deps: {
       vaults: deps.whitelist.length,
       ...tick.counts,
       ...counts,
-      errors: counts.errors + tick.counts.errors
+      errors: counts.errors + tick.counts.errors,
+      ...pendingFields(view)
     })
   }
 
   const reportActivity = createTxReporter({
     logger,
-    feesOf: deps.feesOf,
     reportNotSent: ({ id, ...fields }) =>
       logger.info('reallocation.not_broadcast', { vault: id, ...fields })
   })

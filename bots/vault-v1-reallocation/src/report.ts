@@ -1,8 +1,8 @@
 import type { KernelView } from '@repo/controller'
 import type { Keyed } from '@repo/engine'
-import type { Logger, SignedFees } from '@repo/kit'
+import type { Logger } from '@repo/kit'
 
-import { isBusy } from '@repo/controller'
+import { isBusy, pendingFields } from '@repo/controller'
 import { createTxReporter } from '@repo/kit'
 
 import type { Decision, VaultReading } from './reallocation'
@@ -20,12 +20,7 @@ type ReadState = Readonly<{
  * The bot's operator log. Per read, the per-vault lines and `tick.end` (a vault the read itself failed is logged by the read); per kernel transaction, the
  * {@link createTxReporter} events and `reallocation.not_broadcast`.
  */
-export const createReporter = (deps: {
-  whitelist: readonly string[]
-  /** The fees a transaction bids, when the kernel that signed it still remembers them. */
-  feesOf?: (hash: string) => SignedFees | undefined
-  logger: Logger
-}) => {
+export const createReporter = (deps: { whitelist: readonly string[]; logger: Logger }) => {
   const { logger } = deps
 
   const reportRead = ({ vaults, decisions, view, tick }: ReadState) => {
@@ -69,13 +64,13 @@ export const createReporter = (deps: {
       vaults: deps.whitelist.length,
       ...tick.counts,
       ...counts,
-      errors: counts.errors + tick.counts.errors
+      errors: counts.errors + tick.counts.errors,
+      ...pendingFields(view)
     })
   }
 
   const reportActivity = createTxReporter({
     logger,
-    feesOf: deps.feesOf,
     reportNotSent: ({ id, ...fields }) =>
       logger.info('reallocation.not_broadcast', { vault: id, ...fields })
   })

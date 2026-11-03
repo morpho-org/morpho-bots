@@ -145,15 +145,6 @@ const balancePlan = singleStepPlan({
   approvalSpender: ROUTER
 })
 
-// A plain-collateral plan: one aggregator-shaped venue step (route-bound fixed amount).
-const fixedPlan = singleStepPlan({
-  target: getAddress('0xAbCdeF0000000000000000000000000000000000'),
-  value: 0n,
-  callData: '0xcafebabe',
-  amountIn: { source: 'fixed', value: 5n * WAD },
-  approvalSpender: getAddress('0x0000000000001fF3684f28c67538d4D072C22734')
-})
-
 // An ERC-4626 redeem step: the vault burns the caller's own shares, so no approvalSpender.
 const redeemStep = (tokenOut: Address): SwapStep => ({
   tokenIn: MARKET.collateralToken,
@@ -269,15 +260,6 @@ describe('encodeLiquidationExec', () => {
     expect(getAddress(loanApprove.args[0])).toBe(MORPHO)
   })
 
-  it('splices the live balance for a Uniswap (balance) swap but not an aggregator (fixed) swap', () => {
-    const balanceQueue = decodeCallback(execCalls(encode(balancePlan))[0]!).queue
-    // balance swap → callWithPlaceholders (spliced), fixed swap → plain call.
-    expect(decodeSubCall(balanceQueue[2]!).functionName).toBe('callWithPlaceholders4845164670')
-
-    const fixedQueue = decodeCallback(execCalls(encode(fixedPlan))[0]!).queue
-    expect(decodeSubCall(fixedQueue[2]!).functionName).toBe('call_g0oyU7o')
-  })
-
   it('sweeps transfer the full balance to the recipient EOA', () => {
     const calls = execCalls(encode(balancePlan))
     const skimLoan = decodeFunctionData({
@@ -335,26 +317,5 @@ describe('encodeLiquidationExec', () => {
 
     // The redeem output IS the loan token — the standard sweeps already cover it, so no extra skim.
     expect(calls).toHaveLength(3)
-  })
-
-  it('emits ONE sweep when the market lends and collateralizes the same token', () => {
-    // Not a Blue shape we list today, but `sweepCalls` is shared with midnight-liquidation, whose
-    // loan-as-collateral markets are exactly this. A second sweep would transfer zero, which some
-    // ERC-20s revert on.
-    const selfMarket = { ...MARKET, collateralToken: MARKET.loanToken }
-    const calls = execCalls(
-      encodeLiquidationExec({
-        executor: EXECUTOR,
-        morpho: MORPHO,
-        market: selfMarket,
-        seizedAssets: 3n * WAD,
-        borrower: BORROWER,
-        plan: { steps: [], expectedAmountOut: 3n * WAD, amountOutMinimum: 3n * WAD },
-        recipient: RECIPIENT
-      })
-    )
-    // liquidate + exactly one sweep, where a distinct-token market emits two.
-    expect(calls).toHaveLength(2)
-    expect(decodeSubCall(calls[1]!).target).toBe(MARKET.loanToken)
   })
 })

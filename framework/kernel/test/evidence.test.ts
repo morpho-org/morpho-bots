@@ -152,6 +152,86 @@ describe('evidence at admission', () => {
   })
 })
 
+describe('an offchain fact', () => {
+  const QUOTE = 'quote/p1'
+  const quote = (h: Harness, version = 'r1'): Fact => ({
+    id: QUOTE,
+    version,
+    basis: { observedAt: h.now }
+  })
+  const quoted = (version = 'r1', expiry = FRESH_UNTIL): Observation => ({
+    id: QUOTE,
+    version,
+    expiry
+  })
+  const quotedLiquidation = (h: Harness, intentId: string, extra: Partial<PlanInput> = {}) =>
+    liquidation(h, intentId, { evidence: [fact(h), quote(h)], ...extra })
+
+  it('is admitted beside a chain fact, with no block for the kernel to hold', () => {
+    const h = new Harness().start()
+    submit(h, quotedLiquidation(h, 'liq'), [seen(), quoted()])
+    expect(h.notices('liq')).toEqual(['admitted'])
+    h.drive()
+    expect(h.candidate('0xexec:liq')).toMatchObject({ sent: 'accepted' })
+  })
+
+  it('refuses an act once the offchain fact is at another version', () => {
+    const h = new Harness().start()
+    submit(h, quotedLiquidation(h, 'stale'), [seen(), quoted('r2')])
+    expect(h.refusal('stale')).toEqual({
+      code: 'evidence_invalid',
+      reason: `evidence ${QUOTE} changed`
+    })
+    submit(h, quotedLiquidation(h, 'requoted'), [seen(), quoted()])
+    change(h, quoted('r2'))
+    h.simulate()
+    expect(h.lastReason('requoted')).toBe(`evidence ${QUOTE} changed`)
+    expect(h.commands('sign')).toHaveLength(0)
+  })
+
+  it('refuses an act at the offchain fact expiry', () => {
+    const h = new Harness().start()
+    submit(h, quotedLiquidation(h, 'lapsed'), [seen(), quoted('r1', h.now)])
+    expect(h.refusal('lapsed')?.code).toBe('evidence_expired')
+    submit(h, quotedLiquidation(h, 'liq'), [seen(), quoted('r1', h.now + 1_000)])
+    expect(h.notices('liq')).toEqual(['admitted'])
+    h.tick(2_000)
+    expect(h.lastReason('liq')).toBe('evidence expired')
+    expect(h.commands('sign')).toHaveLength(0)
+  })
+
+  it('refuses an act whose offchain fact is observed with no expiry', () => {
+    const h = new Harness().start()
+    submit(h, quotedLiquidation(h, 'unbounded'), [seen(), { id: QUOTE, version: 'r1' }])
+    expect(h.refusal('unbounded')).toEqual({
+      code: 'evidence_invalid',
+      reason: `evidence ${QUOTE} is offchain with no expiry`
+    })
+  })
+
+  it('refuses an act resting on offchain facts alone', () => {
+    const h = new Harness().start()
+    submit(h, liquidation(h, 'unanchored', { evidence: [quote(h)] }), [quoted()])
+    expect(h.refusal('unanchored')).toEqual({
+      code: 'malformed',
+      reason: 'evidence names no block'
+    })
+  })
+
+  it('is never refused for predating our own effect', () => {
+    const h = new Harness().start()
+    const early = quote(h)
+    submit(h, liquidation(h, 'first'))
+    h.drive()
+    h.head()
+    h.mine(h.candidate('0xexec:first').hash)
+    expect(h.state.conflictMarks[P1]).toBe(h.block)
+    h.tick(1_000)
+    submit(h, liquidation(h, 'again', { evidence: [fact(h), early] }), [seen(), quoted()])
+    expect(h.notices('again')).toEqual(['admitted'])
+  })
+})
+
 describe('evidence before and after a nonce', () => {
   it('refuses a plan whose fact changes before it reaches the slot', () => {
     const h = new Harness().start()
@@ -328,7 +408,7 @@ describe('a quote deadline before and after a nonce', () => {
     expect(h.candidates()).toEqual([])
   })
 
-  it('hands off a neutral plan whose deadline passed while its ledger write was held', () => {
+  it('withholds a neutral plan whose deadline passed while its ledger write was held', () => {
     const h = new Harness().start()
     submit(h, liquidation(h, 'liq', { notAfter: h.now + 1_000 }))
     h.simulate()
@@ -336,8 +416,10 @@ describe('a quote deadline before and after a nonce', () => {
     h.tick(2_000)
     h.flush()
     h.broadcast()
-    expect(h.candidate('0xexec:liq')).toMatchObject({ nonce: 0, sent: 'accepted' })
-    expect(h.notices('liq')).toEqual(['admitted'])
+    expect(h.candidate('0xexec:liq')).toMatchObject({ nonce: 0, sent: 'withheld' })
+    expect(h.broadcastsTo('exec')).toHaveLength(0)
+    expect(h.notices('liq')).toEqual(['admitted', 'compensating'])
+    expect(h.lastReason('liq')).toBe('evidence expired')
   })
 })
 
@@ -433,15 +515,15 @@ describe('an act between its committed nonce and its handoff', () => {
 
   it.each([
     ['neutral', 'its fact changes', 'sent'],
-    ['neutral', 'its evidence deadline passes', 'sent'],
-    ['neutral', 'a halt lands', 'lifecycle forbids this action'],
-    ['neutral', 'its simulation is orphaned', 'simulation orphaned by a reorg'],
-    ['neutral', 'its dispatch window passes', 'dispatch window exceeded'],
-    ['increasing', 'its fact changes', `evidence ${FACT} changed`],
+    ['neutral', 'its evidence deadline passes', 'evidence expired'],
+    ['neutral', 'a halt lands', 'withheld: lifecycle forbids this action'],
+    ['neutral', 'its simulation is orphaned', 'withheld: simulation orphaned by a reorg'],
+    ['neutral', 'its dispatch window passes', 'withheld: dispatch window exceeded'],
+    ['increasing', 'its fact changes', `withheld: evidence ${FACT} changed`],
     ['increasing', 'its evidence deadline passes', 'evidence expired'],
-    ['increasing', 'a halt lands', 'lifecycle forbids this action'],
-    ['increasing', 'its simulation is orphaned', 'simulation orphaned by a reorg'],
-    ['increasing', 'its dispatch window passes', 'dispatch window exceeded']
+    ['increasing', 'a halt lands', 'withheld: lifecycle forbids this action'],
+    ['increasing', 'its simulation is orphaned', 'withheld: simulation orphaned by a reorg'],
+    ['increasing', 'its dispatch window passes', 'withheld: dispatch window exceeded']
   ] as const)('a %s act when %s: %s', (kind, stimulus, outcome) => {
     const h = new Harness().start()
     h.head()
@@ -459,7 +541,7 @@ describe('an act between its committed nonce and its handoff', () => {
       expect(h.notices('act')).toEqual(['admitted'])
     } else {
       expect(sent).toMatchObject({ nonce: 0, sent: 'withheld' })
-      expect(h.lastReason('act')).toBe(`withheld: ${outcome}`)
+      expect(h.lastReason('act')).toBe(outcome)
     }
   })
 
@@ -511,7 +593,7 @@ describe('an act between its committed nonce and its handoff', () => {
 })
 
 describe('a plan whose only cost is its fee', () => {
-  it('reserves its fee, and is not withheld after commit for stale evidence or a passed deadline', () => {
+  it('reserves its fee, and is not withheld after commit for stale evidence', () => {
     const h = new Harness().start()
     submit(h, liquidation(h, 'liq', { notAfter: h.now + 1_000 }))
     expect(h.state.plans.liq?.envelope).toEqual({ ids: [], consumes: {} })
@@ -519,7 +601,6 @@ describe('a plan whose only cost is its fee', () => {
     h.simulate()
     h.sign()
     change(h)
-    h.tick(2_000)
     h.flush()
     h.broadcast()
     expect(h.candidate('0xexec:liq')).toMatchObject({ sent: 'accepted' })

@@ -2,6 +2,7 @@ import type { Emit, Graph, Keyed, KeyRecord, Lane, Node } from '@repo/engine'
 import type { Conflicts, KernelActivity, KernelNodes, KernelRequest, StepSpec } from '@repo/kernel'
 
 import { emitTo, every, GraphDefinitionError, keyRecord, reachable, watch } from '@repo/engine'
+import { isChainFact } from '@repo/kernel'
 
 import type { FactNode, FactReading } from './act'
 import type { BackoffPolicy, Backoff } from './backoff'
@@ -20,8 +21,8 @@ import { isBusy } from './view'
 
 /**
  * `seq` rises with every request a run makes, so an effect can refuse a redelivered one. A
- * preparation builds only from `input`, the key's reading captured when its fact stood at `version`,
- * never from a later read, so the act it returns is what that fact describes.
+ * preparation builds only from `input`, the key's reading captured when its facts stood at `version`,
+ * never from a later read, so the act it returns is what those facts describe.
  */
 export type PrepareRequest<I = unknown> = Readonly<{
   id: string
@@ -34,11 +35,12 @@ export type PrepareRequest<I = unknown> = Readonly<{
 }>
 
 /**
- * A preparation's answer: the steps of an act to submit until `validUntil`, or why there is none and
- * whether that failure backs the key's task off.
+ * A preparation's answer: the steps of an act, or why there is none and whether that failure backs
+ * the key's task off. The act holds while every fact it rests on does; `validUntil` only shortens
+ * that, for a preparation that read something no fact carries.
  */
 export type PrepareOutcome =
-  | Readonly<{ ok: true; steps: readonly StepSpec[]; validUntil: number }>
+  | Readonly<{ ok: true; steps: readonly StepSpec[]; validUntil?: number }>
   | Readonly<{ ok: false; reason: string; backoff: boolean }>
 
 /** What a preparation's handler receives beside its request. */
@@ -153,7 +155,7 @@ export type TaskEvent =
 /** A voided preparation keeps its lane slot until it answers, but can never become ready. */
 type Preparation = Readonly<{
   id: string
-  reading: FactReading<string>
+  readings: readonly FactReading<string>[]
   inputFingerprint: string
   task: string
   /** The conflicts its task declared when it was asked, which its act carries. */
@@ -164,11 +166,12 @@ type Preparation = Readonly<{
 type Ready = Preparation & Readonly<{ answer: Extract<PrepareResult, { ok: true }> }>
 
 /** An act sent to the kernel: the task it carries out and the reading of its key's fact it rests on. */
-type Sent = Readonly<{ intentId: string; task: string; reading: FactReading<string> }>
+type Sent = Readonly<{ intentId: string; task: string; readings: readonly FactReading<string>[] }>
 
 type Family = Readonly<{
   candidates?: Keyed<unknown>
-  facts?: Keyed<unknown>
+  /** Each fact node's level, in the order the family names them. */
+  facts: readonly (Keyed<unknown> | null)[]
   inputs?: Keyed<unknown>
   view?: KernelView
   backoff?: Backoff
@@ -208,7 +211,10 @@ const heldDrop = (
   wanted: Wanted | undefined,
   now: number
 ): DropReason | undefined => {
-  if (ready.answer.validUntil <= now) return 'preparation_expired'
+  const { validUntil } = ready.answer
+  if (validUntil !== undefined && validUntil <= now) return 'preparation_expired'
+  if (ready.readings.some(({ expiry }) => expiry !== undefined && expiry <= now))
+    return 'fact_expired'
   if (wanted === undefined) return 'not_candidate'
   if (wanted.kind === 'rejected') return 'policy_rejected'
   if (wanted.name !== ready.task || !sameConflicts(wanted.conflicts, ready.conflicts))
@@ -218,14 +224,19 @@ const heldDrop = (
 
 /** Why a ready act is discarded as it is about to go to the kernel, in the order it is checked. */
 const submitDrop = (
-  { reading: captured }: Ready,
-  reading: FactReading<string> | undefined,
+  { readings: captured }: Ready,
+  readings: readonly FactReading<string>[] | undefined,
   now: number
 ): DropReason | undefined => {
-  if (reading === undefined) return 'fact_unavailable'
-  if (captured.expiry === undefined) return 'fact_unbounded'
-  if (captured.expiry <= now) return 'fact_expired'
-  if (reading.fact.version !== captured.fact.version) return 'fact_changed'
+  if (readings === undefined) return 'fact_unavailable'
+  if (
+    captured.every(({ expiry }) => expiry === undefined) ||
+    captured.some(({ fact, expiry }) => !isChainFact(fact) && expiry === undefined)
+  )
+    return 'fact_unbounded'
+  if (captured.some(({ expiry }) => expiry !== undefined && expiry <= now)) return 'fact_expired'
+  if (readings.some((reading, i) => reading.fact.version !== captured[i]!.fact.version))
+    return 'fact_changed'
   return undefined
 }
 
@@ -250,10 +261,11 @@ type TaskFamilyOptions<C, I> = Readonly<{
   /** The keys that may act; the policy decides each present one. */
   candidates: Node<Keyed<C>>
   /**
-   * The fact every key's act rests on. Neither it nor anything it reads may be triggered by the
-   * kernel's transitions, which `defineBot` checks: read kernel nodes beside it with `sample`.
+   * The facts every key's act rests on, each read at the same key. Neither they nor anything they
+   * read may be triggered by the kernel's transitions, which `defineBot` checks: read kernel nodes
+   * beside them with `sample`.
    */
-  facts: FactNode<string>
+  facts: FactNode<string> | readonly FactNode<string>[]
   /** What a preparation builds from, captured into its request in the same step as the fact. */
   inputs: Node<Keyed<I>>
   /** Names the run in its intent ids. */
@@ -364,33 +376,45 @@ const ranked = (
   })
 }
 
-/** What a preparation of `key` would read: its candidate, its fact and its input, by digest. */
+/** What a preparation of `key` would read: its candidate, its facts and its input, by digest. */
 const inputFingerprintOf = (family: Family, key: string) => {
-  const digest = (keyed: Keyed<unknown> | undefined) => {
+  const digest = (keyed: Keyed<unknown> | null | undefined) => {
     const fact = keyed && keyRecord(keyed, key)
     return fact?.status === 'present' ? fact.digest : 'none'
   }
-  return `${digest(family.candidates)}/${digest(family.facts)}/${digest(family.inputs)}`
+  return `${digest(family.candidates)}/${family.facts.map(digest).join('+')}/${digest(family.inputs)}`
 }
 
-/** Which reading of its fact a preparation rests on: a new read differs even at the same version. */
-const readingFingerprintOf = (reading: FactReading<string> | undefined) =>
-  reading === undefined
+/** Which readings of its facts a preparation rests on: a new read differs even at the same version. */
+const readingFingerprintOf = (readings: readonly FactReading<string>[] | undefined) =>
+  readings === undefined
     ? 'none'
-    : `${reading.fact.version}@${reading.fact.basis.blockHash}<${reading.expiry ?? ''}`
+    : readings
+        .map(({ fact, expiry }) => {
+          const at = 'block' in fact.basis ? fact.basis.blockHash : fact.basis.observedAt
+          return `${fact.version}@${at}<${expiry ?? ''}`
+        })
+        .join('+')
+
+/** The version a preparation is asked at: every fact's, in the family's order. */
+const versionOf = (readings: readonly FactReading<string>[]) =>
+  readings.map(({ fact }) => fact.version).join('+')
 
 /**
- * Whether `reading` was taken before our own last inclusion or release on a conflict id of `want`:
- * the kernel refuses an act on it as predating our own effect, so it waits for a later read.
+ * Whether a chain fact of `readings` was read before our own last inclusion or release on a conflict
+ * id of `want`: the kernel refuses an act on it as predating our own effect, so it waits for a later
+ * read.
  */
 const predatesOwnEffect = (
   view: KernelView | undefined,
   want: Wanted | undefined,
-  reading: FactReading<string> | undefined
+  readings: readonly FactReading<string>[] | undefined
 ) => {
-  const block = reading?.fact.basis.block
-  if (view === undefined || want?.kind !== 'task' || block === undefined) return false
+  if (view === undefined || want?.kind !== 'task' || readings === undefined) return false
   const { reads = [], writes = [] } = want.conflicts
+  const block = Math.min(
+    ...readings.flatMap(({ fact }) => (isChainFact(fact) ? [fact.basis.block] : []))
+  )
   return [...reads, ...writes].some(id => block < (entryOf(view.conflictMarks, id) ?? -1))
 }
 
@@ -409,7 +433,7 @@ const faultOf = (result: PrepareResult): TaskEvent[] => {
 /** Takes the answer to a key's outstanding ticket; any other answer, or a void ticket's, readies nothing. */
 const answered = (family: Family, result: PrepareResult): Family => {
   const asked = entryOf(family.preparing, result.key)
-  if (asked?.id !== result.id || asked.reading.fact.version !== result.version) return family
+  if (asked?.id !== result.id || versionOf(asked.readings) !== result.version) return family
   const { [result.key]: _, ...preparing } = family.preparing
   const declines = !result.ok && !result.backoff && !asked.void
   const declined = withTaskEntry(
@@ -440,7 +464,7 @@ const noticed = (family: Family, activity: readonly KernelActivity[]): Family =>
     Object.entries(family.submitted).filter(([key, sent]) => {
       const notice = notices.get(sent.intentId)
       if (isStaleRefusal(notice))
-        stale = withTaskEntry(stale, key, sent.task, readingFingerprintOf(sent.reading))
+        stale = withTaskEntry(stale, key, sent.task, readingFingerprintOf(sent.readings))
       return notice === undefined
     })
   )
@@ -478,7 +502,20 @@ const each = <C, I>(b: Bot, id: string, options: TaskFamilyOptions<C, I>) => {
   const { maxReservations } = options
   if (!Number.isSafeInteger(maxReservations) || maxReservations < 0)
     throw new GraphDefinitionError(`${id} needs maxReservations, a whole number from 0`)
-  onBuild(b, graph => checkFactKernelFree(graph, id, options.facts.id, kernel))
+  const factNodes: readonly FactNode<string>[] = Array.isArray(options.facts)
+    ? options.facts
+    : [options.facts as FactNode<string>]
+  if (factNodes.length === 0) throw new GraphDefinitionError(`${id} rests on no fact`)
+  onBuild(b, graph => {
+    for (const fact of factNodes) checkFactKernelFree(graph, id, fact.id, kernel)
+  })
+  /** The key's reading of every fact, or undefined while any is unknown or failed. */
+  const readingsOf = (family: Family, key: string) => {
+    const readings = factNodes.map((node, i) => factOf(node, family.facts[i] ?? undefined, key))
+    return readings.every(reading => reading !== undefined) ? readings : undefined
+  }
+  /** Each fact's read in the family fold; the first keeps `facts`, so a one-fact graph is unchanged. */
+  const factReads = factNodes.map((_, i) => (i === 0 ? 'facts' : `facts${i}`))
   return b.raw(g =>
     g.scope(id, s => {
       const backoff = declareBackoff(s, 'backoff', {
@@ -509,7 +546,7 @@ const each = <C, I>(b: Bot, id: string, options: TaskFamilyOptions<C, I>) => {
         isBusy(draft.family.view, key) || has(draft.submitted, key)
 
       const drop = (draft: Draft, key: string, reason: DropReason) => {
-        const { task, inputFingerprint, reading } = draft.ready[key]!
+        const { task, inputFingerprint, readings } = draft.ready[key]!
         delete draft.ready[key]
         if (reason === 'fact_unbounded')
           draft.declined = withTaskEntry(draft.declined, key, task, inputFingerprint)
@@ -519,28 +556,27 @@ const each = <C, I>(b: Bot, id: string, options: TaskFamilyOptions<C, I>) => {
             key,
             task,
             reason,
-            ...(reason === 'fact_unbounded' && { fact: reading.fact.id })
+            ...(reason === 'fact_unbounded' && { fact: readings.map(r => r.fact.id).join('+') })
           })
         )
       }
 
       const submit = (draft: Draft, key: string, now: number) => {
         const ready = entryOf(draft.ready, key)!
-        const reading = factOf(options.facts, draft.family.facts, key)
-        const reason = submitDrop(ready, reading, now)
+        const reason = submitDrop(ready, readingsOf(draft.family, key), now)
         if (reason) return drop(draft, key, reason)
         const want = entryOf(draft.wanted, key) as Task
         const intentId = intentIdOf(key, options.runId, draft.issued++, ready.task)
         const plan = act(domain, {
           intentId,
           steps: ready.answer.steps,
-          restsOn: [ready.reading],
-          validUntil: ready.answer.validUntil,
+          restsOn: ready.readings,
+          ...(ready.answer.validUntil !== undefined && { validUntil: ready.answer.validUntil }),
           conflicts: ready.conflicts,
           decision: { key, priority: String(want.priority), prepared: ready.id }
         })
         delete draft.ready[key]
-        draft.submitted[key] = { intentId, task: ready.task, reading: ready.reading }
+        draft.submitted[key] = { intentId, task: ready.task, readings: ready.readings }
         draft.served = key
         draft.numReservations++
         draft.emit.push(
@@ -559,16 +595,18 @@ const each = <C, I>(b: Bot, id: string, options: TaskFamilyOptions<C, I>) => {
         const { family } = draft
         const want = entryOf(draft.wanted, key)
         if (want?.kind !== 'task') return false
-        const fact = family.facts && keyRecord(family.facts, key)
+        const facts = family.facts.map(keyed => keyed && keyRecord(keyed, key))
         const input = family.inputs && keyRecord(family.inputs, key)
-        const reading = factOf(options.facts, family.facts, key)
+        const readings = readingsOf(family, key)
         return (
-          fact?.status === 'present' &&
-          !(fact.expiry !== undefined && fact.expiry <= draft.now) &&
+          facts.every(
+            fact =>
+              fact?.status === 'present' && !(fact.expiry !== undefined && fact.expiry <= draft.now)
+          ) &&
           input?.status === 'present' &&
           taskEntryOf(draft.declined, key, want.name) !== inputFingerprintOf(family, key) &&
-          taskEntryOf(family.stale, key, want.name) !== readingFingerprintOf(reading) &&
-          !predatesOwnEffect(family.view, want, reading) &&
+          taskEntryOf(family.stale, key, want.name) !== readingFingerprintOf(readings) &&
+          !predatesOwnEffect(family.view, want, readings) &&
           !busy(draft, key) &&
           !has(draft.preparing, key) &&
           !has(draft.ready, key) &&
@@ -606,8 +644,8 @@ const each = <C, I>(b: Bot, id: string, options: TaskFamilyOptions<C, I>) => {
           if (pending >= maxReservations) break
           const seq = draft.issued++
           const ticket = `${options.runId}.p${seq}`
-          const reading = factOf(options.facts, family.facts, key)!
-          const { version } = reading.fact
+          const readings = readingsOf(family, key)!
+          const version = versionOf(readings)
           const input = keyRecord(family.inputs!, key) as Extract<
             KeyRecord<I>,
             { status: 'present' }
@@ -615,7 +653,7 @@ const each = <C, I>(b: Bot, id: string, options: TaskFamilyOptions<C, I>) => {
           const { name, conflicts } = entryOf(draft.wanted, key) as Task
           draft.preparing[key] = {
             id: ticket,
-            reading,
+            readings,
             inputFingerprint: inputFingerprintOf(family, key),
             task: name,
             conflicts
@@ -663,8 +701,7 @@ const each = <C, I>(b: Bot, id: string, options: TaskFamilyOptions<C, I>) => {
         )
         const stale = keptTaskEntries(
           family.stale,
-          (key, fingerprint) =>
-            fingerprint === readingFingerprintOf(factOf(options.facts, family.facts, key))
+          (key, fingerprint) => fingerprint === readingFingerprintOf(readingsOf(family, key))
         )
         const { ready, preparing, submitted, issued, served, emit } = draft
         return {
@@ -686,7 +723,9 @@ const each = <C, I>(b: Bot, id: string, options: TaskFamilyOptions<C, I>) => {
       const state = s.fold('', {
         reads: {
           candidates: watch(options.candidates),
-          facts: watch(options.facts),
+          ...(Object.fromEntries(factNodes.map((node, i) => [factReads[i], watch(node)])) as {
+            facts: ReturnType<typeof watch<Keyed<unknown>>>
+          }),
           inputs: watch(options.inputs),
           view: watch(view),
           backoff: watch(backoff.state),
@@ -695,6 +734,7 @@ const each = <C, I>(b: Bot, id: string, options: TaskFamilyOptions<C, I>) => {
         },
         emits: [prepare, requests, events],
         initial: {
+          facts: factNodes.map(() => null),
           preparing: {},
           ready: {},
           declined: {},
@@ -713,6 +753,17 @@ const each = <C, I>(b: Bot, id: string, options: TaskFamilyOptions<C, I>) => {
             }
           }
           if (input.from === 'activity') return { state: noticed(family, input.value) }
+          const fact = factReads.indexOf(input.from)
+          if (fact >= 0)
+            return {
+              state: {
+                ...family,
+                facts: family.facts.with(
+                  fact,
+                  (input.value.value as Keyed<unknown> | undefined) ?? null
+                )
+              }
+            }
           return { state: { ...family, [input.from]: input.value.value } }
         },
         afterInputs: (family, stamp) => decide(family, stamp.at)

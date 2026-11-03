@@ -2,6 +2,7 @@ import type { GraphBuilder, Keyed, Node, Stream } from '@repo/engine'
 import type { Fact, KernelRequest, KernelState, Plan } from '@repo/kernel'
 
 import { emitTo, watch } from '@repo/engine'
+import { isChainFact } from '@repo/kernel'
 
 import type { FactNode, FactReading, KernelDomain } from './act'
 
@@ -28,8 +29,8 @@ export type WorkflowOptions<D extends string> = Readonly<{
 
 /**
  * The current reading of every fact `plan` rests on, if each still holds the version the plan was
- * decided on, read at or after the plan's last inclusion, with an expiry; otherwise nothing, and
- * the plan waits.
+ * decided on, with an expiry, and each chain fact was read at or after the plan's last inclusion;
+ * otherwise nothing, and the plan waits.
  */
 const freshEvidence = <D extends string>(
   workflow: Workflow,
@@ -43,7 +44,8 @@ const freshEvidence = <D extends string>(
     if (node === undefined) return undefined
     const current = factOf(node, workflow.facts[node.id], fact.id.slice(node.id.length + 1))
     if (current?.fact.version !== fact.version || current.expiry === undefined) return undefined
-    return current.fact.basis.block < (plan.lastInclusion ?? 0) ? undefined : current
+    const stale = isChainFact(current.fact) && current.fact.basis.block < (plan.lastInclusion ?? 0)
+    return stale ? undefined : current
   })
   return read.every(current => current !== undefined) ? read : undefined
 }
@@ -51,7 +53,7 @@ const freshEvidence = <D extends string>(
 /**
  * Advances each plan the kernel parks at a stage boundary once every fact its evidence names reads
  * at the same version again, read at or after the plan's own last inclusion: the decision it was
- * admitted on still holds after its own effect. A fact that moved leaves the plan parked, for the
+ * admitted on still holds after its own effect, and only until the `validUntil` it was made with. A fact that moved leaves the plan parked, for the
  * bot's decision to supersede or for its finished stage's deadline to end it. Nothing here is a
  * second store of the workflow: it reads the kernel's plans, and the kernel judges every advance.
  */
@@ -85,6 +87,7 @@ export const declareWorkflow = <D extends string>(
         stage: plan.cursor,
         restsOn: evidence,
         ...(plan.lastInclusion !== undefined && { readAt: plan.lastInclusion }),
+        ...(plan.validUntil !== undefined && { validUntil: plan.validUntil }),
         ...(plan.decision && { decision: plan.decision })
       })
       emit.push(

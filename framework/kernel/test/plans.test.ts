@@ -105,18 +105,18 @@ describe('plans', () => {
     const t = tree(offer('g1', 100n, { ratifier: W.setter }))
     h.send({ type: 'Submit', plan: setterPlan('q:M1', t) })
     h.drive()
-    h.head(5)
+    h.head(3)
     h.mine(h.candidate('0xsetIsRootRatified').hash)
     expect(h.entry(G1)?.state).toBe('live')
     expect(h.state.plans['q:M1']?.phase).toBe('awaiting-advance')
     expect(h.pending('simulate')).toHaveLength(0)
-    h.advance('q:M1', { basisBlock: 4 })
+    h.advance('q:M1', { basisBlock: 2 })
     expect(h.commands('notify').at(-1)).toMatchObject({
       notice: 'stalled',
       reason: 'decision predates our own inclusion'
     })
     expect(h.pending('simulate')).toHaveLength(0)
-    h.advance('q:M1', { basisBlock: 5 })
+    h.advance('q:M1', { basisBlock: 3 })
     expect(h.pending('simulate')).toHaveLength(1)
     h.drive()
     h.head()
@@ -173,8 +173,8 @@ describe('plans', () => {
     h.mine(publication)
     const settled = h.commands('notify').find(c => c.intentId === 'q:M1' && c.notice === 'settled')
     expect(settled?.included).toStrictEqual([
-      { step: 0, hash: ratification, block: ratifiedAt },
-      { step: 1, hash: publication, block: h.block }
+      { step: 0, hash: ratification, block: ratifiedAt, success: true },
+      { step: 1, hash: publication, block: h.block, success: true }
     ])
   })
 
@@ -191,7 +191,9 @@ describe('plans', () => {
       .commands('notify')
       .filter(c => c.intentId === 'liq')
       .at(-1)
-    expect(ended?.included).toStrictEqual([{ step: 0, hash: reverted, block: minedAt }])
+    expect(ended?.included).toStrictEqual([
+      { step: 0, hash: reverted, block: minedAt, success: false }
+    ])
   })
 
   it('a fill observed at finality shrinks the reservation to what remains, and a full fill retires it', () => {

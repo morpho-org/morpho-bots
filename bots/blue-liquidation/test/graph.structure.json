@@ -1,0 +1,646 @@
+{
+  "id": "blue-liquidation",
+  "nodes": [
+    {
+      "id": "kernel.activity",
+      "kind": "derived",
+      "coalesces": false
+    },
+    {
+      "id": "kernel.chain.events",
+      "kind": "derived",
+      "coalesces": false
+    },
+    {
+      "id": "kernel.commands",
+      "kind": "derived",
+      "coalesces": false
+    },
+    {
+      "id": "kernel.effects.results",
+      "kind": "derived",
+      "coalesces": false
+    },
+    {
+      "id": "kernel.heads",
+      "kind": "derived",
+      "coalesces": false
+    },
+    {
+      "id": "kernel.in",
+      "kind": "derived",
+      "coalesces": false
+    },
+    {
+      "id": "kernel.lookups",
+      "kind": "derived",
+      "coalesces": false
+    },
+    {
+      "id": "kernel.merge",
+      "kind": "derived",
+      "coalesces": true
+    },
+    {
+      "id": "kernel.observe",
+      "kind": "derived",
+      "coalesces": true
+    },
+    {
+      "id": "kernel.observed",
+      "kind": "derived",
+      "coalesces": false
+    },
+    {
+      "id": "kernel.requests",
+      "kind": "occurrence",
+      "coalesces": false
+    },
+    {
+      "id": "kernel.start",
+      "kind": "occurrence",
+      "coalesces": false
+    },
+    {
+      "id": "kernel.state",
+      "kind": "derived",
+      "coalesces": true
+    },
+    {
+      "id": "kernel.tick",
+      "kind": "clock",
+      "coalesces": false,
+      "everyMs": 5
+    },
+    {
+      "id": "kernel.view",
+      "kind": "derived",
+      "coalesces": true
+    },
+    {
+      "id": "liquidations",
+      "kind": "derived",
+      "coalesces": true
+    },
+    {
+      "id": "liquidations.backoff",
+      "kind": "derived",
+      "coalesces": true
+    },
+    {
+      "id": "liquidations.backoff.events",
+      "kind": "derived",
+      "coalesces": false
+    },
+    {
+      "id": "liquidations.candidates",
+      "kind": "derived",
+      "coalesces": true
+    },
+    {
+      "id": "liquidations.events",
+      "kind": "derived",
+      "coalesces": false
+    },
+    {
+      "id": "liquidations.inputs",
+      "kind": "derived",
+      "coalesces": true
+    },
+    {
+      "id": "liquidations.prepare",
+      "kind": "derived",
+      "coalesces": false
+    },
+    {
+      "id": "liquidations.prepared",
+      "kind": "derived",
+      "coalesces": false
+    },
+    {
+      "id": "liquidations.requests",
+      "kind": "derived",
+      "coalesces": false
+    },
+    {
+      "id": "positions",
+      "kind": "derived",
+      "coalesces": true
+    },
+    {
+      "id": "positions.liquidatable",
+      "kind": "derived",
+      "coalesces": true
+    },
+    {
+      "id": "positions.sizing",
+      "kind": "derived",
+      "coalesces": true
+    },
+    {
+      "id": "quotes",
+      "kind": "derived",
+      "coalesces": true
+    },
+    {
+      "id": "quotes.held",
+      "kind": "derived",
+      "coalesces": true
+    },
+    {
+      "id": "quotes.reads",
+      "kind": "derived",
+      "coalesces": false
+    },
+    {
+      "id": "quotes.requests",
+      "kind": "derived",
+      "coalesces": false
+    },
+    {
+      "id": "quotes.route",
+      "kind": "derived",
+      "coalesces": true
+    },
+    {
+      "id": "quotes.schedule",
+      "kind": "derived",
+      "coalesces": true
+    },
+    {
+      "id": "world.reads",
+      "kind": "derived",
+      "coalesces": false
+    }
+  ],
+  "operators": [
+    {
+      "kind": "fold",
+      "id": "positions",
+      "output": "positions",
+      "emits": [],
+      "afterInputs": false,
+      "reads": [
+        {
+          "name": "write",
+          "mode": "every",
+          "node": "world.reads"
+        }
+      ]
+    },
+    {
+      "kind": "fold",
+      "id": "quotes",
+      "output": "quotes",
+      "emits": [],
+      "afterInputs": false,
+      "reads": [
+        {
+          "name": "write",
+          "mode": "every",
+          "node": "quotes.reads"
+        }
+      ]
+    },
+    {
+      "kind": "map",
+      "id": "positions.liquidatable",
+      "output": "positions.liquidatable",
+      "reads": [
+        {
+          "name": "over",
+          "mode": "latest",
+          "node": "positions",
+          "trigger": true
+        }
+      ]
+    },
+    {
+      "kind": "map",
+      "id": "quotes.route",
+      "output": "quotes.route",
+      "reads": [
+        {
+          "name": "over",
+          "mode": "latest",
+          "node": "quotes",
+          "trigger": true
+        }
+      ]
+    },
+    {
+      "kind": "map",
+      "id": "positions.sizing",
+      "output": "positions.sizing",
+      "reads": [
+        {
+          "name": "over",
+          "mode": "latest",
+          "node": "positions",
+          "trigger": true
+        }
+      ]
+    },
+    {
+      "kind": "map",
+      "id": "liquidations.inputs",
+      "output": "liquidations.inputs",
+      "reads": [
+        {
+          "name": "routes",
+          "mode": "latest",
+          "node": "quotes",
+          "trigger": true
+        },
+        {
+          "name": "over",
+          "mode": "latest",
+          "node": "positions",
+          "trigger": true
+        }
+      ]
+    },
+    {
+      "kind": "map",
+      "id": "liquidations.candidates",
+      "output": "liquidations.candidates",
+      "reads": [
+        {
+          "name": "over",
+          "mode": "latest",
+          "node": "liquidations.inputs",
+          "trigger": true
+        }
+      ]
+    },
+    {
+      "kind": "map",
+      "id": "kernel.view",
+      "output": "kernel.view",
+      "reads": [
+        {
+          "name": "state",
+          "mode": "latest",
+          "node": "kernel.state",
+          "trigger": true
+        }
+      ]
+    },
+    {
+      "kind": "fold",
+      "id": "liquidations.backoff",
+      "output": "liquidations.backoff",
+      "emits": ["liquidations.backoff.events"],
+      "afterInputs": false,
+      "reads": [
+        {
+          "name": "prepared",
+          "mode": "every",
+          "node": "liquidations.prepared"
+        },
+        {
+          "name": "activity",
+          "mode": "every",
+          "node": "kernel.activity"
+        },
+        {
+          "name": "head",
+          "mode": "every",
+          "node": "kernel.heads"
+        }
+      ]
+    },
+    {
+      "kind": "map",
+      "id": "quotes.held",
+      "output": "quotes.held",
+      "reads": [
+        {
+          "name": "positions",
+          "mode": "latest",
+          "node": "positions",
+          "trigger": true
+        },
+        {
+          "name": "quotes",
+          "mode": "latest",
+          "node": "quotes",
+          "trigger": true
+        },
+        {
+          "name": "view",
+          "mode": "latest",
+          "node": "kernel.view",
+          "trigger": false
+        },
+        {
+          "name": "backoff",
+          "mode": "latest",
+          "node": "liquidations.backoff",
+          "trigger": false
+        }
+      ]
+    },
+    {
+      "kind": "fold",
+      "id": "quotes.schedule",
+      "output": "quotes.schedule",
+      "emits": ["quotes.requests"],
+      "afterInputs": true,
+      "reads": [
+        {
+          "name": "positions",
+          "mode": "watch",
+          "node": "positions"
+        },
+        {
+          "name": "held",
+          "mode": "watch",
+          "node": "quotes.held"
+        },
+        {
+          "name": "quotes",
+          "mode": "watch",
+          "node": "quotes"
+        },
+        {
+          "name": "written",
+          "mode": "every",
+          "node": "quotes.reads"
+        }
+      ]
+    },
+    {
+      "kind": "fold",
+      "id": "liquidations",
+      "output": "liquidations",
+      "emits": ["liquidations.prepare", "liquidations.requests", "liquidations.events"],
+      "afterInputs": true,
+      "reads": [
+        {
+          "name": "candidates",
+          "mode": "watch",
+          "node": "liquidations.candidates"
+        },
+        {
+          "name": "facts",
+          "mode": "watch",
+          "node": "positions.liquidatable"
+        },
+        {
+          "name": "facts1",
+          "mode": "watch",
+          "node": "quotes.route"
+        },
+        {
+          "name": "inputs",
+          "mode": "watch",
+          "node": "liquidations.inputs"
+        },
+        {
+          "name": "view",
+          "mode": "watch",
+          "node": "kernel.view"
+        },
+        {
+          "name": "backoff",
+          "mode": "watch",
+          "node": "liquidations.backoff"
+        },
+        {
+          "name": "prepared",
+          "mode": "every",
+          "node": "liquidations.prepared"
+        },
+        {
+          "name": "activity",
+          "mode": "every",
+          "node": "kernel.activity"
+        }
+      ]
+    },
+    {
+      "kind": "fold",
+      "id": "kernel.observe",
+      "output": "kernel.observe",
+      "emits": ["kernel.observed"],
+      "afterInputs": false,
+      "reads": [
+        {
+          "name": "requests",
+          "mode": "every",
+          "node": "kernel.requests"
+        },
+        {
+          "name": "activity",
+          "mode": "every",
+          "node": "kernel.activity"
+        },
+        {
+          "name": "acts0",
+          "mode": "every",
+          "node": "liquidations.requests"
+        },
+        {
+          "name": "fact0",
+          "mode": "watch",
+          "node": "positions.liquidatable"
+        },
+        {
+          "name": "fact1",
+          "mode": "watch",
+          "node": "quotes.route"
+        }
+      ]
+    },
+    {
+      "kind": "fold",
+      "id": "kernel.merge",
+      "output": "kernel.merge",
+      "emits": ["kernel.in", "kernel.heads"],
+      "afterInputs": false,
+      "reads": [
+        {
+          "name": "start",
+          "mode": "every",
+          "node": "kernel.start"
+        },
+        {
+          "name": "chain",
+          "mode": "every",
+          "node": "kernel.chain.events"
+        },
+        {
+          "name": "results",
+          "mode": "every",
+          "node": "kernel.effects.results"
+        },
+        {
+          "name": "observed",
+          "mode": "every",
+          "node": "kernel.observed"
+        },
+        {
+          "name": "tick",
+          "mode": "every",
+          "node": "kernel.tick"
+        }
+      ]
+    },
+    {
+      "kind": "fold",
+      "id": "kernel.state",
+      "output": "kernel.state",
+      "emits": ["kernel.commands", "kernel.lookups", "kernel.activity"],
+      "afterInputs": false,
+      "reads": [
+        {
+          "name": "event",
+          "mode": "every",
+          "node": "kernel.in"
+        }
+      ]
+    }
+  ],
+  "effects": [
+    {
+      "id": "kernel.listener",
+      "reads": [
+        {
+          "name": "activity",
+          "node": "kernel.activity"
+        }
+      ],
+      "samples": [],
+      "lane": {
+        "name": "kernel.listener",
+        "concurrency": null,
+        "queue": 4096
+      }
+    },
+    {
+      "id": "kernel.executor",
+      "reads": [
+        {
+          "name": "command",
+          "node": "kernel.commands"
+        }
+      ],
+      "samples": ["kernel.state"],
+      "results": "kernel.effects.results",
+      "lane": {
+        "name": "kernel.executor",
+        "concurrency": null,
+        "queue": 4096
+      }
+    },
+    {
+      "id": "kernel.chain",
+      "reads": [
+        {
+          "name": "start",
+          "node": "kernel.start"
+        },
+        {
+          "name": "tick",
+          "node": "kernel.tick"
+        },
+        {
+          "name": "lookup",
+          "node": "kernel.lookups"
+        }
+      ],
+      "samples": ["kernel.state"],
+      "results": "kernel.chain.events",
+      "lane": {
+        "name": "kernel.chain",
+        "concurrency": null,
+        "queue": 4096
+      }
+    },
+    {
+      "id": "world",
+      "reads": [
+        {
+          "name": "head",
+          "node": "kernel.heads"
+        }
+      ],
+      "samples": ["kernel.state"],
+      "results": "world.reads",
+      "lane": {
+        "name": "world",
+        "concurrency": 1,
+        "queue": 256
+      }
+    },
+    {
+      "id": "liquidations.preparation",
+      "reads": [
+        {
+          "name": "request",
+          "node": "liquidations.prepare"
+        }
+      ],
+      "samples": [],
+      "results": "liquidations.prepared",
+      "lane": {
+        "name": "simulation",
+        "concurrency": 4,
+        "queue": 64
+      }
+    },
+    {
+      "id": "quotes.read",
+      "reads": [
+        {
+          "name": "request",
+          "node": "quotes.requests"
+        }
+      ],
+      "samples": ["liquidations.backoff", "positions", "quotes"],
+      "results": "quotes.reads",
+      "lane": {
+        "name": "venue",
+        "concurrency": 4,
+        "budget": {
+          "calls": 2,
+          "perMs": 1000
+        },
+        "queue": 4
+      }
+    },
+    {
+      "id": "liquidations.log",
+      "reads": [
+        {
+          "name": "world",
+          "node": "world.reads"
+        },
+        {
+          "name": "acts",
+          "node": "liquidations.events"
+        },
+        {
+          "name": "backoff",
+          "node": "liquidations.backoff.events"
+        }
+      ],
+      "samples": ["kernel.view", "liquidations.backoff", "positions.sizing"],
+      "lane": {
+        "name": "default",
+        "concurrency": null,
+        "queue": 1024
+      }
+    }
+  ],
+  "recovery": [
+    "kernel.chain",
+    "kernel.executor",
+    "kernel.listener",
+    "kernel.merge",
+    "kernel.observe",
+    "kernel.state",
+    "kernel.tick"
+  ]
+}

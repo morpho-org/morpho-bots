@@ -1,3 +1,4 @@
+import type { SignedTx, TxBid } from '@repo/kernel'
 import type { BotLogger, LogLevel } from '@repo/kit'
 import type { Address, Hex } from 'viem'
 
@@ -106,12 +107,17 @@ const kernel = () => {
   }
 }
 
-const sign = (to: Address, data: Hex, fee = MAX_SPEND_WEI) =>
-  kernel().live.effects.signTx(
-    { kind: 'tx', to, data, value: 0n },
-    { nonce: 0, fee, level: 1 },
-    guard
-  )
+const bid = (overrides: Partial<TxBid> = {}): TxBid => ({
+  nonce: 0,
+  level: 1,
+  kind: 'step',
+  fee: MAX_SPEND_WEI,
+  recoveryFee: MAX_SPEND_WEI,
+  ...overrides
+})
+
+const sign = (to: Address, data: Hex) =>
+  kernel().live.effects.signTx({ kind: 'tx', to, data, value: 0n }, bid(), guard)
 
 describe('reallocatorKernel', () => {
   it('builds the kernel config for the whitelisted vaults and their adapters from the loaded config', () => {
@@ -163,9 +169,9 @@ describe('reallocatorKernel', () => {
       reorgDepth: live.reorgDepth
     }).toStrictEqual({
       enrollment: 'enrolling',
-      pollMs: 1_000,
+      pollMs: 2_000,
       effectTimeoutMs: 10_000,
-      reorgDepth: 64
+      reorgDepth: 150
     })
   })
 
@@ -204,23 +210,22 @@ describe('reallocatorKernel', () => {
     ])
   })
 
-  it('signs a multicall to a whitelisted vault, tipping 1 gwei first and bidding at most the fee ceiling', async () => {
+  it('signs a multicall to a whitelisted vault, tipping 1 gwei first and outbidding recorded fees under the step cap', async () => {
     mockRpc()
-    const { live, feesOf } = kernel()
-    const signAt = (nonce: number, level: number) =>
+    const { live } = kernel()
+    const signAt = async (overrides: Partial<TxBid> = {}) =>
       live.effects.signTx(
         { kind: 'tx', to: VAULT, data: MULTICALL, value: 0n },
-        { nonce, fee: MAX_SPEND_WEI, level },
+        bid(overrides),
         guard
       )
-    const first = await signAt(0, 1)
+    const first = (await signAt()) as SignedTx
     expect(parseTransaction(first.raw as Hex).to).toBe(VAULT)
-    expect(feesOf(first.hash)?.priorityFeePerGasWei).toBe(parseGwei('1'))
-    const unpricedReplacement = await signAt(1, 2)
-    expect(feesOf(unpricedReplacement.hash)).toStrictEqual({
-      maxFeePerGasWei: MAX_FEE_PER_GAS_WEI,
-      priorityFeePerGasWei: MAX_FEE_PER_GAS_WEI
-    })
+    expect(first.bid.maxPriorityFeePerGas).toBe(parseGwei('1'))
+    const replacement = (await signAt({ level: 2, outbid: first.bid })) as SignedTx
+    expect(replacement.bid.maxPriorityFeePerGas).toBe(parseGwei('1.125'))
+    const atCeiling = { maxFeePerGas: MAX_FEE_PER_GAS_WEI, maxPriorityFeePerGas: 1n }
+    expect(await signAt({ level: 3, outbid: atCeiling })).toBe('capped')
   })
 
   it.each([

@@ -3,7 +3,7 @@
 //
 // VENDORED from morpho-org/morpho-blue (src/interfaces/IMorpho.sol + EventsLib.sol), trimmed to the
 // surface the blue-liquidation bot needs: the three market structs, the position event set, and the
-// read/entry functions the lens and executor path reference. The deployed Base singleton
+// read/entry functions the lens, the executor path and the fork suite's seeding reference. The deployed Base singleton
 // (0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb) emits exactly these events and exposes these signatures
 // (verified on-chain). We use `bytes32` in place of Blue's `type Id is bytes32` user-defined value
 // type — the ABI encoding is identical (Id is a bytes32) and it keeps viem decoding plain, matching
@@ -83,6 +83,15 @@ interface IMorpho {
 
     /// ENTRY-POINTS ///
     function accrueInterest(MarketParams memory marketParams) external;
+    function supplyCollateral(MarketParams memory marketParams, uint256 assets, address onBehalf, bytes memory data)
+        external;
+    function borrow(
+        MarketParams memory marketParams,
+        uint256 assets,
+        uint256 shares,
+        address onBehalf,
+        address receiver
+    ) external returns (uint256, uint256);
     /// @dev Pass exactly one of `seizedAssets` / `repaidShares` nonzero (the other zero). Returns
     /// (seizedAssets, repaidAssets) — collateral seized, then loan repaid.
     function liquidate(

@@ -50,10 +50,13 @@ export type BackoffEvent =
 
 /** Caps the exponent so a chronically failing key cannot overflow its wait. */
 const MAX_SHIFT = 32
-/** Notices that end an act without settling it: each backs its key off, as a failed preparation does. */
-const FAILED = new Set(['refused', 'abandoned', 'compensating', 'failed'])
-/** Notices that end or withdraw an earlier run's act because that run stopped, not because the act was bad. */
-const ENDED_BY_RESTART = new Set(['abandoned', 'compensating'])
+/**
+ * Notices that end an act without settling it: each backs its key off, as a failed preparation does.
+ * `compensating` is not one, since only the act's last notice says whether it was merely cancelled.
+ */
+const FAILED = new Set(['refused', 'abandoned', 'compensated', 'failed'])
+/** Notices that end an earlier run's act because that run stopped, not because the act was bad. */
+const ENDED_BY_RESTART = new Set(['abandoned', 'compensated'])
 /** Refusals of evidence read too long ago or before our own effect, which a fresh read may pass. */
 const STALE_EVIDENCE: ReadonlySet<RefusalCode> = new Set([
   'evidence_expired',
@@ -82,6 +85,10 @@ export const isBackedOff = (backoff: Backoff | undefined, key: string, task?: st
   )
 }
 
+/** How many blocks a key waits after `failures` consecutive failures. */
+export const backoffWait = (policy: BackoffPolicy, failures: number) =>
+  Math.min(policy.baseBlocks * 2 ** Math.min(failures - 1, MAX_SHIFT), policy.maxBlocks)
+
 const widenedWait = (
   backoff: Backoff,
   key: string,
@@ -89,11 +96,7 @@ const widenedWait = (
   policy: BackoffPolicy
 ): KeyBackoff => {
   const failures = (taskEntryOf(backoff.keys, key, task)?.failures ?? 0) + 1
-  const wait = Math.min(
-    policy.baseBlocks * 2 ** Math.min(failures - 1, MAX_SHIFT),
-    policy.maxBlocks
-  )
-  return { failures, until: backoff.block + wait }
+  return { failures, until: backoff.block + backoffWait(policy, failures) }
 }
 
 /** Forgets a task whose last wait ended a whole maximum wait ago, so state stays bounded. */
@@ -108,10 +111,12 @@ const slotOfIntent = (intentId: string) => {
 
 /**
  * The slot a notice backs off, if it says the act itself was bad: not an act refused on stale
- * evidence, which waits for a fresh read instead, nor one an earlier run abandoned or a restart withdrew.
+ * evidence, which waits for a fresh read instead, nor one cancelled before anything of it ran, nor
+ * one an earlier run ended.
  */
 const failureOf = (activity: KernelActivity, runId: string) => {
   if (activity.type !== 'notice' || !FAILED.has(activity.notice)) return undefined
+  if ('code' in activity && activity.code === 'cancelled') return undefined
   const slot = slotOfIntent(activity.intentId)
   if (slot === undefined) return undefined
   if (ENDED_BY_RESTART.has(activity.notice) && slot.runId !== runId) return undefined

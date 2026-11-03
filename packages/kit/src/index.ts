@@ -2,7 +2,14 @@ export { withLogging } from '@morpho-org/viem-dlc'
 export { BALANCE_EVERY_BLOCKS, createBalanceMonitor } from './balance'
 export { withDlcFacts } from './chain-facts'
 export { assertContractDeployed, createDeploylessClient } from './client'
-export { bumpFees, hasBumpHeadroom, initialFees } from './fee-policy'
+export {
+  bumpFees,
+  feeCeiling,
+  hasBumpHeadroom,
+  initialFees,
+  stepCap,
+  blocksFor
+} from './fee-policy'
 export type { EndpointKind } from './gas-limits'
 export { ethCallGasCap } from './gas-limits'
 export { createHeartbeatMonitor, HEARTBEAT_INTERVAL_MS, HEARTBEAT_TIMEOUT_MS } from './heartbeat'
@@ -46,11 +53,7 @@ export type { Signer } from './signer'
 export { createAccountSigner } from './signer'
 export type { SimulateResult } from './simulate'
 export { simulateCall, simulateLiquidationExec } from './simulate'
-export type {
-  SignedFees,
-  TransactionKernelLimits,
-  TransactionKernelOptions
-} from './transaction-kernel'
+export type { TransactionKernelLimits, TransactionKernelOptions } from './transaction-kernel'
 export {
   TRANSACTION_KERNEL_RESERVATIONS,
   transactionKernelConfig,

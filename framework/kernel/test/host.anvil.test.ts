@@ -83,6 +83,7 @@ const chainFor = (account: PrivateKeyAccount): KernelChain => ({
     }
   },
   block: async number => toBlock(await client.getBlock({ blockNumber: BigInt(number) })),
+  safe: async () => toBlock(await client.getBlock({ blockTag: 'safe' })),
   nonceAt: async at => ({
     latest: await client.getTransactionCount({
       address: account.address,
@@ -134,6 +135,7 @@ const effectsFor = (account: PrivateKeyAccount): KernelEffects => ({
     }
   },
   signTx: async (payload, { nonce, fee }) => {
+    const bid = { maxFeePerGas: fee / GAS, maxPriorityFeePerGas: PRIORITY, gas: GAS }
     const raw = await account.signTransaction({
       chainId: foundry.id,
       type: 'eip1559',
@@ -141,11 +143,9 @@ const effectsFor = (account: PrivateKeyAccount): KernelEffects => ({
       data: encode(payload),
       value: payload.value,
       nonce,
-      gas: GAS,
-      maxFeePerGas: fee / GAS,
-      maxPriorityFeePerGas: PRIORITY
+      ...bid
     })
-    return { hash: keccak256(raw), raw }
+    return { hash: keccak256(raw), raw, bid }
   },
   signTyped: () => Promise.reject(new Error('no typed data here')),
   broadcast: async (raw, guard) => {
@@ -344,7 +344,7 @@ describe.skipIf(!hasAnvil)(
       await driver.abandon()
     })
 
-    it('after the flush lands but before the broadcast: latched, then the nonce is filled in recovery', async () => {
+    it('after the flush lands but before the broadcast: latched, then the nonce is filled while running', async () => {
       const { account, path } = await crashDuring(KEYS[2]!, (effects, reached) => ({
         ...effects,
         broadcast: () => {
@@ -355,15 +355,18 @@ describe.skipIf(!hasAnvil)(
       const driver = await restart(account, path)
       await until(() => driver.state().nonces[0] !== undefined, 'the stored record')
       expect(driver.state().nonces[0]?.candidates[0]?.sent).toBe('unknown')
-      const report = await Promise.race([
-        driver.stopped,
-        until(() => false, 'a stop', true).then(() => undefined)
-      ])
-      expect(report).toMatchObject({ outcome: 'clean' })
+      await until(
+        () =>
+          driver.state().lifecycle.kind === 'running' &&
+          Object.keys(driver.state().nonces).length === 0,
+        'the nonce filled',
+        true
+      )
       expect(await client.getTransactionCount({ address: account.address })).toBe(1)
       const filled = await chainFor(account).nonceTx(0)
       const tx = await client.getTransaction({ hash: filled!.hash as Hex })
       expect(tx.to?.toLowerCase()).toBe(account.address.toLowerCase())
+      await driver.abandon()
     })
 
     it('after the broadcast but before its result: a restart resolves it from the chain', async () => {

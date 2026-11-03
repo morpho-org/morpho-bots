@@ -53,3 +53,20 @@ app.kubernetes.io/instance: {{ .Release.Name | quote }}
 {{- $tag := required "image.tag is required" .Values.image.tag | toString -}}
 {{- printf "%s:%s" $repository $tag }}
 {{- end }}
+
+{{- define "blue-liquidation.stateDirectory" -}}
+/repo/state
+{{- end }}
+
+{{/*
+Bounded to the 63-character DNS label limit; a truncated name embeds a hash of the full one, so
+releases sharing a truncated prefix never share a claim.
+*/}}
+{{- define "blue-liquidation.stateClaimName" -}}
+{{- $fullname := include "blue-liquidation.fullname" . }}
+{{- if gt (len $fullname) 57 }}
+{{- printf "%s-%s-state" ($fullname | trunc 48 | trimSuffix "-") (sha256sum $fullname | trunc 8) }}
+{{- else }}
+{{- printf "%s-state" $fullname }}
+{{- end }}
+{{- end }}

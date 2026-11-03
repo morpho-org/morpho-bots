@@ -117,7 +117,7 @@ describe('nonces and the latch', () => {
     h.flush()
     h.broadcast('rejected')
 
-    expect(executingFills(h).map(plan => plan.recovery?.targetNonce)).toEqual([1])
+    expect(executingFills(h).map(plan => plan.terms?.nonce)).toEqual([1])
   })
 
   it('a failed recovery fill does not delay a neutralizer', () => {
@@ -128,7 +128,7 @@ describe('nonces and the latch', () => {
     const neutralizers = Object.values(h.state.plans).filter(
       plan => plan.status === 'executing' && plan.recovery?.kind === 'neutralizer'
     )
-    expect(neutralizers.map(plan => plan.recovery?.targetNonce)).toEqual([1])
+    expect(neutralizers.map(plan => plan.terms?.nonce)).toEqual([1])
   })
 
   it('a failed recovery fill pace mark is process-local', () => {
@@ -206,7 +206,7 @@ describe('nonces and the latch', () => {
     expect(h.state.lifecycle).toMatchObject({ kind: 'stopped', outcome: 'clean' })
   })
 
-  it('multiple unresolved nonces are each contested, and each winner is reconciled on its own', () => {
+  it('multiple unresolved nonces are each contested after a restart, and each winner is reconciled on its own', () => {
     const h = new Harness().start()
     quote(h, 'q:A', 'g1')
     quote(h, 'q:B', 'g2')
@@ -222,30 +222,20 @@ describe('nonces and the latch', () => {
     h.observe(G2)
     expect(h.candidates().map(c => c.sent)).toEqual(['unknown', 'unknown'])
     expect(latched(h.state)).toBe(true)
-    for (let i = 0; i < 11; i++) h.head()
-    expect(h.state.lifecycle).toMatchObject({ kind: 'recovering' })
+    h.stall()
     h.drive()
-    const cancels = h.candidates().filter(c => c.kind === 'neutralizer')
-    expect(cancels.map(c => [c.nonce, c.retires[0]])).toEqual([
-      [0, G1],
-      [1, G2]
-    ])
+    const fills = h.candidates().filter(c => c.kind === 'fill')
+    expect(fills.map(c => c.nonce)).toEqual([0, 1])
     h.head()
-    h.mine(cancels[0]!.hash)
+    h.mine(fills[0]!.hash)
     h.mine(h.candidates().find(c => c.nonce === 1 && c.kind === 'step')!.hash)
-    expect(h.entry(G1)?.state).toBe('revoking')
+    expect(latched(h.state)).toBe(false)
     expect(h.entry(G2)?.state).toBe('live')
-    h.drive()
-    const retry = h.candidates().find(c => c.kind === 'neutralizer' && c.nonce === 2)
-    expect(retry?.retires).toEqual([G2])
-    h.head()
-    h.mine(retry!.hash)
     h.finalize(h.block)
-    expect([h.entry(G1)?.state, h.entry(G2)?.state]).toEqual(['retired', 'retired'])
-    expect(h.available(W.loan)).toBe(1000n)
+    expect(h.entry(G1)?.state).toBe('exposed')
+    expect(h.state.lifecycle.kind).toBe('running')
+    expect(h.state.nonces).toEqual({})
     expect(h.reports()).toHaveLength(0)
-    h.flush()
-    expect(h.state.lifecycle).toMatchObject({ kind: 'stopped', outcome: 'clean' })
   })
 
   it('a nonce consumed by a transaction the kernel cannot identify stays unresolved and held', () => {
@@ -529,7 +519,7 @@ describe('replacement candidates', () => {
   })
 
   it.each(['original', 'replacement'] as const)(
-    'a step and its recovery replacement share one nonce; when the %s wins the plan follows it',
+    'a step its uncertain nonce cancels shares that nonce with a fill; the %s winning ends it, executed or cancelled',
     winner => {
       const h = new Harness().start()
       h.send({ type: 'Submit', plan: liquidationPlan('liq') })
@@ -546,14 +536,21 @@ describe('replacement candidates', () => {
       expect(h.available('native')).toBe(99n * FEE)
       h.head()
       h.mine(winner === 'original' ? original.hash : fill.hash)
-      expect(h.notices('liq')).toEqual(
-        winner === 'original' ? ['admitted', 'settled'] : ['admitted', 'compensating']
-      )
+      expect(h.notices('liq')).toEqual(['admitted', 'compensating'])
       expect(h.reports()).toHaveLength(0)
       h.finalize(h.block)
       expect(h.state.nonces).toEqual({})
-      if (winner === 'replacement')
-        expect(h.notices('liq')).toEqual(['admitted', 'compensating', 'compensated'])
+      expect(h.notices('liq')).toEqual(['admitted', 'compensating', 'compensated'])
+      const ended = h.commands('notify').at(-1)
+      if (winner === 'original')
+        expect(ended).toMatchObject({
+          notice: 'compensated',
+          included: [{ step: 0, hash: original.hash, success: true }]
+        })
+      else expect(ended).toMatchObject({ notice: 'compensated', code: 'cancelled', included: [] })
+      expect(h.commands('notify').filter(c => 'code' in c && c.code === 'cancelled')).toHaveLength(
+        winner === 'original' ? 0 : 1
+      )
       expect(h.reports()).toHaveLength(0)
       h.flush()
       expect(h.reports().at(-1)).toMatchObject({ outcome: 'clean' })

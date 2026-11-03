@@ -1,0 +1,5 @@
+apiVersion: v2
+name: midnight-crossed-books
+description: Helm chart for the midnight-crossed-books bot
+type: application
+version: 0.1.0

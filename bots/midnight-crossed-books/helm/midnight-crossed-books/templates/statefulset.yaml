@@ -1,0 +1,57 @@
+{{- if not (has (int .Values.replicas) (list 0 1)) }}{{ fail (printf "midnight-crossed-books: replicas must be 0 or 1, got %v: the resolver signs with one key" .Values.replicas) }}{{- end }}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "midnight-crossed-books.fullname" . | quote }}
+  labels:
+    {{- include "midnight-crossed-books.labels" . | nindent 4 }}
+  annotations:
+    secret.reloader.stakater.com/reload: {{ include "midnight-crossed-books.runtimeSecretName" . | quote }}
+spec:
+  replicas: {{ .Values.replicas }}
+  serviceName: {{ include "midnight-crossed-books.fullname" . | quote }}
+  podManagementPolicy: OrderedReady
+  updateStrategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      {{- include "midnight-crossed-books.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "midnight-crossed-books.selectorLabels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "midnight-crossed-books.serviceAccountName" . | quote }}
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: {{ .Chart.Name }}
+          image: {{ include "midnight-crossed-books.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- with .Values.env }}
+          env:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          envFrom:
+            - secretRef:
+                name: {{ include "midnight-crossed-books.runtimeSecretName" . | quote }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}

@@ -96,9 +96,35 @@ describe('a workflow across stages', () => {
     expect(h.notices('q')).toEqual(['admitted', 'stalled', 'stalled', 'advanced', 'settled'])
   })
 
-  it('stalls a stage whose evidence names no block', () => {
+  it("keeps its decision's validity across an advance that names none, and an advance that names one replaces it", () => {
+    const kept = ratified({ notAfter: 200, validUntil: 200 }).h
+    kept.advance('q', { evidence: [desired(kept)], observations: [seen()], notAfter: 60_000 })
+    expect(kept.state.plans.q).toMatchObject({ notAfter: 200, validUntil: 200 })
+    kept.tick(200)
+    expect(kept.state.plans.q?.status).not.toBe('executing')
+
+    const replaced = ratified({ notAfter: 200, validUntil: 200 }).h
+    replaced.advance('q', {
+      evidence: [desired(replaced)],
+      observations: [seen()],
+      notAfter: 60_000,
+      validUntil: 500
+    })
+    expect(replaced.state.plans.q).toMatchObject({ notAfter: 500, validUntil: 500 })
+  })
+
+  it('stalls a stage whose evidence names no basis', () => {
     const { h } = ratified()
     h.advance('q', { evidence: [{ id: FACT, version: 'T' } as Fact], observations: [seen()] })
+    expect(h.notices('q').at(-1)).toBe('stalled')
+    expect(reasons(h, 'q').at(-1)).toBe('evidence names no basis')
+    expect(published(h)).toHaveLength(0)
+  })
+
+  it('stalls a stage whose evidence is offchain alone, with no block to anchor it', () => {
+    const { h } = ratified()
+    const offchain: Fact = { id: FACT, version: 'T', basis: { observedAt: h.now } }
+    h.advance('q', { evidence: [offchain], observations: [seen()] })
     expect(h.notices('q').at(-1)).toBe('stalled')
     expect(reasons(h, 'q').at(-1)).toBe('evidence names no block')
     expect(published(h)).toHaveLength(0)
@@ -112,7 +138,7 @@ describe('a workflow across stages', () => {
     expect(published(h)).toHaveLength(0)
   })
 
-  it('keeps a stage whose evidence expires while its transaction is included, and advances on fresh evidence', () => {
+  it('keeps a stage alive on an equal re-read while its transaction is included, and advances on fresh evidence', () => {
     const h = new Harness().start()
     h.send({
       type: 'Submit',
@@ -120,8 +146,9 @@ describe('a workflow across stages', () => {
       observations: [seen()]
     })
     h.drive()
-    h.tick(5_000)
-    h.send({ type: 'Observed', observations: [{ id: FACT, version: 'T', expiry: h.now + 1_000 }] })
+    h.tick(500)
+    h.send({ type: 'Observed', observations: [{ id: FACT, version: 'T', expiry: h.now + 5_000 }] })
+    h.tick(4_000)
     h.head()
     h.mine(h.candidate('0xsetIsRootRatified').hash)
     expect(h.state.plans.q).toMatchObject({ status: 'executing', phase: 'awaiting-advance' })

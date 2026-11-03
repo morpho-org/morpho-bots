@@ -18,9 +18,6 @@ export type PrepareDeps = Readonly<{
   simulate: (vault: Address, data: Hex) => Promise<SimulateResult>
   /** Read, plan and simulate, but hand the kernel nothing. */
   dryRun: boolean
-  /** How long a prepared reallocation may wait to be submitted. */
-  validForMs: number
-  now: () => number
   logger: Logger
 }>
 
@@ -61,7 +58,6 @@ const prepareReallocation = async (
   }
   return {
     ok: true,
-    validUntil: deps.now() + deps.validForMs,
     steps: [
       {
         kind: 'tx',

@@ -67,7 +67,7 @@ class FakeChain implements KernelChain {
       timestamp: BigInt(number * 2)
     }
   }
-  latest = async () => {
+  latest: KernelChain['latest'] = async () => {
     if (this.latestDelayMs > 0) await sleep(this.latestDelayMs)
     return {
       head: this.blockAt(this.height),
@@ -81,8 +81,12 @@ class FakeChain implements KernelChain {
     if (number > this.height) throw new Error(`no block ${number}`)
     return this.blockAt(number)
   }
+  /** The `safe` block, at finality unless a test sets it apart. */
+  safeAt?: number
+  safe: KernelChain['safe'] = async () => this.blockAt(this.safeAt ?? this.finalized)
   nonce = 0
-  nonceAt = () => Promise.resolve({ latest: this.nonce, pending: this.nonce })
+  nonceAt: KernelChain['nonceAt'] = () =>
+    Promise.resolve({ latest: this.nonce, pending: this.nonce })
   code = '0x'
   accountCode = () => Promise.resolve(this.code)
   minedAt?: { hash: string; block: number; branch: string }
@@ -119,12 +123,32 @@ class FakeChain implements KernelChain {
   }
 }
 
+/** Records every block number `chain` is asked for, and the most reads it ever had in flight. */
+const readsOf = (chain: FakeChain) => {
+  const reads = { numbers: [] as number[], peak: 0 }
+  let inFlight = 0
+  const block = chain.block
+  chain.block = async number => {
+    reads.numbers.push(number)
+    reads.peak = Math.max(reads.peak, ++inFlight)
+    try {
+      await sleep(0)
+      return await block(number)
+    } finally {
+      inFlight--
+    }
+  }
+  return reads
+}
+
+const BID = { maxFeePerGas: 1n, maxPriorityFeePerGas: 1n, gas: 1n }
+
 const effects = (overrides: Partial<KernelEffects> = {}): KernelEffects => ({
   materialize: () => Promise.reject(new Error('none')),
   simulate: () => Promise.resolve(true),
   signTx: payload => {
     const name = fnOf(payload) ?? 'fill'
-    return Promise.resolve({ hash: `0x${name}`, raw: `raw:${name}` })
+    return Promise.resolve({ hash: `0x${name}`, raw: `raw:${name}`, bid: BID })
   },
   signTyped: () => Promise.reject(new Error('none')),
   broadcast: () => Promise.resolve('accepted'),
@@ -182,20 +206,27 @@ describe('the kernel hosted on the engine', () => {
     await driver.abandon()
   })
 
-  it('hands the signer the nonce, the spend ceiling, and the fee level of the candidate', async () => {
+  it('hands the signer the nonce, the kind, the spend ceilings, and the fee level of the candidate', async () => {
     const signed: Parameters<KernelEffects['signTx']>[1][] = []
     const driver = await start({
       effects: effects({
         signTx: (payload, candidate) => {
           signed.push(candidate)
-          return Promise.resolve({ hash: `0x${fnOf(payload)}`, raw: 'raw' })
+          return Promise.resolve({ hash: `0x${fnOf(payload)}`, raw: 'raw', bid: BID })
         }
       })
     })
     await running(driver)
     driver.send({ type: 'Submit', plan: liquidationPlan('liq') })
     await until(() => signed.length > 0, 'the signature')
-    expect(signed[0]).toEqual({ nonce: 0, fee: makeConfig().feeReserve, level: 1 })
+    const { feeReserve } = makeConfig()
+    expect(signed[0]).toEqual({
+      nonce: 0,
+      fee: feeReserve,
+      recoveryFee: feeReserve,
+      kind: 'step',
+      level: 1
+    })
     await driver.abandon()
   })
 
@@ -215,7 +246,7 @@ describe('the kernel hosted on the engine', () => {
     chain.receipts.set('0xexec', { block: 2, branch: 'A' })
     chain.height = 4
     await until(() => seen.includes('notice settled'), 'the settlement')
-    expect(seen).toEqual(['notice admitted', 'sent', 'included', 'notice settled'])
+    expect(seen).toEqual(['running', 'notice admitted', 'sent', 'included', 'notice settled'])
     await driver.abandon()
   })
 
@@ -487,7 +518,7 @@ describe('the kernel hosted on the engine', () => {
     await driver.abandon()
   })
 
-  it('withholds a risk-increasing send whose evidence expired while it waited to hand off', async () => {
+  it('withholds a send whose plan expired while it waited to hand off, and cancels the plan', async () => {
     const released = Promise.withResolvers<void>()
     const driver = await start({
       now: Date.now,
@@ -511,33 +542,44 @@ describe('the kernel hosted on the engine', () => {
     await until(() => Date.now() > notAfter, 'the evidence to expire')
     released.resolve()
     await until(() => driver.state().nonces[0]?.candidates[0]?.sent === 'withheld', 'withheld')
-    expect(driver.state().plans.q?.reason).toBe('withheld at handoff: evidence expired')
+    expect(driver.state().plans.q).toMatchObject({
+      status: 'compensating',
+      reason: 'intent expired'
+    })
     await driver.abandon()
   })
 
   it('lets the re-send of a step that latched the kernel through the guard, past the dispatch window', async () => {
     const chain = new FakeChain()
     const handedOff: boolean[] = []
+    const candidatesWhileResending: number[] = []
+    let state = (): KernelState | undefined => undefined
     const driver = await start({
       chain,
-      config: makeConfig({ maxDispatchLagMs: 50, stuckBlocks: 1 }),
+      config: makeConfig({ maxDispatchLagMs: 200, stuckBlocks: 1 }),
       effects: effects({
-        broadcast: (_raw, guard) => {
+        broadcast: async (_raw, guard) => {
           handedOff.push(guard.mayAct())
-          return handedOff.length === 1
-            ? Promise.reject(new Error('the connection dropped after the write'))
-            : Promise.resolve('accepted')
+          if (handedOff.length === 1) throw new Error('the connection dropped after the write')
+          if (handedOff.length > 2) return 'accepted'
+          const height = (chain.height += 2)
+          await until(() => state()?.head?.number === height, 'a head while the re-send is out')
+          await sleep(10)
+          candidatesWhileResending.push(state()?.nonces[0]?.candidates.length ?? 0)
+          return 'accepted'
         }
       })
     })
+    state = driver.state
     await running(driver)
     driver.send({ type: 'Submit', plan: liquidationPlan('liq') })
     await until(() => driver.state().nonces[0]?.candidates[0]?.sent === 'unknown', 'unknown')
-    await sleep(100)
+    await sleep(300)
     chain.height += 2
     await until(() => driver.state().nonces[0]?.candidates[0]?.sent === 'accepted', 'the re-send')
     expect(handedOff.length).toBeGreaterThan(1)
     expect(handedOff).not.toContain(false)
+    expect(candidatesWhileResending).toEqual([1])
     await driver.abandon()
   })
 
@@ -568,7 +610,7 @@ describe('the kernel hosted on the engine', () => {
     driver.send({ type: 'Halt', reason: 'operator' })
     released.resolve()
     await until(() => handedOff.length > 1, 'the handoff')
-    expect(handedOff.slice(1)).not.toContain(true)
+    expect(handedOff[1]).toBe(false)
     await driver.abandon()
   })
 
@@ -673,36 +715,59 @@ describe('the kernel hosted on the engine', () => {
     await driver.abandon()
   })
 
-  it('carries no finality time before any anchor is proved', async () => {
+  it('alarms once on finality stalled below its window, and again only after it returned', async () => {
+    const chain = new FakeChain()
+    chain.height = 30
+    chain.finalized = 27
+    const driver = await start({ chain, reorgDepth: 4 })
+    await running(driver)
+    const held = () => driver.alarms().filter(a => a.startsWith('finality is held'))
+    chain.height = 40
+    await until(() => driver.state().head?.number === 40, 'the head past finality')
+    await sleep(50)
+    expect(driver.state().finalized.number).toBe(27)
+    expect(held()).toHaveLength(1)
+    chain.finalized = 38
+    await until(() => driver.state().finalized.number === 38, 'finality back inside the window')
+    chain.height = 50
+    await until(() => driver.state().head?.number === 50, 'the head past finality again')
+    await sleep(50)
+    expect(held()).toHaveLength(2)
+    await driver.abandon()
+  })
+
+  it('refuses to start when finality lags the head past its reorg window', async () => {
     const chain = new FakeChain()
     chain.height = 30
     chain.finalized = 20
-    chain.beforeBlock = number =>
-      number === 20 ? Promise.reject(new Error('block 20 unavailable')) : Promise.resolve()
     const driver = await start({ chain, reorgDepth: 4 })
-    await until(() => driver.state().head?.number === 30, 'the head')
-    await sleep(30)
+    await until(() => driver.state().lifecycle.kind === 'stopped', 'the refusal')
+    expect(driver.state().lifecycle).toMatchObject({
+      kind: 'stopped',
+      outcome: 'refused',
+      reason: expect.stringContaining('past the 4-block reorg window')
+    })
     expect(driver.state().finalized).toStrictEqual({ number: -1, timestamp: 0n })
     await driver.abandon()
   })
 
-  it('holds finality back until the new anchor below its window is read and linked', async () => {
+  it('holds finality below its window with one alarm, never walking back, until it returns', async () => {
     const chain = new FakeChain()
     chain.height = 30
-    chain.finalized = 5
+    chain.finalized = 27
     const driver = await start({ chain, reorgDepth: 4 })
     await running(driver)
-    expect(driver.state().finalized.number).toBe(5)
-    let unavailable = true
-    chain.beforeBlock = number =>
-      unavailable && number === 20
-        ? Promise.reject(new Error('block 20 unavailable'))
-        : Promise.resolve()
-    chain.finalized = 20
+    expect(driver.state().finalized.number).toBe(27)
+    const reads = readsOf(chain)
+    chain.height = 40
+    chain.finalized = 30
+    await until(() => driver.state().head?.number === 40, 'the head past finality')
     await sleep(50)
-    expect(driver.state().finalized.number).toBe(5)
-    unavailable = false
-    await until(() => driver.state().finalized.number === 20, 'finality once the anchor reads')
+    expect(driver.state().finalized.number).toBe(27)
+    expect(driver.alarms().filter(a => a.startsWith('finality is held'))).toHaveLength(1)
+    expect(reads.numbers.filter(n => n !== 27 && n <= 30)).toEqual([])
+    chain.finalized = 38
+    await until(() => driver.state().finalized.number === 38, 'finality back inside the window')
     await driver.abandon()
   })
 
@@ -779,6 +844,226 @@ describe('the kernel hosted on the engine', () => {
     await until(() => errors.length > 0, 'a refused walk')
     expect(String(errors[0])).toMatch(/changed forks/)
     expect(driver.state().head?.number).toBe(1)
+    await driver.abandon()
+  })
+
+  it('follows a poll gap deeper than its window on a 100ms chain, keeping its evidence', async () => {
+    const chain = new FakeChain()
+    chain.height = 10
+    const reads = readsOf(chain)
+    const driver = await start({ chain, reorgDepth: 16 })
+    await running(driver)
+    driver.send({ type: 'Submit', plan: liquidationPlan('liq') })
+    await until(() => driver.state().nonces[0] !== undefined, 'the broadcast')
+    chain.receipts.set('0xexec', { block: 11, branch: 'A' })
+    chain.height = 12
+    await until(() => driver.state().nonces[0]?.resolution !== undefined, 'the receipt')
+    reads.numbers.length = 0
+    reads.peak = 0
+    chain.height = 12 + 30
+    await until(() => driver.state().head?.number === 42, 'the head past the gap')
+    expect(driver.alarms().filter(a => !a.startsWith('finality is held'))).toEqual([])
+    expect(driver.state().nonces[0]?.resolution).toBeDefined()
+    expect([...new Set(reads.numbers.filter(n => n > 0))].toSorted((x, y) => x - y)).toEqual(
+      Array.from({ length: 29 }, (_, i) => 13 + i)
+    )
+    expect(reads.peak).toBeGreaterThan(1)
+    await driver.abandon()
+  })
+
+  it('links its first window down to finality a bounded batch at a time, handing over only usable heads', async () => {
+    const chain = new FakeChain()
+    chain.height = 500
+    chain.finalized = 100
+    const reads = readsOf(chain)
+    const config = makeConfig({ maxDispatchLagMs: 5_000 })
+    const driver = await start({ chain, config, reorgDepth: 1_000 })
+    await running(driver)
+    expect(driver.state().finalized.number).toBe(100)
+    const usable = 500 - Math.max(config.maxSimLagBlocks, config.maxEvidenceAgeBlocks)
+    expect(Math.min(...Object.keys(driver.state().headers).map(Number))).toBe(usable)
+    expect(reads.peak).toBeGreaterThan(1)
+    expect(reads.peak).toBeLessThanOrEqual(32)
+    expect(new Set(reads.numbers).size).toBe(400)
+    await driver.abandon()
+  })
+
+  it('rolls back to a fork found by a batched walk below a poll gap', async () => {
+    const chain = new FakeChain()
+    chain.height = 10
+    const driver = await start({ chain, reorgDepth: 64 })
+    await running(driver)
+    driver.send({ type: 'Submit', plan: liquidationPlan('liq') })
+    await until(() => driver.state().nonces[0] !== undefined, 'the broadcast')
+    chain.receipts.set('0xexec', { block: 11, branch: 'A' })
+    chain.height = 12
+    await until(() => driver.state().nonces[0]?.resolution !== undefined, 'the receipt')
+    chain.forkAt = 10
+    chain.branch = 'B'
+    chain.height = 80
+    await until(() => driver.state().head?.hash === '0x80B', 'the new branch')
+    expect(driver.alarms().filter(a => !a.startsWith('finality is held'))).toEqual([])
+    expect(driver.state().headers[11]).toBe('0x11B')
+    expect(driver.state().nonces[0]?.resolution).toBeUndefined()
+    await driver.abandon()
+  })
+
+  it('enrolls only once the nonce at the safe block matches the head, whatever its finality', async () => {
+    const chain = new FakeChain()
+    chain.height = 10
+    chain.finalized = 8
+    chain.safeAt = 4
+    chain.nonceAt = at =>
+      Promise.resolve(at.number >= 6 ? { latest: 1, pending: 1 } : { latest: 0, pending: 0 })
+    const driver = await start({ chain })
+    await until(() => driver.state().head?.number === 10, 'the head')
+    await sleep(30)
+    expect(driver.state().lifecycle.kind).toBe('starting')
+    expect(driver.state().nextNonce).toBeUndefined()
+    chain.safeAt = 7
+    await running(driver)
+    expect(driver.state().nextNonce).toBe(1)
+    await driver.abandon()
+  })
+
+  it('refuses to start on a chain that serves no tag for its finality', async () => {
+    const chain = new FakeChain()
+    chain.latest = () => Promise.resolve({ head: chain.blockAt(chain.height), finalized: null })
+    const driver = await start({ chain })
+    await until(() => driver.state().lifecycle.kind === 'stopped', 'the refusal')
+    expect(driver.state().lifecycle).toMatchObject({
+      kind: 'stopped',
+      outcome: 'refused',
+      reason: expect.stringContaining('does not serve the finality tag')
+    })
+    await driver.abandon()
+  })
+
+  it('alarms once when the chain stops serving its finality tag while running', async () => {
+    const chain = new FakeChain()
+    const driver = await start({ chain })
+    await running(driver)
+    const latest = chain.latest
+    chain.latest = () => Promise.resolve({ head: chain.blockAt(chain.height), finalized: null })
+    await sleep(50)
+    const unserved = () =>
+      driver.alarms().filter(a => a.includes('does not serve the finality tag'))
+    expect(unserved()).toHaveLength(1)
+    expect(driver.state().lifecycle.kind).toBe('running')
+    chain.latest = latest
+    chain.height = 3
+    await until(() => driver.state().head?.number === 3, 'heads again')
+    await driver.abandon()
+  })
+
+  it('refuses a fresh enrollment on a chain that serves no safe tag', async () => {
+    const chain = new FakeChain()
+    chain.safe = () => Promise.resolve(null)
+    const driver = await start({ chain })
+    await until(() => driver.state().lifecycle.kind === 'stopped', 'the refusal')
+    expect(driver.state().lifecycle).toMatchObject({
+      kind: 'stopped',
+      outcome: 'refused',
+      reason: expect.stringContaining('does not serve the safe tag')
+    })
+    await driver.abandon()
+  })
+
+  it('retries a safe read that failed, and enrolls once it answers', async () => {
+    const chain = new FakeChain()
+    const safe = chain.safe
+    let failures = 2
+    chain.safe = () => (failures-- > 0 ? Promise.reject(new Error('connection reset')) : safe())
+    const driver = await start({ chain })
+    await running(driver)
+    expect(failures).toBeLessThan(0)
+    expect(driver.state().nextNonce).toBe(0)
+    await driver.abandon()
+  })
+
+  it('refuses to enroll when the pending nonce advances between its two nonce reads', async () => {
+    const chain = new FakeChain()
+    chain.height = 10
+    chain.finalized = 4
+    let reads = 0
+    chain.nonceAt = () =>
+      Promise.resolve(reads++ % 2 === 0 ? { latest: 0, pending: 0 } : { latest: 0, pending: 1 })
+    const driver = await start({ chain })
+    await until(() => driver.state().lifecycle.kind === 'stopped', 'the refusal')
+    expect(driver.state().lifecycle).toMatchObject({
+      kind: 'stopped',
+      outcome: 'refused',
+      reason: expect.stringMatching(/^unrecorded pending transaction/)
+    })
+    expect(driver.state().nextNonce).toBeUndefined()
+    await driver.abandon()
+  })
+
+  /** Sends one liquidation from head 10, then moves the head to 42, past a 16-block window. */
+  const pastTheWindow = async (chain: FakeChain) => {
+    chain.height = 10
+    const driver = await start({
+      chain,
+      effects: effects({ broadcast: () => new Promise<never>(() => {}) })
+    })
+    await running(driver)
+    driver.send({ type: 'Submit', plan: liquidationPlan('liq') })
+    await until(() => driver.state().nonces[0] !== undefined, 'the broadcast')
+    chain.height = 42
+    await until(() => driver.state().head?.hash === '0x42A', 'the head past the window')
+    return driver
+  }
+
+  /** The source switches to a branch forked at 15 and stops answering heads, so no poll rolls back. */
+  const switchBranch = (chain: FakeChain) => {
+    chain.forkAt = 15
+    chain.branch = 'B'
+    chain.latestDelayMs = 60_000
+  }
+
+  /** Inclusion evidence from branch B held beside the head of branch A it replaced. */
+  const mixesBranches = (state: KernelState) =>
+    state.nonces[0]?.resolution !== undefined && state.headers[42] === '0x42A'
+
+  it('never holds a receipt below its window beside a head from the branch it replaced', async () => {
+    const chain = new FakeChain()
+    const driver = await pastTheWindow(chain)
+    chain.receipts.set('0xexec', { block: 20, branch: 'B' })
+    let switched = false
+    chain.onReceipt = () => {
+      switched = true
+      switchBranch(chain)
+    }
+    await until(() => switched, 'the receipt lookup')
+    await sleep(50)
+    expect(mixesBranches(driver.state())).toBe(false)
+    await driver.abandon()
+  })
+
+  it('never holds a nonce lookup below its window beside a head from the branch it replaced', async () => {
+    const chain = new FakeChain()
+    const driver = await pastTheWindow(chain)
+    const nonceTx = chain.nonceTx
+    let switched = false
+    chain.nonceTx = nonce => {
+      switched = true
+      switchBranch(chain)
+      chain.minedAt = { hash: '0xexec', block: 20, branch: 'B' }
+      return nonceTx(nonce)
+    }
+    chain.nonce = 1
+    await until(() => switched, 'the nonce lookup')
+    await sleep(50)
+    expect(mixesBranches(driver.state())).toBe(false)
+    await driver.abandon()
+  })
+
+  it('vouches for a receipt below its window once it links to the delivered head', async () => {
+    const chain = new FakeChain()
+    const driver = await pastTheWindow(chain)
+    chain.receipts.set('0xexec', { block: 20, branch: 'A' })
+    await until(() => driver.state().nonces[0]?.resolution !== undefined, 'the receipt')
+    expect(driver.state().headers[20]).toBe('0x20A')
     await driver.abandon()
   })
 
@@ -1301,8 +1586,8 @@ describe('kernels in one process', () => {
       let kernel
       if (split) {
         const host = declareKernelHost(g, hosting)
-        lifecycle(host)
         host.attach({ facts: [positions] })
+        lifecycle(host)
         kernel = host
       } else {
         kernel = declareKernel(g, { ...hosting, facts: [positions] })
@@ -1392,7 +1677,7 @@ describe('kernels in one process', () => {
           await held.promise
           if (!guard.mayAct()) throw new Error('withdrawn before signing')
           signed.push(payload.data)
-          return { hash: '0xexec', raw: 'raw:exec' }
+          return { hash: '0xexec', raw: 'raw:exec', bid: BID }
         }
       })
     })

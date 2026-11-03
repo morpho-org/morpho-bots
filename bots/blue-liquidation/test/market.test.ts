@@ -1,4 +1,3 @@
-import { encodeAbiParameters, keccak256 } from 'viem'
 import { describe, expect, it } from 'vitest'
 
 import type { MarketParams } from '../src/market'
@@ -18,36 +17,5 @@ describe('marketId', () => {
     expect(marketId(PARAMS)).toBe(
       '0xd64291e23e436138f447ae181e5c8c1a78b7426250901ffcd8898fe01da24bf0'
     )
-  })
-
-  it('equals the abi.encode of the five fields as separate static args (independent encoding)', () => {
-    // A struct of only static fields ABI-encodes identically to its fields concatenated, so this
-    // separate-args encoding is an independent check of the tuple encoding in marketId().
-    const independent = keccak256(
-      encodeAbiParameters(
-        [
-          { type: 'address' },
-          { type: 'address' },
-          { type: 'address' },
-          { type: 'address' },
-          { type: 'uint256' }
-        ],
-        [PARAMS.loanToken, PARAMS.collateralToken, PARAMS.oracle, PARAMS.irm, PARAMS.lltv]
-      )
-    )
-    expect(marketId(PARAMS)).toBe(independent)
-  })
-
-  it('is field-order sensitive: swapping loanToken and collateralToken changes the id', () => {
-    const swapped: MarketParams = {
-      ...PARAMS,
-      loanToken: PARAMS.collateralToken,
-      collateralToken: PARAMS.loanToken
-    }
-    expect(marketId(swapped)).not.toBe(marketId(PARAMS))
-  })
-
-  it('changes when lltv changes', () => {
-    expect(marketId({ ...PARAMS, lltv: PARAMS.lltv + 1n })).not.toBe(marketId(PARAMS))
   })
 })

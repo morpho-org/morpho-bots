@@ -1,7 +1,6 @@
 import type { KernelActivity, Notice, Refusal } from '@repo/kernel'
 
 import type { Logger } from './logger'
-import type { SignedFees } from './transaction-kernel'
 
 type Level = keyof Logger
 type Line = Readonly<{ level: Level; event: string; fields: Record<string, unknown> }>
@@ -26,11 +25,11 @@ export const TX_KEY = '0xmarket:0xborrower'
 const intent = (n: number) => `${TX_KEY}#run.${n}`
 export const TX_FOREIGN_INTENT = 'fill-7'
 
-/** The fees each scenario hash bids; `0xf1` is one the kernel no longer remembers. */
-export const txFeesOf = (hash: string): SignedFees | undefined =>
-  hash === '0xf1'
-    ? undefined
-    : { maxFeePerGasWei: hash.endsWith('2') ? 9n : 5n, priorityFeePerGasWei: 1n }
+/** The fees each scenario hash bids. */
+const feesOf = (hash: string) => ({
+  maxFeePerGas: hash.endsWith('2') ? 9n : 5n,
+  maxPriorityFeePerGas: 1n
+})
 
 const sent = (
   n: number,
@@ -38,19 +37,39 @@ const sent = (
   nonce: number,
   status: Extract<KernelActivity, { type: 'sent' }>['status'] = 'accepted',
   kind: Extract<KernelActivity, { type: 'sent' }>['kind'] = 'step'
-): KernelActivity => ({ type: 'sent', intentId: intent(n), step: 0, kind, nonce, hash, status })
+): KernelActivity => ({
+  type: 'sent',
+  intentId: intent(n),
+  step: 0,
+  kind,
+  nonce,
+  hash,
+  status,
+  ...feesOf(hash)
+})
 
 const notice = (
   n: number,
   kind: Exclude<Notice, 'refused'>,
-  included?: { hash: string; block: number }[],
+  included?: { hash: string; block: number; success?: boolean }[],
   reason?: string
 ): KernelActivity => ({
   type: 'notice',
   intentId: intent(n),
   notice: kind,
   ...(reason !== undefined && { reason }),
-  ...(included && { included: included.map(inclusion => ({ step: 0, ...inclusion })) })
+  ...(included && {
+    included: included.map(inclusion => ({ step: 0, success: true, ...inclusion }))
+  })
+})
+
+const cancelled = (n: number, reason: string): KernelActivity => ({
+  type: 'notice',
+  intentId: intent(n),
+  notice: 'compensated',
+  code: 'cancelled',
+  reason,
+  included: []
 })
 
 const refused = (n: number, refusal: Refusal): KernelActivity => ({
@@ -83,7 +102,11 @@ export const TX_SCENARIO: readonly (readonly KernelActivity[])[] = [
   [refused(4, { code: 'lifecycle', reason: 'stopped' })],
   [notice(7, 'abandoned', [], 'deadline passed')],
   [notice(5, 'settled', [{ hash: '0x99', block: 11 }])],
-  [sent(6, '0xe1', 9), notice(6, 'failed', [{ hash: '0xe1', block: 12 }], 'reverted')],
+  [
+    sent(6, '0xe1', 9),
+    notice(6, 'failed', [{ hash: '0xe1', block: 12, success: false }], 'reverted')
+  ],
+  [sent(8, '0xg1', 12), cancelled(8, 'evidence expired')],
   [
     {
       type: 'sent',
@@ -92,7 +115,8 @@ export const TX_SCENARIO: readonly (readonly KernelActivity[])[] = [
       kind: 'fill',
       nonce: 10,
       hash: '0xf1',
-      status: 'accepted'
+      status: 'accepted',
+      ...feesOf('0xf1')
     },
     { type: 'notice', intentId: TX_FOREIGN_INTENT, notice: 'settled', included: [] }
   ],

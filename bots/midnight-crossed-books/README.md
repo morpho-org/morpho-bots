@@ -78,6 +78,13 @@ The signer policy pins chain, resolver, `resolve` selector, zero ETH value, call
 
 ## Deploy
 
+The bot is moving to the `tools` EKS cluster. Chart
+`helm/midnight-crossed-books`; ArgoCD apps `morpho-org/morpho-infra`
+`gitops/tools`. ECR `bots/midnight-crossed-books` images published by
+`.github/workflows/publish-liquidation-ecr.yml`. ExternalSecret reads `RPC_URL`,
+optional `RPC_URL_FALLBACK`, and `RESOLVER_PRIVATE_KEY` from Secrets Manager
+`midnight-crossed-books/<env>/8453/runtime`. Railway remains live until cutover.
+
 The first deployment provisions the Railway service and writes the runtime secrets directly to
 Railway:
 

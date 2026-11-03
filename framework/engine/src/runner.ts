@@ -402,6 +402,7 @@ export const createRunner = (graph: Graph, options: RunnerOptions = {}): Runner 
     )
       throw new RequestRefusedError(effect.id, `${identity} is already waiting or running`)
     const recovery = policy(effect, () => spec.recovery?.(request, samplesOf(effect))) ?? false
+    if (spec.latestOnly) state.waiting = state.waiting.filter(job => job.effect !== effect)
     const queued = (kind: boolean) => state.waiting.filter(job => job.recovery === kind).length
     const ahead = state.running + (recovery ? 0 : queued(true))
     const { concurrency } = effect.lane

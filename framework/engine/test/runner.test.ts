@@ -564,6 +564,34 @@ describe('the runner', () => {
     await expect(runner.stopped).rejects.toBeInstanceOf(LaneOverflowError)
   })
 
+  it('runs only the newest of a burst for a latest-only effect, never overflowing its queue', async () => {
+    const g = createGraph('latest')
+    const requests = g.occurrences<number>('requests')
+    const started: number[] = []
+    const running = gate()
+    g.effect('read', {
+      requests: { request: every(requests) },
+      lane: lane('reads', { concurrency: 1, queue: 1 }),
+      latestOnly: true,
+      handle: async ({ value }) => {
+        started.push(value)
+        if (value === 1) await running.opened
+      }
+    })
+    const runner = createRunner(g.build())
+    let failure: unknown
+    runner.stopped.catch((error: unknown) => (failure = error))
+    runner.push(requests, 1)
+    await sleep(0)
+    runner.pushAll([2, 3, 4, 5].map(n => sourceWrite(requests, n)))
+    runner.push(requests, 6)
+    running.open()
+    await sleep(10)
+    expect(failure).toBeUndefined()
+    expect(started).toStrictEqual([1, 6])
+    await runner.abandon()
+  })
+
   it('resolves its stop with the value an effect stops it with, after work that must land', async () => {
     const g = createGraph('stop')
     const requests = g.occurrences<string>('requests')

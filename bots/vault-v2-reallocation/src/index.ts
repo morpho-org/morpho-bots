@@ -31,8 +31,6 @@ import { createStrategy } from './strategies'
 import { checkVaults } from './vault-checks'
 import { fetchVaults } from './vault-data'
 
-/** How long a prepared reallocation may wait for a reservation before it is simulated again. */
-const PREPARE_VALID_MS = 30_000
 /** A failed or refused reallocation waits this many blocks, doubling, before it is prepared again. */
 const BACKOFF = { baseBlocks: 20, maxBlocks: 600 }
 
@@ -148,16 +146,13 @@ async function main() {
       // A revert here (role revoked, cap exceeded, insufficient idle, market no longer enabled)
       // means do not send; the kernel simulates the same bytes again at its own head before signing.
       simulate: (vault, data) => simulateCall(client, { eoa, to: vault, data }),
-      dryRun: config.dryRun,
-      validForMs: PREPARE_VALID_MS,
-      now: Date.now
+      dryRun: config.dryRun
     },
     intervalMs: config.reallocationIntervalMs,
     backoff: BACKOFF,
     runId: runIdAt(Date.now()),
     maxReservations: TRANSACTION_KERNEL_RESERVATIONS,
     onHead: head => void balanceMonitor.maybeLog(BigInt(head.number)),
-    feesOf: kernel.feesOf,
     logger
   })
 

@@ -204,6 +204,11 @@ export type EffectSpec<Q extends Requests, R, S extends Sampled = Record<never, 
   sequence?: (request: EffectRequest<Q>) => number | undefined
   /** Recovery work starts before normal work waiting in the same lane. */
   recovery?: (request: EffectRequest<Q>, samples: Samples<S>) => boolean
+  /**
+   * Each request replaces this effect's requests still waiting in its lane, so a burst runs only its
+   * newest; one already running finishes. For work whose newest request makes the older ones moot.
+   */
+  latestOnly?: boolean
   /** A request waits in its lane, counted against its bound, until this holds after some step. */
   ready?: (request: EffectRequest<Q>, samples: Samples<S>) => boolean
   /**

@@ -1,6 +1,6 @@
 import type { BackoffPolicy } from '@repo/controller'
 import type { KernelHead, KernelHostOptions } from '@repo/kernel'
-import type { Logger, SignedFees } from '@repo/kit'
+import type { Logger } from '@repo/kit'
 import type { Address } from 'viem'
 
 import { defineBot, logBackoff, logTasks, tasks } from '@repo/controller'
@@ -44,7 +44,6 @@ export type ReallocatorOptions = Readonly<{
   /** How many native reservations the kernel's caps allow. */
   maxReservations: number
   onHead?: (head: KernelHead) => void
-  feesOf?: (hash: string) => SignedFees | undefined
   logger: Logger
 }>
 
@@ -58,7 +57,6 @@ export const declareReallocator = defineBot('vault-v1-reallocation', (b, o: Real
   const { logger } = o
   const reporter = createReporter({
     whitelist: o.world.vaults,
-    ...(o.feesOf && { feesOf: o.feesOf }),
     logger
   })
   // The only signer: it checks each act with the validator, simulates it again, signs and tracks it.

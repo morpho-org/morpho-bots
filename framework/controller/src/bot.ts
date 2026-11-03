@@ -96,9 +96,9 @@ export type Bot = Readonly<{
   /**
    * The effect `id` on lane `id`, writing `${id}.reads` folded into `level`, each read expiring
    * `validForMs` after it started; `everyMs` adds
-   * `${level}.interval` and `${level}.due`, `'head'` skips a head the kernel has passed or
-   * replaced. Reads run one at a time, so each lands in the order its head came and a newer head's
-   * read always lands last. `read` returns a failed write for its own failures: a throw fails the
+   * `${level}.interval` and `${level}.due`, `'head'` reads only the newest head waiting and skips
+   * one the kernel has passed or replaced. Reads run one at a time, so each lands in the order its
+   * head came and a newer head's read always lands last. `read` returns a failed write for its own failures: a throw fails the
    * graph.
    * @throws GraphDefinitionError - for a `validForMs` that is not a positive safe integer.
    */
@@ -226,6 +226,7 @@ export const defineBot =
           samples: { state },
           results: writes,
           lane: lane(sourceId, { concurrency: 1, queue: spec.queue }),
+          latestOnly: spec.at === 'head',
           handle: async ({ from, value: head }, context) => {
             const startedAt = context.now()
             const current = context.samples.state().head

@@ -1,31 +1,27 @@
 /**
  * Reads the deployless lens against REAL Base state, exactly as the running bot does — no anvil, no
- * deploy: the viem-dlc `deployless` transport runs the lens inside one `eth_call`. Two uses:
- *
- *   1. Operator check — proves the whole read path works against production (the lens compiles,
- *      deploys deploylessly, the IRM accrual sim + oracle reads don't revert, and the structs decode)
- *      and prints a health breakdown across a sample of real borrowers.
- *   2. Fork-fixture finder — if any sampled position is currently liquidatable, it prints the
- *      `ForkFixture` you can paste into `test/fork/liquidation.test.ts` to run the end-to-end suite.
+ * deploy: the viem-dlc `deployless` transport runs the lens inside one `eth_call`. It proves the whole
+ * read path works against production (the lens compiles, deploys deploylessly, the IRM accrual sim +
+ * oracle reads don't revert, and the structs decode) and prints a health breakdown across a sample of
+ * real borrowers.
  *
  * Usage (needs a Base RPC; no anvil required):
  *   RPC_URL=https://… pnpm --filter @morpho-org/blue-liquidation run probe:lens
  */
 import type { Address, Hex } from 'viem'
 
-import { createDeploylessClient } from '@repo/bot-kit'
 import { MorphoAbi } from '@repo/contracts'
+import { createDeploylessClient } from '@repo/kit'
 import { ensureError, lensKey } from '@repo/utils'
 import { getAbiItem } from 'viem'
 import { getBlockNumber, getLogs, readContract } from 'viem/actions'
 import { base } from 'viem/chains'
 
 import type { MarketParams } from '../src/market'
-import type { LensInput, LensOut } from '../src/state/lens.sol'
+import type { LensInput } from '../src/state/lens.sol'
 
 import { marketId } from '../src/market'
 import { isLiquidatable } from '../src/runner/eligibility'
-import { plan } from '../src/sizing/plan'
 import { readBlueLiquidationLens } from '../src/state/lens.sol'
 
 const MORPHO: Address = '0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb'
@@ -39,7 +35,6 @@ function required(name: string): string {
   return value.trim()
 }
 
-// oxlint-disable-next-line complexity
 async function main() {
   const rpcUrl = required('RPC_URL')
   const baseClient = createDeploylessClient({ chain: base, rpcUrl, rpcUrlFallback: undefined })
@@ -89,18 +84,18 @@ async function main() {
   let valid = 0
   let hasDebt = 0
   let healthy = 0
-  const liquidatable: { pair: LensInput; row: LensOut }[] = []
+  let liquidatable = 0
   for (const pair of pairs) {
     const row = out.get(lensKey(marketId(pair.params), pair.borrower))
     if (!row) continue
     if (row.valid) valid++
     if (row.hasDebt) hasDebt++
     if (row.valid && row.hasDebt && row.healthy) healthy++
-    if (isLiquidatable(row)) liquidatable.push({ pair, row })
+    if (isLiquidatable(row)) liquidatable++
   }
   console.log(
     `[probe] returned ${out.size}/${pairs.length} · valid ${valid} · hasDebt ${hasDebt} · ` +
-      `healthy(with debt) ${healthy} · liquidatable ${liquidatable.length}`
+      `healthy(with debt) ${healthy} · liquidatable ${liquidatable}`
   )
 
   // Show one decoded sample so the accrual/oracle/decode path is eyeballable against real state.
@@ -115,40 +110,6 @@ async function main() {
       lltv: sample.lltv
     })
   }
-
-  if (liquidatable.length === 0) {
-    console.log(
-      '[probe] no live-liquidatable position in this sample — expected for a healthy market.'
-    )
-    console.log('[probe] the fork suite (test/fork/) stays skipped until a FIXTURE is supplied.')
-    return
-  }
-
-  const { pair, row } = liquidatable[0]!
-  const seizePlan = plan({
-    hasDebt: row.hasDebt,
-    healthy: row.healthy,
-    borrowShares: row.borrowShares,
-    collateral: row.collateral,
-    accruedTotalBorrowAssets: row.accruedTotalBorrowAssets,
-    totalBorrowShares: row.totalBorrowShares,
-    collateralPrice: row.collateralPrice,
-    lltv: row.lltv
-  })
-  console.log('[probe] LIQUIDATABLE — paste into test/fork/liquidation.test.ts FIXTURE:')
-  console.log(
-    JSON.stringify(
-      {
-        forkBlock: `${head} (pin at or just below)`,
-        marketParams: pair.params,
-        borrower: pair.borrower,
-        poolFee: '<the collateral→loan Uniswap-V3 fee tier, e.g. 500/3000>',
-        plannedSeizedAssets: seizePlan?.seizedAssets ?? null
-      },
-      (_k, v) => (typeof v === 'bigint' ? v.toString() : v),
-      2
-    )
-  )
 }
 
 main().catch(error => {

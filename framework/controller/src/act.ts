@@ -3,7 +3,6 @@ import type {
   Authored,
   Conflicts,
   DecisionRecord,
-  BlockRef,
   Fact,
   Id,
   KernelEvent,
@@ -13,7 +12,7 @@ import type {
 } from '@repo/kernel'
 
 import { GraphDefinitionError, keyRecord } from '@repo/engine'
-import { ABSENT, factId } from '@repo/kernel'
+import { ABSENT, factId, isChainFact } from '@repo/kernel'
 
 import { EvidenceDefectError } from './errors'
 
@@ -72,21 +71,28 @@ export const kernelDomain = <const D extends string>(name: D): KernelDomain<D> =
   return handle
 }
 
-/** The block `basis` was read at, which the kernel checks for canonicality. */
-const chainBasis = (id: Id, basis: Data): BlockRef => {
+const isTime = (v: Data | undefined) => Number.isSafeInteger(v) && (v as number) >= 0
+
+/**
+ * The block `basis` was read at, which the kernel checks for canonicality, or, for an offchain
+ * read, the time it was observed.
+ */
+const factBasis = (id: Id, basis: Data): Fact['basis'] => {
   if (typeof basis === 'object' && basis !== null && !Array.isArray(basis)) {
-    const { block, blockHash } = basis as Readonly<Record<string, Data | undefined>>
-    if (Number.isSafeInteger(block) && (block as number) >= 0 && typeof blockHash === 'string')
+    const { block, blockHash, observedAt } = basis as Readonly<Record<string, Data | undefined>>
+    if (isTime(block) && typeof blockHash === 'string' && observedAt === undefined)
       return Object.freeze({ block: block as number, blockHash })
+    if (block === undefined && blockHash === undefined && isTime(observedAt))
+      return Object.freeze({ observedAt: observedAt as number })
   }
-  throw new EvidenceDefectError(`${id} was read at a basis that names no block`)
+  throw new EvidenceDefectError(`${id} was read at a basis that names no block or observation time`)
 }
 
 /**
  * The evidence that `key` of a fact node still reads as it does now: its digest, or that it
- * is absent, with the block it was read at and when the read expires. Undefined while the key is
- * unknown or failed, which authorizes nothing.
- * @throws EvidenceDefectError - for a key read at a basis that names no block.
+ * is absent, with its basis and when the read expires. Undefined while the key is unknown or
+ * failed, which authorizes nothing.
+ * @throws EvidenceDefectError - for a key read at a basis that names no block or observation time.
  */
 export const factOf = <D extends string>(
   node: FactNode<D>,
@@ -99,7 +105,7 @@ export const factOf = <D extends string>(
   const id = factId(node.id, key)
   const version = fact.status === 'present' ? fact.digest : ABSENT
   const reading = Object.freeze({
-    fact: Object.freeze({ id, version, basis: chainBasis(id, fact.basis) }),
+    fact: Object.freeze({ id, version, basis: factBasis(id, fact.basis) }),
     ...(fact.expiry !== undefined && { expiry: fact.expiry })
   }) as FactReading<D>
   origins.set(reading, node)
@@ -118,10 +124,10 @@ type Grounds<D extends string> = Readonly<{
 }>
 
 /**
- * The kernel fields a decision's grounds imply: every fact as evidence, the latest block any of
- * it was read at, and the earliest of `validUntil` and every fact's expiry as `notAfter`. Throws
- * on a reading {@link factOf} did not make from a fact registered with `domain`, and on grounds
- * that name no deadline.
+ * The kernel fields a decision's grounds imply: every fact as evidence, the latest block any chain
+ * fact of it was read at, and the earliest of `validUntil` and every fact's expiry as `notAfter`.
+ * Throws on a reading {@link factOf} did not make from a fact registered with `domain`, and on
+ * grounds that name no chain fact or no deadline.
  */
 const groundsOf = <D extends string>(domain: KernelDomain<D>, grounds: Grounds<D>) => {
   const { restsOn, readAt, validUntil, decision } = grounds
@@ -132,7 +138,11 @@ const groundsOf = <D extends string>(domain: KernelDomain<D>, grounds: Grounds<D
     if (node === undefined || owners.get(node) !== domain)
       throw new EvidenceDefectError(`${reading.fact.id} is not a fact of ${domain.name}`)
   }
-  const blocks = restsOn.map(({ fact }) => fact.basis.block)
+  const blocks = restsOn.flatMap(({ fact }) => (isChainFact(fact) ? [fact.basis.block] : []))
+  if (blocks.length === 0)
+    throw new EvidenceDefectError(`an act on ${domain.name} rests on no chain fact`)
+  const unbounded = restsOn.find(({ fact, expiry }) => !isChainFact(fact) && expiry === undefined)
+  if (unbounded) throw new EvidenceDefectError(`${unbounded.fact.id} is offchain with no expiry`)
   const deadlines = [validUntil, ...restsOn.map(({ expiry }) => expiry)].filter(
     (deadline): deadline is number => deadline !== undefined
   )
@@ -142,6 +152,7 @@ const groundsOf = <D extends string>(domain: KernelDomain<D>, grounds: Grounds<D
     basisBlock: Math.max(readAt ?? 0, ...blocks),
     evidence: Object.freeze(restsOn.map(({ fact }) => fact)),
     notAfter: Math.min(...deadlines),
+    ...(validUntil !== undefined && { validUntil }),
     ...(decision && { decision })
   }
 }

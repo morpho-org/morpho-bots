@@ -94,8 +94,12 @@ describe('the evidence of a key', () => {
     { block: 7 },
     { block: '7', blockHash: '0xb7' },
     { block: -1, blockHash: '0xb7' },
-    { block: 1.5, blockHash: '0xb7' }
-  ])('refuses a key read at a basis that names no block: %j', async basis => {
+    { block: 1.5, blockHash: '0xb7' },
+    { observedAt: -1 },
+    { block: 7, observedAt: 5 },
+    { block: 7, blockHash: '0xb7', observedAt: 5 },
+    { blockHash: '0xb7', observedAt: 5 }
+  ])('refuses a key read at a basis that names no block or observation time: %j', async basis => {
     const { runner, writes, open } = positions()
     runner.push(writes, {
       coverage: 'carried',
@@ -105,6 +109,21 @@ describe('the evidence of a key', () => {
     })
     expect(() => factOf(open, runner.read(open), 'a')).toThrow(EvidenceDefectError)
     expect(() => factOf(open, runner.read(open), 'b')).toThrow(EvidenceDefectError)
+    await runner.abandon()
+  })
+
+  it('carries an offchain read basis into the fact as the time it was observed', async () => {
+    const { runner, writes, open } = positions()
+    runner.push(writes, {
+      coverage: 'complete',
+      entries: { a: { debt: 5 } },
+      basis: { observedAt: 40 },
+      expiry: 90
+    })
+    expect(factOf(open, runner.read(open), 'a')).toStrictEqual({
+      fact: { id: 'open/a', version: digestOf(true), basis: { observedAt: 40 } },
+      expiry: 90
+    })
     await runner.abandon()
   })
 
@@ -125,8 +144,9 @@ describe('the evidence of a key', () => {
 })
 
 /**
- * Facts of one kernel: `a` read at block 7 until 300, `b` read at block 9 until 200, and `c` read
- * at block 9 with no expiry.
+ * Facts of one kernel: `a` read at block 7 until 300, `b` read at block 9 until 200, `c` read at
+ * block 9 with no expiry, `q` observed offchain at 50 until 120, and `u` observed offchain at 50
+ * with no expiry.
  */
 const twoFacts = async () => {
   const g = createGraph('grounds')
@@ -137,7 +157,22 @@ const twoFacts = async () => {
   const second = domain.fact(keyedLevel(g, 'second', otherWrites))
   const unboundedWrites = g.occurrences<KeyedWrite<number>>('unbounded.writes')
   const third = domain.fact(keyedLevel(g, 'third', unboundedWrites))
+  const quoteWrites = g.occurrences<KeyedWrite<number>>('quote.writes')
+  const quote = domain.fact(keyedLevel(g, 'quote', quoteWrites))
+  const lapselessWrites = g.occurrences<KeyedWrite<number>>('lapseless.writes')
+  const lapseless = domain.fact(keyedLevel(g, 'lapseless', lapselessWrites))
   const runner = createRunner(g.build())
+  runner.push(lapselessWrites, {
+    coverage: 'complete',
+    entries: { u: 5 },
+    basis: { observedAt: 50 }
+  })
+  runner.push(quoteWrites, {
+    coverage: 'complete',
+    entries: { q: 4 },
+    basis: { observedAt: 50 },
+    expiry: 120
+  })
   runner.push(unboundedWrites, {
     coverage: 'complete',
     entries: { c: 3 },
@@ -158,8 +193,10 @@ const twoFacts = async () => {
   const a = factOf(first, runner.read(first), 'a')!
   const b = factOf(second, runner.read(second), 'b')!
   const c = factOf(third, runner.read(third), 'c')!
+  const q = factOf(quote, runner.read(quote), 'q')!
+  const u = factOf(lapseless, runner.read(lapseless), 'u')!
   await runner.abandon()
-  return { domain, a, b, c }
+  return { domain, a, b, c, q, u }
 }
 
 const STEPS = [{ kind: 'tx' as const }]
@@ -181,6 +218,37 @@ describe('a plan built by act', () => {
     const { domain, a, b } = await twoFacts()
     expect(act(domain, { ...base, restsOn: [a, b] }).notAfter).toBe(200)
     expect(act(domain, { ...base, restsOn: [a, b], validUntil: 150 }).notAfter).toBe(150)
+  })
+
+  it('hands the kernel its own validity apart, so refreshed evidence never outlives it', async () => {
+    const { domain, a, b } = await twoFacts()
+    expect(act(domain, { ...base, restsOn: [a, b], validUntil: 250 })).toMatchObject({
+      notAfter: 200,
+      validUntil: 250
+    })
+    expect(act(domain, { ...base, restsOn: [a, b] })).not.toHaveProperty('validUntil')
+  })
+
+  it('rests on an offchain fact beside a chain fact, based at the chain fact alone', async () => {
+    const { domain, a, q } = await twoFacts()
+    const plan = act(domain, { ...base, restsOn: [a, q] })
+    expect(plan.evidence).toStrictEqual([a.fact, q.fact])
+    expect(plan.basisBlock).toBe(7)
+    expect(plan.notAfter).toBe(120)
+  })
+
+  it('refuses an offchain fact with no expiry, whatever else bounds the act', async () => {
+    const { domain, a, u } = await twoFacts()
+    expect(() => act(domain, { ...base, restsOn: [a, u] })).toThrow(EvidenceDefectError)
+    expect(() => act(domain, { ...base, restsOn: [a, u], validUntil: 100 })).toThrow(
+      EvidenceDefectError
+    )
+  })
+
+  it('refuses to rest on offchain facts alone', async () => {
+    const { domain, q } = await twoFacts()
+    expect(() => act(domain, { ...base, restsOn: [q] })).toThrow(EvidenceDefectError)
+    expect(() => act(domain, { ...base, restsOn: [q], readAt: 9 })).toThrow(EvidenceDefectError)
   })
 
   it('refuses grounds that name no deadline', async () => {

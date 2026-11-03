@@ -295,7 +295,11 @@ request came in on, in delivery order"). Each is **admitted** in that order:
    retained.
 3. `recovery(request, samples)` marks it recovery work ("holds work past a lane bound and starts
    recovery work first").
-4. The lane's queue bound (§7.2) is checked, and the request joins the lane's waiting list ("takes
+4. For a `latestOnly` effect, its requests still waiting are dropped without a report, the one
+   exception ADR-2026-10-07 allows to reporting dropped work, so a burst runs only its newest and one
+   already running finishes ("runs only the newest of a burst for a latest-only effect,
+   never overflowing its queue").
+5. The lane's queue bound (§7.2) is checked, and the request joins the lane's waiting list ("takes
    a burst up to its free slots plus its queue, and stops rather than skip work past it").
 
 A refusal (`RequestRefusedError`, `LaneOverflowError`, or a lane policy's `PolicyReentryError`)

@@ -75,8 +75,8 @@ catalog:
   tsx: 4.22.0
   typescript: 6.0.2
   viem: 2.47.17
-  vite: 7.3.6
-  vitest: 4.1.11
+  vite: 7.3.7
+  vitest: 4.1.12
   # Must match the zod that `@morpho-org/morpho-sdk` (and knip) resolve. viem's transitive `abitype`
   # declares an optional peer on zod, so a workspace package holding a DIFFERENT zod major gets its
   # own peer-variation copy of viem — two `BaseError` classes, and every cross-package `instanceof`
@@ -104,3 +104,6 @@ overrides:
   # 2.1.2 is the lowest release fixing both. Drop this once oxfmt is bumped to a release pinning
   # tinypool >= 2.1.2.
   oxfmt>tinypool: 2.1.2
+  # GHSA-q7qp-rjg7-q26m: @nestjs/platform-express pins multer 2.4.0 exactly; 2.5.0 fixes it.
+  # Drop this once platform-express resolves multer >= 2.5.0 on its own.
+  '@nestjs/platform-express>multer': 2.5.0

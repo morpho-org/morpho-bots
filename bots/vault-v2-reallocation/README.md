@@ -183,7 +183,14 @@ cd bots/vault-v2-reallocation && BUILD_REVISION=$(git rev-parse HEAD) docker com
 ```
 
 Set `KERNEL_ENROLLMENT_<id>=enrolling` for a chain's first start and `enrolled` for every start
-after it, so a lost ledger refuses to start instead of starting blank.
+after it, so a lost ledger refuses to start instead of starting blank. A fresh `enrolling` start
+also waits in `starting`, signing nothing, until the account's nonce at the chain's `safe` block
+matches its latest one. Switch to `enrolled` only once the bot logs `kernel.running` and
+`KERNEL_STATE_DIR` holds `kernel-<id>-<account>.json`: before that the kernel has written no ledger,
+and an `enrolled` restart refuses. Finality must lag the head by less than the kernel's 5-minute
+reorg window, at least 128 blocks (128 on mainnet, 150 on Base), so mainnet's `finalized` fits: the
+kernel refuses to start past it, and holds finality with one `kernel.alarm` if it falls behind while
+running.
 
 ### Ramp-up (recommended)
 
@@ -198,7 +205,10 @@ stamped on every line. Key events: `startup`, `allocator.missing_role`, `realloc
 (per-leg direction/collateral/lltv/assets), `reallocation.sim_revert`, `reallocation.dry_run`,
 `reallocation.not_broadcast` (an act that ended without a send), `adapter.changed`, `vault.error`,
 per-read `tick.end` counters (`blockNumber`, `vaults`, `skipped_inflight`, `missing_role`,
-`adapter_changed`, `reallocations_found`, `sim_reverts`, `dry_runs`, `broadcast`, `errors`), the framework's `act.submitted` / `act.dropped` / `backoff.*` / `kernel.*` events,
+`adapter_changed`, `reallocations_found`, `sim_reverts`, `dry_runs`, `broadcast`, `errors`, and the
+kernel's `oldestPendingMs`, `pendingAtCeiling` and `waitingMaxFeePerGasWei`, described in
+[How a kernel bot bids](../../docs/framework/README.md#how-a-kernel-bot-bids)), the framework's
+`act.submitted` / `act.dropped` / `backoff.*` / `kernel.*` events,
 and the `tx.*` / `signer.balance` events. Preparations and sends finish after the read that started
 them, so `sim_reverts`, `dry_runs` and `broadcast` count what finished since the previous
 `tick.end`. BetterStack shipping and heartbeat are opt-in via the env vars above.

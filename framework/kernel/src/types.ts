@@ -126,11 +126,20 @@ export type StepSpec = { kind: 'sign' | 'tx' | 'release'; payload?: Payload; wit
 /** What a fact's version reads as when it is known absent, rather than present with a digest. */
 export const ABSENT = 'absent'
 
+/** When an offchain fact, such as a venue quote, was observed, in the kernel's clock. */
+export type ObservedAt = { observedAt: number }
+
 /**
  * A named fact a plan's authorization rests on, as it stood when the plan was decided: its version
- * (a digest, or {@link ABSENT}), and the block of this kernel's chain it was read at.
+ * (a digest, or {@link ABSENT}), and the block of this kernel's chain it was read at, or, for an
+ * offchain fact, when it was observed. An offchain fact is held to its version and expiry only, so
+ * an act must also rest on a chain fact ({@link isChainFact}), which anchors its basis.
  */
-export type Fact = { id: Id; version: string; basis: BlockRef }
+export type Fact = { id: Id; version: string; basis: BlockRef | ObservedAt }
+
+export type ChainFact = Fact & { basis: BlockRef }
+
+export const isChainFact = (fact: Fact): fact is ChainFact => 'block' in fact.basis
 
 /**
  * A fact as the engine last saw it; one that is unknown or failed authorizes nothing. An `expiry`
@@ -163,6 +172,11 @@ export type PlanInput = {
    * is refused, and once admitted nothing of it leaves past it.
    */
   notAfter: number
+  /**
+   * When what was decided stops holding, apart from the evidence's expiries: refreshed evidence
+   * never extends `notAfter` past it.
+   */
+  validUntil?: number
   basisBlock: number
   /** A tighter ceiling on each own candidate's total fee, in wei (not per gas); recovery ignores it. */
   maxSpendWei?: bigint
@@ -204,15 +218,17 @@ export type Entry = {
   state: EntryState
   intentId: Id
   validator: string
-  creators: Hash[]
-  deadCreators: Hash[]
+  /** The nonces whose candidates create it; one dies only on what its winner created. */
+  creators: number[]
+  deadCreators: number[]
   /** Set when the entry leaves `intended`. */
   origin?: Origin
   /** Loaded from an earlier run's ledger, which cannot say whether that run's later stages ran. */
   adopted?: true
   consumedFinal: bigint
   prior?: 'exposed' | 'live'
-  neutralizing?: { nonce: number; hash: Hash }
+  /** The nonce whose candidates retire it; see the kernel's `reviewRevocations`. */
+  neutralizing?: { nonce: number }
   retiredBy?: string
   recoveryAttempts: number
   stuck: boolean
@@ -224,6 +240,12 @@ export type Entry = {
 }
 
 export type CandidateKind = 'step' | 'neutralizer' | 'fill'
+
+/** What a transaction bids per gas unit, as signed. */
+export type GasFees = { maxFeePerGas: bigint; maxPriorityFeePerGas: bigint }
+
+/** The fees and gas limit a transaction was signed with, as the signer reports them. */
+export type SignedBid = GasFees & { gas: bigint }
 /** `withheld`: committed and recorded, then deliberately never sent. */
 export type SendStatus = 'unsent' | 'accepted' | 'unknown' | 'rejected' | 'withheld'
 
@@ -240,7 +262,14 @@ export type Candidate = {
   consumes: Resources
   feeLevel: number
   fee: bigint
+  maxFeePerGas: bigint
+  maxPriorityFeePerGas: bigint
+  gas: bigint
+  /** The head of its first broadcast, or of its commit while it has none; rebroadcasts never move it. */
+  sendHead: number
   sent: SendStatus
+  /** The head it became `unknown` at, set once and cleared when it is accepted. */
+  unknownSince?: number
   /** The conflict ids its plan writes: whichever run sees it land raises their marks. */
   writes: Id[]
   /** Persisted in the flush that gates the send, so the ledger records why it went. */
@@ -268,8 +297,11 @@ export type NonceRecord = {
   candidates: Candidate[]
   resolution?: Resolution
   lastActionHead: number
+  /** When this process first held the record, in the kernel's clock; a restart dates it anew. */
+  openedAt: number
   failedFillHead?: number
-  unknownSince?: number
+  /** Candidates re-sent once in this process, as an uncertain nonce gets one retry before recovery. */
+  resent?: Hash[]
   /** Consumed or pending at the chain by a transaction the kernel never recorded. */
   foreign?: true
 }
@@ -301,7 +333,7 @@ export type Plan = {
   /** Canonical digest of the submitted steps; a submission id is bound to it. */
   digest: string
   committedAt?: number
-  recovery?: { kind: 'neutralizer' | 'fill'; entry?: Id; targetNonce?: number }
+  recovery?: { kind: 'neutralizer' | 'fill'; entry?: Id }
   steps: Step[]
   cursor: number
   /** The step the current stage began at; evidence and `notAfter` are this stage's own. */
@@ -315,6 +347,8 @@ export type Plan = {
   exposed: boolean
   basisBlock: number
   notAfter: number
+  /** The current stage's {@link PlanInput.validUntil}. */
+  validUntil?: number
   maxSpendWei?: bigint
   evidence?: readonly Fact[]
   conflicts?: Conflicts
@@ -323,14 +357,24 @@ export type Plan = {
   lastInclusion?: number
   included?: Inclusion[]
   sim?: BlockRef
-  /** What the transaction in progress is signed at, kept for the candidate it commits. */
-  terms?: SignTerms
+  /**
+   * The recorded nonce the current step bids at: a recovery plan's target from its creation, or the
+   * nonce of the step's first candidate; cleared when the cursor advances. `generation` counts the
+   * resolutions seen there, so work asked for before one is stale; `capped`: no bid fits under the
+   * step cap, or for recovery under the fee ceiling, where its nonce waits re-sending what it signed.
+   */
+  terms?: { nonce: number; generation: number; capped?: true }
+  /** Ended by a cancel; its end says so only if nothing of it ran ({@link NoticeBody}). */
+  cancelled?: true
+  /** A neutralizer of one of its entries was committed, at any time: its compensation acted. */
+  neutralized?: true
   pending?: { hash: Hash; raw: string }
   flushSeq?: number
   reason?: string
 }
 
-export type Inclusion = { step: number; hash: Hash; block: number }
+/** `success`: the receipt succeeded, which a step can do even on a plan that did not settle. */
+export type Inclusion = { step: number; hash: Hash; block: number; success: boolean }
 
 export type Lifecycle =
   | { kind: 'idle' }
@@ -344,6 +388,10 @@ export type Outstanding = {
   plan: Id
   /** For a broadcast: the candidate these bytes belong to, which a timeout marks `unknown`. */
   hash?: Hash
+  /** For a transaction's signature: what it is signed at. */
+  terms?: SignTerms
+  /** For a signature at a recorded nonce: the plan's generation there when asked. */
+  generation?: number
 }
 
 export type Submission = {
@@ -422,6 +470,8 @@ export type KernelEvent =
       stage: number
       basisBlock: number
       notAfter: number
+      /** As {@link PlanInput.validUntil}, for this stage; omitted, the plan's carries over. */
+      validUntil?: number
       evidence?: readonly Fact[]
       decision?: DecisionRecord
       /** The current observation of each fact the stage names, delivered with it. */
@@ -430,7 +480,18 @@ export type KernelEvent =
   | { type: 'Affirm'; ids: readonly Id[] }
   | { type: 'Materialized'; request: number; payload: Payload; witness?: unknown }
   | { type: 'Simulated'; request: number; ok: boolean; block: number; blockHash: Hash }
-  | { type: 'Signed'; request: number; hash?: Hash; raw?: string; signature?: string }
+  | {
+      type: 'Signed'
+      request: number
+      hash?: Hash
+      raw?: string
+      bid?: SignedBid
+      signature?: string
+    }
+  /** A step's bid cannot outbid its nonce's recorded fees under the step cap; nothing was signed. */
+  | { type: 'StepCapReached'; request: number }
+  /** A fill's or neutralizer's bid cannot outbid its nonce's recorded fees under the fee ceiling. */
+  | { type: 'FeeCeilingReached'; request: number }
   | { type: 'EffectFailed'; request: number }
   | { type: 'TimedOut'; request: number }
   | { type: 'Flushed'; seq: number }
@@ -463,7 +524,18 @@ export type KernelEvent =
       status: 'success' | 'reverted'
       logs: readonly Log[]
     }
-  | { type: 'NonceAt'; block: number; blockHash: Hash; latest: number; pending: number }
+  | {
+      type: 'NonceAt'
+      block: number
+      blockHash: Hash
+      latest: number
+      pending: number
+      /**
+       * The account's nonce at the chain's `safe` block, read while the kernel holds no nonce: a
+       * fresh start takes one only once it is safe, so a reorg cannot lower the chain's nonce below it.
+       */
+      safe?: number
+    }
   | {
       type: 'NonceTx'
       nonce: number
@@ -485,6 +557,10 @@ export type KernelEvent =
   | { type: 'Tick'; now: number }
   | { type: 'Stop' }
   | { type: 'Halt'; reason: string }
+  /** A chain condition worth an operator's attention that changes nothing. */
+  | { type: 'Alarm'; reason: string }
+  /** A chain the kernel cannot follow safely, found before it starts running: it refuses to start. */
+  | { type: 'Refuse'; reason: string }
 
 /** `advanced` and `stalled` answer an `Advance`: a stalled plan stays parked. */
 export type Notice =
@@ -521,7 +597,18 @@ export type NoticeBody = {
   reason?: string
   /** On a plan's last notice: every step it mined, reverted or not, in step order. */
   included?: readonly Inclusion[]
-} & (({ notice: 'refused' } & Refusal) | { notice: Exclude<Notice, 'refused'> })
+} & (
+  | ({ notice: 'refused' } & Refusal)
+  | {
+      notice: Ended
+      /** `cancelled`: a cancel ended the plan before any of its steps executed or compensation acted. */
+      code?: 'cancelled'
+    }
+  | { notice: Exclude<Notice, 'refused' | Ended> }
+)
+
+/** The terminal notices a cancelled plan can end in. */
+type Ended = 'abandoned' | 'compensated'
 
 /**
  * What one kernel transition did, in order, its own neutralizers included; `dropped` is an entry
@@ -529,7 +616,7 @@ export type NoticeBody = {
  * undoes, so current inclusion and exposure are read from {@link KernelState}.
  */
 export type KernelActivity =
-  | {
+  | ({
       type: 'sent'
       intentId: Id
       step: number
@@ -537,12 +624,16 @@ export type KernelActivity =
       nonce: number
       hash: Hash
       status: Exclude<SendStatus, 'unsent'>
-    }
+    } & GasFees)
   | { type: 'released'; intentId: Id; step: number; outcome: 'ok' | 'unknown' }
   | ({ type: 'included'; intentId: Id } & Inclusion)
   | { type: 'entry'; id: Id; intentId: Id; from?: EntryState; to: EntryState | 'dropped' }
   | ({ type: 'notice' } & NoticeBody)
   | { type: 'alarm'; reason: string }
+  /** A nonce record dropped once its resolution is final: nothing of its candidates changes again. */
+  | { type: 'final'; nonce: number; hashes: Hash[] }
+  /** The kernel left `starting` with the account's ledger on disk. */
+  | { type: 'running' }
 
 export type Command =
   | {
@@ -556,7 +647,15 @@ export type Command =
     }
   | { type: 'simulate'; request: number; intentId: Id; payload: TxPayload }
   | { type: 'sign'; request: number; intentId: Id; payload: TypedPayload }
-  | ({ type: 'sign'; request: number; intentId: Id; payload: TxPayload } & SignTerms)
+  | ({
+      type: 'sign'
+      request: number
+      intentId: Id
+      payload: TxPayload
+      kind: CandidateKind
+      /** The highest fees recorded at the nonce, field by field, which this bid must outbid. */
+      outbid?: GasFees
+    } & SignTerms)
   | { type: 'flush'; seq: number; ledger: DurableLedger }
   | { type: 'broadcast'; request: number; hash: Hash; raw: string }
   | { type: 'release'; request: number; payload: ReleasePayload }
@@ -591,10 +690,7 @@ export type DurableLedger = {
   header: { format: typeof LEDGER_FORMAT; chainId: number; account: string; seq: number }
   nextNonce: number | null
   entries: Record<Id, DurableEntry>
-  nonces: Record<
-    number,
-    { nonce: number; candidates: Candidate[]; unknownSince?: number; foreign?: true }
-  >
+  nonces: Record<number, { nonce: number; candidates: Candidate[]; foreign?: true }>
   submissions: Record<Id, Submission>
   watermarks: Record<string, number>
   /** Pairs, so no conflict id can collide with a codec tag. */

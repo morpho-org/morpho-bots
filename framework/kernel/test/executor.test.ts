@@ -135,6 +135,55 @@ describe('the executor', () => {
     ])
   })
 
+  it.each([
+    ['step', 'StepCapReached'],
+    ['fill', 'FeeCeilingReached'],
+    ['neutralizer', 'FeeCeilingReached']
+  ] as const)('reads a %s the signer cannot outbid with as %s', async (kind, outcome) => {
+    const bids: unknown[] = []
+    const written: KernelEvent[] = []
+    const executor = createExecutor({
+      config,
+      kernel: createKernel(config),
+      store: { read: () => Promise.resolve(null), write: () => Promise.resolve() },
+      effects: {
+        signTx: (_payload, bid) => {
+          bids.push(bid)
+          return Promise.resolve('capped' as const)
+        }
+      } as Partial<KernelEffects> as KernelEffects,
+      effectTimeoutMs: 1_000,
+      onError: () => {}
+    })
+    const outbid = { maxFeePerGas: 9n, maxPriorityFeePerGas: 2n }
+    await executor.execute(
+      {
+        type: 'sign',
+        request: 4,
+        intentId: 'q',
+        payload: { kind: 'tx', to: '0x1', data: '0x', value: 0n },
+        kind,
+        nonce: 3,
+        feeLevel: 2,
+        fee: 7n,
+        outbid
+      },
+      {
+        signal: new AbortController().signal,
+        emittedAt: 0,
+        now: () => 0,
+        write: event => void written.push(event),
+        note: () => {},
+        state: () => createKernel(config).initialState(),
+        stop: () => {}
+      }
+    )
+    expect(bids).toStrictEqual([
+      { nonce: 3, level: 2, kind, fee: 7n, recoveryFee: config.feeReserve, outbid }
+    ])
+    expect(written).toStrictEqual([{ type: outcome, request: 4 }])
+  })
+
   it('invokes no effect for a command whose runner already stopped', async () => {
     const { signTyped, written, settled } = signUnder(AbortSignal.abort())
     await settled
@@ -168,7 +217,7 @@ describe('the executor', () => {
         2: { kind: 'release', plan: 'quote' }
       },
       plans: {
-        fill: { recovery: { kind: 'fill', targetNonce: 0 } } as Plan,
+        fill: { recovery: { kind: 'fill' }, terms: { nonce: 0, generation: 0 } } as Plan,
         quote: {} as Plan
       }
     }
@@ -230,7 +279,10 @@ describe('the executor', () => {
           3: { kind: 'broadcast', plan: 'liq' },
           4: { kind: 'broadcast', plan: 'liq' }
         },
-        plans: { fill: { recovery: { kind: 'fill', targetNonce: 0 } } as Plan, liq: {} as Plan }
+        plans: {
+          fill: { recovery: { kind: 'fill' }, terms: { nonce: 0, generation: 0 } } as Plan,
+          liq: {} as Plan
+        }
       }
     })
     runner.push(commands, broadcast(3))

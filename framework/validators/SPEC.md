@@ -117,6 +117,51 @@ refused ("refuses a witness with %s", "refuses a leg whose caps the witness does
 bytes in the outer or any inner call, and every payload that is not a transaction to a configured
 vault ("refuses %s", "refuses a payload that is not a transaction, or to another vault").
 
+## 3. Executor liquidation
+
+`executorLiquidationValidator({ executor, protocol })`, id `executor-liquidation`, version 2. One
+validator serves both liquidators: `protocol` is `{ kind: 'blue', morpho }` or
+`{ kind: 'midnight', midnight }`, the protocol's address on this chain. Assumes the generic Executor
+(`exec_606BaXt`, `call_g0oyU7o` and its placeholder variant) and Blue's and Midnight's `liquidate`
+as encoded by the ABIs in `@repo/contracts`, ERC-20 calls as encoded by viem's `erc20Abi`, and the
+ERC-4626 `redeem` and `withdraw` signatures it declares itself (review). It takes no
+witness. [Kernel SPEC §9.3](../kernel/SPEC.md#93-no-persistent-commitments) says why a liquidator
+needs this validator and not the reference model's.
+
+**Claims** every transaction whose `to` is `executor`, in any address case, and nothing else
+("claims only transactions to the Executor, in any address case").
+
+**Allows**, reading it as creating, exposing, carrying, retiring and consuming nothing, a zero-value
+`exec_606BaXt` whose calls each re-encode byte for byte, where:
+
+- the first call is a plain, zero-value call to the protocol's `liquidate`. On Midnight the market
+  must be this chain's market on this Midnight, with the collateral index in range ("reads as
+  recorded under");
+- the seized collateral is received, and the callback runs, on the Executor ("reads as recorded
+  under");
+- the callback queue carries no value or callback of its own, never calls the Executor, and never
+  calls `transfer` or `transferFrom`. Its approvals name no fixed amount: zero, or the Executor's
+  balance of the token spliced in. An ERC-4626 `redeem` or `withdraw` burns and pays the Executor's
+  own shares. Any other step may splice only an Executor balance into one whole word past its
+  selector. Its last call approves the protocol to pull the repay in the loan token. On Midnight, the
+  callback returns Midnight's success value ("reads as recorded under");
+- every trailing call sweeps a distinct token, the Executor's whole balance of it, to the account,
+  and together they cover the loan token, the collateral token and every token the callback
+  approved ("reads as recorded under");
+- or, on Midnight only, the liquidation is a bad-debt write-off: nothing seized or repaid, paid to
+  the account, no callback, no trailing call ("reads as recorded under").
+
+The recorded readings pin, for each protocol, a liquidation that sweeps both tokens and a refusal
+for most bullets above. The limits on a single callback step (its value and context, its
+placeholders, a vault exit's receiver) are not recorded (untested). `confirm`
+accepts any receipt, since nothing is committed ("treats every receipt as confirming, since a
+liquidation promises no commitment").
+
+**Refuses** anything else, including a non-transaction payload, a transaction to any target but
+`executor` (so a direct `read` refuses what `claims` would not claim), value on the outer call, an account
+that is not an address, a call other than `exec_606BaXt`, an `exec` with no call, and calldata that
+is not hex or carries trailing bytes ("refuses %s").
+
 ## What is deliberately left out
 
 - **Roles and timelocks.** Neither validator checks that the account holds the allocator role, or
@@ -124,5 +169,17 @@ vault ("refuses %s", "refuses a payload that is not a transaction, or to another
   the revert before signing.
 - **Economic judgement.** Whether a reallocation is worth its gas, or moves toward a better rate, is
   the bot's strategy. A validator bounds what the call may do, not whether it should be sent.
-- **Other protocols' validators.** Midnight offers, crossed-book settlement and executor
-  liquidation join this package, and this document, when their bots are ported.
+- **Venue steps.** A liquidation's swap steps inside the callback stay opaque. The validator bounds
+  what they splice and what is swept after them, but not where a venue sends what the callback lets
+  it pull: an approval may name any spender, and an opaque step may name any recipient. The kernel's
+  simulation only checks that the whole call does not revert. So the router a venue adapter selects,
+  sometimes supplied by its quote API, is trusted, as it is on the liquidator before this port. What
+  a misbehaving router can take is bounded by the liquidation's own proceeds only while the shared
+  Executor holds nothing beforehand and no callback target holds an allowance or other permission
+  over the account's assets; the repay must still succeed. These are operating assumptions, not
+  checks (review).
+- **Sweeps that return `false`.** The Executor ignores an ERC-20 `transfer`'s return value, so a token
+  that returns `false` instead of reverting would leave its sweep in the Executor, where anyone can
+  call it (review).
+- **Other protocols' validators.** Midnight offers and crossed-book settlement join this package,
+  and this document, when their bots are ported.

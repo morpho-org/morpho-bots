@@ -4,7 +4,7 @@ import type { LocalAccount } from 'viem'
 import { metaMorphoAbi } from '@morpho-org/blue-sdk-viem'
 import { createHttpTransport, DEFAULT_MAX_GAS_LIMIT, transactionKernelSpec } from '@repo/kit'
 import { vaultV1ReallocationValidator } from '@repo/validators'
-import { createPublicClient, getAbiItem, parseGwei, toFunctionSelector } from 'viem'
+import { createPublicClient, getAbiItem, toFunctionSelector } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
 
 import type { Config } from './config'
@@ -12,10 +12,8 @@ import type { Config } from './config'
 import { readValidMs } from './config'
 
 const KERNEL_EFFECT_TIMEOUT_MS = 10_000
-/** The tip a first send bids. */
-const FIRST_SEND_TIP_WEI = parseGwei('1')
-/** Blocks a sent transaction may wait for inclusion before the kernel replaces it at a higher fee. */
-const STUCK_BLOCKS = 4
+/** How long a sent transaction may wait for inclusion before the kernel replaces it at a higher fee. */
+const STUCK_MS = 8_000
 /** Base's block time, the fastest of the chains the bot supports. */
 const FASTEST_BLOCK_MS = 2_000
 const REALLOCATE_SELECTOR = toFunctionSelector(
@@ -46,8 +44,7 @@ export const reallocatorKernel = (options: {
       maxFeePerGasWei: config.maxFeePerGasWei,
       maxSpendWei,
       maxGasLimit: DEFAULT_MAX_GAS_LIMIT,
-      priorityFeePerGasWei: FIRST_SEND_TIP_WEI,
-      stuckBlocks: STUCK_BLOCKS,
+      stuckMs: STUCK_MS,
       maxEvidenceAgeBlocks: evidenceAgeBlocks(config.reallocationIntervalMs)
     },
     validator: vaultV1ReallocationValidator({ vaults: config.vaultWhitelist }),

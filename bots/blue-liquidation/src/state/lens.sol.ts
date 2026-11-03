@@ -1,8 +1,9 @@
 import type { Client, Transport } from 'viem'
 
+import { blockTagAt } from '@repo/kit'
 import { type BatchLensTransportType, lensKey, readDeploylessBatchLens } from '@repo/utils'
 import { sol } from 'soltag'
-import { type Address } from 'viem'
+import { type Address, type Hex } from 'viem'
 
 import type { MarketParams } from '../market'
 
@@ -187,7 +188,8 @@ export type LensOut = RawLensOut & { params: MarketParams }
 export async function readBlueLiquidationLens(
   client: Client<Transport<BatchLensTransportType>>,
   morpho: Address,
-  pairs: readonly LensInput[]
+  pairs: readonly LensInput[],
+  blockHash?: Hex
 ): Promise<Map<string, LensOut>> {
   // No `batch.gas`: the old polynomial fit does not carry over (the new model's `fixed` excludes the
   // copy of the chunk's own bytes, where `constant` folded in CREATE overhead), and a model viem-dlc
@@ -200,7 +202,8 @@ export async function readBlueLiquidationLens(
     parameters: {
       ...BlueLiquidationLens.with(morpho),
       functionName: 'computeOne',
-      args: pairs
+      args: pairs,
+      ...(blockHash === undefined ? {} : { blockTag: blockTagAt(blockHash) })
     },
     key: ({ params, borrower }) => lensKey(marketId(params), borrower),
     value: (input, out): LensOut => ({ ...out, params: input.params })

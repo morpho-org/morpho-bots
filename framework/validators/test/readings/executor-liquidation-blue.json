@@ -1,0 +1,274 @@
+{
+  "executor-liquidation@1": {
+    "a liquidation sweeping both tokens": {
+      "claims": true,
+      "reading": {
+        "ok": true,
+        "creates": [],
+        "exposes": [],
+        "carries": [],
+        "retires": [],
+        "consumes": {}
+      }
+    },
+    "a liquidation leaving collateral unswept": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "the tokens it touches are not all swept to the account"
+      }
+    },
+    "a sweep to someone else": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "sweep does not pay the account"
+      }
+    },
+    "a token swept twice": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "a token is swept twice"
+      }
+    },
+    "a callback that transfers out": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "the callback transfers a token"
+      }
+    },
+    "a callback that does not end approving the repay": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "the callback does not end approving the protocol to pull the repay"
+      }
+    },
+    "a callback that approves the wrong spender": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "the callback does not end approving the protocol to pull the repay"
+      }
+    },
+    "a callback that approves a fixed amount": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "an approval names a fixed amount"
+      }
+    },
+    "a liquidation called back elsewhere": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "seized collateral is not received and called back on the Executor"
+      }
+    },
+    "a first call to another target": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "first call is not a plain call to the protocol"
+      }
+    },
+    "value attached": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "an Executor call carries no value"
+      }
+    },
+    "an exec that carries no call": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "exec carries no call"
+      }
+    },
+    "a release": {
+      "claims": false,
+      "reading": {
+        "ok": false,
+        "reason": "only transactions are read"
+      }
+    },
+    "a transaction to the protocol": {
+      "claims": false,
+      "reading": {
+        "ok": true,
+        "creates": [],
+        "exposes": [],
+        "carries": [],
+        "retires": [],
+        "consumes": {}
+      }
+    }
+  },
+  "executor-liquidation@2": {
+    "a liquidation sweeping both tokens": {
+      "claims": true,
+      "reading": {
+        "ok": true,
+        "creates": [],
+        "exposes": [],
+        "carries": [],
+        "retires": [],
+        "consumes": {}
+      }
+    },
+    "a liquidation leaving collateral unswept": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "the tokens it touches are not all swept to the account"
+      }
+    },
+    "a sweep to someone else": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "sweep does not pay the account"
+      }
+    },
+    "a token swept twice": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "a token is swept twice"
+      }
+    },
+    "a sweep of a fixed amount": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "sweep does not pay the account"
+      }
+    },
+    "a sweep without the balance read": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "sweep amount is not one balance read"
+      }
+    },
+    "an approved intermediate left unswept": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "the tokens it touches are not all swept to the account"
+      }
+    },
+    "a sweep reading the balance of another holder": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "sweep amount is not the Executor balance of its token"
+      }
+    },
+    "a sweep reading the balance of another token": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "sweep amount is not the Executor balance of its token"
+      }
+    },
+    "a sweep splicing its balance elsewhere": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "sweep amount is not the Executor balance of its token"
+      }
+    },
+    "a callback step that calls the Executor": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "a callback call carries value or a callback, or calls the Executor"
+      }
+    },
+    "an approved intermediate swept too": {
+      "claims": true,
+      "reading": {
+        "ok": true,
+        "creates": [],
+        "exposes": [],
+        "carries": [],
+        "retires": [],
+        "consumes": {}
+      }
+    },
+    "a callback that transfers out": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "the callback transfers a token"
+      }
+    },
+    "a callback that does not end approving the repay": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "the callback does not end approving the protocol to pull the repay"
+      }
+    },
+    "a callback that approves the wrong spender": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "the callback does not end approving the protocol to pull the repay"
+      }
+    },
+    "a callback that approves a fixed amount": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "an approval names a fixed amount"
+      }
+    },
+    "a liquidation called back elsewhere": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "seized collateral is not received and called back on the Executor"
+      }
+    },
+    "a first call to another target": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "first call is not a plain call to the protocol"
+      }
+    },
+    "value attached": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "an Executor call carries no value"
+      }
+    },
+    "an exec that carries no call": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "exec carries no call"
+      }
+    },
+    "a release": {
+      "claims": false,
+      "reading": {
+        "ok": false,
+        "reason": "only transactions are read"
+      }
+    },
+    "a transaction to the protocol": {
+      "claims": false,
+      "reading": {
+        "ok": false,
+        "reason": "not the configured Executor"
+      }
+    }
+  }
+}

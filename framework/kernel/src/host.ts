@@ -79,7 +79,11 @@ export type KernelHostOptions = {
   enrollment: 'enrolled' | 'enrolling'
   pollMs: number
   effectTimeoutMs: number
-  /** How many delivered blocks are kept to find a fork point; a deeper reorg halts the kernel. */
+  /**
+   * How many blocks below the tip are kept to find a fork point and the finalized anchor; a deeper
+   * reorg halts the kernel, and finality below them is held. It must reach past the chain's finality
+   * lag, or the kernel refuses to start.
+   */
   reorgDepth: number
   now?: () => number
   /** Each transition's {@link KernelActivity}, in order, before its commands run. */

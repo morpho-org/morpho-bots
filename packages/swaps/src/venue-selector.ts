@@ -112,6 +112,16 @@ type PairCache = {
   curves: Map<Venue, (RungQuote | null)[]>
 }
 
+/**
+ * One pair's probe curve as plain data, venues in configured order, so a caller can hold it outside
+ * the selector and read it with {@link selectFromCurve}.
+ */
+export type PairCurve = Readonly<{
+  updatedAt: number
+  ladder: readonly bigint[]
+  venues: readonly Readonly<{ venue: Venue; rungs: readonly (RungQuote | null)[] }>[]
+}>
+
 /** A process-lifetime probe cache + best-first venue lookup, keyed by chain + collateral + loan. */
 export type VenueSelector = {
   /**
@@ -134,6 +144,8 @@ export type VenueSelector = {
    * for selection and the caller must fall back to its pre-curve behaviour.
    */
   select: (pair: VenuePair, amountIn: bigint, referenceAmountOut?: bigint) => VenueCostEstimate[]
+  /** The pair's curve as the last completed sweep left it, or `undefined` before one. */
+  curveOf: (pair: VenuePair) => PairCurve | undefined
   /** Per-pair cache ages + current winner per bucket, for periodic / shutdown observability. */
   snapshot: () => { pair: string; ageMs: number; winners: (Venue | null)[] }[]
 }
@@ -152,7 +164,7 @@ const rateOf = (rung: RungQuote): bigint => (rung.expectedOut * RATE_SCALE) / ru
 const ascending = (a: bigint, b: bigint): number => (a < b ? -1 : a > b ? 1 : 0)
 
 // The two adjacent ladder indices enclosing `amountIn`, or `null` when it sits outside the ladder.
-const bracketOf = (ladder: bigint[], amountIn: bigint): [number, number] | null => {
+const bracketOf = (ladder: readonly bigint[], amountIn: bigint): [number, number] | null => {
   for (let i = 0; i + 1 < ladder.length; i++) {
     const lo = ladder[i]
     const hi = ladder[i + 1]
@@ -175,7 +187,10 @@ const logWeight = (lo: bigint, hi: bigint, amountIn: bigint): bigint | null => {
 }
 
 // Probed rung closest to `amountIn` in log space — the clamp target when the bracket is unusable.
-const nearestProbed = (rungs: (RungQuote | null)[], amountIn: bigint): RungQuote | null => {
+const nearestProbed = (
+  rungs: readonly (RungQuote | null)[],
+  amountIn: bigint
+): RungQuote | null => {
   let best: RungQuote | null = null
   let bestDistance = Infinity
   for (const rung of rungs) {
@@ -193,8 +208,8 @@ const nearestProbed = (rungs: (RungQuote | null)[], amountIn: bigint): RungQuote
 // Log-linear interpolation of a venue's rate at `amountIn`, or a clamp to its nearest probed rung
 // when `amountIn` falls off the ladder or a bracketing rung never returned. Never extrapolates.
 const rateAt = (
-  ladder: bigint[],
-  rungs: (RungQuote | null)[],
+  ladder: readonly bigint[],
+  rungs: readonly (RungQuote | null)[],
   amountIn: bigint
 ): { rate: bigint; clamped: boolean } | null => {
   const bracket = bracketOf(ladder, amountIn)
@@ -208,6 +223,46 @@ const rateAt = (
   const nearest = nearestProbed(rungs, amountIn)
   return nearest ? { rate: rateOf(nearest), clamped: true } : null
 }
+
+/**
+ * Best-first venues on `curve` at `amountIn` as of `now`, interpolated across its ladder: what
+ * {@link VenueSelector.select} answers for a cached pair, as a pure function of the curve's data.
+ * Ranked on the interpolated RATE rather than on `estimatedOut`, so the ordering survives a size
+ * small enough that every venue's output floors to the same base-unit figure.
+ */
+export const selectFromCurve = (
+  curve: PairCurve,
+  amountIn: bigint,
+  referenceAmountOut: bigint | undefined,
+  now: number
+): VenueCostEstimate[] => {
+  const ageMs = now - curve.updatedAt
+  const ranked: { rate: bigint; estimate: VenueCostEstimate }[] = []
+  for (const { venue, rungs } of curve.venues) {
+    const interpolated = rateAt(curve.ladder, rungs, amountIn)
+    if (!interpolated) continue
+    const estimatedOut = (interpolated.rate * amountIn) / RATE_SCALE
+    const raw = routeCostBps({ reference: referenceAmountOut, amountOut: estimatedOut })
+    ranked.push({
+      rate: interpolated.rate,
+      estimate: {
+        venue,
+        estimatedOut,
+        costBps: raw === null ? null : Math.max(raw, 0),
+        costBpsRaw: raw,
+        clamped: interpolated.clamped,
+        ageMs
+      }
+    })
+  }
+  return ranked.toSorted((a, b) => ascending(b.rate, a.rate)).map(candidate => candidate.estimate)
+}
+
+const curveFrom = (entry: PairCache): PairCurve => ({
+  updatedAt: entry.updatedAt,
+  ladder: entry.ladder,
+  venues: [...entry.curves].map(([venue, rungs]) => ({ venue, rungs }))
+})
 
 /**
  * Builds the venue selector consumed by {@link composeMultiVenueQuoting}. It caches, per pair, each
@@ -370,35 +425,18 @@ export function createVenueSelector(deps: {
     }
   }
 
-  // Ranked on the interpolated RATE rather than on `estimatedOut`, so the ordering survives a size
-  // small enough that every venue's output floors to the same base-unit figure.
   const select = (
     pair: VenuePair,
     amountIn: bigint,
     referenceAmountOut?: bigint
   ): VenueCostEstimate[] => {
     const entry = cache.get(keyFor(pair))
-    if (!entry) return []
-    const ageMs = now() - entry.updatedAt
-    const ranked: { rate: bigint; estimate: VenueCostEstimate }[] = []
-    for (const [venue, rungs] of entry.curves) {
-      const interpolated = rateAt(entry.ladder, rungs, amountIn)
-      if (!interpolated) continue
-      const estimatedOut = (interpolated.rate * amountIn) / RATE_SCALE
-      const raw = routeCostBps({ reference: referenceAmountOut, amountOut: estimatedOut })
-      ranked.push({
-        rate: interpolated.rate,
-        estimate: {
-          venue,
-          estimatedOut,
-          costBps: raw === null ? null : Math.max(raw, 0),
-          costBpsRaw: raw,
-          clamped: interpolated.clamped,
-          ageMs
-        }
-      })
-    }
-    return ranked.toSorted((a, b) => ascending(b.rate, a.rate)).map(candidate => candidate.estimate)
+    return entry ? selectFromCurve(curveFrom(entry), amountIn, referenceAmountOut, now()) : []
+  }
+
+  const curveOf = (pair: VenuePair) => {
+    const entry = cache.get(keyFor(pair))
+    return entry && curveFrom(entry)
   }
 
   const winnerAt = (curves: Map<Venue, (RungQuote | null)[]>, index: number): Venue | null => {
@@ -423,5 +461,5 @@ export function createVenueSelector(deps: {
       winners: entry.ladder.map((_, index) => winnerAt(entry.curves, index))
     }))
 
-  return { refresh, select, snapshot }
+  return { refresh, select, curveOf, snapshot }
 }

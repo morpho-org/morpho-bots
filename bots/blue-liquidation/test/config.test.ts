@@ -15,9 +15,17 @@ const COLLATERAL = '0x4200000000000000000000000000000000000006'
 function baseEnv(overrides: Record<string, string | undefined> = {}): Record<string, string> {
   const env: Record<string, string> = {
     CHAIN_ID: String(base.id),
+    FINALITY_1: 'safe',
+    FINALITY_10: 'safe',
+    FINALITY_4663: 'safe',
+    FINALITY_8453: 'safe',
     RPC_URL: 'https://base.example',
     LIQUIDATOR_PRIVATE_KEY: KEY,
+    KERNEL_STATE_DIR: '/var/lib/kernel',
+    KERNEL_ENROLLMENT: 'enrolled',
+    MAX_FEE_GWEI: '250',
     ZEROX_API_KEY: 'zx-key',
+    MORPHO_API_KEY: 'morpho-key',
     ...overrides
   }
   for (const k of Object.keys(overrides)) if (overrides[k] === undefined) delete env[k]
@@ -25,6 +33,25 @@ function baseEnv(overrides: Record<string, string | undefined> = {}): Record<str
 }
 
 describe('loadConfig', () => {
+  it('reads where the kernel keeps its ledger and whether it must exist', () => {
+    expect(loadConfig(baseEnv()).kernel).toStrictEqual({
+      stateDirectory: '/var/lib/kernel',
+      enrollment: 'enrolled'
+    })
+  })
+
+  it.each([
+    [{ KERNEL_STATE_DIR: undefined }, 'Missing required env var: KERNEL_STATE_DIR'],
+    [{ KERNEL_ENROLLMENT: undefined }, 'Missing required env var: KERNEL_ENROLLMENT'],
+    [{ KERNEL_ENROLLMENT: 'yes' }, 'KERNEL_ENROLLMENT must be "enrolling" or "enrolled"'],
+    [
+      { POSITION_LIQUIDATION_COOLDOWN_MS: '0' },
+      'POSITION_LIQUIDATION_COOLDOWN_MS is no longer supported'
+    ]
+  ])('refuses kernel settings %o', (overrides, message) => {
+    expect(() => loadConfig(baseEnv(overrides))).toThrow(message)
+  })
+
   it('loads a valid Base config with the canonical Morpho singleton', () => {
     const config = loadConfig(baseEnv())
     expect(config.chainId).toBe(base.id)
@@ -47,12 +74,24 @@ describe('loadConfig', () => {
     expect(config.morpho).not.toBe(MORPHO)
   })
 
+  it.each([undefined, '', '  '])('refuses to start without MAX_FEE_GWEI (%j)', value => {
+    expect(() => loadConfig(baseEnv({ MAX_FEE_GWEI: value }))).toThrow(
+      'Missing required env var: MAX_FEE_GWEI'
+    )
+  })
+
   it('fails loud on each missing required var', () => {
     expect(() => loadConfig(baseEnv({ CHAIN_ID: undefined }))).toThrow(/CHAIN_ID/)
     expect(() => loadConfig(baseEnv({ RPC_URL: undefined }))).toThrow(/RPC_URL/)
     expect(() => loadConfig(baseEnv({ LIQUIDATOR_PRIVATE_KEY: undefined }))).toThrow(
       /LIQUIDATOR_PRIVATE_KEY/
     )
+  })
+
+  it('refuses a chain whose finality is missing or malformed', () => {
+    expect(() => loadConfig(baseEnv({ FINALITY_8453: undefined }))).toThrow(/FINALITY_8453/)
+    expect(() => loadConfig(baseEnv({ FINALITY_8453: 'latest' }))).toThrow(/FINALITY_8453/)
+    expect(loadConfig(baseEnv({ CHAIN_ID: '4663' })).finality).toBe('safe')
   })
 
   it('rejects an unsupported chain id', () => {
@@ -69,7 +108,7 @@ describe('loadConfig', () => {
 
   it('honors an injected chain map (so a new chain is wired in one place)', () => {
     const chainMap: Record<number, ChainConfig> = {
-      [base.id]: { chain: base, morpho: MORPHO }
+      [base.id]: { chain: base, morpho: MORPHO, worldValidMs: 30_000 }
     }
     expect(loadConfig(baseEnv(), { chainMap }).morpho).toBe(MORPHO)
     // A chain absent from the injected map is rejected even if it is a real chain id.
@@ -146,13 +185,29 @@ describe('loadConfig', () => {
     )
   })
 
-  it('defaults the discovery endpoint to the public Morpho GraphQL API and validates overrides', () => {
-    expect(loadConfig(baseEnv()).discovery.apiUrl).toBe('https://api.morpho.org/graphql')
+  it('defaults the discovery endpoint to the partner API and validates overrides', () => {
+    expect(loadConfig(baseEnv()).discovery.apiUrl).toBe(
+      'https://private.api.morpho.org/liquidation-bot/blue/liquidation-candidates'
+    )
     expect(
-      loadConfig(baseEnv({ MORPHO_API_URL: 'https://staging.example/graphql' })).discovery.apiUrl
-    ).toBe('https://staging.example/graphql')
-    expect(() => loadConfig(baseEnv({ MORPHO_API_URL: 'not a url' }))).toThrow(
-      /MORPHO_API_URL is not a valid URL/
+      loadConfig(baseEnv({ LIQUIDATION_CANDIDATES_API_URL: 'https://api.example/candidates' }))
+        .discovery.apiUrl
+    ).toBe('https://api.example/candidates')
+    expect(() => loadConfig(baseEnv({ LIQUIDATION_CANDIDATES_API_URL: 'not a url' }))).toThrow(
+      'LIQUIDATION_CANDIDATES_API_URL is not a valid URL'
+    )
+    expect(() =>
+      loadConfig(baseEnv({ LIQUIDATION_CANDIDATES_API_URL: 'http://api.example/candidates' }))
+    ).toThrow('LIQUIDATION_CANDIDATES_API_URL must use https')
+  })
+
+  it('requires MORPHO_API_KEY', () => {
+    expect(loadConfig(baseEnv()).discovery.apiKey).toBe('morpho-key')
+    expect(() => loadConfig(baseEnv({ MORPHO_API_KEY: undefined }))).toThrow(
+      'Missing required env var: MORPHO_API_KEY'
+    )
+    expect(() => loadConfig(baseEnv({ MORPHO_API_KEY: '  ' }))).toThrow(
+      'Missing required env var: MORPHO_API_KEY'
     )
   })
 

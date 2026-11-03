@@ -61,6 +61,11 @@ const library = () => {
     requests: { event: every(workflow.events) },
     handle: ({ value }) => void advanced.push(value)
   })
+  const sent: KernelRequest[] = []
+  g.effect('workflow.sent', {
+    requests: { request: every(requests) },
+    handle: ({ value }) => void sent.push(value)
+  })
   const runner = createRunner(g.build(), { now: () => 0, journal })
   const state = () => runner.read(kernel.nodes.state)!
   const want = (value: string, expiry = 60_000) => {
@@ -72,7 +77,7 @@ const library = () => {
       expiry
     })
   }
-  const submit = () => {
+  const submit = (validUntil?: number) => {
     const evidence = factOf(desire, runner.read(desire), 'k')!
     runner.push(kernel.nodes.requests, {
       type: 'Submit',
@@ -80,11 +85,12 @@ const library = () => {
         intentId: 'k#run.0',
         steps: [step('01'), step('02')],
         restsOn: [evidence],
-        conflicts: {}
+        conflicts: {},
+        ...(validUntil !== undefined && { validUntil })
       })
     })
   }
-  return { runner, kernel, state, want, submit, advanced }
+  return { runner, kernel, state, want, submit, advanced, sent }
 }
 
 describe('the workflow library', () => {
@@ -102,6 +108,21 @@ describe('the workflow library', () => {
     await until(() => state().plans['k#run.0'] === undefined, 'the second stage')
     expect(advanced).toStrictEqual([{ intentId: 'k#run.0', stage: 1, block: included }])
     expect(state().observations).toStrictEqual({})
+    await runner.abandon()
+  })
+
+  it('carries the validity its decision was made with into the stage it advances', async () => {
+    const { runner, kernel, state, want, submit, sent } = library()
+    await kernel.start(runner)
+    await until(() => state().lifecycle.kind === 'running', 'running')
+    want('T')
+    submit(50_000)
+    await until(() => state().plans['k#run.0']?.phase === 'awaiting-advance', 'the first stage')
+    const included = state().plans['k#run.0']!.lastInclusion!
+    await until(() => (runner.read(kernel.nodes.heads)?.number ?? 0) >= included, 'the head')
+    want('T')
+    await until(() => sent.length === 1, 'the advance')
+    expect(sent[0]).toMatchObject({ type: 'Advance', validUntil: 50_000, notAfter: 50_000 })
     await runner.abandon()
   })
 

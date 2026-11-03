@@ -494,6 +494,25 @@ describe('a source read at each head', () => {
     await runner.abandon()
   })
 
+  it('reads only the newest of a burst of heads, past its queue bound', async () => {
+    const held = Promise.withResolvers<void>()
+    const { chain, reads, bot } = sourced(head =>
+      head.number === 2 ? held.promise : Promise.resolve()
+    )
+    const runner = await started(bot)
+    let failure: unknown
+    runner.stopped.catch((error: unknown) => (failure = error))
+    chain.mine()
+    await until(() => reads.includes('2/0x2'), 'the read of 2')
+    chain.height += 50
+    await until(() => runner.read(bot.kernel.nodes.state)?.head?.number === 52, 'the burst')
+    held.resolve()
+    await until(() => reads.includes('52/0x34'), 'the read of the newest head')
+    expect(failure).toBeUndefined()
+    expect(reads.slice(reads.indexOf('2/0x2'))).toStrictEqual(['2/0x2', '52/0x34'])
+    await runner.abandon()
+  })
+
   it('lands a newer head last even when an older read is slower', async () => {
     const { chain, reads, bot } = sourced(head => sleep(head.number === 2 ? 50 : 1))
     const runner = await started(bot)

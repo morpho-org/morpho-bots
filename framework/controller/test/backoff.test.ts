@@ -37,7 +37,8 @@ const backoff = (policy: BackoffPolicy) => {
   const refused = (intentId: string, code: RefusalCode, reason: string) =>
     runner.push(activity, [{ type: 'notice', intentId, notice: 'refused', code, reason }])
   const settle = (intentId: string) => notice(intentId, 'settled')
-  return { runner, state, fail, head, settle, notice, refused }
+  const report = (one: KernelActivity) => runner.push(activity, [one])
+  return { runner, state, fail, head, settle, notice, refused, report }
 }
 
 describe('per-key backoff', () => {
@@ -151,7 +152,34 @@ describe('per-key backoff', () => {
     notice(intentIdOf('d', 'run', 0, 't'), 'abandoned', 'intent expired')
     notice(intentIdOf('e', 'run', 1, 't'), 'compensating', 'intent expired')
     expect(isBackedOff(runner.read(state), 'd', 't')).toBe(true)
+    expect(isBackedOff(runner.read(state), 'e', 't')).toBe(false)
+    notice(intentIdOf('e', 'run', 1, 't'), 'compensated', 'intent expired')
     expect(isBackedOff(runner.read(state), 'e', 't')).toBe(true)
+    await runner.abandon()
+  })
+
+  it('backs off no act cancelled before anything of it ran, but one whose original won after a cancel', async () => {
+    const { runner, state, head, report } = backoff({ baseBlocks: 2, maxBlocks: 64 })
+    head(10)
+    const end = (key: string, notice: Partial<KernelActivity>) =>
+      report({
+        type: 'notice',
+        intentId: intentIdOf(key, 'run', 0, 't'),
+        ...notice
+      } as KernelActivity)
+    end('a', { notice: 'compensating', reason: 'evidence expired' })
+    end('a', { notice: 'compensated', code: 'cancelled', reason: 'evidence expired', included: [] })
+    end('b', { notice: 'abandoned', code: 'cancelled', reason: 'evidence expired', included: [] })
+    end('c', {
+      notice: 'compensated',
+      reason: 'evidence expired',
+      included: [{ step: 0, hash: '0xc', block: 9, success: true }]
+    })
+    expect(['a', 'b', 'c'].map(key => isBackedOff(runner.read(state), key, 't'))).toStrictEqual([
+      false,
+      false,
+      true
+    ])
     await runner.abandon()
   })
 })

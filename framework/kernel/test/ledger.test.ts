@@ -115,6 +115,49 @@ describe('the durable ledger', () => {
     expect(h.state.lifecycle.kind).not.toBe('stopped')
   })
 
+  it('a fresh enrollment waits for the chain nonce to be final, so a reorg that drops a transaction cannot strand it', () => {
+    const h = new Harness()
+    h.boot('enrolling', null)
+    h.head(1)
+    h.nonceAt(4, 4, 3)
+    expect(h.state.nextNonce).toBeUndefined()
+    expect(h.state.lifecycle.kind).toBe('starting')
+    h.send({ type: 'NonceAt', block: h.block, blockHash: h.hash(h.block), latest: 4, pending: 4 })
+    expect(h.state.nextNonce).toBeUndefined()
+    h.nonceAt(3, 3, 3)
+    expect(h.state.nextNonce).toBe(3)
+    h.flush()
+    expect(h.state.lifecycle.kind).toBe('running')
+  })
+
+  it('a fresh enrollment runs only once its first ledger write lands, so running proves the ledger exists', () => {
+    const h = new Harness()
+    h.boot('enrolling', null)
+    h.head(1)
+    h.nonceAt(3, 3, 3)
+    expect(h.commands('flush')).toHaveLength(1)
+    expect(h.state.lifecycle.kind).toBe('starting')
+    h.flush({ ack: false })
+    expect(h.state.lifecycle.kind).toBe('starting')
+    h.send({ type: 'Flushed', seq: 1 })
+    expect(h.state.lifecycle.kind).toBe('running')
+
+    const failed = new Harness()
+    failed.boot('enrolling', null)
+    failed.head(1)
+    failed.nonceAt(3, 3, 3)
+    failed.send({ type: 'FlushFailed', seq: 1, reason: 'io' })
+    expect(failed.state.lifecycle).toMatchObject({ kind: 'recovering', reason: 'flush failed: io' })
+  })
+
+  it('refuses a ledger at sequence 0, which no flush writes', () => {
+    const ledger = new Harness().start().ledger()!
+    ledger.header.seq = 0
+    const h = new Harness()
+    h.boot('enrolled', ledger)
+    expect(refusal(h)?.reason).toMatch(/bad sequence number/)
+  })
+
   it('an enrollment against an account that already has a ledger refuses', () => {
     const h = withLiveOffer()
     h.crash()
@@ -366,12 +409,8 @@ describe('the durable ledger', () => {
       l => void Object.assign(l.entries[G1]!, { origin: { payload: { kind: 'blob' } } })
     ],
     [
-      'a revoking entry whose neutralizing candidate is not recorded',
-      l =>
-        void Object.assign(l.entries[G1]!, {
-          state: 'revoking',
-          neutralizing: { nonce: 7, hash: '0xgone' }
-        })
+      'a revoking entry whose neutralizing nonce is not recorded',
+      l => void Object.assign(l.entries[G1]!, { state: 'revoking', neutralizing: { nonce: 7 } })
     ],
     [
       'a nonce record stored under another nonce',
