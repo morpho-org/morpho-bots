@@ -1,4 +1,4 @@
-import { createCliLogger } from '@repo/logging'
+import { SignerAccountError } from '@repo/kit'
 
 import type { MonitoringEvent } from '../../application/monitoring/monitoring-event'
 import type { CliRuntimeOptions } from './cli'
@@ -7,25 +7,20 @@ import { isShippableRecord } from '../../application/monitoring/monitoring-event
 import { operatorErrorName } from '../../application/monitoring/operator-error-name.utils'
 import { terminalMonitoringEvents } from '../../application/monitoring/terminal-monitoring.utils'
 import {
-  BootstrapConfigurationError,
-  CliUsageError,
-  ConfigFileError,
-  ConfigValidationError,
-  LadderConfigurationError,
-  LadderCycleHaltedError,
-  LadderMonitorHaltedError,
   OfferInvalidationFailedError,
-  PositionBootstrapHaltedError,
-  PositionBootstrapMonitorHaltedError,
-  QuoterBotMonitorHaltedError,
-  QuoterTransactionError,
+  QuoterRunFailedError,
+  StartupCleanupFailedError,
   SafeProviderError,
   SetupFailedError,
-  SetupMonitorHaltedError,
-  SignerAccountError,
-  StartupCleanupFailedError,
-  StrategyStateVersionError
+  ConfigFileError,
+  ConfigValidationError,
+  BootstrapConfigurationError,
+  LadderConfigurationError,
+  StrategyStateVersionError,
+  QuoterTransactionError,
+  CliUsageError
 } from '../../errors'
+import { createCliLogger } from './cli-logger.utils'
 
 type QuoterBotApplication = {
   run(argv: readonly string[], runtime?: CliRuntimeOptions): Promise<unknown>
@@ -36,27 +31,10 @@ type EntrypointObservability = {
   unexpected(error: unknown, origin: 'entrypoint'): void
 }
 
-/** CLI commands whose safe verbose event stream may be auto-enabled by observability shipping. */
-export const QUOTER_BOT_VERBOSE_COMMANDS = ['start', 'bootstrap', 'ladder'] as const
-
-/** Value-taking root options whose values must not be mistaken for the command. */
-export const QUOTER_BOT_ROOT_VALUE_OPTIONS = [
-  '--config',
-  '-c',
-  '--keystore',
-  '--password',
-  '--private-key'
-] as const
-
 const REPORTED_ERRORS = [
-  QuoterBotMonitorHaltedError,
+  QuoterRunFailedError,
   StartupCleanupFailedError,
-  SetupMonitorHaltedError,
   OfferInvalidationFailedError,
-  PositionBootstrapMonitorHaltedError,
-  LadderMonitorHaltedError,
-  LadderCycleHaltedError,
-  PositionBootstrapHaltedError,
   SetupFailedError
 ] as const
 
@@ -116,7 +94,7 @@ export const runQuoterBotEntrypoint = async (
         if (isShippableRecord(value)) observability?.record(value)
         logger.result(value)
       },
-      // One-shot record projections reach the sinks without joining the stdout result contract.
+      // A one-shot setup check's records reach the sinks without joining its stdout report.
       observeRecord: value => {
         if (isShippableRecord(value)) observability?.record(value)
       }

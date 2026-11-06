@@ -2,14 +2,6 @@ import type { CrossedMatch, TakeableOffer } from './order-book'
 
 export const DEFAULT_MAX_MATCHES = 10
 
-export interface MatchingServicePort {
-  match(parameters: {
-    asks: readonly TakeableOffer[]
-    bids: readonly TakeableOffer[]
-    maxMatches?: number
-  }): CrossedMatch[]
-}
-
 function compareTicksAscending(left: TakeableOffer, right: TakeableOffer) {
   if (left.offer.tick < right.offer.tick) return -1
   if (left.offer.tick > right.offer.tick) return 1
@@ -20,7 +12,7 @@ function compareTicksDescending(left: TakeableOffer, right: TakeableOffer) {
   return -compareTicksAscending(left, right)
 }
 
-export class MatchingService implements MatchingServicePort {
+export class MatchingService {
   match({
     asks,
     bids,

@@ -260,6 +260,7 @@ const declareWorld = (b: Bot, options: LiquidatorOptions) => {
     queue: WORLD_QUEUE,
     validForMs: options.worldValidMs,
     samples: { markets },
+    logger: options.logger,
     read: readListedWorld(options)
   })
   const positions = world.level

@@ -1,6 +1,6 @@
 import type { Hex } from 'viem'
 
-import type { BootstrapActiveGroup } from './bootstrap-position.service'
+import type { BootstrapActiveGroup } from './bootstrap-groups.utils'
 
 import { BootstrapAdapterError } from '../../errors'
 

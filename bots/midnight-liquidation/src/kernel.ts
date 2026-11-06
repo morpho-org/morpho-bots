@@ -35,7 +35,7 @@ const maxEvidenceAgeBlocks = (config: Pick<Config, 'worldValidMs' | 'chain'>) =>
 
 /**
  * The EOA that liquidates and receives the end-of-exec sweeps. Only the kernel signs with it,
- * through the bot-kit signer's default-deny policy.
+ * through the kit signer's default-deny policy.
  */
 export const liquidatorAccount = (config: Config) =>
   privateKeyToAccount(config.liquidatorPrivateKey)

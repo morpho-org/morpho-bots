@@ -1,9 +1,7 @@
 import { parseGwei } from 'viem'
-import { base, mainnet } from 'viem/chains'
 import { describe, expect, it } from 'vitest'
 
-import { MissingBlockTimeError } from '../src/errors'
-import { blocksFor, bumpFees, feeCeiling, initialFees, stepCap } from '../src/fee-policy'
+import { bumpFees, feeCeiling, initialFees, stepCap } from '../src/fee-policy'
 import { NONCE_FILL_MAX_GAS } from '../src/policy'
 
 describe('bumpFees', () => {
@@ -126,17 +124,5 @@ describe('the kernel bid ruleset', () => {
   it('sets the fee ceiling at what the recovery bound funds for a fill, within the policy', () => {
     expect(feeCeiling(1_000n, 50n * NONCE_FILL_MAX_GAS + 1n)).toBe(50n)
     expect(feeCeiling(40n, 50n * NONCE_FILL_MAX_GAS)).toBe(40n)
-  })
-
-  it("converts a stuck time to whole blocks of the chain's block time", () => {
-    expect(blocksFor(8_000, base)).toBe(4)
-    expect(blocksFor(8_000, mainnet)).toBe(1)
-    expect(blocksFor(8_000, { id: 4663, blockTime: 100 })).toBe(80)
-    expect(() => blocksFor(8_000, { id: 1 })).toThrow(MissingBlockTimeError)
-  })
-
-  it('keeps a converted window at its floor on a chain whose blocks span more of the time', () => {
-    expect(blocksFor(6_000, mainnet, 3)).toBe(3)
-    expect(blocksFor(6_000, { id: 4663, blockTime: 100 }, 3)).toBe(60)
   })
 })

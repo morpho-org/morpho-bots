@@ -14,12 +14,16 @@ The package uses a pragmatic hexagonal architecture:
 - `src/domain/` is a flat set of pure, deterministic modules: bootstrap and ladder decisions and
   their configuration validation, maturity premiums, tick windows, and failure budgets. It may use
   SDK math but has no provider, signer, persistence, or CLI responsibilities.
-- `src/application/` coordinates setup, bootstrap, ladder, invalidation, and the combined lifecycle.
-  Application services own the ports they consume and return sanitized workflow reports.
-- `src/infrastructure/` implements those ports with viem, the Morpho API, the Midnight
-  SDK, local ownership state, transaction submission, and terminal output. Every signer, executor,
-  and pre-broadcast calldata check lives in `infrastructure/transaction/`, and each read-only make
-  service (`*-make.read-only.ts`) sits beside the live service it replaces.
+- `src/graph.ts`, `src/run.ts`, `src/kernel.ts` and `src/report.ts` are the framework skeleton
+  every bot shares (`docs/framework/AUTHORING.md`): the one static graph, the run that hosts it, the
+  kernel's options and signer policy, and the operator log over its events.
+- `src/application/` owns setup readiness, invalidation, and each strategy's pure per-market
+  decision under `application/engine/`, and the ports the readers implement live beside the reports
+  they produce.
+- `src/infrastructure/` implements those ports with viem, the Morpho API, the Midnight SDK, the
+  kernel's ownership, and terminal output. `infrastructure/engine/` holds the graph's sources, acts,
+  plans and polls, and the services the CLI calls. Every signer and pre-broadcast calldata check
+  lives in `src/kernel.ts` and `infrastructure/kernel/`, over `@repo/kit`'s KMS and keystore accounts.
 - `src/config/` loads YAML and environment sources, applies precedence, and narrows external values
   into the types consumed by the application.
 - `src/bootstrap.ts` is the manual composition root. It selects live or read-only adapters and wires
@@ -44,62 +48,39 @@ error boundary, so one rejected provider call becomes a failed report item witho
 other observations. Book reads also run concurrently; book validation waits only for the latest
 timestamp required for maturity comparison.
 
-### Position bootstrap
+### Bootstrap and ladder on the engine
 
-`PositionBootstrapService` consumes three application-owned ports:
+Both strategies run as one static dataflow graph (`src/graph.ts`) on
+`@repo/engine`, with its kernel declared in the graph and the library folds of `@repo/controller`
+around it. See [`docs/framework/AUTHORING.md`](../../../docs/framework/AUTHORING.md).
 
-- `BootstrapPositionService` reads fresh position, balance, exposure, and active-group state.
-- `BootstrapReferenceRateService` reads the configured target-rate observation, extended with the
-  market's fresh seconds to maturity when a maturity premium is configured.
-- `BootstrapMakeService` owns reconciliation, market invalidation, strategy hard halt, and graceful
-  cleanup mutations.
+- **Sources** (`infrastructure/engine/quoter-sources.ts`) read every configured market with the
+  readers each strategy always used: the ladder's lending guard first, then its active quote and
+  market state; the bootstrap position at its own cadence; each market's reference; and setup
+  readiness. Every chain reading carries the kernel epoch it was read at and its block, and the
+  sources read again at once whenever one of the bot's own acts moves that epoch.
+- **Decisions** (`application/engine/ladder-decision.ts`, `bootstrap-decision.ts`) are pure. Per
+  market, they keep today's order of checks and reuse the domain's generation and sizing; each
+  returns the groups to keep live, the quote it desires, and at most one act.
+- **Preparation** is a need: only while a market would publish, the complete book is read, a
+  `book-crossed` crossing is rechecked, the unsigned tree is built and API-validated, and the
+  prospective spread is asserted, all before anything is cancelled.
+- **Acts** are a cancellation, or a replacement that cancels the market's live groups and then
+  signs or ratifies and publishes the prepared tree, in one kernel plan. The kernel holds the
+  publication after the cancellation lands until a decision read after it still desires the same
+  quote, which is what re-admission did.
+- **The controller** sends one act at a time across both strategies, only from readings at the
+  current epoch, re-affirms only what fresh decisions keep, and withdraws a market whose decision
+  failed or went stale. Its bookkeeping retries a failed act after the fastest market cadence and
+  halts after five consecutive failed acts of one market; the reporter also applies the five-poll
+  per-market failure budget to the markets' reports, halting before that step sends anything.
 
-Configuration is validated once when it loads, so invalid configuration stops the bot before either
-writer starts. Reference and decision failures request a strategy-wide hard halt. A position-read
-failure first requests market-local invalidation and allows other markets to complete unless that
-invalidation also fails.
-
-`MidnightBootstrapMakeService` is the live implementation. It rereads owned groups, validates the
-prospective complete maker book, serializes invalidation and publication, persists group ownership
-before broadcast, and waits for bounded receipts. `ReadOnlyBootstrapMakeService` implements the same
-mutation port by emitting `readonly.make` records without loading a signer or mutating state.
-
-Continuous bootstrap cycles never overlap. Shutdown waits for the current cycle and then calls the
-same make port to clean all strategy-owned bootstrap groups.
-
-### Ladder quoter-bot
-
-`LadderQuoterService` consumes the analogous `LadderPositionService`,
-`LadderReferenceRateService` (whose observation is extended with the market's fresh seconds to
-maturity when a maturity premium is configured), and `LadderMakeService` ports. The domain module
-validates ladder configuration, generates deterministic quote sets around the premium-adjusted
-effective center, and decides whether a live center must be recentered. The application service
-reconstructs the active quote, derives a complete desired quote from fresh capacity, and selects
-`publish`, `rest`, `resize`, or `recenter`.
-
-`MidnightLadderMakeService` implements live reconciliation. Its infrastructure collaborators handle
-inventory reads, tick conversion, lower/higher-rate to buy/sell mapping, offer-tree encoding,
-Mempool validation, whole-book spread validation, signing, publication, replacement, invalidation,
-and durable group ownership. `ReadOnlyLadderMakeService` preserves the read and validation path but
-renders the intended mutation instead of signing or submitting it.
-
-Replacement is deliberately market-wide. The adapter reserves future content-addressed group IDs,
-validates the future tree, confirms cancellation of existing owned groups, publishes the complete
-replacement, waits for its receipt, and confirms ownership. Continuous cycles do not overlap and
-use the shortest configured market interval.
-
-As with bootstrap, reference and decision failures request a strategy-wide hard halt. A market-state read failure requests market-local invalidation. A halted monitor still attempts
-exhaustive owned-group cleanup.
-
-### Combined lifecycle
-
-`QuoterBotService` supervises readiness, position bootstrap, and ladder monitoring as one
-fail-together lifecycle. `serializeQuoterBotWrites()` wraps the two make ports in one shared queue,
-so otherwise concurrent strategy reads cannot turn into signer-nonce or maker-book mutation races.
-
-The first rejected, halted, or unexpectedly stopped workflow aborts its peers. The supervisor then
-waits for both writer workflows to drain their in-flight cycles and finish cleanup before returning
-one terminal report.
+A reference or decision failure halts the bot: the kernel withdraws every commitment it holds. A
+market-read failure withdraws that market alone. Each decision carries its market's report as data;
+on every markets poll, each market not in flight reports once, from the outcome of an act that ended
+since its last report or else from its current decision, and that report becomes `cycle.completed`
+and the guardrail and observation records. A decision is never `applied`: an act it wants is
+`queued` until the kernel settles it.
 
 ### Explicit invalidation
 
@@ -110,35 +91,32 @@ operator to remove unknown maker groups without weakening the readiness rules us
 ## Composition and runtime modes
 
 `createApplication()` loads configuration lazily for commands that need it and constructs only the
-selected workflow. Before a bootstrap, ladder, or combined writer is created, the composition root
-runs the readiness assertion. This prevents writer side effects after failed setup.
+selected workflow. A writer's controller first withdraws what an earlier run left, then runs the
+readiness assertion, and only then lets any decision act; a failure there stops the kernel.
 
 The root `--readonly` option changes composition rather than adding conditionals to domain logic:
 
 - signer material is neither loaded nor validated;
 - the configured maker address is used for observations;
-- live make ports are replaced or decorated by read-only implementations;
+- the controller runs over a dry kernel that starts from the ledgers on disk and signs nothing;
 - all normal state, rate, policy, and prospective-spread validation remains active;
-- requested mutations are emitted as `readonly.make` JSON Lines records.
+- each requested act is reported as a logged `cycle.completed` record carrying its condition.
 
 ## State and transaction safety
 
-Bootstrap and ladder group ownership is stored outside the repository in a maker-and-market-bound
-state namespace. Publication reserves derived group IDs before broadcast and promotes them after
-confirmation. A failed broadcast removes the reservation; a successful broadcast followed by a
-storage failure leaves enough ownership evidence to recognize the group when provider indexing
-catches up.
+The kernel's ledger, beside the strategy state, is the only state the bot keeps: what it exposed
+and what it signed at each nonce. Ownership of groups is read from the kernel's entries, with the
+quote behind each publication kept in process memory from the act that published it. A restart
+withdraws every group an earlier run left before quoting again.
 
-One invocation-scoped executor owns the signer nonce and pending queue. Each write is structurally
-validated, simulated from the signer, prepared, checked against operation-specific target, selector,
-gas, calldata, fee, and spend limits, then signed, broadcast, replaced if needed, and reconciled.
-AWS mode uses a distinct KMS signer authorized by the funded maker; the KMS key never becomes the
-offer maker. A receipt timeout retains the pending transaction and ownership reservation and blocks
-later writes until an operator reconciles the nonce.
+Every write is a kernel plan: each step's payload is read by the Midnight offers validator,
+simulated, signed through the kit signer's per-operation policy (target, selector, gas,
+calldata, fee, and spend limits), durably recorded, then broadcast. AWS mode uses a distinct KMS
+signer authorized by the funded maker; the KMS key never becomes the offer maker.
 
 ## Error and output boundaries
 
-Expected failures use named error classes declared in the bot's `errors.ts`. Infrastructure
+Expected failures use named error classes declared in `src/errors.ts`. Infrastructure
 errors are translated into stable application outcomes before reaching the CLI. Operator-visible
 reports omit private keys, maker identity, endpoints, signatures, raw transactions, response bodies,
 provider payloads, and untrusted nested error text.

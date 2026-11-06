@@ -8,7 +8,6 @@ import { defineConfig } from 'vitest/config'
 const members = [
   'packages/contracts',
   'packages/utils',
-  'packages/bot-kit',
   'packages/kit',
   'framework/engine',
   'framework/kernel',
@@ -17,9 +16,6 @@ const members = [
   'framework/tests',
   'tools/ci-scripts',
   'packages/swaps',
-  'packages/logging',
-  'packages/monitoring',
-  'packages/observability',
   'packages/offers',
   'packages/oxlint-plugin',
   'packages/telemetry',

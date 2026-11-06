@@ -162,6 +162,36 @@ liquidation promises no commitment").
 that is not an address, a call other than `exec_606BaXt`, an `exec` with no call, and calldata that
 is not hex or carries trailing bytes ("refuses %s").
 
+## 4. Crossed-books resolution
+
+`crossedBooksValidator({ resolver, midnight })`, id `crossed-books`, version 1. Assumes the
+`CrossedBooksResolver` in `@repo/contracts` at `resolver`, built for `midnight`, and its `resolve`
+as encoded by that ABI (review). It takes no witness. The resolver takes every offer as itself,
+holds no allowance from its caller, and pays its caller only the loan-token profit, so a resolution
+puts nothing of the account's at risk but its fee, and creates no commitment (review).
+
+**Claims** every transaction whose `to` is `resolver`, in any address case, and nothing else
+("claims only transactions to the resolver, in any address case").
+
+**Allows**, reading it as creating, exposing, carrying, retiring and consuming nothing, a zero-value
+`resolve(sellOffers, buyOffers, minimumProfit)` that re-encodes byte for byte, where:
+
+- each side takes at least one offer, every sell take is of a sell offer and every buy take of a
+  buy offer, and no take is for zero units ("reads as recorded under");
+- every take is of one market, on this chain and on `midnight` ("reads as recorded under");
+- no take is of an offer whose maker is the account, which would move the account's own funds
+  outside this kernel's ledger ("reads as recorded under");
+- the sides take equal units, as the resolver requires ("reads as recorded under").
+
+`minimumProfit` is not bounded: the resolver reverts any resolution that earns nothing, and the
+kernel's simulation stops it before signing ("reads as recorded under"). `confirm` accepts any
+receipt, since nothing is committed ("treats every receipt as confirming, since a resolution
+promises no commitment").
+
+**Refuses** anything else, including a non-transaction payload, a transaction to any other target,
+value on the call, another resolver function, and calldata that is not hex, is cut short or
+carries trailing bytes ("refuses %s").
+
 ## What is deliberately left out
 
 - **Roles and timelocks.** Neither validator checks that the account holds the allocator role, or
@@ -181,5 +211,5 @@ is not hex or carries trailing bytes ("refuses %s").
 - **Sweeps that return `false`.** The Executor ignores an ERC-20 `transfer`'s return value, so a token
   that returns `false` instead of reverting would leave its sweep in the Executor, where anyone can
   call it (review).
-- **Other protocols' validators.** Midnight offers and crossed-book settlement join this package,
-  and this document, when their bots are ported.
+- **Midnight offers.** `midnightOffersValidator` is specified in
+  [kernel SPEC §9.2](../kernel/SPEC.md#92-midnight-offers), not here.

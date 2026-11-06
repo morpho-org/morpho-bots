@@ -9,6 +9,10 @@ export const ANVIL_DEFAULT_ACCOUNT = privateKeyToAccount(ANVIL_DEFAULT_PRIVATE_K
 export const ANVIL_TAKER_PRIVATE_KEY =
   '0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d' as Hex
 export const ANVIL_TAKER_ACCOUNT = privateKeyToAccount(ANVIL_TAKER_PRIVATE_KEY)
+/** Takes the external seed offer, so no fixture transaction spends the kernel-held maker nonce. */
+export const ANVIL_BORROWER_ACCOUNT = privateKeyToAccount(
+  '0x47e179ec197488593b187f80a00eb0da91f1b9d0b13f8733639f19c30a34926a'
+)
 
 export const MARKET_ID = '0x168e31250e0008b50d2255a5ab85e0265acd6c12e4f9a1336134b36a65a47937' as Hex
 export const REFERENCE_MARKET_ID =

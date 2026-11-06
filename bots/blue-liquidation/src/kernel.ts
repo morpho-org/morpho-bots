@@ -19,12 +19,11 @@ const KERNEL_EFFECT_TIMEOUT_MS = 10_000
 const STUCK_MS = 8_000
 /** Deliberately twice what one act rests on: a 30s world read plus a 4s preparation, 2 × 34s. */
 const MAX_EVIDENCE_AGE_MS = 68_000
-/** The evidence age's floor, which binds on Base's slower blocks. */
 const MIN_EVIDENCE_AGE_BLOCKS = 256
 
 /**
  * The EOA that liquidates and receives the end-of-exec sweeps. Only the kernel signs with it,
- * through the bot-kit signer's default-deny policy.
+ * through the kit signer's default-deny policy.
  */
 export const liquidatorAccount = (config: Config) =>
   privateKeyToAccount(config.liquidatorPrivateKey)

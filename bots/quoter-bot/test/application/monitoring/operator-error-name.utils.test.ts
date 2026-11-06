@@ -1,26 +1,24 @@
+import { SignerAccountError } from '@repo/kit'
 import { ContractFunctionZeroDataError, HttpRequestError, UserRejectedRequestError } from 'viem'
 import { describe, expect, test } from 'vitest'
 
 import {
   operatorAdapterOperation,
-  operatorErrorDetails,
   operatorErrorName
 } from '../../../src/application/monitoring/operator-error-name.utils'
 import {
-  BootstrapAdapterError,
+  QuoterReadingUnavailableError,
+  QuoterRunFailedError,
   BootstrapConfigurationError,
-  BootstrapHardHaltError,
-  BootstrapMempoolValidationError,
-  LadderAdapterError,
   LadderConfigurationError,
-  LadderHardHaltError,
+  BootstrapAdapterError,
+  ActFailedError,
+  KernelRefusedError,
   OfferInvalidationAdapterError,
-  QuoterBotMonitorHaltedError,
-  QuoterTransactionError,
+  KernelStopError,
+  LadderAdapterError,
   ReferenceAdapterError,
-  SetupMonitorConfigurationError,
-  SetupMonitorHaltedError,
-  SignerAccountError
+  QuoterTransactionError
 } from '../../../src/errors'
 
 describe('operatorErrorName', () => {
@@ -41,7 +39,12 @@ describe('operatorErrorName', () => {
     expect(operatorErrorName(new LadderAdapterError('position-unavailable'))).toBe(
       'LadderAdapterError'
     )
-    expect(operatorErrorName(new LadderHardHaltError([]))).toBe('LadderHardHaltError')
+    expect(operatorErrorName(new KernelRefusedError('start'))).toBe('KernelRefusedError')
+    expect(operatorErrorName(new ActFailedError('ladder', 'failed'))).toBe('ActFailedError')
+    expect(operatorErrorName(new QuoterReadingUnavailableError('reference rate'))).toBe(
+      'QuoterReadingUnavailableError'
+    )
+    expect(operatorErrorName(new KernelStopError())).toBe('KernelStopError')
     expect(operatorErrorName(new ReferenceAdapterError('latest-block'))).toBe(
       'ReferenceAdapterError'
     )
@@ -55,69 +58,18 @@ describe('operatorErrorName', () => {
     expect(operatorErrorName(rpc)).toBe('HttpRequestError')
     expect(operatorErrorName(contract)).toBe('ContractFunctionZeroDataError')
     expect(operatorErrorName(unrelated)).toBe('UnknownError')
-    expect(operatorErrorDetails(rpc)).toEqual({ errorName: 'HttpRequestError' })
   })
 
-  test('retains only the sanitized Mempool minimum-assets detail', () => {
-    const error = new BootstrapMempoolValidationError([
-      { rule: 'min_offer_assets_usd', minimumAssets: 100_000_000n }
-    ])
+  test('keeps the kit effect classifications the kernel reports', () => {
+    const feeLimit = Object.assign(new Error('cap below gas'), { name: 'FeeLimitError' })
 
-    expect(operatorErrorDetails(error)).toEqual({
-      errorName: 'BootstrapMempoolValidationError',
-      minimumAssets: '100000000'
-    })
+    expect(operatorErrorName(feeLimit)).toBe('FeeLimitError')
   })
 
-  test('retains only allowlisted reservation cleanup diagnostics', () => {
-    const error = new BootstrapAdapterError('transaction-reverted')
-    error.recordReservationCleanupFailure('BootstrapAdapterError')
+  test('keeps the quoter run classification', () => {
+    const error = new QuoterRunFailedError({ status: 'halted', reason: 'graph-error' })
 
-    expect(operatorErrorDetails(error)).toEqual({
-      errorName: 'BootstrapAdapterError',
-      adapterOperation: 'transaction-reverted',
-      reservationCleanupErrorName: 'BootstrapAdapterError'
-    })
-
-    error.recordReservationCleanupFailure('https://provider.example/?token=secret-token')
-    expect(operatorErrorDetails(error)).toEqual({
-      errorName: 'BootstrapAdapterError',
-      adapterOperation: 'transaction-reverted'
-    })
-  })
-
-  test('keeps the aggregate hard-halt classification', () => {
-    expect(operatorErrorName(new BootstrapHardHaltError([]))).toBe('BootstrapHardHaltError')
-  })
-
-  test('keeps the setup-monitor configuration classification', () => {
-    expect(operatorErrorName(new SetupMonitorConfigurationError())).toBe(
-      'SetupMonitorConfigurationError'
-    )
-    expect(
-      operatorErrorName(
-        new SetupMonitorHaltedError({
-          status: 'halted',
-          reason: 'cycle-error',
-          cycles: 0,
-          cycleErrorName: 'UnknownError'
-        })
-      )
-    ).toBe('SetupMonitorHaltedError')
-  })
-
-  test('keeps the combined quoter-bot monitor classification', () => {
-    const error = new QuoterBotMonitorHaltedError({
-      status: 'halted',
-      reason: 'workflow-error',
-      workflows: {
-        setupCheck: { status: 'rejected', errorName: 'TypeError' },
-        bootstrap: { status: 'rejected', errorName: 'TypeError' },
-        ladder: { status: 'rejected', errorName: 'TypeError' }
-      }
-    })
-
-    expect(operatorErrorName(error)).toBe('QuoterBotMonitorHaltedError')
+    expect(operatorErrorName(error)).toBe('QuoterRunFailedError')
   })
 
   test('maps hostile arbitrary names to one generic classification', () => {
@@ -146,10 +98,6 @@ describe('operatorAdapterOperation', () => {
     expect(operatorAdapterOperation(new BootstrapAdapterError('negative-spread'))).toBe(
       'negative-spread'
     )
-    expect(operatorErrorDetails(new BootstrapAdapterError('negative-spread'))).toEqual({
-      errorName: 'BootstrapAdapterError',
-      adapterOperation: 'negative-spread'
-    })
   })
 
   test('returns every adapter operation so a halt names which check failed', () => {
@@ -164,9 +112,7 @@ describe('operatorAdapterOperation', () => {
       'reference-stale',
       'reference-checkpoint',
       'reference-rate',
-      'maturity-read',
       'preflight',
-      'ratifier-transaction-reverted',
       'transaction-pending',
       'transaction-dropped',
       'transaction-reverted'
@@ -179,22 +125,12 @@ describe('operatorAdapterOperation', () => {
       'empty-ladder',
       'market-configuration-missing',
       'market-matured',
-      'market-not-configured',
       'publication-reservation-missing',
-      'ratifier-signature',
-      'readonly-mutation',
-      'removed-market-cleanup',
       'unsupported-ratifier'
     ] as const) {
       expect(operatorAdapterOperation(new LadderAdapterError(operation))).toBe(operation)
     }
-    for (const operation of [
-      'batch-transaction',
-      'offer-groups-read',
-      'ownership-cleanup',
-      'preflight',
-      'transaction'
-    ] as const) {
+    for (const operation of ['offer-groups-read', 'preflight'] as const) {
       expect(operatorAdapterOperation(new OfferInvalidationAdapterError(operation))).toBe(operation)
     }
     for (const operation of [
@@ -214,11 +150,6 @@ describe('operatorAdapterOperation', () => {
         new BootstrapAdapterError('https://rpc.example/key?secret=1' as never)
       )
     ).toBeUndefined()
-    expect(
-      operatorErrorDetails(new BootstrapAdapterError('not-a-known-operation' as never))
-    ).toEqual({
-      errorName: 'BootstrapAdapterError'
-    })
   })
 
   test('ignores non-adapter failures and non-object values', () => {

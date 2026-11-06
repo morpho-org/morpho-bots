@@ -5,9 +5,7 @@ import { metrics } from '@opentelemetry/api'
 import type { MonitoringEvent } from '../../application/monitoring/monitoring-event'
 
 type SubmittedTransactionRecord = {
-  event: `${string}.transaction-submitted`
-  operation?: unknown
-  marketId?: unknown
+  event: 'offer-invalidation.transaction-submitted'
   txHash?: unknown
 }
 
@@ -46,10 +44,6 @@ export const createTelemetryRecordObserver = () => {
   const meter = metrics.getMeter('quoter-bot')
   const cycles = meter.createCounter('quoter_bot.cycles', {
     description: 'Completed monitor cycle results by workflow and status.'
-  })
-  const cycleDuration = meter.createHistogram('quoter_bot.cycle.duration', {
-    unit: 'ms',
-    description: 'Duration of completed monitor cycle results.'
   })
   const failures = meter.createCounter('quoter_bot.failures', {
     description: 'Terminal bot failures by workflow and reason.'
@@ -121,6 +115,11 @@ export const createTelemetryRecordObserver = () => {
     maximumTotalCapacityAssets: gauge(
       'quoter_bot.position.maximum_total_capacity_assets',
       'Remaining total exposure capacity.'
+    ),
+    debtAssets: gauge('quoter_bot.position.debt_assets', 'Maker face debt in the market.'),
+    debtCeilingAssets: gauge(
+      'quoter_bot.position.debt_ceiling_assets',
+      'Most face debt the market lets the maker carry.'
     )
   }
   const bootstrapCredit = gauge('quoter_bot.bootstrap.credit_assets', 'Bootstrap credit progress.')
@@ -179,22 +178,12 @@ export const createTelemetryRecordObserver = () => {
   }
 
   // oxlint-disable-next-line complexity
-  const observe = (record: MonitoringEvent | SubmittedTransactionRecord) => {
-    if (record.event.endsWith('.transaction-submitted')) {
-      const submitted = record as SubmittedTransactionRecord
-      if (!isFirstSubmission(submitted.txHash)) return
-      transactions.add(
-        1,
-        definedAttributes({
-          phase: 'submitted',
-          workflow: submitted.event.split('.', 1)[0],
-          operation: submitted.operation,
-          marketId: submitted.marketId
-        })
-      )
+  const observe = (event: MonitoringEvent | SubmittedTransactionRecord) => {
+    if (event.event === 'offer-invalidation.transaction-submitted') {
+      if (!isFirstSubmission(event.txHash)) return
+      transactions.add(1, { phase: 'submitted', workflow: 'offer-invalidation' })
       return
     }
-    const event = record as MonitoringEvent
     switch (event.event) {
       case 'cycle.completed': {
         const attributes = definedAttributes({
@@ -219,17 +208,6 @@ export const createTelemetryRecordObserver = () => {
             }
           )
         }
-        const durationMs = asNumber(event.durationMs)
-        if (durationMs !== undefined) {
-          cycleDuration.record(
-            durationMs,
-            definedAttributes({
-              workflow: event.workflow,
-              status: event.status,
-              marketId: event.marketId
-            })
-          )
-        }
         return
       }
       case 'bot.failed':
@@ -237,7 +215,6 @@ export const createTelemetryRecordObserver = () => {
         return
       case 'guardrail.rate-omitted':
       case 'guardrail.cross-book-cleared':
-      case 'guardrail.book-cleared':
       case 'guardrail.book-crossed':
       case 'guardrail.exposure-capped':
       case 'guardrail.rungs-truncated':
@@ -348,6 +325,17 @@ export const createTelemetryRecordObserver = () => {
       // Static configuration echoes; the log stream carries them and no aggregation needs them.
       case 'bot.configured':
       case 'market.configured':
+        return
+      // Per-plan kernel traces carry unbounded identities; the log stream is their home.
+      case 'kernel.notice':
+      case 'kernel.commitment':
+      case 'kernel.advance':
+      case 'kernel.error':
+      case 'kernel.alarm':
+      case 'kernel.stopped':
+      case 'signer.policy_violation':
+      case 'journal.pruned':
+      case 'journal.capped':
         return
       default: {
         // Compile-time exhaustiveness: a new MonitoringEvent variant must pick a mapping here.

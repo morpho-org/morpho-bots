@@ -8,8 +8,8 @@ import { BaseError } from 'viem'
 import type { Finality } from './kernel-chain'
 import type { BotLogger } from './logger'
 
+import { blocksFor } from './block-time'
 import { FeeLimitError, FinalityBeyondWindowError, NoCommitmentsError } from './errors'
-import { blocksFor } from './fee-policy'
 import { createKernelChain } from './kernel-chain'
 import { createKernelEffects } from './kernel-effects'
 import { DEFAULT_MAX_DATA_BYTES } from './policy'
@@ -22,10 +22,17 @@ import { createAccountSigner } from './signer'
  */
 export const TRANSACTION_KERNEL_RESERVATIONS = 4
 const POLL_MS = 2_000
-/** How far below the head blocks are retained; finality must lag less, or the kernel holds it. */
-const REORG_WINDOW_MS = 5 * 60_000
+/**
+ * How far below the head blocks are retained; finality must lag less, or the kernel refuses to
+ * start. Base's `safe` block lags 5 minutes while its batcher stalls.
+ */
+const REORG_WINDOW_MS = 10 * 60_000
 /** Mainnet's `finalized` block lags 64 to 95 blocks, so a 12s chain still keeps it inside. */
 const MIN_REORG_DEPTH_BLOCKS = 128
+
+/** How many blocks below the head a kernel bot on `chain` retains. */
+export const reorgDepthFor = (chain: Pick<Chain, 'id'>) =>
+  blocksFor(REORG_WINDOW_MS, chain, MIN_REORG_DEPTH_BLOCKS)
 /** How old a simulation may be at the head, though never under 3 blocks on a slow chain. */
 const MAX_SIM_LAG_MS = 6_000
 const MIN_SIM_LAG_BLOCKS = 3
@@ -76,7 +83,7 @@ export const transactionKernelConfig = (
     TransactionKernelLimits,
     'chainId' | 'targets' | 'maxSpendWei' | 'stuckMs' | 'maxEvidenceAgeBlocks'
   >,
-  chain: Pick<Chain, 'id' | 'blockTime'>,
+  chain: Pick<Chain, 'id'>,
   account: Address,
   validator: Validator
 ): KernelConfig => ({
@@ -118,7 +125,7 @@ export const transactionKernelSpec = (parameters: {
   logger: BotLogger
 }): Readonly<{ live: TransactionKernelOptions }> => {
   const { limits, account, client, logger } = parameters
-  const reorgDepth = blocksFor(REORG_WINDOW_MS, parameters.chain, MIN_REORG_DEPTH_BLOCKS)
+  const reorgDepth = reorgDepthFor(parameters.chain)
   const { finality } = parameters
   if (typeof finality === 'object' && finality.depth >= reorgDepth)
     throw new FinalityBeyondWindowError(limits.chainId, finality.depth, reorgDepth)

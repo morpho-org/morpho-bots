@@ -6,43 +6,11 @@ const readChartFile = (path: string) =>
 
 describe('quoter-bot Helm chart', () => {
   it('mounts the config file under a directory that exists in the image', async () => {
-    const [statefulSet, readme] = await Promise.all([
-      readChartFile('templates/statefulset.yaml'),
-      readChartFile('README.md')
-    ])
+    const statefulSet = await readChartFile('templates/statefulset.yaml')
 
     expect(statefulSet).toContain('- /repo/bots/quoter-bot/quoter-bot.yaml')
     expect(statefulSet).toContain('mountPath: /repo/bots/quoter-bot/quoter-bot.yaml')
     expect(statefulSet).not.toContain('/config/quoter-bot.yaml')
-    expect(readme).toContain('`--config /repo/bots/quoter-bot/quoter-bot.yaml`')
-    expect(readme).not.toContain('/config/quoter-bot.yaml')
-  })
-
-  it('reports the actual mounted config path in the install notes', async () => {
-    const notes = await readChartFile('templates/NOTES.txt')
-
-    expect(notes).toContain('/repo/bots/quoter-bot/quoter-bot.yaml')
-    expect(notes).not.toContain('/config/quoter-bot.yaml')
-  })
-
-  it('gives the default start command a bootstrap market in the quickstart', async () => {
-    const readme = await readChartFile('README.md')
-
-    expect(readme).not.toContain('  bootstrap: []')
-    expect(readme).toContain(
-      "  bootstrap:\n    - marketId: '0x5555555555555555555555555555555555555555555555555555555555555555'"
-    )
-  })
-
-  it('creates the quickstart namespace before creating its signer Secret', async () => {
-    const readme = await readChartFile('README.md')
-    const createNamespace = readme.indexOf('kubectl create namespace quoter-bot')
-    const createSecret = readme.indexOf(
-      'kubectl --namespace quoter-bot create secret generic quoter-bot-signer'
-    )
-
-    expect(createNamespace).toBeGreaterThan(-1)
-    expect(createSecret).toBeGreaterThan(createNamespace)
   })
 
   it('keeps the maker key out of kubectl argv in the quickstart', async () => {

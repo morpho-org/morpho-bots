@@ -1,9 +1,8 @@
 import type { Address } from 'viem'
 
-import { getChainAddress } from '@morpho-org/morpho-ts'
-import { isAddressEqual } from 'viem'
-
 import type { SupportedChainId } from './supported-chains.utils'
+
+import { ratifierType } from './supported-chains.utils'
 
 type WriteSignerMethod = 'private-key' | 'keystore' | 'aws'
 
@@ -18,4 +17,4 @@ export const requiresMaxRatificationGas = (
   method: WriteSignerMethod,
   ratifier: Address,
   chainId: SupportedChainId
-) => method !== 'aws' && isAddressEqual(ratifier, getChainAddress(chainId, 'setterRatifier'))
+) => method !== 'aws' && ratifierType(ratifier, chainId) === 'setter'

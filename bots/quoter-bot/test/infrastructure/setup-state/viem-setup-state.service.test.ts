@@ -8,18 +8,23 @@ import { createServer } from 'node:http'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { bytesToHex, hexToBytes, keccak256, zeroHash } from 'viem'
 import { base } from 'viem/chains'
-import { describe, expect, test } from 'vitest'
+import { describe, expect, test, vi } from 'vitest'
 
-import { MAX_LOSS_FACTOR } from '../../../src/domain/loss-factor'
 import {
-  ProviderPaginationError,
+  SafeProviderError,
   ProviderReadError,
   ProviderResponseError,
-  SafeProviderError
+  OfferGroupsReadError
 } from '../../../src/errors'
 import { requestJson } from '../../../src/infrastructure/provider/http-json.utils'
 import { executeProviderRead } from '../../../src/infrastructure/provider/provider-read.utils'
 import { ViemSetupStateService } from '../../../src/infrastructure/setup-state/viem-setup-state.service'
+
+// Provider retries back off for real seconds; the retry tests assert attempts, not wall time.
+vi.mock('@repo/utils', async importOriginal => ({
+  ...(await importOriginal<typeof import('@repo/utils')>()),
+  delay: async () => undefined
+}))
 
 // bun's `Bun.serve` accepted a Web-standard fetch handler and exposed `.port`/`.stop()`. These tests
 // only need a throwaway loopback server, so this keeps that shape over node:http.
@@ -58,8 +63,34 @@ const ratifier: Address = '0xd6e70365C8E8DDa9a4ca662C07bbE663b017755E'
 const setterRatifier: Address = '0x800B5F12A61B8198a5a6EfD794Cac6699B294d63'
 const marketId: Hex = `0x${'55'.repeat(32)}`
 const referenceMarketId: Hex = `0x${'88'.repeat(32)}`
+const loanCollateralOracle: Address = '0x4444444444444444444444444444444444444444'
 const knownGroup: Hex = `0x${'66'.repeat(32)}`
 const unknownGroup: Hex = `0x${'77'.repeat(32)}`
+
+/** Fills the cap, consumption and fee fields the strict offer-group reader requires, when absent. */
+const withGroupFields = (response: unknown) => {
+  const page = response as { data?: unknown }
+  if (typeof response !== 'object' || response === null || !Array.isArray(page.data))
+    return response
+  return {
+    ...page,
+    data: page.data.map((group: Record<string, unknown>) =>
+      typeof group !== 'object' || group === null || !Array.isArray(group.offers)
+        ? group
+        : {
+            consumed: '0',
+            max_assets: '0',
+            max_units: '1000',
+            ...group,
+            offers: group.offers.map((offer: Record<string, unknown>) => ({
+              continuous_fee_cap: '0',
+              market: { maturity: 2_000 },
+              ...offer
+            }))
+          }
+    )
+  }
+}
 const removedMarketId: Hex = `0x${'ab'.repeat(32)}`
 const authoritativeRatifierRuntime = (
   await readFile(new URL('../../fixtures/ecrecover-ratifier-base.hex', import.meta.url), 'utf8')
@@ -70,7 +101,8 @@ const authoritativeSetterRatifierRuntime = (
   await readFile(new URL('../../fixtures/setter-ratifier-base.hex', import.meta.url), 'utf8')
 ).trim() as Hex
 
-const REFERENCE_SECONDS_PER_BLOCK = 2n
+/** Base's 200ms blocks: five share each second's timestamp. */
+const REFERENCE_BLOCKS_PER_SECOND = 5n
 
 const createState = (
   responses: Record<string, unknown>,
@@ -84,30 +116,41 @@ const createState = (
     referenceLoanAsset?: Address
     requestLimit?: number
     requestTimeoutMs?: number
-    now?: () => number
     onRequest?: (url: string, timeoutMs: number | undefined) => unknown
     marketIds?: readonly Hex[]
     v0OfferGroupIds?: readonly Hex[]
     readOnly?: boolean
     persistedGroupIds?: readonly Hex[]
-    ignoredGroupIds?: readonly Hex[]
+    withdrawnGroupIds?: readonly Hex[]
     readOwnedGroupIds?: () => Promise<readonly Hex[]>
     bootstrapGroupIds?: readonly Hex[]
     ladderSellGroupIds?: readonly Hex[]
     referenceLookbackSeconds?: bigint
     withdrawnReferenceMarket?: boolean
     lossFactor?: unknown
+    market?: Record<string, unknown>
+    debt?: unknown
+    collateral?: unknown
+    oracleCode?: Hex
+    canIncreaseDebt?: unknown
   } = {}
 ) => {
   const calls: string[] = []
   const chainReadCalls: Record<string, unknown>[] = []
   const requestBudgets: (number | undefined)[] = []
   const referenceAbis: unknown[] = []
+  const borrowReads: Record<string, unknown> = {
+    debt: overrides.debt ?? 0n,
+    collateral: overrides.collateral ?? 0n,
+    canIncreaseDebt: overrides.canIncreaseDebt ?? true
+  }
   const chain = {
     getChainId: async () => 8453,
-    getCode: async () => overrides.code ?? authoritativeRatifierRuntime,
+    getCode: async ({ address }: { address: Address }) =>
+      address === loanCollateralOracle
+        ? overrides.oracleCode
+        : (overrides.code ?? authoritativeRatifierRuntime),
     getBalance: async () => 10n,
-    getTransactionCount: async () => 0,
     getBlock: async () => ({ number: 100n, timestamp: 1_000n }),
     readContract: async (parameters: Record<string, unknown>) => {
       chainReadCalls.push(parameters)
@@ -135,11 +178,14 @@ const createState = (
           maturity: 2_000n,
           rcfThreshold: 0n,
           enterGate: maker,
-          liquidatorGate: maker
+          liquidatorGate: maker,
+          ...overrides.market
         }
       }
       if (functionName === 'tickSpacing') return 4
       if (functionName === 'lossFactor') return overrides.lossFactor ?? 0n
+      const borrowRead = borrowReads[String(functionName)]
+      if (borrowRead !== undefined) return borrowRead
       throw new Error(`unexpected ${String(functionName)}`)
     }
   }
@@ -151,7 +197,7 @@ const createState = (
         ? { number: 100n, timestamp: 1_000n }
         : {
             number: blockNumber ?? null,
-            timestamp: 1_000n - (100n - (blockNumber ?? 0n)) * REFERENCE_SECONDS_PER_BLOCK
+            timestamp: 1_000n - (100n - (blockNumber ?? 0n)) / REFERENCE_BLOCKS_PER_SECOND
           }
     },
     readContract: async (parameters: Record<string, unknown>) => {
@@ -189,9 +235,9 @@ const createState = (
     if (overrides.requestLimit !== undefined && calls.length > overrides.requestLimit) {
       throw new Error('test request limit reached')
     }
-    if (overrides.onRequest) return overrides.onRequest(url, timeoutMs)
+    if (overrides.onRequest) return withGroupFields(await overrides.onRequest(url, timeoutMs))
     const match = Object.entries(responses).find(([path]) => url.includes(path))
-    if (match) return match[1]
+    if (match) return withGroupFields(match[1])
     if (url.includes('/v0/midnight/markets')) {
       return {
         cursor: null,
@@ -217,21 +263,20 @@ const createState = (
       chainId: base.id,
       ...(overrides.readOnly
         ? { readOnly: true as const }
-        : { readOnly: false as const, privateKey: `0x${'11'.repeat(32)}` }),
+        : { readOnly: false as const, deriveSignerAddress: async () => maker }),
       midnight,
       loanAsset,
       morphoApiBaseUrl: 'https://api.example',
       marketIds: overrides.marketIds ?? [marketId],
       referenceMarketId,
       v0OfferGroupIds: overrides.v0OfferGroupIds ?? [knownGroup],
-      ignoredOfferGroupIds: overrides.ignoredGroupIds,
+      readWithdrawnGroupIds: async () => overrides.withdrawnGroupIds ?? [],
       readOwnedGroupIds:
         overrides.readOwnedGroupIds ?? (async () => overrides.persistedGroupIds ?? []),
       readBootstrapGroupIds: async () => overrides.bootstrapGroupIds ?? [],
       readLadderSellGroupIds: async () => overrides.ladderSellGroupIds ?? [],
       referenceLookbackSeconds: overrides.referenceLookbackSeconds ?? 2n,
-      requestTimeoutMs: overrides.requestTimeoutMs,
-      now: overrides.now
+      requestTimeoutMs: overrides.requestTimeoutMs
     })
   }
 }
@@ -315,7 +360,6 @@ describe('ViemSetupStateService', () => {
         getChainId: () => rejectAt('chain-id', 8453),
         getCode: () => rejectAt('code', authoritativeRatifierRuntime),
         getBalance: () => rejectAt('balance', 10n),
-        getTransactionCount: () => rejectAt('nonce', 0),
         getBlock: () => rejectAt('latest', { number: 100n, timestamp: 1_000n }),
         readContract: ({ functionName }: { functionName?: unknown }) =>
           rejectAt(
@@ -337,7 +381,7 @@ describe('ViemSetupStateService', () => {
             })
       const state = new ViemSetupStateService(chain, reference, request, {
         chainId: base.id,
-        privateKey: `0x${'11'.repeat(32)}`,
+        deriveSignerAddress: async () => maker,
         midnight,
         loanAsset,
         morphoApiBaseUrl: 'https://api.example',
@@ -754,24 +798,24 @@ describe('ViemSetupStateService', () => {
     })
     expect(calls).toEqual([
       'latest',
-      '99',
-      `idToMarketParams:${referenceMarketId}:99`,
-      `market:${referenceMarketId}:99`,
+      '90',
+      `idToMarketParams:${referenceMarketId}:90`,
+      `market:${referenceMarketId}:90`,
       `market:${referenceMarketId}:100`
     ])
     expect(referenceAbis).toEqual([blueAbi, blueAbi, blueAbi])
   })
 
   test('probes the historical block implied by the configured window', async () => {
-    const { state, calls } = createState({}, { referenceLookbackSeconds: 20n })
+    const { state, calls } = createState({}, { referenceLookbackSeconds: 10n })
 
     await state.checkReference()
 
     expect(calls).toEqual([
       'latest',
-      '90',
-      `idToMarketParams:${referenceMarketId}:90`,
-      `market:${referenceMarketId}:90`,
+      '50',
+      `idToMarketParams:${referenceMarketId}:50`,
+      `market:${referenceMarketId}:50`,
       `market:${referenceMarketId}:100`
     ])
   })
@@ -986,7 +1030,7 @@ describe('ViemSetupStateService', () => {
           ]
         }
       },
-      { ignoredGroupIds: [knownGroup] }
+      { withdrawnGroupIds: [knownGroup] }
     )
 
     expect(await state.inspectOffers(maker)).toEqual({
@@ -1027,6 +1071,38 @@ describe('ViemSetupStateService', () => {
     })
   })
 
+  test('keeps every page of a group the API repeats, so an unconfigured market is not hidden', async () => {
+    const { state } = createState(
+      {},
+      {
+        onRequest: url =>
+          url.includes('cursor=next')
+            ? {
+                cursor: null,
+                data: [
+                  {
+                    id: knownGroup,
+                    chain_id: 8453,
+                    offers: [{ market_id: marketId, maker, buy: true, tick: 20 }]
+                  }
+                ]
+              }
+            : {
+                cursor: 'next',
+                data: [
+                  {
+                    id: knownGroup,
+                    chain_id: 8453,
+                    offers: [{ market_id: removedMarketId, maker, buy: true, tick: 20 }]
+                  }
+                ]
+              }
+      }
+    )
+
+    expect((await state.inspectOffers(maker)).unknownMarketIds).toEqual([removedMarketId])
+  })
+
   test('fails closed when an active offer side is not boolean', async () => {
     const { state } = createState({
       '/v0/midnight/users/': {
@@ -1043,96 +1119,9 @@ describe('ViemSetupStateService', () => {
 
     const error = await state.inspectOffers(maker).catch(value => value)
 
-    expect(error).toBeInstanceOf(ProviderResponseError)
-    expect(error).toMatchObject({ provider: 'provider', operation: 'decode' })
+    expect(error).toBeInstanceOf(OfferGroupsReadError)
+    expect(error).toMatchObject({ provider: 'morpho-api', operation: 'offer-groups-response' })
   })
-
-  test('fails closed at one aggregate deadline while traversing delayed unique cursors', async () => {
-    let now = 0
-    let page = 0
-    const { state, requestBudgets } = createState(
-      {},
-      {
-        requestTimeoutMs: 10,
-        now: () => now,
-        onRequest: () => {
-          now += 4
-          page += 1
-          return { cursor: `unique-${page}`, data: [] }
-        }
-      }
-    )
-
-    const error = await state.inspectOffers(maker).catch(value => value)
-
-    expect(error).toMatchObject({
-      failure: {
-        kind: 'provider-error',
-        provider: 'morpho-api',
-        name: 'TimeoutError',
-        code: 'REQUEST_TIMEOUT',
-        context: 'request'
-      }
-    })
-    expect(page).toBe(3)
-    expect(requestBudgets).toEqual([10, 6, 2])
-  })
-
-  test('does not start another cursor request at the exact aggregate deadline', async () => {
-    let now = 5
-    let page = 0
-    const { state, requestBudgets } = createState(
-      {},
-      {
-        requestTimeoutMs: 10,
-        now: () => now,
-        onRequest: () => {
-          now = 15
-          page += 1
-          return { cursor: `boundary-${page}`, data: [] }
-        }
-      }
-    )
-
-    await expect(state.inspectOffers(maker)).rejects.toThrow('TimeoutError')
-    expect(page).toBe(1)
-    expect(requestBudgets).toEqual([10])
-  })
-
-  test('fails closed when Morpho API repeats an offer cursor', async () => {
-    const { state } = createState(
-      {
-        'cursor=loop': { cursor: 'loop', data: [] },
-        '/v0/midnight/users/': { cursor: 'loop', data: [] }
-      },
-      { requestLimit: 3 }
-    )
-
-    const error = await state.inspectOffers(maker).catch(value => value)
-    expect(error).toBeInstanceOf(ProviderPaginationError)
-    expect(error).toMatchObject({
-      name: 'ProviderPaginationError',
-      provider: 'morpho-api',
-      reason: 'repeated-cursor'
-    })
-    expect(error.message).toBe('Morpho API cursor repeated')
-  })
-
-  test.each(['', '   ', 42])(
-    'rejects malformed non-null cursor %p without early success',
-    async cursor => {
-      const { state } = createState({
-        '/v0/midnight/users/': {
-          cursor,
-          data: [{ id: knownGroup, chain_id: 8453, offers: [] }]
-        }
-      })
-
-      const error = await state.inspectOffers(maker).catch(value => value)
-      expect(error).toBeInstanceOf(ProviderResponseError)
-      expect(error).toMatchObject({ provider: 'morpho-api', operation: 'cursor' })
-    }
-  )
 
   test('ignores well-formed non-Base groups returned despite the Base filter', async () => {
     const { state } = createState({
@@ -1164,65 +1153,85 @@ describe('ViemSetupStateService', () => {
     })
 
     const error = await state.inspectOffers(maker).catch(value => value)
-    expect(error).toBeInstanceOf(ProviderResponseError)
-    expect(error).toMatchObject({ provider: 'provider', operation: 'decode' })
+    expect(error).toBeInstanceOf(OfferGroupsReadError)
+    expect(error).toMatchObject({ provider: 'morpho-api', operation: 'offer-groups-response' })
   })
 
-  test('fails closed when Morpho API exceeds the offer page limit with unique cursors', async () => {
-    const page = (index: number) => `page-${String(index).padStart(3, '0')}`
-    const responses = Object.fromEntries(
-      Array.from({ length: 101 }, (_, index) => [
-        `cursor=${page(index)}`,
-        { cursor: index === 100 ? null : page(index + 1), data: [] }
+  test('reads the maker debt and rejects a response that is not a uint128', async () => {
+    expect(await createState({}, { debt: 7n }).state.getDebt(marketId, maker)).toBe(7n)
+    const error = await createState({}, { debt: -1n })
+      .state.getDebt(marketId, maker)
+      .catch((value: unknown) => value)
+    expect(error).toMatchObject({ operation: 'position-debt' })
+  })
+
+  describe('getLoanCollateral', () => {
+    const oracle = loanCollateralOracle
+    const loanSlotMarket = (enterGate: Address = '0x0000000000000000000000000000000000000000') => ({
+      collateralParams: [
+        {
+          token: '0x0000000000000000000000000000000000000001',
+          lltv: 860_000_000_000_000_000n,
+          liquidationCursor: 0n,
+          oracle: maker
+        },
+        { token: loanAsset, lltv: 10n ** 18n, liquidationCursor: 0n, oracle }
+      ],
+      enterGate
+    })
+
+    test('reads the slot whose token is the loan asset, at its own index and oracle', async () => {
+      const { state, chainReadCalls } = createState(
+        {},
+        { market: loanSlotMarket(), collateral: 900n, oracleCode: '0x6001' }
+      )
+
+      expect(await state.getLoanCollateral(marketId, maker)).toEqual({
+        assets: 900n,
+        lltv: 10n ** 18n,
+        oracleRuntimeHash: keccak256('0x6001'),
+        enterGateOpen: true,
+        matured: false
+      })
+      expect(chainReadCalls.find(call => call.functionName === 'collateral')?.args).toEqual([
+        marketId,
+        maker,
+        1n
       ])
-    )
-    responses['/v0/midnight/users/'] = { cursor: page(0), data: [] }
-
-    await expect(createState(responses).state.inspectOffers(maker)).rejects.toThrow(
-      'Morpho API offer page limit exceeded'
-    )
-  })
-
-  test('fails closed when Morpho API returns more groups than one requested page', async () => {
-    const { state } = createState({
-      '/v0/midnight/users/': {
-        cursor: null,
-        data: Array.from({ length: 101 }, () => ({ id: knownGroup, chain_id: 8453, offers: [] }))
-      }
+      expect(chainReadCalls.some(call => call.functionName === 'canIncreaseDebt')).toBe(false)
     })
 
-    await expect(state.inspectOffers(maker)).rejects.toThrow(
-      'Morpho API offer-group page size exceeded'
-    )
-  })
+    test('asks a set enter gate whether the maker may borrow', async () => {
+      const { state, chainReadCalls } = createState(
+        {},
+        { market: loanSlotMarket(midnight), canIncreaseDebt: false }
+      )
 
-  test('fails closed when Morpho API exceeds the offer item limit', async () => {
-    const offer = {
-      market_id: marketId,
-      maker,
-      buy: true,
-      tick: 20
-    }
-    const { state } = createState({
-      '/v0/midnight/users/': {
-        cursor: null,
-        data: [{ id: knownGroup, chain_id: 8453, offers: Array(100_001).fill(offer) }]
-      }
+      expect(await state.getLoanCollateral(marketId, maker)).toMatchObject({
+        enterGateOpen: false
+      })
+      expect(chainReadCalls.find(call => call.functionName === 'canIncreaseDebt')).toMatchObject({
+        address: midnight,
+        args: [maker]
+      })
     })
 
-    await expect(state.inspectOffers(maker)).rejects.toThrow('Morpho API offer item limit exceeded')
-  })
+    test('reports no runtime hash for an oracle with no deployed code', async () => {
+      const { state } = createState({}, { market: loanSlotMarket() })
 
-  test('reads a market loss factor and rejects a response that is not a uint128', async () => {
-    expect(
-      await createState({}, { lossFactor: MAX_LOSS_FACTOR }).state.getLossFactor(marketId)
-    ).toBe(MAX_LOSS_FACTOR)
-    for (const lossFactor of [1, -1n, MAX_LOSS_FACTOR + 1n]) {
-      const error = await createState({}, { lossFactor })
-        .state.getLossFactor(marketId)
-        .catch((value: unknown) => value)
-      expect(error).toBeInstanceOf(ProviderResponseError)
-      expect(error).toMatchObject({ operation: 'market-loss-factor' })
-    }
+      expect(await state.getLoanCollateral(marketId, maker)).toMatchObject({
+        oracleRuntimeHash: undefined
+      })
+    })
+
+    test('reports a market past maturity', async () => {
+      const { state } = createState({}, { market: { ...loanSlotMarket(), maturity: 999n } })
+
+      expect(await state.getLoanCollateral(marketId, maker)).toMatchObject({ matured: true })
+    })
+
+    test('is undefined for a market that lists no loan-asset collateral', async () => {
+      expect(await createState({}).state.getLoanCollateral(marketId, maker)).toBeUndefined()
+    })
   })
 })

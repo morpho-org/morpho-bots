@@ -1,0 +1,138 @@
+{
+  "crossed-books@1": {
+    "a crossing of one market in equal units": {
+      "claims": true,
+      "reading": {
+        "ok": true,
+        "creates": [],
+        "exposes": [],
+        "carries": [],
+        "retires": [],
+        "consumes": {}
+      }
+    },
+    "a crossing with no profit floor": {
+      "claims": true,
+      "reading": {
+        "ok": true,
+        "creates": [],
+        "exposes": [],
+        "carries": [],
+        "retires": [],
+        "consumes": {}
+      }
+    },
+    "a crossing with no sell offer": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "a side takes no offer"
+      }
+    },
+    "a crossing with no buy offer": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "a side takes no offer"
+      }
+    },
+    "a sell offer taken as a buy": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "an offer is taken on the wrong side"
+      }
+    },
+    "a buy offer taken as a sell": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "an offer is taken on the wrong side"
+      }
+    },
+    "an offer taken for no units": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "an offer is taken for no units"
+      }
+    },
+    "sides taking unequal units": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "the sides take unequal units"
+      }
+    },
+    "takes in two markets": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "takes span more than one market"
+      }
+    },
+    "a market on another Midnight": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "a market is on another Midnight"
+      }
+    },
+    "a market on another chain": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "a market is on another chain"
+      }
+    },
+    "a take of the account's own sell offer": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "an offer is the account's own"
+      }
+    },
+    "a take of the account's own offer": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "an offer is the account's own"
+      }
+    },
+    "value attached": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "a resolution carries no value"
+      }
+    },
+    "an account that is not an address": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "the account is not an address"
+      }
+    },
+    "another resolver function": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "not resolve"
+      }
+    },
+    "a release": {
+      "claims": false,
+      "reading": {
+        "ok": false,
+        "reason": "only transactions are read"
+      }
+    },
+    "a transaction to Midnight": {
+      "claims": false,
+      "reading": {
+        "ok": false,
+        "reason": "not the configured resolver"
+      }
+    }
+  }
+}

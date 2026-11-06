@@ -5,18 +5,15 @@ import { dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, test, vi } from 'vitest'
 
-import type { LadderTransactionSubmittedEvent } from '../../../src/application/ladder/ladder-verbose'
+import type { MarketReport } from '../../../src/application/engine/market-report'
+import type { QuoterRunReport } from '../../../src/errors'
 
 import { VersionService } from '../../../src/application/quoter-bot/version.service'
+import { createApplication } from '../../../src/bootstrap'
 import {
-  CliUsageError,
-  LadderCycleHaltedError,
-  LadderMonitorHaltedError,
   OfferInvalidationFailedError,
-  PositionBootstrapHaltedError,
-  PositionBootstrapMonitorHaltedError,
-  QuoterBotMonitorHaltedError,
-  SetupMonitorHaltedError
+  QuoterRunFailedError,
+  CliUsageError
 } from '../../../src/errors'
 import { Cli } from '../../../src/infrastructure/cli/cli'
 import { runQuoterBotEntrypoint } from '../../../src/infrastructure/cli/quoter-bot-entrypoint'
@@ -28,19 +25,33 @@ const readyReport = {
   ]
 }
 
-const failedReport = {
-  ready: false,
-  checks: [
-    { name: 'native-balance' as const, status: 'failed' as const, observed: 9n, required: 10n }
-  ]
-}
+const stopped: QuoterRunReport = { status: 'stopped', reason: 'signal' }
+
+const runs = (
+  overrides: Partial<{
+    runOnce: (parameters: {
+      signal: AbortSignal
+      verbose: boolean
+    }) => Promise<readonly MarketReport[]>
+    runContinuously: (parameters: {
+      signal: AbortSignal
+      verbose: boolean
+    }) => Promise<QuoterRunReport>
+  }> = {}
+) => ({
+  runOnce: async () => [] as readonly MarketReport[],
+  runContinuously: async () => stopped,
+  ...overrides
+})
+
+const marketId = `0x${'11'.repeat(32)}` as const
 
 const cli = (assertReady = async () => readyReport) => {
   return new Cli(
     new VersionService(),
     () => ({ assertReady }),
-    () => ({ runOnce: async () => [] }),
-    () => ({ runOnce: async () => [] })
+    () => runs(),
+    () => runs()
   )
 }
 
@@ -62,8 +73,19 @@ const runEntrypointWith = async (
   return { exitCode: exitCode ?? 0, stdout, stderr }
 }
 
+/** Runs the production application in-process against an empty environment. */
+const runInProcess = async (argv: readonly string[]) => {
+  const stdout: string[] = []
+  const stderr: string[] = []
+  const exitCode = await runQuoterBotEntrypoint(createApplication({}), argv, {
+    writeOut: value => stdout.push(value),
+    writeError: value => stderr.push(value)
+  })
+  return { exitCode, stdout: stdout.join('\n'), stderr: stderr.join('\n') }
+}
+
 const runEntrypoint = async (argv: readonly string[]) => {
-  const { exitCode, stdout, stderr } = await runEntrypointWith(argv)
+  const { exitCode, stdout, stderr } = await runInProcess(argv)
   return { exitCode, output: stdout + stderr }
 }
 
@@ -80,7 +102,7 @@ describe('Cli', () => {
   })
 
   test('entrypoint --version succeeds without loading runtime setup environment', async () => {
-    const { exitCode, stdout, stderr } = await runEntrypointWith(['--version'])
+    const { exitCode, stdout, stderr } = await runInProcess(['--version'])
 
     expect(exitCode).toBe(0)
     expect(stdout.trim()).toBe('0.0.0-dev')
@@ -88,7 +110,7 @@ describe('Cli', () => {
   })
 
   test('entrypoint --json --version emits a valid JSON string', async () => {
-    const { exitCode, stdout, stderr } = await runEntrypointWith(['--json', '--version'])
+    const { exitCode, stdout, stderr } = await runInProcess(['--json', '--version'])
 
     expect(exitCode).toBe(0)
     expect(JSON.parse(stdout)).toBe('0.0.0-dev')
@@ -126,8 +148,9 @@ describe('Cli', () => {
       REFERENCE_MARKET_ID: `0x${'77'.repeat(32)}`,
       NATIVE_RESERVE_WEI: '10',
       MAX_FEE_GWEI: '100',
-      PRIORITY_FEE_GWEI: '1',
       MAX_TRANSACTION_SPEND_WEI: '100000000000000000',
+      MAX_CONTINUOUS_FEE_CAP: '0',
+      KERNEL_ENROLLMENT: 'enrolling',
       MAX_PUBLICATION_GAS: '5000000',
       MAX_PUBLICATION_DATA_BYTES: '65536',
       MAX_CANCELLATION_GAS: '100000',
@@ -212,8 +235,8 @@ describe('Cli', () => {
         configPath = options.configPath
         return { assertReady: async () => readyReport }
       },
-      () => ({ runOnce: async () => [] }),
-      () => ({ runOnce: async () => [] })
+      () => runs(),
+      () => runs()
     )
 
     await application.run(['--config', 'operator.yml', 'setup-check'])
@@ -229,8 +252,8 @@ describe('Cli', () => {
         readOnly = options.readOnly
         return { assertReady: async () => readyReport }
       },
-      () => ({ runOnce: async () => [] }),
-      () => ({ runOnce: async () => [] })
+      () => runs(),
+      () => runs()
     )
 
     await application.run(['--readonly', 'setup-check'])
@@ -255,300 +278,107 @@ describe('Cli', () => {
     expect(assertReady).toHaveBeenCalledWith(controller.signal)
   })
 
-  test('never lets a failing monitoring write stop a monitored cycle', async () => {
-    const report = {
-      status: 'stopped' as const,
-      reason: 'signal' as const,
-      cycles: 1
+  test.each(['bootstrap', 'ladder'] as const)(
+    'quoter-bot %s runs once until steady and returns each market report',
+    async workflow => {
+      const reports: readonly MarketReport[] = [
+        { workflow, marketId, status: 'applied', action: 'publish' }
+      ]
+      const runOnce = vi.fn(async () => reports)
+      const other = vi.fn(async () => [])
+      const assertReady = vi.fn(async () => readyReport)
+      const controller = new AbortController()
+      const application = new Cli(
+        new VersionService(),
+        () => ({ assertReady }),
+        () => runs(workflow === 'bootstrap' ? { runOnce } : { runOnce: other }),
+        () => runs(workflow === 'ladder' ? { runOnce } : { runOnce: other })
+      )
+
+      expect(await application.run([workflow], { signal: controller.signal })).toEqual(reports)
+      expect(runOnce).toHaveBeenCalledWith({ signal: controller.signal, verbose: false })
+      expect(other).not.toHaveBeenCalled()
+      expect(assertReady).not.toHaveBeenCalled()
     }
-    const runContinuously = vi.fn(
-      async (parameters: {
-        signal: AbortSignal
-        onCycle?: (result: typeof readyReport) => void | Promise<void>
-      }) => {
-        await parameters.onCycle?.(readyReport)
-        return report
-      }
-    )
-    const written: unknown[] = []
-    const application = new Cli(
-      new VersionService(),
-      () => ({ assertReady: async () => readyReport, runContinuously }),
-      () => ({ runOnce: async () => [] }),
-      () => ({ runOnce: async () => [] })
-    )
+  )
 
-    expect(
-      await application.run(['setup-check', '--monitor'], {
-        signal: new AbortController().signal,
-        writeEvent: value => {
-          written.push(value)
-          if ((value as { event?: string }).event === 'cycle.completed') {
-            throw new Error('sink unavailable')
-          }
-        }
-      })
-    ).toEqual(report)
-    expect(runContinuously).toHaveBeenCalledTimes(1)
-    expect(written).toContainEqual(
-      expect.objectContaining({ event: 'cycle.completed', workflow: 'setup-check' })
-    )
-  })
-
-  test('quoter-bot setup-check --monitor streams readiness reports until shutdown', async () => {
-    const report = {
-      status: 'stopped' as const,
-      reason: 'signal' as const,
-      cycles: 1
-    }
-    const assertReady = vi.fn(async () => readyReport)
-    const runContinuously = vi.fn(
-      async (parameters: {
-        signal: AbortSignal
-        onCycle?: (result: typeof readyReport) => void | Promise<void>
-      }) => {
-        await parameters.onCycle?.(readyReport)
-        return report
-      }
-    )
-    const streamed: unknown[] = []
-    const controller = new AbortController()
-    const application = new Cli(
-      new VersionService(),
-      () => ({ assertReady, runContinuously }),
-      () => ({ runOnce: async () => [] }),
-      () => ({ runOnce: async () => [] })
-    )
-
-    expect(
-      await application.run(['setup-check', '--monitor'], {
-        signal: controller.signal,
-        writeEvent: value => {
-          streamed.push(value)
-        }
-      })
-    ).toEqual(report)
-    expect(streamed).toEqual([
-      readyReport,
-      { event: 'cycle.completed', workflow: 'setup-check', status: 'ready' }
-    ])
-    expect(runContinuously).toHaveBeenCalledTimes(1)
-    expect(assertReady).not.toHaveBeenCalled()
-  })
-
-  test('quoter-bot setup-check --monitor rejects a halted lifecycle report', async () => {
-    const report = {
-      status: 'halted' as const,
-      reason: 'setup-failed' as const,
-      cycles: 1,
-      lastReport: failedReport
-    }
-    const application = new Cli(
-      new VersionService(),
-      () => ({
-        assertReady: async () => readyReport,
-        runContinuously: async () => report
-      }),
-      () => ({ runOnce: async () => [] }),
-      () => ({ runOnce: async () => [] })
-    )
-
-    const error = await application.run(['setup-check', '--monitor']).catch(value => value)
-
-    expect(error).toBeInstanceOf(SetupMonitorHaltedError)
-    expect(error).toMatchObject({ report })
-  })
-
-  test('quoter-bot bootstrap triggers one explicit position-bootstrap run', async () => {
-    const runOnce = vi.fn(async () => [
-      { marketId: `0x${'11'.repeat(32)}`, status: 'applied', action: 'publish', assets: 10n }
-    ])
+  test('quoter-bot bootstrap --verbose asks for what each market observed', async () => {
+    const runOnce = vi.fn(async (_parameters: { signal: AbortSignal; verbose: boolean }) => [])
     const application = new Cli(
       new VersionService(),
       () => ({ assertReady: async () => readyReport }),
-      () => ({ runOnce }),
-      () => ({ runOnce: async () => [] })
+      () => runs({ runOnce }),
+      () => runs()
     )
 
-    expect(await application.run(['bootstrap'])).toEqual([
-      { marketId: `0x${'11'.repeat(32)}`, status: 'applied', action: 'publish', assets: 10n }
-    ])
-    expect(runOnce).toHaveBeenCalledTimes(1)
-    expect(runOnce).toHaveBeenCalledWith({ verbose: false })
-  })
+    await application.run(['bootstrap', '--verbose'])
 
-  test('quoter-bot bootstrap --verbose requests expanded bootstrap diagnostics', async () => {
-    const txHash = `0x${'aa'.repeat(32)}` as const
-    const runOnce = vi.fn(
-      async (parameters?: {
-        verbose?: boolean
-        onTransactionSubmitted?: (event: {
-          event: 'bootstrap.transaction-submitted'
-          operation: 'publish'
-          txHash: typeof txHash
-        }) => void | Promise<void>
-      }) => {
-        await parameters?.onTransactionSubmitted?.({
-          event: 'bootstrap.transaction-submitted',
-          operation: 'publish',
-          txHash
-        })
-        return []
-      }
-    )
-    const events: unknown[] = []
-    const application = new Cli(
-      new VersionService(),
-      () => ({ assertReady: async () => readyReport }),
-      () => ({ runOnce }),
-      () => ({ runOnce: async () => [] })
-    )
-
-    expect(
-      await application.run(['bootstrap', '--verbose'], {
-        writeEvent: event => {
-          events.push(event)
-        }
-      })
-    ).toEqual([])
     expect(runOnce.mock.calls[0]?.[0]).toMatchObject({ verbose: true })
-    expect(events).toEqual([
-      {
-        event: 'bootstrap.transaction-submitted',
-        operation: 'publish',
-        txHash
-      }
-    ])
   })
 
-  test('quoter-bot bootstrap --monitor streams cycles and returns shutdown cleanup evidence', async () => {
-    const cycle = [{ marketId: `0x${'11'.repeat(32)}`, status: 'observed', action: 'rest' }]
-    const report = {
-      status: 'stopped' as const,
-      reason: 'signal' as const,
-      cycles: 1,
-      cleanup: { status: 'applied' as const }
-    }
+  test('quoter-bot bootstrap --monitor runs until the signal and returns the stop report', async () => {
     const runOnce = vi.fn(async () => [])
-    const runContinuously = vi.fn(
-      async (parameters: {
-        signal: AbortSignal
-        onCycle?: (result: readonly { status: string; [key: string]: unknown }[]) => void
-      }) => {
-        await parameters.onCycle?.(cycle)
-        return report
-      }
-    )
-    const streamed: unknown[] = []
+    const runContinuously = vi.fn(async () => stopped)
     const controller = new AbortController()
     const application = new Cli(
       new VersionService(),
       () => ({ assertReady: async () => readyReport }),
-      () => ({ runOnce, runContinuously }),
-      () => ({ runOnce: async () => [] })
+      () => runs({ runOnce, runContinuously }),
+      () => runs()
     )
 
     expect(
-      await application.run(['bootstrap', '--monitor'], {
-        signal: controller.signal,
-        writeEvent: value => {
-          streamed.push(value)
-        }
-      })
-    ).toEqual(report)
-    expect(streamed).toEqual([
-      cycle,
-      {
-        event: 'cycle.completed',
-        workflow: 'bootstrap',
-        marketId: cycle[0]?.marketId,
-        status: 'observed',
-        action: 'rest'
-      }
-    ])
-    expect(runContinuously).toHaveBeenCalledTimes(1)
-    expect(runContinuously.mock.calls[0]?.[0]).toMatchObject({ verbose: false })
+      await application.run(['bootstrap', '--monitor'], { signal: controller.signal })
+    ).toEqual(stopped)
+    expect(runContinuously).toHaveBeenCalledWith({ signal: controller.signal, verbose: false })
     expect(runOnce).not.toHaveBeenCalled()
   })
 
   test('quoter-bot bootstrap --monitor --verbose forwards verbose monitoring', async () => {
     const controller = new AbortController()
-    const runContinuously = vi.fn(
-      async (_parameters: { signal: AbortSignal; verbose?: boolean }) => ({
-        status: 'stopped' as const,
-        reason: 'signal' as const,
-        cycles: 0,
-        cleanup: { status: 'applied' as const }
-      })
-    )
+    const runContinuously = vi.fn(async () => stopped)
     const application = new Cli(
       new VersionService(),
       () => ({ assertReady: async () => readyReport }),
-      () => ({ runOnce: async () => [], runContinuously }),
-      () => ({ runOnce: async () => [] })
+      () => runs({ runContinuously }),
+      () => runs()
     )
 
     await application.run(['bootstrap', '--monitor', '--verbose'], {
       signal: controller.signal
     })
 
-    expect(runContinuously.mock.calls[0]?.[0]).toMatchObject({
-      signal: controller.signal,
-      verbose: true
-    })
+    expect(runContinuously).toHaveBeenCalledWith({ signal: controller.signal, verbose: true })
   })
 
-  test('quoter-bot bootstrap --monitor preserves a halted terminal report object', async () => {
-    const report = {
-      status: 'halted' as const,
-      reason: 'cycle-failed' as const,
-      cycles: 1,
-      cleanup: { status: 'applied' as const },
-      lastCycle: [
+  test.each([
+    ['ladder', 'runOnce'],
+    ['ladder --monitor', 'runContinuously'],
+    ['bootstrap', 'runOnce']
+  ] as const)('quoter-bot %s surfaces a failed run unchanged', async (command, method) => {
+    const failure = new QuoterRunFailedError({
+      status: 'halted',
+      reason: 'halted',
+      halt: 'market-failure-budget: ladder',
+      markets: [
         {
-          marketId: `0x${'11'.repeat(32)}` as const,
-          status: 'failed' as const,
-          stage: 'make' as const,
-          invalidated: false,
-          errorName: 'ProviderWriteError'
+          workflow: 'ladder',
+          marketId,
+          status: 'failed',
+          stage: 'act',
+          errorName: 'KernelPlanError'
         }
       ]
-    }
+    })
+    const service = runs({ [method]: async () => Promise.reject(failure) })
     const application = new Cli(
       new VersionService(),
       () => ({ assertReady: async () => readyReport }),
-      () => ({
-        runOnce: async () => [],
-        runContinuously: async () => report
-      }),
-      () => ({ runOnce: async () => [] })
+      () => service,
+      () => service
     )
 
-    const error = await application.run(['bootstrap', '--monitor']).catch(value => value)
-
-    expect(error).toBeInstanceOf(PositionBootstrapMonitorHaltedError)
-    expect(error).toMatchObject({ report })
-  })
-
-  test('quoter-bot ladder is exposed alongside setup-check and bootstrap', async () => {
-    const assertReady = vi.fn(async () => readyReport)
-    const bootstrap = vi.fn(async () => [])
-    const runOnce = vi.fn(async () => [
-      { marketId: `0x${'11'.repeat(32)}`, status: 'observed', action: 'rest' }
-    ])
-    const application = new Cli(
-      new VersionService(),
-      () => ({ assertReady }),
-      () => ({ runOnce: bootstrap }),
-      () => ({ runOnce })
-    )
-
-    expect(await application.run(['ladder'])).toEqual([
-      { marketId: `0x${'11'.repeat(32)}`, status: 'observed', action: 'rest' }
-    ])
-    expect(runOnce).toHaveBeenCalledTimes(1)
-    expect(assertReady).not.toHaveBeenCalled()
-    expect(bootstrap).not.toHaveBeenCalled()
+    await expect(application.run(command.split(' '))).rejects.toBe(failure)
   })
 
   test('quoter-bot invalidate targets every active maker group and streams submitted hashes', async () => {
@@ -581,8 +411,8 @@ describe('Cli', () => {
     const application = new Cli(
       new VersionService(),
       () => ({ assertReady: async () => readyReport }),
-      () => ({ runOnce: async () => [] }),
-      () => ({ runOnce: async () => [] }),
+      () => runs(),
+      () => runs(),
       () => ({ run })
     )
 
@@ -611,8 +441,8 @@ describe('Cli', () => {
     const application = new Cli(
       new VersionService(),
       () => ({ assertReady: async () => readyReport }),
-      () => ({ runOnce: async () => [] }),
-      () => ({ runOnce: async () => [] }),
+      () => runs(),
+      () => runs(),
       options => {
         readOnly = options.readOnly
         return { run }
@@ -630,8 +460,8 @@ describe('Cli', () => {
     const application = new Cli(
       new VersionService(),
       () => ({ assertReady: async () => readyReport }),
-      () => ({ runOnce: async () => [] }),
-      () => ({ runOnce: async () => [] }),
+      () => runs(),
+      () => runs(),
       invalidation
     )
 
@@ -641,160 +471,44 @@ describe('Cli', () => {
     expect(invalidation).not.toHaveBeenCalled()
   })
 
-  test('quoter-bot ladder --monitor --verbose --readonly streams cycles and cleanup evidence', async () => {
-    const marketId = `0x${'11'.repeat(32)}` as const
-    const txHash = `0x${'aa'.repeat(32)}` as const
-    const cycle = [{ marketId, status: 'observed' as const, action: 'rest' as const }]
-    const report = {
-      status: 'stopped' as const,
-      reason: 'signal' as const,
-      cycles: 1,
-      cleanup: { status: 'logged' as const }
-    }
+  test('quoter-bot ladder --monitor --verbose --readonly hands the writer to the run', async () => {
     let readOnly: boolean | undefined
-    const runContinuously = vi.fn(
-      async (parameters: {
-        signal: AbortSignal
-        verbose?: boolean
-        onCycle?: (results: typeof cycle) => void | Promise<void>
-        onTransactionSubmitted?: (event: LadderTransactionSubmittedEvent) => void | Promise<void>
-      }) => {
-        await parameters.onTransactionSubmitted?.({
-          event: 'ladder.transaction-submitted',
-          operation: 'publish',
-          txHash
-        })
-        await parameters.onCycle?.(cycle)
-        return report
-      }
-    )
-    const streamed: unknown[] = []
+    let factoryWriteEvent: ((value: unknown) => void | Promise<void>) | undefined
+    const runContinuously = vi.fn(async () => stopped)
     const controller = new AbortController()
     const application = new Cli(
       new VersionService(),
       () => ({ assertReady: async () => readyReport }),
-      () => ({ runOnce: async () => [] }),
+      () => runs(),
       options => {
         readOnly = options.readOnly
-        return { runOnce: async () => [], runContinuously }
+        factoryWriteEvent = options.writeEvent
+        return runs({ runContinuously })
       }
     )
+    const writeEvent = () => {}
 
     expect(
       await application.run(['ladder', '--monitor', '--verbose', '--readonly'], {
         signal: controller.signal,
-        writeEvent: event => {
-          streamed.push(event)
-        }
+        writeEvent
       })
-    ).toEqual(report)
+    ).toEqual(stopped)
     expect(readOnly).toBe(true)
-    expect(runContinuously.mock.calls[0]?.[0]).toMatchObject({
-      signal: controller.signal,
-      verbose: true
-    })
-    expect(streamed).toEqual([
-      {
-        event: 'ladder.transaction-submitted',
-        operation: 'publish',
-        txHash
-      },
-      cycle,
-      {
-        event: 'cycle.completed',
-        workflow: 'ladder',
-        marketId,
-        status: 'observed',
-        action: 'rest'
-      }
-    ])
+    expect(factoryWriteEvent).toBe(writeEvent)
+    expect(runContinuously).toHaveBeenCalledWith({ signal: controller.signal, verbose: true })
   })
 
-  test('quoter-bot ladder --monitor rejects a halted lifecycle report', async () => {
-    const report = {
-      status: 'halted' as const,
-      reason: 'cycle-failed' as const,
-      cycles: 1,
-      cleanup: { status: 'applied' as const },
-      lastCycle: [
-        {
-          marketId: `0x${'11'.repeat(32)}` as const,
-          status: 'failed' as const,
-          stage: 'reconcile' as const,
-          invalidated: false as const,
-          errorName: 'LadderAdapterError'
-        }
-      ]
-    }
-    const application = new Cli(
-      new VersionService(),
-      () => ({ assertReady: async () => readyReport }),
-      () => ({ runOnce: async () => [] }),
-      () => ({
-        runOnce: async () => [],
-        runContinuously: async () => report
-      })
-    )
-
-    const error = await application.run(['ladder', '--monitor']).catch(value => value)
-
-    expect(error).toBeInstanceOf(LadderMonitorHaltedError)
-    expect(error).toMatchObject({ report })
-  })
-
-  test('quoter-bot start forwards the shared signal, verbose mode, read-only mode, and events', async () => {
-    const event = {
-      event: 'quoter-bot.cycle' as const,
-      workflow: 'setup-check' as const,
-      report: readyReport
-    }
-    const report = {
-      status: 'stopped' as const,
-      reason: 'signal' as const,
-      workflows: {
-        setupCheck: {
-          status: 'fulfilled' as const,
-          report: { status: 'stopped' as const, reason: 'signal' as const, cycles: 1 }
-        },
-        bootstrap: {
-          status: 'fulfilled' as const,
-          report: {
-            status: 'stopped' as const,
-            reason: 'signal' as const,
-            cycles: 1,
-            cleanup: { status: 'logged' as const }
-          }
-        },
-        ladder: {
-          status: 'fulfilled' as const,
-          report: {
-            status: 'stopped' as const,
-            reason: 'signal' as const,
-            cycles: 1,
-            cleanup: { status: 'logged' as const }
-          }
-        }
-      }
-    }
+  test('quoter-bot start forwards the shared signal, verbose mode, read-only mode, and writer', async () => {
     let readOnly: boolean | undefined
     let factoryWriteEvent: ((value: unknown) => void | Promise<void>) | undefined
-    const runContinuously = vi.fn(
-      async (parameters: {
-        signal: AbortSignal
-        verbose?: boolean
-        onEvent?: (value: typeof event) => void | Promise<void>
-      }) => {
-        await parameters.onEvent?.(event)
-        return report
-      }
-    )
-    const streamed: unknown[] = []
+    const runContinuously = vi.fn(async () => stopped)
     const controller = new AbortController()
     const application = new Cli(
       new VersionService(),
       () => ({ assertReady: async () => readyReport }),
-      () => ({ runOnce: async () => [] }),
-      () => ({ runOnce: async () => [] }),
+      () => runs(),
+      () => runs(),
       undefined,
       options => {
         readOnly = options.readOnly
@@ -802,152 +516,31 @@ describe('Cli', () => {
         return { runContinuously }
       }
     )
-
-    const writeEvent = (value: unknown) => {
-      streamed.push(value)
-    }
+    const writeEvent = () => {}
 
     expect(
       await application.run(['--readonly', 'start', '--verbose'], {
         signal: controller.signal,
         writeEvent
       })
-    ).toEqual(report)
+    ).toEqual(stopped)
     expect(readOnly).toBe(true)
     expect(factoryWriteEvent).toBe(writeEvent)
-    expect(runContinuously.mock.calls[0]?.[0]).toMatchObject({
-      signal: controller.signal,
-      verbose: true
-    })
-    expect(streamed).toEqual([
-      event,
-      { event: 'cycle.completed', workflow: 'setup-check', status: 'ready' }
-    ])
+    expect(runContinuously).toHaveBeenCalledWith({ signal: controller.signal, verbose: true })
   })
 
-  test('quoter-bot start rejects a halted combined lifecycle report', async () => {
-    const report = {
-      status: 'halted' as const,
-      reason: 'workflow-error' as const,
-      workflows: {
-        setupCheck: { status: 'rejected' as const, errorName: 'TypeError' },
-        bootstrap: {
-          status: 'fulfilled' as const,
-          report: {
-            status: 'stopped' as const,
-            reason: 'signal' as const,
-            cycles: 0,
-            cleanup: { status: 'applied' as const }
-          }
-        },
-        ladder: {
-          status: 'fulfilled' as const,
-          report: {
-            status: 'stopped' as const,
-            reason: 'signal' as const,
-            cycles: 0,
-            cleanup: { status: 'applied' as const }
-          }
-        }
-      }
-    }
+  test('quoter-bot start surfaces a halted run unchanged', async () => {
+    const failure = new QuoterRunFailedError({ status: 'halted', reason: 'graph-error' })
     const application = new Cli(
       new VersionService(),
       () => ({ assertReady: async () => readyReport }),
-      () => ({ runOnce: async () => [] }),
-      () => ({ runOnce: async () => [] }),
+      () => runs(),
+      () => runs(),
       undefined,
-      () => ({ runContinuously: async () => report })
+      () => ({ runContinuously: async () => Promise.reject(failure) })
     )
 
-    const error = await application.run(['start']).catch(value => value)
-
-    expect(error).toBeInstanceOf(QuoterBotMonitorHaltedError)
-    expect(error).toMatchObject({ report })
-  })
-
-  test.each(['failed', 'halted'] as const)(
-    'rejects a ladder cycle containing a %s market result',
-    async status => {
-      const report = [
-        {
-          marketId: `0x${'11'.repeat(32)}`,
-          status,
-          stage: 'make',
-          invalidated: status === 'halted',
-          errorName: 'ProviderWriteError'
-        }
-      ]
-      const application = new Cli(
-        new VersionService(),
-        () => ({ assertReady: async () => readyReport }),
-        () => ({ runOnce: async () => [] }),
-        () => ({ runOnce: async () => report })
-      )
-
-      const error = await application.run(['ladder']).catch(value => value)
-
-      expect(error).toMatchObject({
-        name: 'LadderCycleHaltedError',
-        code: 'LADDER_CYCLE_HALTED',
-        kind: 'safety-halt',
-        report
-      })
-      expect((error as Error).message).toBe('Ladder cycle halted for safety')
-    }
-  )
-
-  test('rejects a bootstrap cycle containing a failed market result', async () => {
-    const report = [
-      {
-        marketId: `0x${'11'.repeat(32)}`,
-        status: 'failed',
-        stage: 'make',
-        invalidated: false,
-        errorName: 'ProviderWriteError'
-      }
-    ]
-    const application = new Cli(
-      new VersionService(),
-      () => ({ assertReady: async () => readyReport }),
-      () => ({ runOnce: async () => report }),
-      () => ({ runOnce: async () => [] })
-    )
-
-    const error = await application.run(['bootstrap']).catch(value => value)
-
-    expect(error).toBeInstanceOf(PositionBootstrapHaltedError)
-    expect(error).toMatchObject({ report })
-  })
-
-  test('rejects a bootstrap cycle containing a strategy-wide safety halt', async () => {
-    const report = [
-      {
-        marketId: `0x${'11'.repeat(32)}`,
-        status: 'halted',
-        stage: 'reference-read',
-        strategyInvalidated: true,
-        errorName: 'ProviderReadError'
-      }
-    ]
-    const application = new Cli(
-      new VersionService(),
-      () => ({ assertReady: async () => readyReport }),
-      () => ({
-        runOnce: async () => report
-      }),
-      () => ({ runOnce: async () => [] })
-    )
-
-    const error = await application.run(['bootstrap']).catch(value => value)
-
-    expect(error).toBeInstanceOf(PositionBootstrapHaltedError)
-    expect(error).toMatchObject({
-      code: 'POSITION_BOOTSTRAP_HALTED',
-      kind: 'safety-halt',
-      report
-    })
-    expect((error as Error).message).toBe('Position bootstrap halted for safety')
+    await expect(application.run(['start'])).rejects.toBe(failure)
   })
 
   test('entrypoint renders structured output for humans by default', async () => {
@@ -1062,28 +655,38 @@ describe('Cli', () => {
     expect(output.trim()).toBe('Error: Invalid command-line usage; rerun with --help for usage')
   })
 
-  test('entrypoint emits a halted report and returns a non-zero exit code', async () => {
-    const report = [
-      {
-        marketId: `0x${'11'.repeat(32)}`,
-        status: 'halted',
-        stage: 'reference-read',
-        strategyInvalidated: true,
-        errorName: 'ProviderReadError'
-      }
-    ]
+  test('entrypoint emits a failed run report, its bot.failed record, and a non-zero exit code', async () => {
+    const report: QuoterRunReport = {
+      status: 'failed',
+      reason: 'market-failed',
+      markets: [
+        {
+          workflow: 'bootstrap',
+          marketId,
+          status: 'halted',
+          stage: 'reference-read',
+          errorName: 'ProviderReadError'
+        }
+      ]
+    }
     const stdout: string[] = []
     const stderr: string[] = []
+    const records: unknown[] = []
 
     const exitCode = await runQuoterBotEntrypoint(
-      { run: async () => Promise.reject(new PositionBootstrapHaltedError(report)) },
+      { run: async () => Promise.reject(new QuoterRunFailedError(report)) },
       ['bootstrap'],
-      { writeOut: value => stdout.push(value), writeError: value => stderr.push(value) }
+      { writeOut: value => stdout.push(value), writeError: value => stderr.push(value) },
+      {},
+      { record: value => void records.push(value), unexpected: () => {} }
     )
 
     expect(exitCode).toBe(1)
     expect(stdout).toEqual([])
-    expectHumanFailure(stderr, 'Position bootstrap halted for safety', report)
+    expectHumanFailure(stderr, 'Quoter run failed', report)
+    expect(records).toEqual([
+      { event: 'bot.failed', reason: 'market-failed', errorName: 'QuoterRunFailedError' }
+    ])
   })
 
   test('entrypoint emits an invalidation failure report and returns non-zero', async () => {
@@ -1114,67 +717,6 @@ describe('Cli', () => {
     expectHumanFailure(stderr, 'Offer invalidation failed', report)
   })
 
-  test('entrypoint emits a halted setup-monitor report and returns a non-zero exit code', async () => {
-    const report = {
-      status: 'halted' as const,
-      reason: 'setup-failed' as const,
-      cycles: 1,
-      lastReport: failedReport
-    }
-    const stdout: string[] = []
-    const stderr: string[] = []
-
-    const exitCode = await runQuoterBotEntrypoint(
-      { run: async () => Promise.reject(new SetupMonitorHaltedError(report)) },
-      ['setup-check', '--monitor'],
-      { writeOut: value => stdout.push(value), writeError: value => stderr.push(value) }
-    )
-
-    expect(exitCode).toBe(1)
-    expect(stdout).toEqual([])
-    expectHumanFailure(stderr, 'Setup monitor halted', {
-      ...report,
-      lastReport: {
-        ...report.lastReport,
-        checks: report.lastReport.checks.map(check => ({
-          ...check,
-          observed: check.observed.toString(),
-          required: check.required.toString()
-        }))
-      }
-    })
-  })
-
-  test('entrypoint emits a halted bootstrap-monitor object and returns a non-zero exit code', async () => {
-    const report = {
-      status: 'halted' as const,
-      reason: 'cycle-failed' as const,
-      cycles: 1,
-      cleanup: { status: 'applied' as const },
-      lastCycle: [
-        {
-          marketId: `0x${'11'.repeat(32)}` as const,
-          status: 'failed' as const,
-          stage: 'make' as const,
-          invalidated: false,
-          errorName: 'ProviderWriteError'
-        }
-      ]
-    }
-    const stdout: string[] = []
-    const stderr: string[] = []
-
-    const exitCode = await runQuoterBotEntrypoint(
-      { run: async () => Promise.reject(new PositionBootstrapMonitorHaltedError(report)) },
-      ['bootstrap', '--monitor'],
-      { writeOut: value => stdout.push(value), writeError: value => stderr.push(value) }
-    )
-
-    expect(exitCode).toBe(1)
-    expect(stdout).toEqual([])
-    expectHumanFailure(stderr, 'Position bootstrap monitor halted for safety', report)
-  })
-
   test('entrypoint writes continuous events before the terminal monitor report', async () => {
     const cycle = [{ status: 'observed', action: 'rest' }]
     const report = {
@@ -1202,89 +744,26 @@ describe('Cli', () => {
     expect(stderr).toEqual([])
   })
 
-  test('entrypoint emits a failed ladder report and returns a non-zero exit code', async () => {
-    const report = [
-      {
-        marketId: `0x${'11'.repeat(32)}`,
-        status: 'failed',
-        stage: 'make',
-        invalidated: false,
-        errorName: 'ProviderWriteError'
-      }
-    ]
-    const stdout: string[] = []
-    const stderr: string[] = []
-
-    const exitCode = await runQuoterBotEntrypoint(
-      { run: async () => Promise.reject(new LadderCycleHaltedError(report)) },
-      ['ladder'],
-      { writeOut: value => stdout.push(value), writeError: value => stderr.push(value) }
-    )
-
-    expect(exitCode).toBe(1)
-    expect(stdout).toEqual([])
-    expectHumanFailure(stderr, 'Ladder cycle halted for safety', report)
-  })
-
-  test('entrypoint emits a halted ladder monitor report and returns a non-zero exit code', async () => {
-    const report = {
-      status: 'halted' as const,
-      reason: 'cleanup-failed' as const,
-      cycles: 1,
-      cleanup: { status: 'failed' as const, errorName: 'LadderHardHaltError' }
+  test("entrypoint emits a halted run's stop report and returns a non-zero exit code", async () => {
+    const report: QuoterRunReport = {
+      status: 'halted',
+      reason: 'cleanup-failed',
+      halt: 'readiness: setup-failed',
+      errorName: 'KernelStopError',
+      setupReady: false
     }
     const stdout: string[] = []
     const stderr: string[] = []
 
     const exitCode = await runQuoterBotEntrypoint(
-      { run: async () => Promise.reject(new LadderMonitorHaltedError(report)) },
-      ['ladder', '--monitor'],
-      { writeOut: value => stdout.push(value), writeError: value => stderr.push(value) }
-    )
-
-    expect(exitCode).toBe(1)
-    expect(stdout).toEqual([])
-    expectHumanFailure(stderr, 'Ladder monitor halted for safety', report)
-  })
-
-  test('entrypoint emits a halted combined-monitor report and returns a non-zero exit code', async () => {
-    const report = {
-      status: 'halted' as const,
-      reason: 'workflow-error' as const,
-      workflows: {
-        setupCheck: { status: 'rejected' as const, errorName: 'TypeError' },
-        bootstrap: {
-          status: 'fulfilled' as const,
-          report: {
-            status: 'stopped' as const,
-            reason: 'signal' as const,
-            cycles: 0,
-            cleanup: { status: 'applied' as const }
-          }
-        },
-        ladder: {
-          status: 'fulfilled' as const,
-          report: {
-            status: 'stopped' as const,
-            reason: 'signal' as const,
-            cycles: 0,
-            cleanup: { status: 'applied' as const }
-          }
-        }
-      }
-    }
-    const stdout: string[] = []
-    const stderr: string[] = []
-
-    const exitCode = await runQuoterBotEntrypoint(
-      { run: async () => Promise.reject(new QuoterBotMonitorHaltedError(report)) },
+      { run: async () => Promise.reject(new QuoterRunFailedError(report)) },
       ['start'],
       { writeOut: value => stdout.push(value), writeError: value => stderr.push(value) }
     )
 
     expect(exitCode).toBe(1)
     expect(stdout).toEqual([])
-    expectHumanFailure(stderr, 'Quoter bot monitor halted for safety', report)
+    expectHumanFailure(stderr, 'Quoter run failed', report)
   })
 
   test('propagates a readiness failure for a deterministic non-zero entrypoint exit', async () => {

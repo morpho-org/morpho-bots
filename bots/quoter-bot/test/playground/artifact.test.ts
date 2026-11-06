@@ -1,4 +1,3 @@
-import { build } from 'esbuild'
 import { execa } from 'execa'
 import { readdir, readFile, rm } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
@@ -63,33 +62,4 @@ describe('playground browser artifact boundary', () => {
     ])
       expect(text).not.toContain(forbidden)
   }, 60_000)
-
-  test('metafile allowlist keeps the browser graph off runtime, providers, secrets, logging, and observability', async () => {
-    const result = await build({
-      entryPoints: [join(packageRoot, 'playground/app.tsx')],
-      bundle: true,
-      format: 'esm',
-      platform: 'browser',
-      target: 'es2022',
-      metafile: true,
-      write: false,
-      define: { 'process.env.NODE_ENV': '"production"' }
-    })
-    const inputs = Object.keys(result.metafile.inputs)
-    const forbidden = inputs.filter(path =>
-      /config\.utils|config\.service|config-source|viem\/accounts|packages\/(?:logging|monitoring|observability)|infrastructure|application\//.test(
-        path
-      )
-    )
-    expect(forbidden).toEqual([])
-    const firstParty = inputs.filter(path => !path.includes('node_modules/'))
-    expect(
-      firstParty.every(path =>
-        /playground\/(?:app|model|asset-format\.utils|reference-rate\.utils|reference-response\.utils|rung-rendering\.utils|playground-error\.utils|field-visibility\.utils|errors)\.tsx?$|src\/errors\.ts$|src\/config\/market-collections\.ts$|src\/domain\/(?:bytes32|cross-book|frozen-copy|maturity-premium|position-bootstrap|rate-range|ladder|loss-factor)\.ts$|packages\/utils\//.test(
-          path
-        )
-      ),
-      firstParty.join('\n')
-    ).toBe(true)
-  })
 })

@@ -1,7 +1,9 @@
+import type { Finality } from '@repo/kit'
 import type { Address, Hex } from 'viem'
 
+import { MAX_CONTINUOUS_FEE } from '@morpho-org/midnight-sdk'
+import { isValidPrivateKey } from '@repo/kit'
 import { getAddress, isAddress, isHex, parseGwei, size } from 'viem'
-import { privateKeyToAccount } from 'viem/accounts'
 
 import { MAX_LOSS_FACTOR } from '../domain/loss-factor'
 import { ConfigValidationError } from '../errors'
@@ -69,13 +71,15 @@ export const chainIdValue = (environment: Environment): SupportedChainId => {
 
 /**
  * Validates and checksum-normalizes one EVM address with viem.
- * @param value - Untrusted address string.
+ * @param value - Untrusted address string. An all-lowercase address carries no checksum and is
+ * accepted; any other casing must be a valid EIP-55 checksum.
  * @param name - Field name used in validation errors.
  * @returns The EIP-55 checksum-normalized address.
- * @throws When viem rejects the address, including invalid mixed-case checksums.
+ * @throws When viem rejects the address, including a mixed- or upper-case address whose EIP-55
+ * checksum is wrong.
  */
 export const parseAddress = (value: string, name: string): Address => {
-  if (!isAddress(value, { strict: false })) {
+  if (!isAddress(value, { strict: true })) {
     throw new ConfigValidationError(name, 'invalid-address', `${name} must be an EVM address`)
   }
   return getAddress(value)
@@ -107,9 +111,7 @@ export const privateKeyValue = (environment: Environment): Hex => {
       'MAKER_PRIVATE_KEY must be a 0x-prefixed 32-byte hex string'
     )
   }
-  try {
-    privateKeyToAccount(privateKey)
-  } catch {
+  if (!isValidPrivateKey(privateKey)) {
     throw new ConfigValidationError(
       'MAKER_PRIVATE_KEY',
       'invalid-private-key',
@@ -382,4 +384,58 @@ export const acceptedLossFactorValue = (
     accepted.set(marketId, lossFactor)
   }
   return accepted
+}
+
+/**
+ * Reads the continuous-fee ceiling a signed offer may accept.
+ * @param environment - Environment map to inspect.
+ * @returns The ceiling in the protocol's per-second fee units; the protocol's `MAX_CONTINUOUS_FEE`
+ * when unset, so every fee a market can charge is accepted.
+ * @throws When set to anything but an unsigned integer at most `MAX_CONTINUOUS_FEE`.
+ */
+export const continuousFeeCapValue = (environment: Environment) => {
+  if (!environment.MAX_CONTINUOUS_FEE_CAP?.trim()) return MAX_CONTINUOUS_FEE
+  const value = unsignedBigIntValue(environment, 'MAX_CONTINUOUS_FEE_CAP')
+  if (value > MAX_CONTINUOUS_FEE) {
+    throw new ConfigValidationError(
+      'MAX_CONTINUOUS_FEE_CAP',
+      'out-of-range',
+      'MAX_CONTINUOUS_FEE_CAP must not exceed the protocol maximum continuous fee'
+    )
+  }
+  return value
+}
+
+/**
+ * Reads the kernel's finality rule: `safe` (the default), `finalized`, or a block depth.
+ * @param environment - Environment map to inspect.
+ * @returns The finality rule.
+ * @throws When `FINALITY` is set to anything else.
+ */
+export const finalityValue = (environment: Environment): Finality => {
+  const value = environment.FINALITY?.trim()
+  if (value === undefined || value === '' || value === 'safe') return 'safe'
+  if (value === 'finalized') return 'finalized'
+  if (/^[1-9]\d{0,5}$/.test(value)) return { depth: Number(value) }
+  throw new ConfigValidationError(
+    'FINALITY',
+    'invalid-finality',
+    'FINALITY must be safe, finalized, or a positive block depth'
+  )
+}
+
+/**
+ * Reads whether this start enrolls the signer with the kernel or resumes its existing ledger.
+ * @param environment - Environment map to inspect.
+ * @returns `enrolling` for the first start of a fresh signer, `enrolled` for every later one.
+ * @throws When absent or anything else, since a lost ledger is detectable only against this value.
+ */
+export const enrollmentValue = (environment: Environment): 'enrolling' | 'enrolled' => {
+  const value = requiredValue(environment, 'KERNEL_ENROLLMENT')
+  if (value === 'enrolling' || value === 'enrolled') return value
+  throw new ConfigValidationError(
+    'KERNEL_ENROLLMENT',
+    'invalid-enrollment',
+    'KERNEL_ENROLLMENT must be enrolling or enrolled'
+  )
 }

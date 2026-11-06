@@ -32,7 +32,9 @@ const providerMethods = new Set([
   'ViemSetupStateService.getRatifier',
   'ViemSetupStateService.getBook',
   'ViemSetupStateService.checkReference',
-  'ViemSetupStateService.inspectOffers'
+  'ViemSetupStateService.inspectOffers',
+  'ViemSetupStateService.getDebt',
+  'ViemSetupStateService.getLoanCollateral'
 ])
 const concurrencyDeclarations = new Set([
   'SetupCheckService.check',
@@ -43,10 +45,8 @@ const concurrencyDeclarations = new Set([
 const deadlineDeclarations = new Set(['ViemSetupStateService.inspectOffers'])
 const readOnlyDeclarations = new Set([
   'SetupCheckService.assertReady',
-  'SetupCheckService.runContinuously',
   'SetupCheckService.check',
-  ...providerMethods,
-  'ViemSetupStateService.checkPositionHealth'
+  ...providerMethods
 ])
 
 const isExported = (node: ts.Node) =>

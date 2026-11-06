@@ -31,6 +31,10 @@ COPY --chown=node:node packages ./packages
 COPY --chown=node:node framework ./framework
 COPY --chown=node:node bots ./bots
 RUN pnpm install --frozen-lockfile
+# The bundle stamps the build the journal names; pass `--build-arg BUILD_REVISION=$(git rev-parse HEAD)`.
+ARG BUILD_REVISION
+ARG BUILD_IMAGE_TAG
+ENV BUILD_REVISION=$BUILD_REVISION BUILD_IMAGE_TAG=$BUILD_IMAGE_TAG
 RUN pnpm --filter '@morpho-org/quoter-bot...' --if-present run build
 
 # Runtime stage. dist/src/index.js is a self-contained esbuild bundle (scripts/build.ts,

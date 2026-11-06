@@ -36,9 +36,6 @@ place secrets in argv, where process listings and shell history may expose them.
 `--interactive` password input for attended keystore operation.
 
 ```sh
-# Repeat read-only readiness checks every minute until SIGINT/SIGTERM.
-pnpm --filter @morpho-org/quoter-bot run start -- setup-check --monitor
-
 # Emit compact JSON Lines for automation instead of the default human-readable output.
 pnpm --filter @morpho-org/quoter-bot run start -- --json setup-check
 
@@ -84,8 +81,7 @@ pnpm --filter @morpho-org/quoter-bot run start -- invalidate --readonly
 
 Success exits zero and writes human-readable output to standard output. Add the root `--json` flag for
 compact JSON Lines suitable for automation. In JSON mode, ordinary commands emit one report record;
-a read-only writer command emits zero or more `readonly.make` records followed by its final cycle
-report. Consumers must parse stdout one line at a time rather than as one JSON document. Bigints are
+a monitoring command emits its records before its final report. Consumers must parse stdout one line at a time rather than as one JSON document. Bigints are
 serialized as decimal strings. Failures always produce an explicit error on standard error and exit
 non-zero; with `--json`, that error is one `quoter-bot.error` JSON record with optional structured
 details. Any failed check throws `SetupFailedError` and identifies the failed check names. The check is
@@ -93,20 +89,9 @@ strictly read-only; remediation transaction descriptions are reported but never 
 `--readonly`, signer-only checks are reported as `not-required`; maker balance, allowance, ratifier,
 chain, market, reference, and active-offer observations still run.
 
-`setup-check --monitor` runs the same complete read-only observation every minute and streams each
-report. A report containing only explicitly transient provider failures is retried up to two
-times within the cycle; recovery emits only the successful report. An invariant or mixed failure
-emits `ready: false`, halts monitoring, includes that report in the terminal `setup-failed`
-record, and exits with code `1`. A transient-only report that survives its in-cycle retries is
-emitted as `ready: false` and retried on the next interval for up to ten consecutive cycles
-before halting the same way, because halting cancels every live offer and a provider outage
-must not cost the book. `SIGINT` or `SIGTERM` after successful checks lets an
-in-flight check finish and emits a final `{"status":"stopped","reason":"signal","cycles":N}` record
-with exit code `0`. Monitoring never signs, submits remediation, or performs shutdown cleanup. Add
-the root `--readonly` flag when signer checks should be omitted.
-
-Read-only writer commands serialize desired bootstrap and ladder reconcile, hard-halt, and cleanup
-requests as one JSON line with event name `readonly.make`. They never sign or submit an operation.
+Read-only writer commands never sign or submit an operation. Each act they would have sent is
+reported as a `cycle.completed` record with `status: "logged"`, its action and reason, and the
+`condition` it would have signed.
 The `--readonly bootstrap` command executes one complete observational decision cycle after deriving
 its exact tick, comparing the prospective offer with the complete current maker book, and applying
 the SDK's live Mempool-policy validation without signing or broadcasting.
@@ -117,103 +102,76 @@ market independently selects `targetRate.strategy: variable_rate_avg` (the exist
 variable-rate average) or `hardcoded` with `hardcodedRateBps`; `premiumBps` — plus the optional
 `maturityPremium` term derived from the market's live time to maturity — is then added to derive
 the published offer rate. It serially runs a cycle every minute
-and streams each result. `SIGINT` or `SIGTERM` lets an in-flight cycle finish, then invalidates every
-explicitly owned bootstrap group through the same mutation queue and waits for bounded transaction
-receipts. The final record reports the number of cycles and whether cleanup was applied, logged, or
+and streams each result. `SIGINT` or `SIGTERM` lets an in-flight cycle finish, then stops the
+kernel, which withdraws every offer the kernel holds; see [Signing kernel](#signing-kernel). The
+final record reports the number of cycles and whether cleanup was applied, logged, or
 failed. Read-only monitoring logs the cleanup request and never loads a private key. In live mode,
-Ecrecover bootstrap signs and publishes the validated payload in one transaction. Setter bootstrap
-durably reserves the future group, confirms any replacement cancellations, submits and confirms
-`setIsRootRatified`, revalidates the exact final proof payload with the Mempool API, then publishes it
-in a second transaction and confirms ownership. A post-approval validation failure does not publish
-and retains the reservation for safe cleanup.
+the kernel signs an Ecrecover bootstrap tree and publishes it in one transaction. For Setter
+bootstrap it confirms any replacement cancellations, submits and confirms `setIsRootRatified`,
+revalidates the exact final proof payload with the Mempool API, then publishes it in a second
+transaction. A post-approval validation failure does not publish, and the kernel withdraws the
+ratified group.
 
-Add `--verbose` to either one-shot or monitored bootstrap mode to include the complete market
-configuration, fresh credit, debt, cash balance, per-market and total exposure, active offer,
-reference rate (with its seconds to maturity when a maturity premium is configured), the resolved
-maturity premium, premium-adjusted target rate, deterministic decision, desired bootstrap offer, and
-a fresh position read after every check. Live mode immediately emits a
-`bootstrap.transaction-submitted` record when the wallet returns each ratification, publication, or cancellation
-hash. Completed results also list confirmed transaction hashes in submission order, and verbose
-monitor cleanup reports its confirmed cancellation hashes. These diagnostics deliberately omit the
-maker identity, private key, RPC/API URLs, signatures, raw transactions, provider payloads, and
-untrusted error text. Without `--verbose`, bootstrap output and provider-read volume remain
-unchanged.
+Add `--verbose` to either one-shot or monitored bootstrap mode to add what each market observed to
+its printed report: its credit and credit target, reference and premium-adjusted target rate, and
+sizing diagnostics. Monitoring records are emitted with or without it. A report never carries the
+maker identity, private key, RPC/API URLs, signatures, raw transactions, provider payloads, or
+untrusted error text.
 
 `ladder` requires at least one `ladder` / `LADDER_MARKETS` entry. It runs readiness first, derives
 fresh wallet, allowance, credit, position, active-group, and strategy-wide exposure capacities, and
 then builds one deterministic quote set from that market's independently selected target-rate
 strategy. Lower-rate rungs are
 reduce-only borrow-side sells; higher-rate rungs are lend-side buys. The complete mixed-side tree is
-Mempool-validated unsigned before signing. Ecrecover trees are signed locally and deliberately not
+Mempool-validated unsigned before the kernel signs it. Ecrecover trees are deliberately not
 revalidated, so the replayable signature never leaves the process before publication; Setter trees
 are revalidated after their approval confirms. Ecrecover trees are signed and published in one
 transaction; Setter trees first submit and confirm `setIsRootRatified`, then publish the proof-only
 payload in a second transaction. Replacement
-reserves the future group IDs durably, verifies the resulting whole maker book has positive spread,
+verifies the resulting whole maker book has positive spread,
 confirms cancellation receipts for old owned groups, and only then broadcasts the replacement.
 `ladder --readonly` performs the same readiness, state, rate, and decision reads, reconstructs any
 active owned quote set, builds the exact prospective tree, applies unsigned Mempool policy and
 whole-book spread validation, and only then emits the requested reconciliation without signing or
 writing.
 
-`ladder --monitor` repeats non-overlapping checks at the shortest `loopIntervalSeconds` configured
-across its markets. `SIGINT` or `SIGTERM` lets the current cycle and receipt handling finish, then
-invalidates every active owned ladder group through the same serialized mutation queue. Any failed
-or halted cycle stops monitoring, still attempts cleanup, prints the terminal halted report, and
-exits with code `1`. Read-only monitoring emits the cleanup request without signing or submitting.
+`ladder --monitor` reads its markets at the shortest `loopIntervalSeconds` configured across them.
+`SIGINT` or `SIGTERM` stops the kernel, which withdraws every offer it holds. A halt, a failed
+decision graph, or five consecutive failing polls of one market stops the run the same way, prints
+the halted run report, and exits with code `1`. Read-only monitoring emits the cleanup request without signing or submitting.
 
-`ladder --verbose` includes the validated market config, current capacities and active quote, the
-reference rate (with its seconds to maturity when a maturity premium is configured), the resolved
-maturity premium, the premium-adjusted target rate, exact desired ladder, decision, confirmed
-transaction hashes, and a fresh state read after every check. Live transaction hashes are also
-emitted immediately as `ladder.transaction-submitted` records.
+`ladder --verbose` adds what each market observed to its printed report: its reference and target
+rate, capacities, active quote, group consumption, generation diagnostics, and book crossing.
 
-`start` requires at least one configured bootstrap market and one configured ladder market. It runs
-the readiness gate before constructing either writer, then launches setup monitoring, position
-bootstrap monitoring, and ladder monitoring concurrently. Cycle records are tagged with
-`event: "quoter-bot.cycle"` and their `workflow`; verbose transaction records retain the existing
-bootstrap and ladder event names. The first halted, rejected, or unexpectedly stopped workflow
-aborts its peers, waits for both writer monitors to drain their in-flight cycles and cleanup owned
-offers, and emits one combined terminal report. Bootstrap and ladder reads remain concurrent, while
-their reconcile, hard-halt, and cleanup operations are serialized to prevent signer-nonce and book
-mutation races. A normal SIGINT or SIGTERM returns `status: "stopped"`; any workflow failure
-returns `status: "halted"` and exits with code `1`.
+`start` requires at least one configured ladder market; bootstrap markets are optional, so a
+loan-as-collateral ladder can run alone. It refuses a configuration with no ladder market. It runs
+the readiness gate, then quotes every bootstrap and ladder market under one controller, one act at a
+time, while setup readiness is monitored. Every markets poll ships one `cycle.completed` per market
+not in flight: the outcome of an act that ended since its last report, else its current decision. A
+normal SIGINT or SIGTERM returns `status: "stopped"`; a halt, a failed decision graph, or a kernel
+that could not withdraw everything returns `status: "halted"` with the controller's halt reason and
+the last poll that held a failure, and exits with code `1`.
 
-`invalidate` is an explicit recovery command and does not run the normal offer-readiness gate. With
-no group argument it reads the complete active maker group set and invalidates every distinct group,
-including groups that are not owned by the bootstrap or ladder strategy. Because one Midnight group
-can cap several offers, one cancellation invalidates every offer in that group. With an optional
-0x-prefixed bytes32 argument, `invalidate <group-id>` directly invalidates only that group without
-depending on API indexing. Before a live cancellation it still verifies the connected chain,
-deployed configured Midnight contract, signer identity and nonce, signer authorization, and the
-signer gas reserve. Maker-wide invalidation submits one zero-value native Midnight
-`multicall(bytes[])`; each
-ordered inner call is exactly `setConsumed(groupId, MAX_OFFER_CAP, MAKER_ADDRESS)`. Midnight executes
-the inner calls with `delegatecall`, so the authorized signer that submits the outer transaction
-remains `msg.sender` throughout while every `onBehalf` value remains the maker. The local transaction
-policy rejects any wrong target, selector, call count,
-order, group, amount, on-behalf account, or extra calldata. A reverted or failed multicall is reported
-without serial retry. Explicit single-group invalidation keeps the simpler direct Midnight
-`setConsumed` transaction. Successfully canceled bot-owned groups are removed from durable
-ownership state; explicitly configured `V0_OFFER_GROUP_IDS` remain configuration-owned until the
-operator edits configuration. If the provider omits one of these configured groups, bootstrap and
-ladder reads deliberately fail closed because neither omission nor ordinary partial onchain
-consumption reveals the group's original maximum capacity. A `consumed` value equal to the Midnight
-SDK's `MAX_OFFER_CAP` is the exception: it conclusively proves invalidation, so readers ignore that
-group and cleanup does not resubmit its cancellation after a restart. Remove stale IDs from
-`V0_OFFER_GROUP_IDS` after invalidation to keep the operator-owned set current.
-
-Maker-wide invalidation waits for the single multicall receipt, reports its hash against every group,
-then forgets all confirmed bot-owned groups together. Submitted hashes stream as
-`offer-invalidation.transaction-submitted` records and are retained in the terminal success or
-failure report. A failed atomic multicall exits with code `1` and reports the same submitted hash for
-every selected group. `invalidate --readonly` performs the cancellation preflight and, for maker-wide
-scope, lists the active groups, but never loads a private key, submits transactions, or edits
-ownership state. `cancelBuys`, hard halt and graceful cleanup always cancel through one native
-multicall under the `cancel-batch` policy, even for one group. Bootstrap and ladder replacement send
-two or more groups the same way and a lone group as one `setConsumed` call, so
-`MAX_BATCH_CANCELLATION_GAS` and `MAX_BATCH_CANCELLATION_DATA_BYTES` also cap every multi-group
-recenter. Removed-market cleanup cancels one group at a time.
+`invalidate` is an explicit recovery command and does not run the normal offer-readiness gate. It
+starts the signer's kernel, so run it only while the bot is stopped. With no group argument it stops
+the kernel, which withdraws every offer the ledger holds and waits until each withdrawal is final.
+Groups the API lists for the maker that the kernel does not hold, including configured
+`V0_OFFER_GROUP_IDS`, are reported as `selection` failures with `adapterOperation: "unowned-group"`
+rather than cancelled, because the kernel signs nothing it cannot read as its own. Because one
+Midnight group can cap several offers, one cancellation invalidates every offer in that group. With
+an optional 0x-prefixed bytes32 argument, `invalidate <group-id>` cancels only that group, through
+the kernel, and refuses a group the kernel does not hold. Before a live cancellation it still
+verifies the connected chain, deployed configured Midnight contract, signer authorization, and the
+signer gas reserve. Every cancellation is exactly
+`setConsumed(groupId, MAX_OFFER_CAP, MAKER_ADDRESS)`, alone or as the ordered inner calls of one
+zero-value native Midnight `multicall(bytes[])`; Midnight executes the inner calls with
+`delegatecall`, so the authorized signer remains `msg.sender` while every `onBehalf` value remains
+the maker. The kernel's Midnight validator refuses any other target, selector, amount, or on-behalf
+account. `invalidate --readonly` performs the cancellation preflight and, for maker-wide scope, lists
+the active groups from the ledger and the API, but never loads a private key or submits
+transactions. Bootstrap and ladder replacement send two or more groups in one multicall and a lone
+group as one `setConsumed` call, so `MAX_BATCH_CANCELLATION_GAS` and
+`MAX_BATCH_CANCELLATION_DATA_BYTES` also cap every multi-group recenter.
 
 For a maker with at least 101 USDC of both available balance and accrued credit, this
 one-rung-per-side preset caps each side at 150 USDC. USDC uses six decimals, so `150000000` is 150
@@ -237,6 +195,35 @@ Version output remains available:
 ```sh
 pnpm --filter @morpho-org/quoter-bot run start -- --version
 ```
+
+## Signing kernel
+
+Every signature, ratification, publication, and cancellation goes through one kernel per signer
+([`@repo/kernel`](../../../framework/kernel/SPEC.md)). It reads each action with the Midnight offers
+validator, admits it against caps derived from configuration, records what it exposes in its ledger
+before the act, and withdraws whatever a workflow stops affirming. Nothing in the bot signs or
+broadcasts outside it.
+
+- **Ledger.** `$XDG_STATE_HOME/morpho-quoter-bot/kernel-<chain>-<signer>.json`, written and fsynced
+  before every irreversible act. Run one replica per ledger volume: two processes on one ledger are
+  not detected.
+- **Enrollment.** Set `KERNEL_ENROLLMENT=enrolling` for the first start of a fresh signer, then
+  `enrolled` for every later start. An enrolled start that finds no ledger (a lost volume) refuses
+  to start, as does an enrolling start that finds one.
+- **Finality.** `FINALITY` (`safe` by default, `finalized`, or a block depth) decides when a
+  withdrawal is done. A replaced book stays reserved until its cancellation is final.
+- **Caps.** Buys may commit at most twice the configured required allowance of the loan asset (one
+  book, plus one being replaced), and unresolved transactions at most sixteen times
+  `MAX_TRANSACTION_SPEND_WEI` of fees. Every signed offer must accept a continuous fee no higher than
+  `MAX_CONTINUOUS_FEE_CAP`, which defaults to the protocol maximum: offers sign the market's own
+  continuous fee, which Midnight never sets above it.
+- **Stop.** Shutdown, a halt, and a failed startup stop the kernel, which withdraws every offer it
+  holds and waits until each withdrawal is final. A workflow that wedges stops affirming its offers,
+  and the kernel withdraws them once three monitor intervals and receipt timeouts pass unaffirmed.
+- **Restart.** A writer withdraws the offers its kernel adopted from the ledger before quoting,
+  because it holds no quote for them, then publishes afresh.
+- **Foreign transactions.** A pending or mined signer transaction the ledger never recorded refuses
+  the start: the kernel acts on nothing, the book included, until an operator resolves it.
 
 ## Deploy
 
@@ -322,7 +309,6 @@ unit; for six-decimal USDC, `101000000` is 101 USDC. No value is inferred from a
 | `NATIVE_RESERVE_WEI`                | `setup.nativeReserveWei`              | Required unsigned integer in read-only mode, and positive in private-key or keystore write mode. Minimum maker native-token balance, in wei, required by readiness for transaction fees. Ignored in AWS write mode, where the maker sends no transactions.                                                                                                                                                             |
 | `SIGNER_NATIVE_RESERVE_WEI`         | `setup.signerNativeReserveWei`        | Required positive integer in AWS write mode. Minimum signer native-token balance in wei.                                                                                                                                                                                                                                                                                                                               |
 | `MAX_FEE_GWEI`                      | `setup.maxFeeGwei`                    | Required positive decimal gwei in write mode. Maximum EIP-1559 fee per gas. Keep it well above twice the chain's base fee: once it clamps a first send, the first bump drops.                                                                                                                                                                                                                                          |
-| `PRIORITY_FEE_GWEI`                 | `setup.priorityFeeGwei`               | Required positive decimal gwei in write mode. Initial priority fee with replacement headroom below `MAX_FEE_GWEI`.                                                                                                                                                                                                                                                                                                     |
 | `MAX_TRANSACTION_SPEND_WEI`         | `setup.maxTransactionSpendWei`        | Required positive integer in write mode. Maximum `gas × maxFeePerGas` for one transaction.                                                                                                                                                                                                                                                                                                                             |
 | `MAX_PUBLICATION_GAS`               | `setup.maxPublicationGas`             | Required positive publication gas ceiling.                                                                                                                                                                                                                                                                                                                                                                             |
 | `MAX_PUBLICATION_DATA_BYTES`        | `setup.maxPublicationDataBytes`       | Required positive publication calldata ceiling.                                                                                                                                                                                                                                                                                                                                                                        |
@@ -330,6 +316,12 @@ unit; for six-decimal USDC, `101000000` is 101 USDC. No value is inferred from a
 | `MAX_BATCH_CANCELLATION_GAS`        | `setup.maxBatchCancellationGas`       | Required positive batch-cancellation gas ceiling.                                                                                                                                                                                                                                                                                                                                                                      |
 | `MAX_BATCH_CANCELLATION_DATA_BYTES` | `setup.maxBatchCancellationDataBytes` | Required positive batch-cancellation calldata ceiling.                                                                                                                                                                                                                                                                                                                                                                 |
 | `MAX_RATIFICATION_GAS`              | `setup.maxRatificationGas`            | Required only for local or keystore Setter mode.                                                                                                                                                                                                                                                                                                                                                                       |
+| `MAX_CONTINUOUS_FEE_CAP`            | `setup.maxContinuousFeeCap`           | Optional unsigned integer, at most and by default the protocol's `MAX_CONTINUOUS_FEE` (317097919). The highest market continuous fee per second that any signed offer may accept; the kernel refuses an offer above it.                                                                                                                                                                                                |
+| `KERNEL_ENROLLMENT`                 | `setup.kernelEnrollment`              | Required in write mode: `enrolling` for the first start of a fresh signer, `enrolled` for every later one. See [Signing kernel](#signing-kernel).                                                                                                                                                                                                                                                                      |
+| `FINALITY`                          | `setup.finality`                      | Optional. `safe` (the default), `finalized`, or a positive block depth: when the kernel treats a block, and so a withdrawal, as final.                                                                                                                                                                                                                                                                                 |
+| `JOURNAL_RUN_CAP_BYTES`             | none                                  | Optional, 1073741824 (1 GiB) by default, at least 67108864. The size at which a run's journal file under `$XDG_STATE_HOME/morpho-quoter-bot/journal` stops the bot cleanly (`journal.capped`) so its next start opens a new file. A start deletes earlier runs' files beyond three caps (`journal.pruned`).                                                                                                            |
+| `BUILD_REVISION`                    | none                                  | The git commit the journal and every shipped record name (`revision`). The Docker image and the npm bundle are stamped with it at build time; set it only to override the stamp. A build with no stamp refuses to quote until it is set.                                                                                                                                                                               |
+| `BUILD_IMAGE_TAG`                   | none                                  | The image tag the journal and every shipped record name (`imageTag`); stamped at build time like `BUILD_REVISION`, `quoter-bot-<version>` for the npm bundle.                                                                                                                                                                                                                                                          |
 | `REQUEST_TIMEOUT_MS`                | `setup.requestTimeoutMs`              | Optional provider-operation and aggregate pagination timeout in milliseconds. Defaults to `10000`; accepted range is `1` through `120000`.                                                                                                                                                                                                                                                                             |
 | `TRANSACTION_RECEIPT_TIMEOUT_MS`    | `setup.transactionReceiptTimeoutMs`   | Optional timeout for confirming an already-submitted transaction, in milliseconds. Defaults to `180000`; accepted range is `1` through `900000`.                                                                                                                                                                                                                                                                       |
 | `BOOTSTRAP_MARKETS`                 | `bootstrap`                           | Optional exact JSON array of position-bootstrap entries documented below; defaults to `[]` and replaces the complete YAML `bootstrap` list when supplied.                                                                                                                                                                                                                                                              |
@@ -362,7 +354,7 @@ added to observability records.
 
 Useful Better Stack source queries/filters include:
 
-- lifecycle and restarts: `bot:quoter-bot AND event:(bot.started OR bot.stopped OR bot.failed)`;
+- failures by reason: `bot:quoter-bot AND event:(bot.failed OR bot.unexpected-error)`;
 - configured scope: `bot:quoter-bot AND event:(bot.configured OR market.configured)`;
 - monitor cycles: `bot:quoter-bot AND event:cycle.completed` plus `workflow`, `action`, or `status`;
 - market state: `bot:quoter-bot AND event:(position.observed OR book.observed OR offer.consumed)`;
@@ -376,35 +368,29 @@ this repository does not provision or claim a deployed dashboard URL.
 Records written through the CLI event writer pass an explicit allowlist, not "any record carrying an
 `event`". `isShippableRecord` admits exactly the names in `MONITORING_EVENT_NAMES` — the
 `MonitoringEvent` union tabulated below, which a compile-time assertion keeps in sync with that list
-— plus the three pre-receipt transaction names
-`ladder.transaction-submitted`, `bootstrap.transaction-submitted`, and
-`offer-invalidation.transaction-submitted`, which are already flat and version alongside their
-`transaction.settled` counterparts.
+— plus `offer-invalidation.transaction-submitted`, which is already flat.
 
 Everything else the CLI writes stays local:
 
 | Record                                                 | Where it goes, and why it is not shipped                                                                               |
 | ------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------- |
-| `quoter-bot.cycle`                                     | stdout; a named envelope wrapping a nested, unversioned per-workflow cycle report                                      |
-| `readonly.make`                                        | stdout; a named envelope wrapping a nested, unversioned mutation request                                               |
 | Terminal monitor and cycle reports, `quoter-bot.error` | stdout on success, stderr on the failure path (the report rides `quoter-bot.error`); never routed through the boundary |
 
 A nested unversioned shape cannot be grouped on by a metric expression and cannot be pinned by
 `schemaVersion`, so admitting it would put an unmaintainable surface in the log source. Nothing is
 lost: the same content ships flat as `cycle.completed`, `guardrail.*`, and `bot.failed`. The
-`@repo/observability` `bot.action` fallback is therefore unreachable for this bot.
+record shipper's `bot.action` fallback for an unnamed record is therefore unreachable.
 
-The allowlist scopes the CLI event writer only. `bot.started`, `bot.stopped`, and
-`bot.unexpected-error` are emitted straight through the shipping logger by `@repo/observability`,
-bypassing this boundary entirely — so they are present in the log source while absent from
-`MONITORING_EVENT_NAMES`. `bot.unexpected-error` in particular
-is the only shipped signal for an entrypoint failure that no reported error classifies.
+The allowlist scopes the CLI event writer only. `bot.unexpected-error` is emitted straight through
+the shipping logger by the process entrypoint, bypassing this boundary entirely — so it is present
+in the log source while absent from `MONITORING_EVENT_NAMES`. It is the only shipped signal for an
+entrypoint failure that no reported error classifies.
 
 #### Event contract
 
 Every shipped record carries a named top-level `event` and a flat scalar payload, so Better Stack
 metric expressions can group on it directly. Names are `<domain>.<kebab-verb>`. `schemaVersion` is
-bound once into the shipping logger's context (`MONITORING_SCHEMA_VERSION`, currently `4`) rather
+bound once into the shipping logger's context (`MONITORING_SCHEMA_VERSION`, currently `5`) rather
 than onto each record, so every line carries it at zero per-event cost and a consumer can pin the
 contract. It is bumped only on a breaking field rename or removal; adding an optional field is not
 breaking.
@@ -426,9 +412,9 @@ extra provider round trip.
 
 Every `*Assets` field is an unsigned raw smallest-unit amount of the configured `loanAsset`. Every
 `*Bps` field is an integer basis-point value (`100` = one percentage point). Both serialize as
-decimal strings, because the bot-kit logger flattens `bigint` before loglayer sees it. Counts
-(`omittedRungs`, `clearedRungs`, `configuredRungs`, `fundedRungs`, `rungs`), the cadence fields
-(`ladderIntervalSeconds`, `bootstrapIntervalSeconds`), and `durationMs` are plain numbers, and
+decimal strings, because the kit logger flattens `bigint` before loglayer sees it. Counts
+(`omittedRungs`, `clearedRungs`, `configuredRungs`, `fundedRungs`, `rungs`)
+and the cadence fields (`ladderIntervalSeconds`, `bootstrapIntervalSeconds`) are plain numbers, and
 `maturityTimestamp` is a Unix-seconds `bigint`. The bot never reads token decimals, so nothing is
 human-scaled: a consumer resolves decimals from the `loanAsset` address shipped in `bot.configured`.
 
@@ -438,8 +424,8 @@ human-scaled: a consumer resolves decimals from the `loanAsset` address shipped 
 | -------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `bot.configured`                 | Once per process start, from the validated configuration                                                                                                                    | `bootstrapIntervalSeconds`, `loanAsset`, `referenceMode` (`static` \| `variable` \| `mixed`), `readOnly`                                                                                                                                                               |
 | `market.configured`              | Once per configured market, immediately after `bot.configured`                                                                                                              | `marketId`, `ladder`, `bootstrap` (which workflows the market is configured for), `ladderIntervalSeconds?` (that market's own `loopIntervalSeconds`; absent for a bootstrap-only market, whose cadence is `bootstrapIntervalSeconds`)                                  |
-| `bot.failed`                     | A terminal failure stops the process; one per process, plus one per failed workflow                                                                                         | `workflow?` (`setup-check` \| `bootstrap` \| `ladder`; absent on the process-level record), `reason`, `errorName?`                                                                                                                                                     |
-| `cycle.completed`                | Once per market per bootstrap/ladder cycle, and once per setup check                                                                                                        | `workflow` (`setup-check` \| `bootstrap` \| `ladder`), `marketId?` (absent for `setup-check`), `status` (`ready` \| `failed` for `setup-check`), `stage?`, `action?`, `reason?`, `durationMs?`, `errorName?`, `adapterOperation?`, `snapshotErrorOperation?`           |
+| `bot.failed`                     | A terminal failure stops the process; one per process                                                                                                                       | `workflow?` (`setup-check` \| `bootstrap` \| `ladder`; absent on the process-level record), `reason`, `errorName?`                                                                                                                                                     |
+| `cycle.completed`                | Once per market per bootstrap/ladder cycle, and once per setup check                                                                                                        | `workflow` (`setup-check` \| `bootstrap` \| `ladder`), `marketId?` (absent for `setup-check`), `status` (`ready` \| `failed` for `setup-check`), `stage?`, `action?`, `reason?`, `errorName?`, `adapterOperation?`                                                     |
 | `guardrail.rate-omitted`         | A cycle omitted rates outside the hard range instead of publishing them; ladder aggregates per side and bound, bootstrap reports its one withheld offer                     | `workflow`, `marketId`, `side?` (absent for `bootstrap`), `omittedRungs`, `omittedAssets`, `bound` (`minimum` \| `maximum`), `outermostRateBps`, `referenceRateBps?`, `minimumRateBps`, `maximumRateBps`                                                               |
 | `guardrail.cross-book-cleared`   | Cross-book clearance repriced at least one rung on a side                                                                                                                   | `workflow`, `marketId`, `side`, `clearedRungs`                                                                                                                                                                                                                         |
 | `guardrail.exposure-capped`      | A bootstrap offer was sized below its request by an inventory limit                                                                                                         | `workflow`, `marketId`, `requestedAssets`, `cappedAssets`, `cap` (`offer-size` \| `credit-target` \| `cash-balance` \| `market-exposure` \| `total-exposure`)                                                                                                          |
@@ -458,10 +444,12 @@ human-scaled: a consumer resolves decimals from the `loanAsset` address shipped 
 | `transaction.settled`            | A submitted bootstrap or ladder transaction confirmed; `marketId` is absent for strategy-wide halt/invalidation cancellations                                               | `workflow`, `marketId?`, `operation` (`cancel` \| `ratify` \| `publish`), `txHash` _(trace only)_                                                                                                                                                                      |
 | `setup.check-failed`             | One named readiness check failed, blocking readiness; `observed`/`required` are typed `unknown` and are omitted                                                             | `check`, `status`                                                                                                                                                                                                                                                      |
 | `setup.check-warning`            | One named readiness check warned without blocking readiness; `observed`/`required` are likewise omitted                                                                     | `check`, `status`                                                                                                                                                                                                                                                      |
+| `signer.policy_violation`        | The signer's policy refused a transaction the kernel asked it to sign                                                                                                       | `check`, `reason`, `to`, `nonce`                                                                                                                                                                                                                                       |
 
-`bot.started`, `bot.stopped`, `bot.unexpected-error`,
-`ladder.transaction-submitted`, `bootstrap.transaction-submitted`, and
-`offer-invalidation.transaction-submitted` are unchanged and ship alongside these.
+Borrowing markets also report `debtAssets?` and `debtCeilingAssets?` on `position.observed`.
+
+`bot.unexpected-error` and `offer-invalidation.transaction-submitted` are unchanged and ship
+alongside these.
 
 Readiness is not a separate record. `cycle.completed { workflow: "setup-check" }` already carries it
 as `status`, so a per-cycle `ready` record would restate the same fact every minute.
@@ -475,8 +463,7 @@ because a settled transaction is confirmed by definition.
 #### Cardinality
 
 Safe grouping dimensions are `workflow`, `marketId`, `side`, `status`, `stage`, `action`, `reason`,
-`check`, `bound`, `cap`, `operation`, `state`, `referenceMode`, `adapterOperation`,
-`snapshotErrorOperation`, and `guardrail.lend-halted`'s `direction` and `defaulted`. `marketId`
+`check`, `bound`, `cap`, `operation`, `state`, `referenceMode`, `adapterOperation`, and `guardrail.lend-halted`'s `direction` and `defaulted`. `marketId`
 is safe only
 because it is bounded by the configured allowlist.
 
@@ -490,17 +477,16 @@ operator question at three orders of magnitude less volume.
 
 #### Alert recipes
 
-| Question             | Signal                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Crash / halt         | `bot.failed` OR `bot.unexpected-error`. `bot.failed` covers a classified failure — the process-level record carries no `workflow`; group the accompanying records by `workflow` to name the half that broke, and by `reason` and `errorName` to classify it. An unclassified entrypoint failure emits `bot.unexpected-error` (with `origin` and `errorName`) and **no** `bot.failed`, so alerting on `bot.failed` alone misses it. A hard process death emits neither; the liveness and restart alerts are the only signals                                                                                                                                                                                                                                    |
-| Liveness             | Absence of a healthy `cycle.completed` — `workflow` `ladder` or `bootstrap` with `status` `applied`, `observed`, or `logged` — for longer than the shortest configured interval plus the longest cycle. A cycle emits only when it ends, runs its markets in turn, and can wait up to `TRANSACTION_RECEIPT_TIMEOUT_MS` on each transaction it confirms, so size the window from that bound and observed `durationMs`. A crash loop that dies before its first healthy cycle, a hung process, and a stopped log pipeline all read as silence. Configure one alert per `chainId`, each opening an incident on missing data: Better Stack's default does not fire when no records arrive, and a grouped query stays non-empty while any other chain still reports |
-| Restarts             | More than one `bot.started` per `chainId` within the liveness window. A process hard-killed after a healthy cycle emits neither `bot.failed` nor `bot.unexpected-error`, and its restarts keep the liveness alert quiet                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| Halt / guardrail     | Any `guardrail.halted` (alert on `strategyInvalidated: true` first); `guardrail.rate-omitted`, `guardrail.cross-book-cleared`, and `guardrail.rungs-truncated` counts sustained over a window                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| Stale reference      | Absence of `reference.observed` for a `marketId` beyond two of that market's `ladderIntervalSeconds`. Sound for a ladder market, which reads a reference every cycle. Scope the alert to `market.configured` with `ladder: true`: a bootstrap-only market can legitimately go silent (see Known limits)                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| Inventory / exposure | `position.observed` balance and capacity gauges; `guardrail.exposure-capped` grouped by `cap` names the limit that actually bound                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| Fills                | `offer.consumed`, summing `consumedDeltaUnits` by `marketId` and `side`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| PnL / losses         | Derived downstream from `offer.consumed`, `position.observed` balances, and `maturityTimestamp` — the bot emits primitives, not attribution                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| Not quoting          | `book.observed` with `state: "empty"`. Both sides are emitted on every observed cycle, including when no quote is active at all, so "not quoting" is a positive signal rather than silence                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| Question             | Signal                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Crash / halt         | `bot.failed` OR `bot.unexpected-error`. `bot.failed` covers a classified failure — the process-level record carries no `workflow`; group the accompanying records by `workflow` to name the half that broke, and by `reason` and `errorName` to classify it. An unclassified entrypoint failure emits `bot.unexpected-error` (with `origin` and `errorName`) and **no** `bot.failed`, so alerting on `bot.failed` alone misses it. A hard process death emits neither; the liveness alert is the only signal                                                                                                                                                                                                 |
+| Liveness             | Absence of a healthy `cycle.completed` — `workflow` `ladder` or `bootstrap` with `status` `applied`, `observed`, or `logged` — for longer than the shortest configured interval plus the longest cycle. A market in flight is silent until its act ends, which can take up to `TRANSACTION_RECEIPT_TIMEOUT_MS` per transaction, so size the window from that bound. A crash loop that dies before its first healthy cycle, a hung process, and a stopped log pipeline all read as silence. Configure one alert per `chainId`, each opening an incident on missing data: Better Stack's default does not fire when no records arrive, and a grouped query stays non-empty while any other chain still reports |
+| Halt / guardrail     | Any `guardrail.halted` (alert on `strategyInvalidated: true` first); `guardrail.rate-omitted`, `guardrail.cross-book-cleared`, and `guardrail.rungs-truncated` counts sustained over a window                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| Stale reference      | Absence of `reference.observed` for a `marketId` beyond two of that market's `ladderIntervalSeconds`. Sound for a ladder market, which reads a reference every cycle. Scope the alert to `market.configured` with `ladder: true`: a bootstrap-only market can legitimately go silent (see Known limits)                                                                                                                                                                                                                                                                                                                                                                                                      |
+| Inventory / exposure | `position.observed` balance and capacity gauges; `guardrail.exposure-capped` grouped by `cap` names the limit that actually bound                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| Fills                | `offer.consumed`, summing `consumedDeltaUnits` by `marketId` and `side`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| PnL / losses         | Derived downstream from `offer.consumed`, `position.observed` balances, and `maturityTimestamp` — the bot emits primitives, not attribution                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| Not quoting          | `book.observed` with `state: "empty"`. Both sides are emitted on every observed cycle, including when no quote is active at all, so "not quoting" is a positive signal rather than silence                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 
 Absence alerts are scoped per market by `market.configured`, which names one `marketId` and that
 market's own `ladderIntervalSeconds`, so each market's silence window is its own configured cadence.
@@ -514,22 +500,21 @@ process-wide `bootstrapIntervalSeconds` and identifies the loan asset and mode. 
 on every process start, so the scope follows configuration changes across a redeploy.
 
 `bot.failed` covers the two incidents no cycle record can describe: a readiness check that fails
-during startup, before any monitor loop begins, and the fail-together lifecycle, where one supervised
-workflow ends and stops its peers. In the combined case one record is emitted for the process plus
-one per failed workflow, so "which workflow half-broke?" is answerable from the shipped stream alone.
+during startup, before any market may act, and a halt, where one workflow's failure stops the whole
+bot. One record is emitted for the process, naming why the run stopped; the per-market cause is on
+the last `cycle.completed` records before it.
 
-The liveness alert is process-level. `runContinuously` is fail-together — any workflow halt aborts
-its peers and the process exits — so one alert covers all three workflows, but it cannot prove a
+The liveness alert is process-level. One halt stops the whole bot — the kernel withdraws everything
+it holds and the process exits — so one alert covers all three workflows, but it cannot prove a
 particular market was read or quoted. Only an unrecoverable cycle halts:
 a handled per-market failure ships `cycle.completed` with `status: "failed"` and is retried on the
 next interval while its peers keep quoting. A failed market is not necessarily flat — a
 publication rejected before its replacement set is invalidated keeps the previous offers live — so
 the same
-market failing five consecutive cycles halts the bot, which cancels through shutdown cleanup rather
-than leaving quotes live at a drifting center. A bootstrap make-stage failure also ends that cycle
-for every market configured after it, so a persistently failing market starves the ones behind it
-until its budget runs out. A market can therefore be dark while the process is healthy and the
-liveness alert quiet: alert on the failed cycle records, not on liveness. The per-market
+market failing five consecutive cycles halts the bot, which withdraws everything rather than leaving
+quotes live at a drifting center. Markets are decided independently, so one failing market never
+holds back the others. A market can still be dark while the process is healthy and the liveness
+alert quiet: alert on the failed cycle records, not on liveness. The per-market
 `cycle.completed` and `reference.observed` records are the positive anchors for that.
 
 #### Known limits
@@ -558,21 +543,16 @@ liveness alert quiet: alert on the failed cycle records, not on liveness. The pe
   not observable at this seam.
 - **Reference reads are conditional for bootstrap.** `decidePositionBootstrapTransition` returns a
   decision before any reference-rate derivation once the credit target is reached, or once the
-  initial target completed with `autoRefill` off — and `reference.observed` is emitted only when a
-  verbose cycle actually holds a reference rate. For a bootstrap-only market, absence therefore
+  initial target completed with `autoRefill` off — and `reference.observed` is emitted only when the
+  decision actually holds a reference rate. For a bootstrap-only market, absence therefore
   means "no reference was needed" at least as often as "the reference went stale". A ladder market
   reads a reference every cycle, so the staleness recipe is sound there.
-- **Monitoring cannot halt quoting.** Records are derived and written inside the monitored cycle's
-  own callback, but `writeCycle` swallows any failure raised while projecting or writing them. A
-  broken projection or a failing writer loses telemetry silently; it can never stop a cycle.
-- **Shutdown cleanup settlement gap.** Shutdown cleanup cancellations ship their pre-receipt
-  `ladder.transaction-submitted` / `bootstrap.transaction-submitted` records but no
-  `transaction.settled` counterpart, because the confirmed hashes exist only on the terminal
-  monitor report, which is never routed through the shipping boundary. A cleanup that fails is still
+- **A broken projection cannot halt quoting.** The reporter falls back to the `cycle.completed`
+  records alone, so telemetry can be lost but the liveness signal is not. A failing writer does stop
+  the run, as any output failure does.
+- **Shutdown cleanup settlement gap.** Shutdown withdrawals ship no `transaction.settled`: the
+  kernel stops with them, and no markets poll follows to report them. A cleanup that fails is still
   alertable as `bot.failed` with `reason: "cleanup-failed"`.
-- **Duration scope.** `cycle.completed.durationMs` covers one market's check including the post-check
-  verbose re-read. Under the combined `start` lifecycle the ladder and bootstrap writers share one
-  mutation queue, so it can include queue wait as well as work.
 
 ### YAML schema
 
@@ -587,10 +567,11 @@ and `ladder`; unknown keys at any level are rejected. Every supported key appear
 - `apis`: `morphoBaseUrl`, `routerBaseUrl`.
 - `markets`: `allowlist`, `referenceMarketId`, `referenceLookbackSeconds`, `v0OfferGroupIds`,
   `acceptedLossFactor`.
-- `setup`: `nativeReserveWei`, `signerNativeReserveWei`, `maxFeeGwei`, `priorityFeeGwei`,
+- `setup`: `nativeReserveWei`, `signerNativeReserveWei`, `maxFeeGwei`,
   `maxTransactionSpendWei`, `maxPublicationGas`, `maxPublicationDataBytes`, `maxCancellationGas`,
   `maxBatchCancellationGas`, `maxBatchCancellationDataBytes`, `maxRatificationGas`,
-  `requestTimeoutMs`, `transactionReceiptTimeoutMs`.
+  `maxContinuousFeeCap`, `finality`, `kernelEnrollment`, `requestTimeoutMs`,
+  `transactionReceiptTimeoutMs`.
 - `bootstrap`: an ordered list of the exact per-market objects documented below.
 - `ladder`: an ordered list of the exact per-market objects documented below.
 
@@ -636,10 +617,10 @@ Setup verifies all of the following from the typed configuration:
   amount, to keep quoting at full size.
 - Active maker offers: an offer on an unconfigured market, or a crossed/inverted book, fails
   readiness. A live offer group the bot cannot attribute to itself is reported as `warning` and
-  does not block readiness — group ownership is a local durable record, so redeploying onto a fresh
+  does not block readiness — group ownership is the kernel ledger, so redeploying onto a fresh
   filesystem orphans the bot's own groups, and halting on that cannot recover until every orphan
   expires. Exposure is derived from live onchain groups either way.
-- Signer identity, signer nonce, and the required identity relationship: local and keystore signers
+- Signer identity and the required identity relationship: local and keystore signers
   equal the maker; an AWS signer differs. AWS mode also checks the signer gas reserve and Midnight
   authorization. Signer-only checks are `not-required` with `--readonly`. Addresses are not included
   in operator output.
@@ -647,23 +628,17 @@ Setup verifies all of the following from the typed configuration:
   maturity, and agrees between API and chain state.
 - The exact Blue reference market is readable from the archive provider.
 - Active offer groups belong to configured namespaces and markets and are not crossed/inverted.
-- Every allowlisted market's loss factor equals its accepted value. A difference, an unreadable
-  value, or a malformed response is a `loss-factor` `warning`, never a failure; see
-  [Loss-factor guard](#loss-factor-guard).
 
 `V0_OFFER_GROUP_IDS` is optional. Readiness and every writer use the same explicit ownership source:
-configured IDs plus bot-issued IDs from the maker-and-market-bound state file. Publication first durably
-reserves the SDK-derived group ID, broadcasts only after that write succeeds, and then promotes the
-reservation to confirmed ownership. A failed broadcast removes its reservation; if confirmation storage
-fails after a successful broadcast, the reservation remains sufficient to recognize the group from fresh
-provider data without claiming that an absent group is live. A same-quoter group absent from these
-sources remains unknown, fails readiness, and requires an operator decision; market membership alone never
-permits reconciliation or hard-halt cancellation. The request timeout is an aggregate fetch/RPC bound and
-does not reveal endpoint details in failures.
+configured IDs plus every group the kernel ledger holds or retired since the kernel started. A
+same-quoter group absent from these sources remains unknown, fails readiness, and requires an
+operator decision; market membership alone never permits reconciliation or cancellation. The request
+timeout is an aggregate fetch/RPC bound and does not reveal endpoint details in failures.
 
 Bootstrap offer-group reads request the configured chain explicitly, ignore well-formed rows from other chains, and fail
 closed on malformed chain identity, asset strings, or empty/repeated pagination cursors. The variable Blue
-reference hard-fails when its latest checkpoint is more than five minutes behind wall-clock time, and
+reference hard-fails when its latest checkpoint is more than five minutes behind wall-clock time, or
+more than one second ahead of it, and
 when either checkpoint lands on a block where the reference market does not yet exist or holds no
 supply shares. Blue's virtual shares make that state indistinguishable from a market supplying at
 par, so it is rejected rather than priced; widening `REFERENCE_LOOKBACK_SECONDS` widens the
@@ -752,8 +727,6 @@ ladder:
     targetRate: { strategy: 'hardcoded', hardcodedRateBps: '400' }
 ```
 
-`morpho-quoter setup-check --monitor` repeats non-overlapping read-only readiness observations every
-minute until its shutdown signal or the first failed report after transient-provider retry tolerance.
 `morpho-quoter bootstrap` first runs the same one-shot readiness gate as `setup-check`, then executes
 exactly one position-bootstrap cycle and prints its
 bigint-safe JSON result. `morpho-quoter bootstrap --monitor` uses the same gate, repeats non-overlapping
@@ -762,7 +735,7 @@ cycles every minute, and performs owned-group cleanup after its shutdown signal.
 before/after position diagnostics to each result. `morpho-quoter ladder --monitor` similarly repeats at the shortest configured ladder cadence,
 streams cycles, and cleans active owned ladder groups after shutdown; `--verbose` adds safe
 configuration, rate, quote, transaction-hash, and before/after capacity diagnostics. Version output,
-setup monitoring, and invalid usage never start either writer.
+`setup-check`, and invalid usage never start either writer.
 
 Configuration is validated once when it loads, so invalid configuration stops the bot before either
 writer starts. Reference and decision failures trigger a strategy-wide hard halt;
@@ -902,11 +875,20 @@ For example, a retained center can stay at 4.22% while a fill changes five highe
 200 USDC each to 160 USDC each.
 
 A replacement is market-wide rather than rung-local. The bot prepares and validates the future tree,
-durably reserves its group IDs, confirms cancellation of every remaining active group for the
-market, publishes the complete replacement tree, waits for its receipt, and confirms its durable
-ownership. Every publication uses the fresh block timestamp, producing new content-addressed group
+confirms cancellation of every remaining active group for the market, then publishes the complete
+replacement tree through the kernel and waits for its receipt. Every publication uses the fresh block timestamp, producing new content-addressed group
 IDs instead of reusing consumed IDs. This means an unchanged rung also receives a new group ID when
 another rung causes a resize or recenter.
+
+Preparation reads for itself: the latest head with the maker's offer groups and the market's book,
+then the market and every known group's consumption at that head. Both strategies assess the same
+complete book there and in each poll: the takeable book, the maker's indexed groups, and the
+bootstrap and ladder offers the API has not indexed yet, each own group live only while the
+chain shows it uncancelled with units left at that block. A book that cannot be read fails the
+preparation. A head older than the decision's world block, or than one a world poll read before the
+preparation finished, fails it with
+`adapterOperation: "head-behind-world"`, which keeps what is live and prepares again on a later
+poll.
 
 Monitoring is interval-based rather than fill-event-driven. With `loopIntervalSeconds: "60"`, a
 consumption is normally reconciled by the next cycle after the current cycle and interval finish;
@@ -1106,11 +1088,11 @@ closed, and a units-capped buy reserves its remaining units as exposure and thos
 its highest buy tick as cash. A group at the protocol cancellation sentinel counts as zero, and an unindexed durable group
 without a persisted cap fails closed.
 
-Durable ownership records every group's size in credit units. A cash-capped buy stays takeable for
+The kernel ledger records every group's offers, and so its size in credit units. A cash-capped buy stays takeable for
 fills that round to zero assets after its cap is used up, so the bot cancels every owned buy before
 forgetting it; a sell is done at its cap.
-To upgrade from a version that capped offers in loan assets, see
-[Upgrading to unit-capped offers](../README.md#upgrading-to-unit-capped-offers).
+To upgrade from a pre-kernel version, see
+[Upgrading to the kernel](../README.md#upgrading-to-the-kernel).
 
 A replacement cancels the old groups before publishing, and an old buy can fill until its
 cancellation lands. So after the cancellations confirm, both strategies re-admit the prepared buy
@@ -1142,7 +1124,7 @@ cycle reports `action: "publication-withheld"`, `reason: "below-minimum-offer"` 
 binding cap, and every other rejection, still fails the `make` stage.
 
 The guarantee assumes one writer per maker key, a complete initial maker inventory (every maker group
-is indexed or in durable ownership state), and that the first receipt is final. It makes no claim
+is indexed or held by the kernel), and that the first receipt is final. It makes no claim
 after B beyond each group's cap: a units-capped group can still acquire its remaining
 `maxUnits − consumed` of face, which B already counts.
 Read-only and preview output is the pre-cancellation plan; it cannot predict fills during a real
@@ -1159,10 +1141,10 @@ allowlisted market id to a canonical unsigned decimal string. A market that is n
 startup.
 
 **Deploy consequence.** A market with any bad debt in its history already has a non-zero loss
-factor, so it starts lend-halted until its current value is accepted. Setup reports it as a
-`loss-factor` `warning` listing the market, both values, the direction, and whether the default was
-used. Readiness never fails on it: a failed readiness cancels every owned offer and exits, which
-would stop quoting on every market rather than only the halted one.
+factor, so it starts lend-halted until its current value is accepted. The writer reports it from
+its first poll as `guardrail.lend-halted`, listing the market, both values, the direction, and
+whether the default was used. Readiness does not check it: the halt is per market, so the other
+markets keep quoting.
 
 **Re-arm.** Review the realized loss, set the market's `acceptedLossFactor` to the observed
 `lossFactor` from the warning or the `guardrail.lend-halted` record, and redeploy. The change is
@@ -1175,13 +1157,11 @@ audited by the configuration history; there is no command and no state file.
 - Bootstrap checks the snapshot-block loss factor before target completion, auto-refill, or any
   reference-rate read, cancels every active group in the market, and never marks the initial target
   complete while halted. The ladder reads only the loss factor first, before the active-state,
-  market, book, or snapshot reads, and on a mismatch cancels the market's durable buy groups through
+  market, book, or snapshot reads, and on a mismatch cancels the market's owned buy groups through
   a dedicated operation that reads no book and prepares no replacement. Sells are untouched.
 - Within a cycle, cancelling mismatched buys comes before any other mutation or fallible step:
   bootstrap runs its loss-factor invalidations before any publication, and the ladder guards every
-  market before removed-market cleanup. A failure elsewhere cannot leave a mismatched buy live.
-  Bootstrap cancels every group of a halted market before forgetting any, so an ownership write
-  failure cannot skip a cancellation.
+  market before any other mutation. A failure elsewhere cannot leave a mismatched buy live.
 - A loss factor that cannot be read or is not a uint128 is treated as a mismatch: the workflow
   cancels its buys in the market and fails that market as a retryable `guard-read`. It counts
   toward the five-cycle market failure budget.
@@ -1203,25 +1183,25 @@ market's credit still counts toward total exposure.
 
 **Guarantee.** Enforcement is per cycle, per workflow, and in writer mode only. Within one cycle of
 a workflow observing a loss factor other than the accepted value, plus cancellation confirmation,
-that workflow has no newly admitted buy and no durably owned resting buy in that market. Bootstrap
+that workflow has no newly admitted buy and no owned resting buy in that market. Bootstrap
 and ladder run separate cycles, so the bot as a whole is covered for a market once every workflow
-configured for it has run its first cycle after the mismatch becomes observable. Buys the bot does
-not durably own (for example after a lost ownership volume) are not covered; readiness already warns
+configured for it has run its first cycle after the mismatch becomes observable. Buys the kernel
+does not hold (for example after a lost ledger volume) are not covered; readiness already warns
 about unattributable groups.
 
 It does not cover a same-block ordering in which a searcher places the loss-causing `liquidate`
 before a take of a resting buy. Only take-time onchain enforcement closes that, which is tracked as
 BOTS-238.
 
-The guard itself runs only in cycles. A writer that fails before its first cycle cancels every
-durably owned offer before it exits; see [Writer startup failure](#writer-startup-failure).
+The guard itself runs only in cycles. A writer that fails before its first cycle withdraws every
+offer the kernel holds before it exits; see [Writer startup failure](#writer-startup-failure).
 
 ### Writer startup failure
 
-A writer (`bootstrap`, `ladder`, or `start`, without `--readonly`) that fails startup cancels every
-offer both strategies durably own before it exits. This covers every step after the signer is
-verified: the pending-nonce check, startup removed-market cleanup, and the readiness gate. It uses
-the same exhaustive, receipt-confirmed cleanup as a hard halt and shutdown.
+A writer (`bootstrap`, `ladder`, or `start`, without `--readonly`) that fails startup stops the
+kernel, which withdraws every offer it holds and waits until each withdrawal is final, before it
+exits. This covers every step after the kernel starts: withdrawing adopted offers and the readiness
+gate.
 
 - Earlier failures cannot cancel anything and exit without cleanup: configuration errors, signer
   creation, and a signer that does not match the maker. An empty strategy configuration is a
@@ -1229,18 +1209,14 @@ the same exhaustive, receipt-confirmed cleanup as a hard halt and shutdown.
 - A `SIGINT` or `SIGTERM` that interrupts startup is a normal stop, not a failure, and exits
   without cleanup. Any other startup error still cleans up, even if a signal arrives at the same
   time.
-- A latched nonce means an unknown transaction is pending. The cancellation queues behind it and
-  confirms once it mines. If it never mines, the receipt deadline expires and cleanup fails.
+- A signer transaction the ledger never recorded refuses the kernel's start, so nothing is
+  cancelled and cleanup fails; see [Signing kernel](#signing-kernel).
 - On success the bot writes `startup.owned-offers-cancelled` (terminal only) with the startup
-  `errorName`, any `adapterOperation`, and each strategy's confirmed cancellation transactions. It
-  then exits with the original startup error.
-- If either cleanup fails, the bot exits with `StartupCleanupFailedError` and ships
-  `bot.failed` with `reason: "startup-cleanup-failed"`. The printed report gives each strategy's
-  outcome and, when ownership could be read, the `unresolvedGroupIds` whose cleanup did not
-  complete. Those offers may or may not still be live; cancel them with `invalidate`.
-
-Bootstrap ownership is scoped to the configured `MARKET_IDS` set, so bootstrap groups persisted under
-a different market set are not covered by this or any other cleanup.
+  `errorName` and any `adapterOperation`, then exits with the original startup error. The kernel's
+  `transaction.lifecycle` and `kernel.commitment` records name each cancellation.
+- If the kernel stops with offers still open, the bot exits with `StartupCleanupFailedError` and
+  ships `bot.failed` with `reason: "startup-cleanup-failed"`. The `kernel.stopped` record counts the
+  open offers and transactions; they may still be live, and stay in the ledger for the next start.
 
 ### Secrets and failure behavior
 
@@ -1313,9 +1289,15 @@ For a production-equivalent build without starting a server, run:
 pnpm --filter @morpho-org/quoter-bot run playground:build
 ```
 
-Relevant playground, browser-safe bot-kit, package, lock, or deployment-workflow changes merged to
+Relevant playground, browser-safe kit, package, lock, or deployment-workflow changes merged to
 `main` deploy through GitHub Actions to <https://morpho-org.github.io/morpho-bots/>. Repository Pages
 settings must use **GitHub Actions** as the publishing source; the workflow intentionally cannot
 change that repository setting with its least-privilege token. The Pages site is not live until that
 post-merge workflow completes successfully; check the repository's **Deploy quoter-bot playground to
 GitHub Pages** workflow and its `github-pages` environment for deployment status.
+
+The optional `ladder[].debt.maximumDebtUnits` field is a positive decimal integer in face units.
+It enables borrowing sells against manually supplied loan-asset collateral and requires a nonzero
+lower-side budget. The required `ladder[].debt.stopBorrowingBeforeMaturitySeconds` is a
+non-negative decimal integer: sells stop borrowing that many seconds before maturity, and `'0'`
+borrows until maturity. See [Loan-as-collateral markets](../README.md#loan-as-collateral-markets).

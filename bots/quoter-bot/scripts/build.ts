@@ -1,4 +1,5 @@
 import { build as esbuild } from 'esbuild'
+import { execFileSync } from 'node:child_process'
 import { readFileSync, rmSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -19,6 +20,17 @@ try {
   throw new BundleFailedError('package.json could not be read or parsed for version stamping')
 }
 
+const gitRevision = () => {
+  try {
+    return execFileSync('git', ['rev-parse', 'HEAD'], { cwd: ROOT, encoding: 'utf8' }).trim()
+  } catch {
+    return undefined
+  }
+}
+// The journal names the build that wrote it; the environment still overrides these at runtime.
+const revision = process.env.BUILD_REVISION?.trim() || gitRevision()
+const imageTag = process.env.BUILD_IMAGE_TAG?.trim() || `quoter-bot-${manifest.version ?? '0.0.0'}`
+
 try {
   await esbuild({
     entryPoints: [join(ROOT, 'src/index.ts')],
@@ -35,7 +47,9 @@ try {
     },
     // Stamp the release version into VersionService so built artifacts report their real version.
     define: {
-      'process.env.QUOTER_BOT_VERSION': JSON.stringify(manifest.version ?? '0.0.0')
+      'process.env.QUOTER_BOT_VERSION': JSON.stringify(manifest.version ?? '0.0.0'),
+      'process.env.QUOTER_BOT_BUILD_IMAGE_TAG': JSON.stringify(imageTag),
+      ...(revision && { 'process.env.QUOTER_BOT_BUILD_REVISION': JSON.stringify(revision) })
     }
   })
 } catch (error) {

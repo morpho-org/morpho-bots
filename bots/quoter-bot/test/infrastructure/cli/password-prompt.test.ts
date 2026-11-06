@@ -1,6 +1,5 @@
 import { EventEmitter } from 'node:events'
-import { readFile } from 'node:fs/promises'
-import { describe, expect, test } from 'vitest'
+import { describe, expect, test, vi } from 'vitest'
 
 import { readPasswordInteractively } from '../../../src/infrastructure/cli/password-prompt.utils'
 
@@ -69,13 +68,24 @@ const expectWiped = (secretBytes: number[], length: number) => {
 
 describe('hidden keystore password input', () => {
   test('defaults prompts and trailing newlines to stderr', async () => {
-    const source = await readFile(
-      new URL('../../../src/infrastructure/cli/password-prompt.utils.ts', import.meta.url),
-      'utf8'
-    )
+    const tty = Object.getOwnPropertyDescriptor(process.stderr, 'isTTY')
+    Object.defineProperty(process.stderr, 'isTTY', { value: true, configurable: true })
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    const stdout = vi.spyOn(process.stdout, 'write')
+    try {
+      const input = new FakeInput()
+      const result = readPasswordInteractively({ input })
+      input.emit('data', Buffer.from('secret\n'))
 
-    expect(source).toContain('const output = options.output ?? process.stderr')
-    expect(source).not.toContain('const output = options.output ?? process.stdout')
+      expect(await result).toBe('secret')
+      expect(stderr.mock.calls.map(([value]) => value)).toEqual(['Keystore password: ', '\n'])
+      expect(stdout).not.toHaveBeenCalled()
+    } finally {
+      stderr.mockRestore()
+      stdout.mockRestore()
+      if (tty) Object.defineProperty(process.stderr, 'isTTY', tty)
+      else delete (process.stderr as { isTTY?: boolean }).isTTY
+    }
   })
 
   test('preserves split UTF-8 input and whitespace without echoing it, then wipes mutable bytes', async () => {

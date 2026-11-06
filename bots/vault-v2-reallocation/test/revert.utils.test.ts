@@ -7,7 +7,7 @@ import { describe, expect, it } from 'vitest'
 import { revertReason } from '../src/revert.utils'
 
 // A viem-style error chain whose cause carries an ABI-encoded revert payload, the shape
-// `revertReason` walks for (mirrors bot-kit's own revert.utils tests).
+// `revertReason` walks for (mirrors kit's own revert.utils tests).
 const revertError = (data: Hex): BaseError =>
   new BaseError('execution reverted', {
     cause: Object.assign(new Error('execution reverted'), { data })

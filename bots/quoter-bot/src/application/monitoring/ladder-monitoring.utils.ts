@@ -3,23 +3,17 @@ import type { Hex } from 'viem'
 import { MAX_OFFER_CAP } from '@morpho-org/midnight-sdk'
 
 import type { LadderQuoteSet, LadderRung, LadderSideDiagnostics } from '../../domain/ladder'
-import type { LadderRunResult } from '../ladder/ladder-quoter.service'
-import type { LadderGroupConsumption, LadderVerboseDetails } from '../ladder/ladder-verbose'
+import type { LadderFacts } from '../engine/market-report'
+import type { LadderGroupConsumption } from '../ladder/ladder-verbose'
 import type { MonitoringEvent, MonitoringSide } from './monitoring-event'
-
-import {
-  adapterOperationOf,
-  publicationWithheldEvents,
-  snapshotErrorOperationOf
-} from './monitoring-event'
 
 const SIDES: readonly MonitoringSide[] = ['lower', 'higher']
 
 const defined = <Key extends string>(key: Key, value: bigint | undefined) =>
   value === undefined ? {} : ({ [key]: value } as Record<Key, bigint>)
 
-// Emitted for both sides on every observed cycle, including when no quote is active at all: an
-// absent record is indistinguishable from an unshipped one, so "not quoting" needs a positive
+// Emitted for both sides whenever the market was read, including when no quote is active at all:
+// an absent record is indistinguishable from an unshipped one, so "not quoting" needs a positive
 // `state: 'empty'` signal rather than silence.
 const sideBook = (marketId: Hex, side: MonitoringSide, quote?: LadderQuoteSet): MonitoringEvent => {
   const rungs: readonly LadderRung[] = quote?.[side] ?? []
@@ -50,7 +44,7 @@ const sideBook = (marketId: Hex, side: MonitoringSide, quote?: LadderQuoteSet): 
 const rateOmitted = (
   marketId: Hex,
   side: MonitoringSide,
-  verbose: Pick<LadderVerboseDetails, 'config' | 'referenceRateBps'>,
+  facts: LadderFacts,
   omission: { bound: 'minimum' | 'maximum'; rungs: number; assets: bigint; rateBps?: bigint }
 ): readonly MonitoringEvent[] =>
   omission.rungs > 0 && omission.rateBps !== undefined
@@ -64,9 +58,9 @@ const rateOmitted = (
           omittedAssets: omission.assets,
           bound: omission.bound,
           outermostRateBps: omission.rateBps,
-          ...defined('referenceRateBps', verbose.referenceRateBps),
-          minimumRateBps: verbose.config.minimumRateBps,
-          maximumRateBps: verbose.config.maximumRateBps
+          ...defined('referenceRateBps', facts.referenceRateBps),
+          minimumRateBps: facts.bounds.minimumRateBps,
+          maximumRateBps: facts.bounds.maximumRateBps
         }
       ]
     : []
@@ -75,9 +69,9 @@ const sideGuardrails = (
   marketId: Hex,
   side: MonitoringSide,
   diagnostics: LadderSideDiagnostics,
-  verbose: Pick<LadderVerboseDetails, 'config' | 'referenceRateBps'>
+  facts: LadderFacts
 ): readonly MonitoringEvent[] => [
-  ...rateOmitted(marketId, side, verbose, {
+  ...rateOmitted(marketId, side, facts, {
     bound: 'minimum',
     rungs: diagnostics.omittedBelowMinimumRungs,
     assets: diagnostics.omittedBelowMinimumAssets,
@@ -85,7 +79,7 @@ const sideGuardrails = (
       ? {}
       : { rateBps: diagnostics.lowestOmittedRateBps })
   }),
-  ...rateOmitted(marketId, side, verbose, {
+  ...rateOmitted(marketId, side, facts, {
     bound: 'maximum',
     rungs: diagnostics.omittedAboveMaximumRungs,
     assets: diagnostics.omittedAboveMaximumAssets,
@@ -117,31 +111,35 @@ const sideGuardrails = (
     : [])
 ]
 
-// oxlint-disable-next-line complexity
-const verboseEvents = (
-  marketId: Hex,
-  verbose: LadderVerboseDetails,
-  status: LadderRunResult['status']
-): readonly MonitoringEvent[] => {
+/**
+ * Projects what one ladder market observed and derived into its reference, position, book, and
+ * guardrail records.
+ * @remarks The position record reports both the saturating capacities and the balance primitives
+ * they were derived from, because the capacities alone cannot be inverted into a position value.
+ * Fill records need the previous poll's consumption; see {@link ladderConsumptionEvents}.
+ * @param marketId - The ladder market the facts describe.
+ * @param facts - What the market's decision observed and derived.
+ * @returns The records in emission order; a fact that is absent emits nothing.
+ */
+export const ladderFactEvents = (marketId: Hex, facts: LadderFacts): readonly MonitoringEvent[] => {
   const events: MonitoringEvent[] = []
-  if (verbose.referenceRateBps !== undefined) {
+  if (facts.referenceRateBps !== undefined)
     events.push({
       event: 'reference.observed',
       workflow: 'ladder',
       marketId,
-      referenceRateBps: verbose.referenceRateBps,
-      ...(verbose.targetRateBps === undefined ? {} : { targetRateBps: verbose.targetRateBps })
+      referenceRateBps: facts.referenceRateBps,
+      ...defined('targetRateBps', facts.targetRateBps)
     })
-  }
-  if (verbose.currentState.status === 'observed') {
-    const observedAfter =
-      verbose.stateAfterCheck.status === 'observed' ? verbose.stateAfterCheck : verbose.currentState
-    const market = observedAfter.market
+  const market = facts.market
+  if (market) {
     events.push({
       event: 'position.observed',
       marketId,
       ...defined('cashBalanceAssets', market.cashBalanceAssets),
       ...defined('creditAssets', market.creditAssets),
+      ...defined('debtAssets', market.debtAssets),
+      ...defined('debtCeilingAssets', market.debtCeilingAssets),
       ...defined('otherMarketCreditAssets', market.otherMarketCreditAssets),
       ...defined('reservedAssets', market.reservedAssets),
       ...defined('marketReservedAssets', market.marketReservedAssets),
@@ -151,181 +149,74 @@ const verboseEvents = (
       ...defined('targetMarketCapacityAssets', market.targetMarketCapacityAssets),
       ...defined('maximumTotalCapacityAssets', market.maximumTotalCapacityAssets)
     })
-    const activeQuote = observedAfter.activeQuote
-    events.push(...SIDES.map(side => sideBook(marketId, side, activeQuote)))
+    events.push(...SIDES.map(side => sideBook(marketId, side, facts.activeQuote)))
   }
-  if (verbose.diagnostics?.inventorySkew) {
+  const diagnostics = facts.diagnostics
+  if (diagnostics?.inventorySkew)
     events.push({
       event: 'inventory-skew.observed',
       workflow: 'ladder',
       marketId,
-      ...verbose.diagnostics.inventorySkew
+      ...diagnostics.inventorySkew
     })
-  }
-  if (verbose.diagnostics) {
-    for (const side of SIDES) {
-      events.push(...sideGuardrails(marketId, side, verbose.diagnostics[side], verbose))
-    }
-  }
+  if (diagnostics)
+    for (const side of SIDES)
+      events.push(...sideGuardrails(marketId, side, diagnostics[side], facts))
   for (const side of SIDES) {
-    const clearedRungs = verbose.bookClearedRungs?.[side] ?? 0
-    if (clearedRungs > 0) {
-      events.push({
-        event: 'guardrail.book-cleared',
-        workflow: 'ladder',
-        marketId,
-        side,
-        clearedRungs
-      })
-    }
-    const report = verbose.bookCrossing?.[side]
-    const crossing =
-      report ??
-      (verbose.currentState.status === 'observed'
-        ? verbose.currentState.market.bookCrossing?.[side]
-        : undefined)
-    if (crossing?.crossed) {
+    const crossing = facts.bookCrossing?.[side]
+    if (crossing?.crossed)
       events.push({
         event: 'guardrail.book-crossed',
         workflow: 'ladder',
         marketId,
         side,
         clearable: crossing.clearable,
-        suppressed: report?.suppressed ?? false
+        suppressed: crossing.suppressed
       })
-    }
-  }
-  for (const transaction of verbose.submittedTransactions ?? []) {
-    events.push({
-      event: 'transaction.settled',
-      workflow: 'ladder',
-      ...(status === 'halted' ? {} : { marketId }),
-      operation: transaction.operation,
-      txHash: transaction.txHash
-    })
   }
   return events
 }
 
 /**
- * Projects one ladder cycle's results into flat, aggregatable monitoring records.
- * @param results - Sanitized per-market outcomes from one ladder cycle.
- * @returns One `cycle.completed` per market plus every guardrail, reference, position, book, and
- * settled-transaction record derivable from the attached verbose diagnostics.
- * @remarks A pure projection: it reads nothing and performs no provider calls. Everything beyond
- * `cycle.completed` and `guardrail.halted` requires `--verbose`, which shipping auto-enables.
- * `position.observed` and `book.observed` describe the post-check snapshot when that read succeeded
- * and fall back to the pre-decision read otherwise. `guardrail.book-crossed` is the exception: it
- * reads the pre-decision snapshot, because a replacement clears the cross before the after-check.
- * The position record reports both the saturating capacities and the balance primitives they were
- * derived from, because the capacities alone cannot be inverted into a position value. Fill records
- * are not produced here — see
- * `ladderConsumptionEvents`, which needs the previous cycle's consumption to compute a delta.
- */
-export const ladderMonitoringEvents = (
-  results: readonly LadderRunResult[]
-): readonly MonitoringEvent[] =>
-  results.flatMap(result => {
-    const marketId = result.marketId
-    const events: MonitoringEvent[] = [
-      {
-        event: 'cycle.completed',
-        workflow: 'ladder',
-        marketId,
-        status: result.status,
-        ...('stage' in result ? { stage: result.stage } : {}),
-        ...('action' in result ? { action: result.action } : {}),
-        ...('reason' in result ? { reason: result.reason } : {}),
-        ...('errorName' in result ? { errorName: result.errorName } : {}),
-        ...adapterOperationOf(result),
-        ...snapshotErrorOperationOf(result),
-        ...(result.verbose?.durationMs === undefined
-          ? {}
-          : { durationMs: result.verbose.durationMs })
-      }
-    ]
-    if (result.status === 'halted') {
-      events.push({
-        event: 'guardrail.halted',
-        workflow: 'ladder',
-        marketId,
-        stage: result.stage,
-        reason: result.errorName,
-        strategyInvalidated: result.strategyInvalidated,
-        ...adapterOperationOf(result)
-      })
-    }
-    events.push(...publicationWithheldEvents('ladder', result))
-    for (const side of 'withdrawnSides' in result ? (result.withdrawnSides ?? []) : []) {
-      events.push({ event: 'guardrail.side-withdrawn', workflow: 'ladder', marketId, side })
-    }
-    if (result.verbose) events.push(...verboseEvents(marketId, result.verbose, result.status))
-    return events
-  })
-
-/**
- * Cycles a baseline is retained for after a group was last seen in the indexed set.
+ * Polls a baseline is retained for after a group was last seen in the indexed set.
  * @remarks Sized far beyond the group API's consistency window so a transiently absent group is
  * never re-baselined, while still bounding memory: reconciliation reserves fresh group IDs on every
  * recenter and resize, so without eviction the set of observed IDs grows for the process lifetime.
  */
-const RETAINED_BASELINE_CYCLES = 500
+const RETAINED_BASELINE_POLLS = 500
 
-/** Per-group fill baselines carried across ladder cycles. */
-type LadderConsumptionBaselines = {
-  groups: Map<Hex, { consumed: bigint; lastSeenCycle: number }>
-  cycle: number
+/** Per-group fill baselines carried across polls; in-process only, so a restart loses one poll of fills. */
+export type LadderConsumptionBaselines = {
+  groups: Map<Hex, { consumed: bigint; lastSeenPoll: number }>
+  poll: number
 }
 
 /**
- * Creates empty fill baselines for one process.
- * @returns Baselines holding no groups, positioned before the first cycle.
- * @remarks In-process only: nothing is persisted, so a restart re-establishes every baseline and the
- * first cycle after one reports no fills.
- */
-export const createLadderConsumptionBaselines = (): LadderConsumptionBaselines => ({
-  groups: new Map(),
-  cycle: 0
-})
-
-/**
- * Diffs monotonic per-group consumption against the previous cycle to derive taker fills.
- * @param results - Sanitized per-market outcomes carrying verbose group consumption.
+ * Diffs monotonic per-group consumption against the previous poll to derive taker fills.
+ * @param consumption - Every ladder market's group consumption in one poll.
  * @param baselines - Consumption last observed per group; advanced in place for the next call.
  * @returns One `offer.consumed` record per group whose consumption grew.
- * @remarks Correct where a quote-set diff is not: reconciliation reserves fresh group IDs and
- * invalidates the old ones on every recenter and resize, so the active set churns for reasons
- * unrelated to takers, while a group's `consumed` only ever grows. Two limits are inherent. A group
- * first seen establishes a baseline and emits nothing, so a restart loses one cycle of fills. And
- * under `per-book` every rung on a side shares one group, so `groupRateBps` is the group's best rate
- * rather than the rate that actually executed.
- *
- * A baseline is never lowered and is not dropped merely because a group is absent for a cycle: the
- * indexer is eventually consistent, so either would silently swallow a fill. Baselines are instead
- * evicted after {@link RETAINED_BASELINE_CYCLES} cycles without a sighting, which bounds memory
- * without reaching the consistency window.
+ * @remarks Correct where a quote-set diff is not: reconciliation reserves fresh group IDs on every
+ * recenter and resize, while a group's `consumed` only ever grows. A group first seen establishes a
+ * baseline and emits nothing, and under `per-book` `groupRateBps` is the group's best rate rather
+ * than the executed one. A baseline is never lowered and survives a poll in which its group is
+ * absent, since the indexer is eventually consistent; it is evicted after
+ * `RETAINED_BASELINE_POLLS` polls unseen.
  */
 export const ladderConsumptionEvents = (
-  results: readonly LadderRunResult[],
+  consumption: readonly LadderGroupConsumption[],
   baselines: LadderConsumptionBaselines
 ): readonly MonitoringEvent[] => {
   const events: MonitoringEvent[] = []
   const seen = new Set<Hex>()
-  baselines.cycle += 1
-  const consumption: readonly LadderGroupConsumption[] = results.flatMap(
-    result => result.verbose?.groupConsumption ?? []
-  )
+  baselines.poll += 1
   for (const group of consumption) {
     if (seen.has(group.groupId) || group.consumed === MAX_OFFER_CAP) continue
     seen.add(group.groupId)
-    const previous = baselines.groups.get(group.groupId)
-    const before = previous?.consumed
-    // Only ever advance. The group API is eventually consistent and can return an older `consumed`
-    // after a newer one; lowering the baseline would re-emit the already-counted portion when the
-    // next fresh value arrives.
+    const before = baselines.groups.get(group.groupId)?.consumed
     baselines.groups.set(group.groupId, {
       consumed: before === undefined || group.consumed > before ? group.consumed : before,
-      lastSeenCycle: baselines.cycle
+      lastSeenPoll: baselines.poll
     })
     if (before === undefined || group.consumed <= before) continue
     events.push({
@@ -338,10 +229,8 @@ export const ladderConsumptionEvents = (
       groupId: group.groupId
     })
   }
-  for (const [groupId, baseline] of baselines.groups) {
-    if (baselines.cycle - baseline.lastSeenCycle > RETAINED_BASELINE_CYCLES) {
+  for (const [groupId, baseline] of baselines.groups)
+    if (baselines.poll - baseline.lastSeenPoll > RETAINED_BASELINE_POLLS)
       baselines.groups.delete(groupId)
-    }
-  }
   return events
 }

@@ -8,6 +8,7 @@ import { estimateGas, getFeeHistory } from 'viem/actions'
 import type { Logger } from './logger'
 import type { Signer } from './signer'
 
+import { BLOCK_TIME_MS } from './block-time'
 import { FeeLimitError, SignWithdrawnError } from './errors'
 import { bumpFees, feeCeiling, initialFees, stepCap } from './fee-policy'
 import { callAt } from './kernel-chain'
@@ -69,6 +70,7 @@ const MARKET_TIP_TIMEOUT_MS = 2_000
  * {@link MARKET_TIP_TIMEOUT_MS}, which leaves {@link initialFees} its own tip and warns once.
  */
 const createMarketTip = (client: Client, logger: Logger | undefined) => {
+  const freshMs = (client.chain && BLOCK_TIME_MS.get(client.chain.id)) ?? 0
   let cached: { settledAt?: number; tip: Promise<bigint | undefined> } | undefined
   let warned = false
   const read = async () => {
@@ -92,10 +94,7 @@ const createMarketTip = (client: Client, logger: Logger | undefined) => {
   }
   return () => {
     const { settledAt } = cached ?? {}
-    if (
-      !cached ||
-      (settledAt !== undefined && Date.now() - settledAt >= (client.chain?.blockTime ?? 0))
-    ) {
+    if (!cached || (settledAt !== undefined && Date.now() - settledAt >= freshMs)) {
       const entry: NonNullable<typeof cached> = { tip: read() }
       void entry.tip.then(() => (entry.settledAt = Date.now()))
       cached = entry

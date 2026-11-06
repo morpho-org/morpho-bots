@@ -425,8 +425,8 @@ be written raw instead (review).
   a family that reaches the kernel after the declaration returned"). A fact may be declared after
   the kernel's view was read ("acts on a fact declared after the view was read, sampling the kernel
   state").
-- `b.source(id, { level, at, queue, validForMs, samples, read })` is the effect `id` on the lane
-  `id`, one read at a time with `queue` waiting, writing `${id}.reads`, folded by `keyedLevel` into
+- `b.source(id, { level, at, queue, validForMs, samples, logger, read })` is the effect `id` on the
+  lane `id`, one read at a time with `queue` waiting, writing `${id}.reads`, folded by `keyedLevel` into
   `level`. `read` gets `samples` as an effect does, each current when called rather than pinned to
   the head it reads at ("hands read its own samples, each current when read calls it"). The source
   samples the kernel's state as `state`, so a sample of that name is refused ("refuses a sample
@@ -441,8 +441,11 @@ be written raw instead (review).
   and hash when the read starts ("skips a queued head the kernel replaced at the same height"), so a newer head's read always lands last ("lands a newer head last even when an
   older read is slower"). With `at: { everyMs }`, the fold `${level}.interval` emits `${level}.due`
   on the first head delivered once the last read landed and `everyMs` has passed since it started;
-  the read then runs at the kernel's current head. A throw from `read` fails the graph, as any
-  effect's does.
+  the read then runs at the kernel's current head. Each read that lands is logged to `logger` as
+  `source.read` with the source's id, the block it read at, how long it took on the runner's clock
+  and its write's coverage, so a bot carries no read timing of its own ("logs each landed read with
+  its source, block, duration and coverage"); a skipped head logs nothing ("skips a queued head the kernel replaced at the same height", "reads only the newest of a burst of heads, past its queue bound"). A throw from `read` fails
+  the graph, as any effect's does.
 - `b.fact(id, over, project, options)` is `keyedMap` registered with the kernel's domain;
   `b.derive` is `keyedMap` alone (untested).
 - `b.sink(id, { on, samples, finishOnStop, handle })` is the effect `id` requested by every write of

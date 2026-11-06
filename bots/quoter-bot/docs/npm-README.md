@@ -37,16 +37,16 @@ Start with `--readonly` to inspect every intended action before enabling signing
 
 | Command                 | Behavior                                                           |
 | ----------------------- | ------------------------------------------------------------------ |
-| `setup-check`           | Run quoter readiness checks once, or continuously with `--monitor` |
+| `setup-check`           | Run quoter readiness checks once                                   |
 | `bootstrap`             | Run one position-bootstrap cycle, or continuously with `--monitor` |
 | `ladder`                | Run one quoter ladder cycle, or continuously with `--monitor`      |
 | `start`                 | Monitor setup, bootstrap, and ladder together until shutdown       |
-| `invalidate [group-id]` | Invalidate all active maker offer groups, or one explicit group    |
+| `invalidate [group-id]` | Cancel every offer group the signer's kernel holds, or one of them |
 
 Root options precede the command: `--config <path>`, `--readonly`, `--json` (JSON Lines output for
 automation), and the signer options below. Add `--verbose` to writer commands for safe diagnostics
 and submitted transaction hashes. The `bootstrap --monitor` and `ladder --monitor` writer variants
-(and `start`) clean up owned offers on SIGINT/SIGTERM; `setup-check --monitor` stays read-only.
+(and `start`) clean up owned offers on SIGINT/SIGTERM; `setup-check` stays read-only.
 
 ## Signing
 
@@ -65,7 +65,27 @@ morpho-quoter --aws setup-check
 
 AWS mode calls KMS directly. Its signer must differ from `MAKER_ADDRESS`, be authorized by that
 maker through Midnight, use the canonical Ecrecover ratifier, and hold the configured gas reserve.
-Write mode also requires the fee, spend, gas, and calldata limits listed in the full reference.
+Write mode also requires the fee, spend, gas, and calldata limits and the `KERNEL_ENROLLMENT`
+setting listed in the full reference.
+
+## Upgrading from 0.x
+
+This major version signs only through a transaction kernel whose ledger and journal live in
+`$XDG_STATE_HOME/morpho-quoter-bot`, which must survive restarts. Upgrade one chain at a time,
+with the chain unquoted for the window:
+
+1. Stop the running bot; its shutdown cancels every offer group it owns.
+2. With the earlier version, run `morpho-quoter invalidate --readonly` and cancel any group that
+   remains with `invalidate`, or `invalidate <group>` for one the API has not indexed.
+3. Delete the earlier version's `0x….json` state files from that directory. Keep the directory.
+4. Unset `PRIORITY_FEE_GWEI`; the kernel tips from the chain's recent fees, and a start that still
+   sets it refuses.
+5. Start this version with `KERNEL_ENROLLMENT=enrolling`, then set `KERNEL_ENROLLMENT=enrolled` for
+   every later start.
+
+`MAX_CONTINUOUS_FEE_CAP`, `FINALITY` and `JOURNAL_RUN_CAP_BYTES` are optional and default to the
+earlier behavior. Log events changed; the full reference lists every change under "Log changes
+from 0.x".
 
 `--private-key <key>` and `--password <password>` exist for explicit automation but place secrets in
 argv, where process listings and shell history may expose them; prefer `MAKER_PRIVATE_KEY` and

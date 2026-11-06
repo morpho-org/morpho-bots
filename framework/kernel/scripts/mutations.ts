@@ -309,8 +309,8 @@ export const MUTATIONS: readonly Mutation[] = [
     replace: '      liveAuthorityDefect(submitted.evidence, submitted.decision)'
   },
   {
-    id: 'live evidence may name no block',
-    find: "  for (const fact of evidence ?? []) if (fact.basis === undefined) return 'evidence names no block'\n",
+    id: 'live evidence may name no basis',
+    find: "  if (evidence.some(fact => fact.basis === undefined)) return 'evidence names no basis'\n",
     replace: ''
   },
   {
@@ -346,7 +346,7 @@ export const MUTATIONS: readonly Mutation[] = [
   },
   {
     id: 'a failed simulation proceeds',
-    find: "if (!event.ok) return failPlan(s, out, taken.plan, 'simulation failed')",
+    find: "if (!event.ok) return failPlan(s, out, taken.plan, 'simulation failed', 'reverted')",
     replace: ''
   },
   {
@@ -427,7 +427,7 @@ export const MUTATIONS: readonly Mutation[] = [
   },
   {
     id: 'a decision is held to our own final effects by its latest read alone',
-    find: 'const oldest = Math.min(plan.basisBlock, ...(plan.evidence ?? []).map(f => f.basis.block))',
+    find: 'const oldest = Math.min(plan.basisBlock, ...chainBlocks(plan.evidence))',
     replace: 'const oldest = plan.basisBlock'
   },
   {
@@ -567,7 +567,7 @@ export const MUTATIONS: readonly Mutation[] = [
   },
   {
     id: 'a fact read below the evidence floor is admitted',
-    find: "      if (fact.basis.block < floor)\n        return asRefusal('evidence_too_old'",
+    find: "      if (chain && fact.basis.block < floor)\n        return asRefusal('evidence_too_old'",
     replace: "      if (false)\n        return asRefusal('evidence_too_old'"
   },
   {

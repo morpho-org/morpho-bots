@@ -68,8 +68,8 @@ describe('bootstrap + ladder only browser contract', () => {
     for (const forbidden of [
       'MAKER_PRIVATE_KEY',
       'RPC_URL',
-      "from '@repo/observability'",
-      "from '@repo/logging'"
+      'infrastructure/observability',
+      'cli-logger'
     ]) {
       expect(model).not.toContain(forbidden)
     }

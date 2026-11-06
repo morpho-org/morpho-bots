@@ -4,7 +4,7 @@ import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 
 import { runPortableProcess } from './playground-process.mjs'
 
-const requiredDependencies = ['viem', '@repo/bot-kit']
+const requiredDependencies = ['viem', '@repo/kit']
 const loopbackHosts = new Set(['localhost', '127.0.0.1', '::1'])
 
 const escapesRoot = path => path === '..' || path.startsWith(`..${sep}`) || isAbsolute(path)

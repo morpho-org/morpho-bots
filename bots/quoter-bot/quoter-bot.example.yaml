@@ -51,10 +51,8 @@ setup:
   nativeReserveWei: '10000000000000000'
   # Required only for AWS write mode.
   signerNativeReserveWei: ''
-  # Decimal gwei. Calibrate the tip per chain: Base tips are nominal (~0.005), mainnet's are a
-  # real market (~1-2).
+  # Decimal gwei. The kernel tips from the chain's recent fees, within this cap.
   maxFeeGwei: 100
-  priorityFeeGwei: 0.01
   maxTransactionSpendWei: '100000000000000000'
   maxPublicationGas: 5000000
   maxPublicationDataBytes: 65536
@@ -63,6 +61,13 @@ setup:
   maxBatchCancellationDataBytes: 65536
   # Required only for local or keystore Setter mode.
   maxRatificationGas: ''
+  # Optional. Highest market continuous fee per second a signed offer may accept; defaults to the
+  # protocol maximum (317097919), so every fee a market can charge is accepted.
+  maxContinuousFeeCap: ''
+  # Required in write mode: enrolling on a fresh signer's first start, enrolled on every later one.
+  kernelEnrollment: enrolling
+  # Optional: safe (the default), finalized, or a block depth.
+  finality: safe
   requestTimeoutMs: 10000
   transactionReceiptTimeoutMs: 180000
 
@@ -145,3 +150,10 @@ ladder:
     #   unitsPerStep: '3333333333'
     #   neutralCredit: '0'
     #   maxSkewBps: '300'
+    # Optional, loan-as-collateral markets only: sells may borrow past credit up to
+    # this face debt, backed by loan-asset collateral supplied by hand. Borrowing sells
+    # expire, and sells turn reduce-only, stopBorrowingBeforeMaturitySeconds before
+    # maturity; '0' borrows until maturity.
+    # debt:
+    #   maximumDebtUnits: '5000000000'
+    #   stopBorrowingBeforeMaturitySeconds: '86400'

@@ -1,66 +1,30 @@
-import type { Hex } from 'viem'
-
-import type { BootstrapSubmittedTransaction } from './application/bootstrap/position-bootstrap-verbose'
-import type { PositionBootstrapMonitorReport } from './application/bootstrap/position-bootstrap.service'
-import type { OfferInvalidationFailureReport } from './application/invalidation/offer-invalidation.service'
-import type { LadderMonitorReport } from './application/ladder/ladder-quoter.service'
-import type { LadderSubmittedTransaction } from './application/ladder/ladder-verbose'
+import type { MarketReport } from './application/engine/market-report'
+import type { Read } from './application/engine/readings'
 import type { OperatorAdapterOperation } from './application/monitoring/operator-error-name.utils'
-import type { QuoterBotMonitorReport } from './application/quoter-bot/quoter-bot.service'
-import type { StartupCleanupReport } from './application/quoter-bot/startup-cleanup.utils'
-import type {
-  SetupCheckReport,
-  SetupCheckMonitorReport
-} from './application/setup/setup-check.service'
+import type { SetupCheckReport } from './application/setup/setup-check.service'
+import type { OfferInvalidationFailureReport } from './infrastructure/invalidation/offer-invalidation'
 
-/** Signals that a confirmed bootstrap cancellation could not be removed from durable ownership. */
-export class BootstrapOwnershipCleanupError extends Error {
-  readonly code = 'BOOTSTRAP_OWNERSHIP_CLEANUP_FAILED'
-  readonly kind = 'cleanup-error'
-
+/** Carries a failed read through a derivation, so the derivation fails with that same read. */
+export class FailedReadError extends Error {
   /**
-   * Creates a sanitized ownership-cleanup failure after an onchain cancellation completed.
-   * @param groupId - Confirmed canceled bootstrap group.
-   * @param submittedTransactions - Confirmed cancellation transaction retained for reporting.
-   * @param cleanupErrorName - Allowlisted classification of the ownership write failure.
+   * Wraps the failed read so the derivation reports it unchanged.
+   * @param failure - The failed read the derivation consumed.
    */
-  constructor(
-    readonly groupId: Hex,
-    readonly submittedTransactions: readonly BootstrapSubmittedTransaction[],
-    readonly cleanupErrorName: string
-  ) {
-    super('Bootstrap ownership cleanup failed after confirmed cancellation')
-    this.name = 'BootstrapOwnershipCleanupError'
+  constructor(readonly failure: Extract<Read<never>, { ok: false }>) {
+    super('A derivation input failed to read')
+    this.name = 'FailedReadError'
   }
 }
 
-/** Sanitized per-market bootstrap outcomes preserved for operator diagnostics. */
-type PositionBootstrapHaltReport = readonly Record<string, unknown>[]
-
-/** Expected CLI failure emitted when a bootstrap cycle enters a strategy-wide safety halt. */
-export class PositionBootstrapHaltedError extends Error {
-  readonly code = 'POSITION_BOOTSTRAP_HALTED'
-  readonly kind = 'safety-halt'
-
-  /** Creates the stable, secret-free operator error. @param report - Sanitized bootstrap outcomes. */
-  constructor(readonly report: PositionBootstrapHaltReport) {
-    super('Position bootstrap halted for safety')
-    this.name = 'PositionBootstrapHaltedError'
-  }
-}
-
-/** Expected CLI failure emitted when continuous position bootstrap halts before shutdown. */
-export class PositionBootstrapMonitorHaltedError extends Error {
-  readonly code = 'POSITION_BOOTSTRAP_MONITOR_HALTED'
-  readonly kind = 'safety-halt'
-
+/** A market decision has no usable input; the controller then withdraws that market's offers. */
+export class QuoterReadingUnavailableError extends Error {
   /**
-   * Creates the stable, secret-free operator error.
-   * @param report - Sanitized terminal monitor and cleanup report.
+   * Names the missing decision input in the operator-safe message.
+   * @param input - Name of the input that had no usable value.
    */
-  constructor(readonly report: PositionBootstrapMonitorReport) {
-    super('Position bootstrap monitor halted for safety')
-    this.name = 'PositionBootstrapMonitorHaltedError'
+  constructor(readonly input: string) {
+    super(`no usable ${input}`)
+    this.name = 'QuoterReadingUnavailableError'
   }
 }
 
@@ -76,70 +40,53 @@ export class OfferInvalidationFailedError extends Error {
   }
 }
 
-/** Sanitized per-market ladder outcomes preserved for operator diagnostics. */
-type LadderCycleHaltReport = readonly Record<string, unknown>[]
-
-/** Expected CLI failure emitted when a ladder cycle fails or enters a safety halt. */
-export class LadderCycleHaltedError extends Error {
-  readonly code = 'LADDER_CYCLE_HALTED'
-  readonly kind = 'safety-halt'
-
-  /** Creates the stable, secret-free operator error. @param report - Sanitized ladder outcomes. */
-  constructor(readonly report: LadderCycleHaltReport) {
-    super('Ladder cycle halted for safety')
-    this.name = 'LadderCycleHaltedError'
-  }
-}
-
-/** Expected CLI failure emitted when continuous ladder monitoring halts before a shutdown signal. */
-export class LadderMonitorHaltedError extends Error {
-  readonly code = 'LADDER_MONITOR_HALTED'
-  readonly kind = 'safety-halt'
-
+/** How a quoter run ended, from the controller's report and the markets' own reports. */
+export type QuoterRunReport = Readonly<{
+  status: 'stopped' | 'failed' | 'halted'
   /**
-   * Creates the stable, secret-free operator error.
-   * @param report - Sanitized terminal monitor and cleanup report.
+   * `market-failed`: a one-shot run settled with a market failed or halted; `halted`: the
+   * controller halted, `halt` says why; `graph-error`: the decision graph itself failed;
+   * `cleanup-failed`: the kernel stopped with commitments it could not withdraw.
    */
-  constructor(readonly report: LadderMonitorReport) {
-    super('Ladder monitor halted for safety')
-    this.name = 'LadderMonitorHaltedError'
-  }
-}
+  reason: 'signal' | 'market-failed' | 'halted' | 'graph-error' | 'cleanup-failed'
+  halt?: string
+  errorName?: string
+  setupReady?: boolean
+  /** The error a setup monitoring cycle threw, when one halted the run. */
+  cycleErrorName?: string
+  /** A one-shot run's final report per market; a continuous run's last poll with a failure. */
+  markets?: readonly MarketReport[]
+}>
 
-/** Signals that a confirmed ladder cancellation could not be removed from durable ownership. */
-export class LadderOwnershipCleanupError extends Error {
-  readonly code = 'LADDER_OWNERSHIP_CLEANUP_FAILED'
-  readonly kind = 'cleanup-error'
-
-  /**
-   * Creates a sanitized ownership-cleanup failure after an onchain cancellation completed.
-   * @param groupId - Confirmed canceled ladder group.
-   * @param submittedTransactions - Confirmed cancellation transaction retained for reporting.
-   * @param cleanupErrorName - Allowlisted classification of the ownership write failure.
-   */
-  constructor(
-    readonly groupId: Hex,
-    readonly submittedTransactions: readonly LadderSubmittedTransaction[],
-    readonly cleanupErrorName: string
-  ) {
-    super('Ladder ownership cleanup failed after confirmed cancellation')
-    this.name = 'LadderOwnershipCleanupError'
-  }
-}
-
-/** Expected CLI failure carrying a sanitized halted combined-monitor report. */
-export class QuoterBotMonitorHaltedError extends Error {
-  readonly name = 'QuoterBotMonitorHaltedError'
-  readonly code = 'QUOTER_BOT_MONITOR_HALTED'
+/** Expected CLI failure: a run that halted, failed to clean up, or ended with a market failed. */
+export class QuoterRunFailedError extends Error {
+  readonly name = 'QuoterRunFailedError'
+  readonly code = 'QUOTER_RUN_FAILED'
   readonly kind = 'safety-halt'
 
   /**
-   * Creates a combined monitor halt from its operator-safe terminal report.
-   * @param report - Complete terminal outcomes for setup, bootstrap, and ladder monitoring.
+   * Carries the run's terminal report for the CLI to print and exit on.
+   * @param report - The run's operator-safe terminal report.
    */
-  constructor(readonly report: QuoterBotMonitorReport) {
-    super('Quoter bot monitor halted for safety')
+  constructor(readonly report: QuoterRunReport) {
+    super('Quoter run failed')
   }
+}
+
+type StrategyCleanupOutcome =
+  | {
+      status: 'succeeded'
+      transactions: readonly { operation: 'cancel' | 'ratify' | 'publish'; txHash: string }[]
+    }
+  | { status: 'failed'; errorName: string; adapterOperation?: string }
+
+/** Sanitized evidence that a writer startup failed and its owned-offer cleanup did not complete. */
+type StartupCleanupReport = {
+  reason: 'startup-cleanup-failed'
+  errorName: string
+  adapterOperation?: string
+  ladder: StrategyCleanupOutcome
+  bootstrap: StrategyCleanupOutcome
 }
 
 /** Expected CLI failure after a writer startup failure whose owned-offer cleanup did not complete. */
@@ -198,33 +145,6 @@ export class SetupFailedError extends Error {
     const failed = report.checks.filter(check => check.status === 'failed')
     super(`Setup check failed: ${failed.map(check => check.name).join(', ')}`)
     this.name = 'SetupFailedError'
-  }
-}
-
-/** Expected setup-monitor interval validation failure with no rejected value attached. */
-export class SetupMonitorConfigurationError extends Error {
-  readonly name = 'SetupMonitorConfigurationError'
-  readonly code = 'INVALID_SETUP_MONITOR_CONFIGURATION'
-  readonly kind = 'configuration'
-
-  /** Creates a sanitized setup-monitor configuration error. */
-  constructor() {
-    super('Setup monitor interval must be a positive safe integer')
-  }
-}
-
-/** Expected terminal error carrying a sanitized halted setup-monitor report. */
-export class SetupMonitorHaltedError extends Error {
-  readonly name = 'SetupMonitorHaltedError'
-  readonly code = 'SETUP_MONITOR_HALTED'
-  readonly kind = 'monitor-halt'
-
-  /**
-   * Creates a setup-monitor halt from its operator-safe terminal report.
-   * @param report - Halted lifecycle report with only an allowlisted error classification.
-   */
-  constructor(readonly report: SetupCheckMonitorReport & { status: 'halted' }) {
-    super('Setup monitor halted')
   }
 }
 
@@ -322,48 +242,11 @@ export class LadderConfigurationError extends Error {
 export class BootstrapAdapterError extends Error {
   readonly code = 'BOOTSTRAP_ADAPTER_FAILED'
   readonly kind = 'provider-error'
-  reservationCleanupErrorName?: string
-  confirmedTransactions: readonly BootstrapSubmittedTransaction[] = []
 
   /** Creates a sanitized failure for one fixed adapter operation. @param operation - Stable operation code. */
   constructor(readonly operation: OperatorAdapterOperation) {
     super('Position bootstrap adapter failed')
     this.name = 'BootstrapAdapterError'
-  }
-
-  /**
-   * Retains a sanitized rollback-storage failure without replacing the primary adapter failure.
-   * @param errorName - Allowlisted classification of the reservation cleanup failure.
-   * @returns This original adapter failure with supplementary cleanup diagnostics.
-   */
-  recordReservationCleanupFailure(errorName: string) {
-    this.reservationCleanupErrorName = errorName
-    return this
-  }
-
-  /**
-   * Retains confirmed transactions that completed before this adapter failure.
-   * @param transactions - Confirmed protocol mutations in submission order.
-   * @returns This original adapter failure with supplementary transaction evidence.
-   */
-  recordConfirmedTransactions(transactions: readonly BootstrapSubmittedTransaction[]) {
-    this.confirmedTransactions = [...transactions]
-    return this
-  }
-}
-
-/** Sanitized cancellation failure produced after a complete hard-halt cleanup attempt. */
-type BootstrapHardHaltFailure = { groupId: Hex; errorName: string }
-
-/** Deterministic aggregate failure after every strategy-owned group cancellation was attempted. */
-export class BootstrapHardHaltError extends Error {
-  readonly code = 'BOOTSTRAP_HARD_HALT_FAILED'
-  readonly kind = 'cleanup-error'
-
-  /** Creates a sanitized aggregate. @param failures - Ordered group IDs and allowlisted error names. */
-  constructor(readonly failures: readonly BootstrapHardHaltFailure[]) {
-    super('Position bootstrap hard-halt cleanup failed')
-    this.name = 'BootstrapHardHaltError'
   }
 }
 
@@ -411,6 +294,69 @@ export class CliUsageError extends Error {
   }
 }
 
+/** A run that waits to settle saw one of its acts end other than settled. */
+export class ActFailedError extends Error {
+  readonly name = 'ActFailedError'
+
+  /**
+   * Records which act ended unsettled and how the kernel reported it.
+   * @param key - Controller key of the act's market.
+   * @param notice - The kernel's terminal notice for the act.
+   * @param reason - The kernel's reason, when it gave one.
+   */
+  constructor(
+    readonly key: string,
+    readonly notice: string,
+    readonly reason?: string
+  ) {
+    super(`an act for ${key} ended ${notice}`)
+  }
+}
+
+/** The kernel did not reach `running`, or did not withdraw the commitments an earlier run left open. */
+export class KernelRefusedError extends Error {
+  readonly name = 'KernelRefusedError'
+
+  /**
+   * Names which kernel gate the run could not pass.
+   * @param reason - `start` when the kernel refused to run, `adopted` when earlier commitments stayed open.
+   */
+  constructor(readonly reason: 'start' | 'adopted') {
+    super(
+      reason === 'start'
+        ? 'the kernel refused to start'
+        : 'the kernel did not withdraw the commitments an earlier run left open'
+    )
+  }
+}
+
+/** The quoter could not open its gate; its kernel was stopped first, and `report` says how. */
+export class QuoterStartError extends Error {
+  readonly name = 'QuoterStartError'
+
+  /**
+   * Reports a failed start together with how the kernel stopped afterwards.
+   * @param cause - The failure that kept the gate closed.
+   * @param report - How the kernel stopped and why.
+   */
+  constructor(
+    cause: unknown,
+    readonly report: Readonly<{ outcome: 'clean' | 'unsafe' | 'refused'; reason: string }>
+  ) {
+    super(`the quoter did not start; its kernel stopped ${report.outcome}`, { cause })
+  }
+}
+
+/** The kernel asked for a step's payload that no act this run submitted planned. */
+export class UnplannedPublicationError extends Error {
+  readonly name = 'UnplannedPublicationError'
+
+  /** Fails the step closed rather than signing a payload no act planned. */
+  constructor() {
+    super('no publication was planned for this step')
+  }
+}
+
 /** Stable cancellation-adapter failure without provider data, endpoints, or credentials. */
 export class OfferInvalidationAdapterError extends Error {
   readonly code = 'OFFER_INVALIDATION_ADAPTER_FAILED'
@@ -423,59 +369,43 @@ export class OfferInvalidationAdapterError extends Error {
   }
 }
 
+/** What a dry world refuses: anything it cannot fake, or an effect withdrawn before it ran. */
+export class DryRunError extends Error {
+  readonly name = 'DryRunError'
+}
+
+/** The kernel stopped with commitments or transactions still open; its `kernel.stopped` record counts them. */
+export class KernelStopError extends Error {
+  readonly name = 'KernelStopError'
+
+  /** Fails the run so the operator sees the open commitments in `kernel.stopped`. */
+  constructor() {
+    super('Kernel stopped with commitments still open')
+  }
+}
+
+/** A kernel ledger on disk that the kernel's own validation refuses; nothing reads its entries. */
+export class LedgerRefusedError extends Error {
+  readonly name = 'LedgerRefusedError'
+
+  /**
+   * Names why the kernel refused the ledger.
+   * @param reason - The kernel's reason, such as a retired format or a malformed record.
+   */
+  constructor(readonly reason: string) {
+    super(`the kernel ledger was refused: ${reason}`)
+  }
+}
+
 /** Stable production ladder-adapter failure without provider data or credentials. */
 export class LadderAdapterError extends Error {
   readonly code = 'LADDER_ADAPTER_FAILED'
   readonly kind = 'provider-error'
-  confirmedTransactions: readonly LadderSubmittedTransaction[] = []
 
   /** Creates one sanitized adapter failure. @param operation - Stable failed operation code. */
   constructor(readonly operation: OperatorAdapterOperation) {
     super('Ladder adapter failed')
     this.name = 'LadderAdapterError'
-  }
-
-  /**
-   * Retains confirmed transactions that completed before this adapter failure.
-   * @param transactions - Confirmed protocol mutations in submission order.
-   * @returns This original adapter failure with supplementary transaction evidence.
-   */
-  recordConfirmedTransactions(transactions: readonly LadderSubmittedTransaction[]) {
-    this.confirmedTransactions = [...transactions]
-    return this
-  }
-}
-
-/** One sanitized ladder cleanup failure. */
-type LadderHardHaltFailure = { groupId: Hex; errorName: string }
-
-/** Aggregate failure raised after every owned ladder group has been attempted. */
-export class LadderHardHaltError extends Error {
-  readonly code = 'LADDER_HARD_HALT_FAILED'
-  readonly kind = 'cleanup-error'
-
-  /** Creates the aggregate. @param failures - Ordered group IDs and sanitized error names. */
-  constructor(readonly failures: readonly LadderHardHaltFailure[]) {
-    super('Ladder hard-halt cleanup failed')
-    this.name = 'LadderHardHaltError'
-  }
-}
-
-/** Signals that bounded provider pagination violated a stable safety invariant. */
-export class ProviderPaginationError extends Error {
-  /**
-   * Creates a pagination failure using no cursor value, URL, response body, or credential.
-   * @param provider - Fixed provider identifier safe for operator-visible reports.
-   * @param reason - Stable pagination reason containing no cursor or response data.
-   * @param message - Sanitized operator-facing invariant failure message.
-   */
-  constructor(
-    readonly provider: SafeProviderFailure['provider'],
-    readonly reason: string,
-    message: string
-  ) {
-    super(message)
-    this.name = 'ProviderPaginationError'
   }
 }
 
@@ -500,6 +430,12 @@ export type ProviderOperation =
   | 'book-market'
   | 'book-tick-spacing'
   | 'market-loss-factor'
+  | 'position-debt'
+  | 'borrow-market'
+  | 'borrow-block'
+  | 'loan-collateral'
+  | 'loan-collateral-oracle'
+  | 'enter-gate'
   | 'reference-chain-id'
   | 'reference-latest-block'
   | 'reference-historical-block'
@@ -601,18 +537,37 @@ export class ReferenceAdapterError extends Error {
   }
 }
 
+/** The shared offer-group reader's failures, in setup's sanitized provider-failure shape. */
+export class OfferGroupsReadError extends Error {
+  readonly provider = 'morpho-api'
+  readonly failure = {
+    kind: 'provider-error',
+    provider: 'morpho-api',
+    name: 'ProviderError',
+    context: 'read'
+  }
+
+  /**
+   * Reports a failed offer-group read under its fixed operation name.
+   * @param operation - The reader's fixed operation name; never provider text.
+   */
+  constructor(readonly operation: string) {
+    super('Morpho API offer-group read failed')
+    this.name = 'OfferGroupsReadError'
+  }
+}
+
 /**
- * Signals strategy state this version cannot trust: unreadable, or written by an earlier version.
- * @remarks Its message is the whole operator procedure; see the README's "Upgrading to unit-capped
- * offers".
+ * Signals strategy state this version cannot trust: unreadable, or written by a pre-kernel version.
+ * @remarks Its message is the whole operator procedure; see the README's "Upgrading to the kernel".
  */
 export class StrategyStateVersionError extends Error {
   /** Creates the operator-facing failure; it carries no path or file contents. */
   constructor() {
     super(
-      'Strategy state is unreadable or was written by an earlier quoter-bot version. Stop that ' +
-        'version, confirm with its `invalidate --readonly` that no offer group remains, delete ' +
-        'the strategy state directory ' +
+      'Strategy state is unreadable or was written by a pre-kernel quoter-bot version. Stop that ' +
+        'version, confirm with its `invalidate --readonly` that no offer group remains, delete its ' +
+        '0x….json files from the strategy state directory ' +
         '($XDG_STATE_HOME/morpho-quoter-bot, by default ~/.local/state/morpho-quoter-bot), then ' +
         'start this version.'
     )
@@ -632,6 +587,7 @@ export class QuoterTransactionError extends Error {
     readonly operation: Extract<
       OperatorAdapterOperation,
       | 'configuration'
+      | 'signer-identity-mismatch'
       | 'simulation-reverted'
       | 'submission-refused'
       | 'transaction-reverted'
@@ -642,25 +598,5 @@ export class QuoterTransactionError extends Error {
     >
   ) {
     super(`Quoter transaction ${operation}`)
-  }
-}
-
-/** Sanitized signer-construction or remote-signing failure. */
-export class SignerAccountError extends Error {
-  readonly name = 'SignerAccountError'
-
-  /**
-   * Creates a sanitized account failure from an allowlisted operation only.
-   * @param operation - Stable signer operation that failed without retaining secret material.
-   */
-  constructor(
-    readonly operation:
-      | 'signer-address'
-      | 'keystore-read'
-      | 'keystore-decrypt'
-      | 'kms-public-key'
-      | 'kms-sign'
-  ) {
-    super(`Signer account ${operation} failed`)
   }
 }

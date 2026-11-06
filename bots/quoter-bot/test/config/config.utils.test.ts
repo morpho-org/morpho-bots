@@ -1,6 +1,6 @@
 import type { Hex } from 'viem'
 
-import { bytesToHex, getAddress, hexToBytes } from 'viem'
+import { bytesToHex, hexToBytes } from 'viem'
 import { describe, expect, test } from 'vitest'
 
 import {
@@ -12,20 +12,19 @@ import {
 import { MAX_LOSS_FACTOR } from '../../src/domain/loss-factor'
 
 describe('config viem parsing utilities', () => {
-  test('normalizes lowercase and valid mixed-case addresses to checksum form', () => {
-    const lower = '0x19e7e376e7c213b7e7e7e46cc70a5dd086daff2a'
-    expect(parseAddress(lower, 'ADDRESS')).toBe(getAddress(lower))
-    expect(parseAddress(getAddress(lower), 'ADDRESS')).toBe(getAddress(lower))
+  test('normalizes lowercase and valid checksummed addresses to checksum form', () => {
+    const checksummed = '0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A'
+    expect(parseAddress('0x19e7e376e7c213b7e7e7e46cc70a5dd086daff2a', 'ADDRESS')).toBe(checksummed)
+    expect(parseAddress(checksummed, 'ADDRESS')).toBe(checksummed)
   })
 
-  test('normalizes arbitrary mixed case and rejects malformed addresses', () => {
-    expect(() => parseAddress('0x1234', 'ADDRESS')).toThrow('ADDRESS must be an EVM address')
-    expect(parseAddress('0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2b', 'ADDRESS')).toBe(
-      getAddress('0x19e7e376e7c213b7e7e7e46cc70a5dd086daff2b')
-    )
-    expect(() => parseAddress('0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2z', 'ADDRESS')).toThrow(
-      'ADDRESS must be an EVM address'
-    )
+  test.each([
+    ['too short', '0x1234'],
+    ['non-hex', '0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2z'],
+    ['one letter of the checksum flipped', '0x19E7E376E7C213B7E7E7e46cc70A5dD086DAff2A'],
+    ['all uppercase', '0x19E7E376E7C213B7E7E7E46CC70A5DD086DAFF2A']
+  ])('rejects an address that is %s', (_, value) => {
+    expect(() => parseAddress(value, 'ADDRESS')).toThrow('ADDRESS must be an EVM address')
   })
 
   test('accepts exactly 32 bytes and rejects adjacent size boundaries', () => {

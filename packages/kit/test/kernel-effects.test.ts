@@ -17,6 +17,7 @@ import { describe, expect, it, vi } from 'vitest'
 
 import type { Signer } from '../src/signer'
 
+import { blockTimeMs } from '../src/block-time'
 import { createKernelEffects, firstBid, gasLimitFor } from '../src/kernel-effects'
 import { NONCE_FILL_MAX_GAS } from '../src/policy'
 
@@ -370,7 +371,7 @@ describe('kernel transaction signing', () => {
         const { tip, effects, warnings, historyReads } = await tipOf(rewards)
         expect(tip).toBe(125n)
         const firstReads = historyReads()
-        vi.spyOn(Date, 'now').mockReturnValue(base.blockTime)
+        vi.spyOn(Date, 'now').mockReturnValue(blockTimeMs(base.id))
         await effects.signTx(payload, bid({ nonce: 8 }), guard)
         expect(historyReads()).toBeGreaterThan(firstReads)
         expect(warnings).toHaveLength(1)
@@ -389,7 +390,7 @@ describe('kernel transaction signing', () => {
 
     it('shares one read among first bids that wait on it together', async () => {
       let clock = 0
-      vi.spyOn(Date, 'now').mockImplementation(() => (clock += base.blockTime))
+      vi.spyOn(Date, 'now').mockImplementation(() => (clock += blockTimeMs(base.id)))
       const { effects, historyReads } = signing(1_000n, GAS, 1_000n, [10n], [5n])
       await Promise.all([7, 8, 9].map(nonce => effects.signTx(payload, bid({ nonce }), guard)))
       expect(historyReads()).toBe(1)
@@ -401,7 +402,7 @@ describe('kernel transaction signing', () => {
       const { effects, historyReads } = await tipOf([5n])
       await effects.signTx(payload, bid({ nonce: 8 }), guard)
       expect(historyReads()).toBe(1)
-      vi.spyOn(Date, 'now').mockReturnValue(base.blockTime)
+      vi.spyOn(Date, 'now').mockReturnValue(blockTimeMs(base.id))
       await effects.signTx(payload, bid({ nonce: 9 }), guard)
       expect(historyReads()).toBe(2)
       vi.restoreAllMocks()

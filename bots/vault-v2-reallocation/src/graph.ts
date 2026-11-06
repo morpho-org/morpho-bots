@@ -68,6 +68,7 @@ export const declareReallocator = defineBot('vault-v2-reallocation', (b, o: Real
     at: { everyMs: o.intervalMs },
     queue: WORLD_QUEUE,
     validForMs: readValidMs(o.intervalMs),
+    logger,
     read: readWorld(o.world, logger)
   })
   const vaults = world.level

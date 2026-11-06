@@ -53,3 +53,28 @@ app.kubernetes.io/instance: {{ .Release.Name | quote }}
 {{- $tag := required "image.tag is required" .Values.image.tag | toString -}}
 {{- printf "%s:%s" $repository $tag }}
 {{- end }}
+
+{{- define "midnight-crossed-books.stateDirectory" -}}
+/repo/state
+{{- end }}
+
+{{/*
+Bounded to the 63-character DNS label limit; a truncated name embeds a hash of the full one, so
+releases sharing a truncated prefix never share a claim.
+*/}}
+{{- define "midnight-crossed-books.stateClaimName" -}}
+{{- $fullname := include "midnight-crossed-books.fullname" . }}
+{{- if gt (len $fullname) 57 }}
+{{- printf "%s-%s-state" ($fullname | trunc 48 | trimSuffix "-") (sha256sum $fullname | trunc 8) }}
+{{- else }}
+{{- printf "%s-state" $fullname }}
+{{- end }}
+{{- end }}
+
+{{- define "midnight-crossed-books.journalRunCapBytes" -}}
+{{- $cap := required "state.journalRunCapBytes is required" .Values.state.journalRunCapBytes }}
+{{- if not (and (kindIs "string" $cap) (regexMatch "^[1-9][0-9]*$" $cap)) }}
+{{- fail "state.journalRunCapBytes must be a quoted whole number of bytes, such as '1073741824'" }}
+{{- end }}
+{{- $cap }}
+{{- end }}

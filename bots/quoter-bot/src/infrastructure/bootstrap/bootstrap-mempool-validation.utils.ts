@@ -50,7 +50,7 @@ const validationIssues = (error: unknown): BootstrapMempoolValidationIssue[] | u
  */
 export const isBelowMinimumOfferRejection = (
   error: unknown
-): error is BootstrapMempoolValidationError =>
+): error is BootstrapMempoolValidationError & { readonly minimumAssets: bigint } =>
   error instanceof BootstrapMempoolValidationError &&
   error.issues.length > 0 &&
   error.issues.every(

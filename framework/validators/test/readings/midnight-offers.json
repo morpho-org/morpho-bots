@@ -1,0 +1,906 @@
+{
+  "midnight-offers@1": {
+    "an ecrecover signature": {
+      "claims": true,
+      "reading": {
+        "ok": true,
+        "creates": [
+          {
+            "id": "midnight:0x8a2a206778867463db4fc1bccbc24f8a3fc7f499f77ba2f5bef76c67b2ccd100",
+            "exposure": "broadcast",
+            "resources": {
+              "loan:0x833589fcd6edb6e08f4c7c32d4f71b54bda02913": "1000000n"
+            },
+            "cap": "1000000n",
+            "expiry": "1798815600n",
+            "neutralizer": {
+              "kind": "tx",
+              "to": "0xAdedD8ab6dE832766Fedf0FaC4992E5C4D3EA18A",
+              "data": "0xf01fc06c8a2a206778867463db4fc1bccbc24f8a3fc7f499f77ba2f5bef76c67b2ccd10000000000000000000000000000000000ffffffffffffffffffffffffffffffff00000000000000000000000070997970c51812dc3a010c7d01b50e0d17dc79c8",
+              "value": "0n"
+            }
+          },
+          {
+            "id": "midnight:0x5faf9aacc1ce1e94580a42690bffc07b9ecc15b71ea8bc15f6bf83c8048f05b4",
+            "exposure": "broadcast",
+            "resources": {},
+            "cap": "1000000n",
+            "expiry": "1798815600n",
+            "neutralizer": {
+              "kind": "tx",
+              "to": "0xAdedD8ab6dE832766Fedf0FaC4992E5C4D3EA18A",
+              "data": "0xf01fc06c5faf9aacc1ce1e94580a42690bffc07b9ecc15b71ea8bc15f6bf83c8048f05b400000000000000000000000000000000ffffffffffffffffffffffffffffffff00000000000000000000000070997970c51812dc3a010c7d01b50e0d17dc79c8",
+              "value": "0n"
+            }
+          }
+        ],
+        "exposes": [],
+        "carries": [],
+        "retires": [],
+        "consumes": {}
+      }
+    },
+    "an ecrecover signature from a stored witness": {
+      "claims": true,
+      "reading": {
+        "ok": true,
+        "creates": [
+          {
+            "id": "midnight:0x8a2a206778867463db4fc1bccbc24f8a3fc7f499f77ba2f5bef76c67b2ccd100",
+            "exposure": "broadcast",
+            "resources": {
+              "loan:0x833589fcd6edb6e08f4c7c32d4f71b54bda02913": "1000000n"
+            },
+            "cap": "1000000n",
+            "expiry": "1798815600n",
+            "neutralizer": {
+              "kind": "tx",
+              "to": "0xAdedD8ab6dE832766Fedf0FaC4992E5C4D3EA18A",
+              "data": "0xf01fc06c8a2a206778867463db4fc1bccbc24f8a3fc7f499f77ba2f5bef76c67b2ccd10000000000000000000000000000000000ffffffffffffffffffffffffffffffff00000000000000000000000070997970c51812dc3a010c7d01b50e0d17dc79c8",
+              "value": "0n"
+            }
+          },
+          {
+            "id": "midnight:0x5faf9aacc1ce1e94580a42690bffc07b9ecc15b71ea8bc15f6bf83c8048f05b4",
+            "exposure": "broadcast",
+            "resources": {},
+            "cap": "1000000n",
+            "expiry": "1798815600n",
+            "neutralizer": {
+              "kind": "tx",
+              "to": "0xAdedD8ab6dE832766Fedf0FaC4992E5C4D3EA18A",
+              "data": "0xf01fc06c5faf9aacc1ce1e94580a42690bffc07b9ecc15b71ea8bc15f6bf83c8048f05b400000000000000000000000000000000ffffffffffffffffffffffffffffffff00000000000000000000000070997970c51812dc3a010c7d01b50e0d17dc79c8",
+              "value": "0n"
+            }
+          }
+        ],
+        "exposes": [],
+        "carries": [],
+        "retires": [],
+        "consumes": {}
+      }
+    },
+    "a unit-capped buy": {
+      "claims": true,
+      "reading": {
+        "ok": true,
+        "creates": [
+          {
+            "id": "midnight:0x65e94d8c19c1654aaa13c5234264e9fdf2c5ad9d140e598f1c1e738dfc35e4f1",
+            "exposure": "broadcast",
+            "resources": {
+              "loan:0x833589fcd6edb6e08f4c7c32d4f71b54bda02913": "700000n"
+            },
+            "cap": "700000n",
+            "expiry": "1798815600n",
+            "neutralizer": {
+              "kind": "tx",
+              "to": "0xAdedD8ab6dE832766Fedf0FaC4992E5C4D3EA18A",
+              "data": "0xf01fc06c65e94d8c19c1654aaa13c5234264e9fdf2c5ad9d140e598f1c1e738dfc35e4f100000000000000000000000000000000ffffffffffffffffffffffffffffffff00000000000000000000000070997970c51812dc3a010c7d01b50e0d17dc79c8",
+              "value": "0n"
+            }
+          }
+        ],
+        "exposes": [],
+        "carries": [],
+        "retires": [],
+        "consumes": {}
+      }
+    },
+    "a publish to the mempool": {
+      "claims": true,
+      "reading": {
+        "ok": true,
+        "creates": [],
+        "exposes": [
+          "midnight:0x8a2a206778867463db4fc1bccbc24f8a3fc7f499f77ba2f5bef76c67b2ccd100",
+          "midnight:0x5faf9aacc1ce1e94580a42690bffc07b9ecc15b71ea8bc15f6bf83c8048f05b4"
+        ],
+        "carries": [
+          "0xa44e0d0bfe9fcc088c5307411a6ee4b57e05e658ccd8f25bf28ca1bafb45328f4b84cefc12033fe86502790ef4e352a6011267131113d9ce43e55f1395b509a21c"
+        ],
+        "retires": [],
+        "consumes": {}
+      }
+    },
+    "a publish to the API": {
+      "claims": true,
+      "reading": {
+        "ok": true,
+        "creates": [],
+        "exposes": [
+          "midnight:0x8a2a206778867463db4fc1bccbc24f8a3fc7f499f77ba2f5bef76c67b2ccd100",
+          "midnight:0x5faf9aacc1ce1e94580a42690bffc07b9ecc15b71ea8bc15f6bf83c8048f05b4"
+        ],
+        "carries": [
+          "0xa44e0d0bfe9fcc088c5307411a6ee4b57e05e658ccd8f25bf28ca1bafb45328f4b84cefc12033fe86502790ef4e352a6011267131113d9ce43e55f1395b509a21c"
+        ],
+        "retires": [],
+        "consumes": {}
+      }
+    },
+    "an unratified publish to the API": {
+      "claims": true,
+      "reading": {
+        "ok": true,
+        "creates": [],
+        "exposes": [],
+        "carries": [],
+        "retires": [],
+        "consumes": {}
+      }
+    },
+    "a setter ratification": {
+      "claims": true,
+      "reading": {
+        "ok": true,
+        "creates": [
+          {
+            "id": "midnight:0x54fa93569c7ea35b0c4a2c9809d3edc6fc0bf40655628da667c524b5660c9ed6",
+            "exposure": "inclusion",
+            "resources": {
+              "loan:0x833589fcd6edb6e08f4c7c32d4f71b54bda02913": "1000000n"
+            },
+            "cap": "1000000n",
+            "expiry": "1798815600n",
+            "neutralizer": {
+              "kind": "tx",
+              "to": "0xAdedD8ab6dE832766Fedf0FaC4992E5C4D3EA18A",
+              "data": "0xf01fc06c54fa93569c7ea35b0c4a2c9809d3edc6fc0bf40655628da667c524b5660c9ed600000000000000000000000000000000ffffffffffffffffffffffffffffffff00000000000000000000000070997970c51812dc3a010c7d01b50e0d17dc79c8",
+              "value": "0n"
+            }
+          },
+          {
+            "id": "midnight:0x8285ca8ddf41fbad8ad67bd13b55b806065612105c28e721d864193daf5d96c2",
+            "exposure": "inclusion",
+            "resources": {},
+            "cap": "1000000n",
+            "expiry": "1798815600n",
+            "neutralizer": {
+              "kind": "tx",
+              "to": "0xAdedD8ab6dE832766Fedf0FaC4992E5C4D3EA18A",
+              "data": "0xf01fc06c8285ca8ddf41fbad8ad67bd13b55b806065612105c28e721d864193daf5d96c200000000000000000000000000000000ffffffffffffffffffffffffffffffff00000000000000000000000070997970c51812dc3a010c7d01b50e0d17dc79c8",
+              "value": "0n"
+            }
+          }
+        ],
+        "exposes": [],
+        "carries": [],
+        "retires": [],
+        "consumes": {}
+      }
+    },
+    "a setter-ratified publish": {
+      "claims": true,
+      "reading": {
+        "ok": true,
+        "creates": [],
+        "exposes": [],
+        "carries": [],
+        "retires": [],
+        "consumes": {}
+      }
+    },
+    "a cancellation": {
+      "claims": true,
+      "reading": {
+        "ok": true,
+        "creates": [],
+        "exposes": [],
+        "carries": [],
+        "retires": ["midnight:0x8a2a206778867463db4fc1bccbc24f8a3fc7f499f77ba2f5bef76c67b2ccd100"],
+        "consumes": {}
+      }
+    },
+    "a batch of cancellations": {
+      "claims": true,
+      "reading": {
+        "ok": true,
+        "creates": [],
+        "exposes": [],
+        "carries": [],
+        "retires": [
+          "midnight:0x8a2a206778867463db4fc1bccbc24f8a3fc7f499f77ba2f5bef76c67b2ccd100",
+          "midnight:0x5faf9aacc1ce1e94580a42690bffc07b9ecc15b71ea8bc15f6bf83c8048f05b4"
+        ],
+        "consumes": {}
+      }
+    },
+    "a release on another channel": {
+      "claims": false,
+      "reading": {
+        "ok": false,
+        "reason": "release carries no payload"
+      }
+    },
+    "a transaction to the ecrecover ratifier": {
+      "claims": false,
+      "reading": {
+        "ok": false,
+        "reason": "unrecognized target"
+      }
+    },
+    "a transaction to another contract": {
+      "claims": false,
+      "reading": {
+        "ok": false,
+        "reason": "unrecognized target"
+      }
+    },
+    "typed data for the setter ratifier": {
+      "claims": false,
+      "reading": {
+        "ok": false,
+        "reason": "typed data is not this tree's ratification"
+      }
+    },
+    "typed data for another chain": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "typed data is not this tree's ratification"
+      }
+    },
+    "typed data with other types": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "typed data does not hash"
+      }
+    },
+    "typed data for another tree": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "typed data is not this tree's ratification"
+      }
+    },
+    "an offer for another maker": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "offer maker is not the configured maker"
+      }
+    },
+    "a market not allowlisted": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "market not allowlisted"
+      }
+    },
+    "a sell that is not reduce-only": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "sell offer must be reduce-only"
+      }
+    },
+    "an offer accepting a continuous fee above the configured cap": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "offer accepts a continuous fee above the configured cap"
+      }
+    },
+    "a sell paying its proceeds to someone other than the maker": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "sell offer must pay the configured maker"
+      }
+    },
+    "a witness capping both units and assets": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "witness is not an offer tree"
+      }
+    },
+    "a payload with bytes after its items": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "payload carries bytes after its items"
+      }
+    },
+    "a payload that does not decompress": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "payload does not decompress"
+      }
+    },
+    "a payload from another tree": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "payload is not this tree's"
+      }
+    },
+    "a partial cancellation": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "a partial setConsumed is not a cancellation"
+      }
+    },
+    "a cancellation for another maker": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "cancels on behalf of another maker"
+      }
+    },
+    "a cancellation with trailing calldata": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "only setConsumed cancels"
+      }
+    },
+    "an empty batch": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "empty multicall"
+      }
+    },
+    "a nested batch": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "multicall: only setConsumed cancels"
+      }
+    },
+    "an unratification": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "unratifying is not modeled"
+      }
+    },
+    "a ratification for another maker": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "ratifies for another maker"
+      }
+    },
+    "a ratification of a root the witness does not hash to": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "tree does not hash to the ratified root"
+      }
+    },
+    "value attached": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "nonzero value"
+      }
+    },
+    "a witness that is not a tree": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "witness is not an offer tree"
+      }
+    },
+    "a ratifier data blob with a second signature appended": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "ratifier data is not canonical"
+      }
+    },
+    "a group that mixes sides or caps, even from a Group the SDK never validated": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "offer group mixes sides, caps, tokens, or markets"
+      }
+    },
+    "an unratified payload whose offers name an unknown ratifier": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "payload names an unknown ratifier"
+      }
+    },
+    "an offer that expires after maturity": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "offer expires after maturity"
+      }
+    },
+    "an offer that carries callback data": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "offer has a callback"
+      }
+    },
+    "an offer that names a callback": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "offer has a callback"
+      }
+    }
+  },
+  "midnight-offers@2": {
+    "an ecrecover signature": {
+      "claims": true,
+      "reading": {
+        "ok": true,
+        "creates": [
+          {
+            "id": "midnight:0x8a2a206778867463db4fc1bccbc24f8a3fc7f499f77ba2f5bef76c67b2ccd100",
+            "exposure": "broadcast",
+            "resources": {
+              "loan:0x833589fcd6edb6e08f4c7c32d4f71b54bda02913": "1000000n"
+            },
+            "cap": "1000000n",
+            "expiry": "1798815600n",
+            "neutralizer": {
+              "kind": "tx",
+              "to": "0xAdedD8ab6dE832766Fedf0FaC4992E5C4D3EA18A",
+              "data": "0xf01fc06c8a2a206778867463db4fc1bccbc24f8a3fc7f499f77ba2f5bef76c67b2ccd10000000000000000000000000000000000ffffffffffffffffffffffffffffffff00000000000000000000000070997970c51812dc3a010c7d01b50e0d17dc79c8",
+              "value": "0n"
+            }
+          },
+          {
+            "id": "midnight:0x5faf9aacc1ce1e94580a42690bffc07b9ecc15b71ea8bc15f6bf83c8048f05b4",
+            "exposure": "broadcast",
+            "resources": {},
+            "cap": "1000000n",
+            "expiry": "1798815600n",
+            "neutralizer": {
+              "kind": "tx",
+              "to": "0xAdedD8ab6dE832766Fedf0FaC4992E5C4D3EA18A",
+              "data": "0xf01fc06c5faf9aacc1ce1e94580a42690bffc07b9ecc15b71ea8bc15f6bf83c8048f05b400000000000000000000000000000000ffffffffffffffffffffffffffffffff00000000000000000000000070997970c51812dc3a010c7d01b50e0d17dc79c8",
+              "value": "0n"
+            }
+          }
+        ],
+        "exposes": [],
+        "carries": [],
+        "retires": [],
+        "consumes": {}
+      }
+    },
+    "an ecrecover signature from a stored witness": {
+      "claims": true,
+      "reading": {
+        "ok": true,
+        "creates": [
+          {
+            "id": "midnight:0x8a2a206778867463db4fc1bccbc24f8a3fc7f499f77ba2f5bef76c67b2ccd100",
+            "exposure": "broadcast",
+            "resources": {
+              "loan:0x833589fcd6edb6e08f4c7c32d4f71b54bda02913": "1000000n"
+            },
+            "cap": "1000000n",
+            "expiry": "1798815600n",
+            "neutralizer": {
+              "kind": "tx",
+              "to": "0xAdedD8ab6dE832766Fedf0FaC4992E5C4D3EA18A",
+              "data": "0xf01fc06c8a2a206778867463db4fc1bccbc24f8a3fc7f499f77ba2f5bef76c67b2ccd10000000000000000000000000000000000ffffffffffffffffffffffffffffffff00000000000000000000000070997970c51812dc3a010c7d01b50e0d17dc79c8",
+              "value": "0n"
+            }
+          },
+          {
+            "id": "midnight:0x5faf9aacc1ce1e94580a42690bffc07b9ecc15b71ea8bc15f6bf83c8048f05b4",
+            "exposure": "broadcast",
+            "resources": {},
+            "cap": "1000000n",
+            "expiry": "1798815600n",
+            "neutralizer": {
+              "kind": "tx",
+              "to": "0xAdedD8ab6dE832766Fedf0FaC4992E5C4D3EA18A",
+              "data": "0xf01fc06c5faf9aacc1ce1e94580a42690bffc07b9ecc15b71ea8bc15f6bf83c8048f05b400000000000000000000000000000000ffffffffffffffffffffffffffffffff00000000000000000000000070997970c51812dc3a010c7d01b50e0d17dc79c8",
+              "value": "0n"
+            }
+          }
+        ],
+        "exposes": [],
+        "carries": [],
+        "retires": [],
+        "consumes": {}
+      }
+    },
+    "a unit-capped buy": {
+      "claims": true,
+      "reading": {
+        "ok": true,
+        "creates": [
+          {
+            "id": "midnight:0x65e94d8c19c1654aaa13c5234264e9fdf2c5ad9d140e598f1c1e738dfc35e4f1",
+            "exposure": "broadcast",
+            "resources": {
+              "loan:0x833589fcd6edb6e08f4c7c32d4f71b54bda02913": "700000n"
+            },
+            "cap": "700000n",
+            "expiry": "1798815600n",
+            "neutralizer": {
+              "kind": "tx",
+              "to": "0xAdedD8ab6dE832766Fedf0FaC4992E5C4D3EA18A",
+              "data": "0xf01fc06c65e94d8c19c1654aaa13c5234264e9fdf2c5ad9d140e598f1c1e738dfc35e4f100000000000000000000000000000000ffffffffffffffffffffffffffffffff00000000000000000000000070997970c51812dc3a010c7d01b50e0d17dc79c8",
+              "value": "0n"
+            }
+          }
+        ],
+        "exposes": [],
+        "carries": [],
+        "retires": [],
+        "consumes": {}
+      }
+    },
+    "a publish to the mempool": {
+      "claims": true,
+      "reading": {
+        "ok": true,
+        "creates": [],
+        "exposes": [
+          "midnight:0x8a2a206778867463db4fc1bccbc24f8a3fc7f499f77ba2f5bef76c67b2ccd100",
+          "midnight:0x5faf9aacc1ce1e94580a42690bffc07b9ecc15b71ea8bc15f6bf83c8048f05b4"
+        ],
+        "carries": [
+          "0xa44e0d0bfe9fcc088c5307411a6ee4b57e05e658ccd8f25bf28ca1bafb45328f4b84cefc12033fe86502790ef4e352a6011267131113d9ce43e55f1395b509a21c"
+        ],
+        "retires": [],
+        "consumes": {}
+      }
+    },
+    "a publish to the API": {
+      "claims": true,
+      "reading": {
+        "ok": true,
+        "creates": [],
+        "exposes": [
+          "midnight:0x8a2a206778867463db4fc1bccbc24f8a3fc7f499f77ba2f5bef76c67b2ccd100",
+          "midnight:0x5faf9aacc1ce1e94580a42690bffc07b9ecc15b71ea8bc15f6bf83c8048f05b4"
+        ],
+        "carries": [
+          "0xa44e0d0bfe9fcc088c5307411a6ee4b57e05e658ccd8f25bf28ca1bafb45328f4b84cefc12033fe86502790ef4e352a6011267131113d9ce43e55f1395b509a21c"
+        ],
+        "retires": [],
+        "consumes": {}
+      }
+    },
+    "an unratified publish to the API": {
+      "claims": true,
+      "reading": {
+        "ok": true,
+        "creates": [],
+        "exposes": [],
+        "carries": [],
+        "retires": [],
+        "consumes": {}
+      }
+    },
+    "a setter ratification": {
+      "claims": true,
+      "reading": {
+        "ok": true,
+        "creates": [
+          {
+            "id": "midnight:0x54fa93569c7ea35b0c4a2c9809d3edc6fc0bf40655628da667c524b5660c9ed6",
+            "exposure": "inclusion",
+            "resources": {
+              "loan:0x833589fcd6edb6e08f4c7c32d4f71b54bda02913": "1000000n"
+            },
+            "cap": "1000000n",
+            "expiry": "1798815600n",
+            "neutralizer": {
+              "kind": "tx",
+              "to": "0xAdedD8ab6dE832766Fedf0FaC4992E5C4D3EA18A",
+              "data": "0xf01fc06c54fa93569c7ea35b0c4a2c9809d3edc6fc0bf40655628da667c524b5660c9ed600000000000000000000000000000000ffffffffffffffffffffffffffffffff00000000000000000000000070997970c51812dc3a010c7d01b50e0d17dc79c8",
+              "value": "0n"
+            }
+          },
+          {
+            "id": "midnight:0x8285ca8ddf41fbad8ad67bd13b55b806065612105c28e721d864193daf5d96c2",
+            "exposure": "inclusion",
+            "resources": {},
+            "cap": "1000000n",
+            "expiry": "1798815600n",
+            "neutralizer": {
+              "kind": "tx",
+              "to": "0xAdedD8ab6dE832766Fedf0FaC4992E5C4D3EA18A",
+              "data": "0xf01fc06c8285ca8ddf41fbad8ad67bd13b55b806065612105c28e721d864193daf5d96c200000000000000000000000000000000ffffffffffffffffffffffffffffffff00000000000000000000000070997970c51812dc3a010c7d01b50e0d17dc79c8",
+              "value": "0n"
+            }
+          }
+        ],
+        "exposes": [],
+        "carries": [],
+        "retires": [],
+        "consumes": {}
+      }
+    },
+    "a setter-ratified publish": {
+      "claims": true,
+      "reading": {
+        "ok": true,
+        "creates": [],
+        "exposes": [],
+        "carries": [],
+        "retires": [],
+        "consumes": {}
+      }
+    },
+    "a cancellation": {
+      "claims": true,
+      "reading": {
+        "ok": true,
+        "creates": [],
+        "exposes": [],
+        "carries": [],
+        "retires": ["midnight:0x8a2a206778867463db4fc1bccbc24f8a3fc7f499f77ba2f5bef76c67b2ccd100"],
+        "consumes": {}
+      }
+    },
+    "a batch of cancellations": {
+      "claims": true,
+      "reading": {
+        "ok": true,
+        "creates": [],
+        "exposes": [],
+        "carries": [],
+        "retires": [
+          "midnight:0x8a2a206778867463db4fc1bccbc24f8a3fc7f499f77ba2f5bef76c67b2ccd100",
+          "midnight:0x5faf9aacc1ce1e94580a42690bffc07b9ecc15b71ea8bc15f6bf83c8048f05b4"
+        ],
+        "consumes": {}
+      }
+    },
+    "a release on another channel": {
+      "claims": false,
+      "reading": {
+        "ok": false,
+        "reason": "release carries no payload"
+      }
+    },
+    "a transaction to the ecrecover ratifier": {
+      "claims": false,
+      "reading": {
+        "ok": false,
+        "reason": "unrecognized target"
+      }
+    },
+    "a transaction to another contract": {
+      "claims": false,
+      "reading": {
+        "ok": false,
+        "reason": "unrecognized target"
+      }
+    },
+    "typed data for the setter ratifier": {
+      "claims": false,
+      "reading": {
+        "ok": false,
+        "reason": "typed data is not this tree's ratification"
+      }
+    },
+    "typed data for another chain": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "typed data is not this tree's ratification"
+      }
+    },
+    "typed data with other types": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "typed data does not hash"
+      }
+    },
+    "typed data for another tree": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "typed data is not this tree's ratification"
+      }
+    },
+    "an offer for another maker": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "offer maker is not the configured maker"
+      }
+    },
+    "a market not allowlisted": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "market not allowlisted"
+      }
+    },
+    "a sell that is not reduce-only": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "sell offer must be reduce-only"
+      }
+    },
+    "an offer accepting a continuous fee above the configured cap": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "offer accepts a continuous fee above the configured cap"
+      }
+    },
+    "a sell paying its proceeds to someone other than the maker": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "sell offer must pay the configured maker"
+      }
+    },
+    "a witness capping both units and assets": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "witness is not an offer tree"
+      }
+    },
+    "a payload with bytes after its items": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "payload carries bytes after its items"
+      }
+    },
+    "a payload that does not decompress": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "payload does not decompress"
+      }
+    },
+    "a payload from another tree": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "payload is not this tree's"
+      }
+    },
+    "a partial cancellation": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "a partial setConsumed is not a cancellation"
+      }
+    },
+    "a cancellation for another maker": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "cancels on behalf of another maker"
+      }
+    },
+    "a cancellation with trailing calldata": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "only setConsumed cancels"
+      }
+    },
+    "an empty batch": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "empty multicall"
+      }
+    },
+    "a nested batch": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "multicall: only setConsumed cancels"
+      }
+    },
+    "an unratification": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "unratifying is not modeled"
+      }
+    },
+    "a ratification for another maker": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "ratifies for another maker"
+      }
+    },
+    "a ratification of a root the witness does not hash to": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "tree does not hash to the ratified root"
+      }
+    },
+    "value attached": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "nonzero value"
+      }
+    },
+    "a witness that is not a tree": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "witness is not an offer tree"
+      }
+    },
+    "a ratifier data blob with a second signature appended": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "ratifier data is not canonical"
+      }
+    },
+    "a group that mixes sides or caps, even from a Group the SDK never validated": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "offer group mixes sides, reduce-only flags, caps, tokens, or markets"
+      }
+    },
+    "an unratified payload whose offers name an unknown ratifier": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "payload names an unknown ratifier"
+      }
+    },
+    "an offer that expires after maturity": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "offer expires after maturity"
+      }
+    },
+    "an offer that carries callback data": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "offer has a callback"
+      }
+    },
+    "an offer that names a callback": {
+      "claims": true,
+      "reading": {
+        "ok": false,
+        "reason": "offer has a callback"
+      }
+    }
+  }
+}

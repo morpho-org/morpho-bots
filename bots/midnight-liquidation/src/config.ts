@@ -3,7 +3,7 @@ import type { Venue } from '@repo/swaps'
 import type { Address, Chain, Hex } from 'viem'
 
 import { Executor } from '@repo/contracts'
-import { blocksFor as blocksSpanning, feeCeiling, parseFinality, stepCap } from '@repo/kit'
+import { blocksFor, blockTimeMs, feeCeiling, parseFinality, stepCap } from '@repo/kit'
 import { tryCatch } from '@repo/utils'
 import { getAddress, isAddress, isHex, parseEther, parseGwei } from 'viem'
 import { base, mainnet } from 'viem/chains'
@@ -16,25 +16,6 @@ import { InvalidConfigError } from './errors'
 const ZEROX_API_KEY_ENV = 'ZEROX_API_KEY'
 const ONEINCH_API_KEY_ENV = 'ONEINCH_API_KEY'
 const LIFI_API_KEY_ENV = 'LIFI_API_KEY'
-
-/**
- * Nominal block time per supported chain. Every block-denominated tunable is derived from a
- * wall-clock intent through {@link blocksFor}, so these are the only place the chains' differing
- * cadence is encoded — an ~6x ratio between Base and Ethereum mainnet.
- */
-const BASE_BLOCK_TIME_MS = 2_000
-const MAINNET_BLOCK_TIME_MS = 12_000
-
-/**
- * Converts a wall-clock intent into a block count at `blockTimeMs`, floored at one block (a target
- * shorter than one block must still wait a block, never zero).
- *
- * Block counts are expressed this way rather than as per-chain literals so the INTENT is the source
- * of truth: `blocksFor(8_000, …)` reads as "bump a stuck tx after ~8s" on every chain, whereas a bare
- * `4n` beside a `1n` is unauditable. Base's row reproduces the previous hard-coded values exactly by
- * construction, which `SHIPPED_ROWS` in `test/config.test.ts` asserts.
- */
-const blocksFor = (ms: number, blockTimeMs: number) => Math.max(1, Math.round(ms / blockTimeMs))
 
 /**
  * Wall-clock intent behind each block-denominated tunable, shared by every chain. Changing one of
@@ -52,7 +33,7 @@ const BACKOFF_MAX_MS = 128_000
  * these has an env var — a deployment retunes them by editing the chain's row.
  *
  * Block-denominated fields are counts of BLOCKS derived from a shared wall-clock intent via
- * {@link blocksFor}, so one behaviour keeps roughly one timing on a ~2s and a ~12s chain.
+ * kit's `blocksFor`, so one behaviour keeps one timing on every chain.
  */
 export type TuningConfig = {
   /** Blocks between EOA gas-balance metric emissions. */
@@ -82,30 +63,30 @@ export type ChainConfig = {
   wrappedNative: Address
   /** How long a world read authorizes acts: above this chain's slowest healthy read cadence. */
   worldValidMs: number
-  /** The fewest stuck-nonce re-bids a send outlives before its quote ages out; see {@link sendLifeMs}. */
-  rebids: number
+  /** How long a prepared liquidation may wait to be included; see {@link sendLifeMs}. */
+  sendLifeMs: number
   tuning: TuningConfig
   defaults: ChainDefaults
 }
 
 /**
- * How long a prepared liquidation's quote authorizes its send: `rebids + 1` spans of one block more
- * than the stuck threshold. The kernel re-bids every stuck threshold, not every span, so a send rides
- * more re-bids than `rebids`: about 4 on Base and 13 on mainnet.
+ * How long a prepared liquidation's quote authorizes its send on `chain`: `rebids + 1` spans of the
+ * stuck threshold plus one block. The kernel re-bids every stuck threshold, not every span, so a send
+ * rides about 4 re-bids on Base and 13 on mainnet.
  */
-const sendLifeMs = ({ chain, rebids }: Pick<ChainConfig, 'chain' | 'rebids'>) =>
-  (blocksSpanning(STUCK_MS, chain) + 1) * chain.blockTime! * (rebids + 1)
+const sendLifeMs = (chain: Chain, rebids: number) =>
+  (blocksFor(STUCK_MS, chain) + 1) * blockTimeMs(chain.id) * (rebids + 1)
 
-const tuningFor = (blockTimeMs: number): TuningConfig => ({
-  balanceEveryBlocks: BigInt(blocksFor(BALANCE_LOG_MS, blockTimeMs))
+const tuningFor = (chain: Chain): TuningConfig => ({
+  balanceEveryBlocks: BigInt(blocksFor(BALANCE_LOG_MS, chain))
 })
 
 const defaultsFor = (
-  blockTimeMs: number,
+  chain: Chain,
   rest: Omit<ChainDefaults, 'backoffBaseBlocks' | 'backoffMaxBlocks'>
 ): ChainDefaults => ({
-  backoffBaseBlocks: BigInt(blocksFor(BACKOFF_BASE_MS, blockTimeMs)),
-  backoffMaxBlocks: BigInt(blocksFor(BACKOFF_MAX_MS, blockTimeMs)),
+  backoffBaseBlocks: BigInt(blocksFor(BACKOFF_BASE_MS, chain)),
+  backoffMaxBlocks: BigInt(blocksFor(BACKOFF_MAX_MS, chain)),
   ...rest
 })
 
@@ -124,9 +105,9 @@ const CHAIN_MAP: Record<number, ChainConfig> = {
     wrappedNative: getAddress('0x4200000000000000000000000000000000000006'),
     // Over four times the longest gap between landed world reads in a day of production.
     worldValidMs: 30_000,
-    rebids: 3,
-    tuning: tuningFor(BASE_BLOCK_TIME_MS),
-    defaults: defaultsFor(BASE_BLOCK_TIME_MS, { seizeCapMarginBps: 30 })
+    sendLifeMs: sendLifeMs(base, 3),
+    tuning: tuningFor(base),
+    defaults: defaultsFor(base, { seizeCapMarginBps: 30 })
   },
   [mainnet.id]: {
     chain: mainnet,
@@ -135,10 +116,10 @@ const CHAIN_MAP: Record<number, ChainConfig> = {
     // Twice the longest gap between landed world reads in a day of production: a missed block.
     worldValidMs: 60_000,
     // Mainnet's base fee compounds 12.5% per block between re-bids, so a send rides more of them.
-    rebids: 6,
-    tuning: tuningFor(MAINNET_BLOCK_TIME_MS),
-    defaults: defaultsFor(MAINNET_BLOCK_TIME_MS, {
-      // One-block oracle-drift headroom, and a mainnet block is ~6x the drift window of a Base one.
+    sendLifeMs: sendLifeMs(mainnet, 6),
+    tuning: tuningFor(mainnet),
+    defaults: defaultsFor(mainnet, {
+      // One-block oracle-drift headroom, and a mainnet block is 60x the drift window of a Base one.
       seizeCapMarginBps: 60
     })
   }
@@ -542,7 +523,7 @@ export function loadConfig(
       `Unsupported CHAIN_ID ${chainId}; supported chain ids: ${supported}`
     )
   }
-  // `tuning` is threaded to bot-kit as-is; `defaults` only ever appears in the `def` position of the
+  // `tuning` is threaded to kit as-is; `defaults` only ever appears in the `def` position of the
   // env parsers below, so an explicitly-set env var always wins.
   const { tuning, defaults } = chainConfig
   const finalityName = `FINALITY_${chainId}`
@@ -690,7 +671,7 @@ export function loadConfig(
     midnight: chainConfig.midnight,
     wrappedNative: chainConfig.wrappedNative,
     worldValidMs: chainConfig.worldValidMs,
-    sendLifeMs: sendLifeMs(chainConfig),
+    sendLifeMs: chainConfig.sendLifeMs,
     tuning,
     maxGasLimit: bigintFrom(env, 'MAX_GAS_LIMIT', required(env, 'MAX_GAS_LIMIT').trim(), {
       min: MIN_GAS_LIMIT

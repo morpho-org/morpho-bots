@@ -2,16 +2,13 @@ import type { IMarket } from '@morpho-org/midnight-sdk'
 import type { Hex } from 'viem'
 
 import { MAX_OFFER_CAP } from '@morpho-org/midnight-sdk'
-import { mkdtemp, rm } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
 import { describe, expect, test } from 'vitest'
 
 import type { LadderQuoteSet } from '../../../src/domain/ladder'
 import type { OwnedLadderPublication } from '../../../src/infrastructure/ladder/ladder-group-ownership.utils'
 import type { MakerOfferGroup } from '../../../src/infrastructure/provider/offer-groups.utils'
 
-import { sameLadderQuoteSet } from '../../../src/application/ladder/ladder-quoter.utils'
+import { ladderIdentity } from '../../../src/application/engine/ladder-decision'
 import { offerCapsByRung } from '../../../src/domain/ladder'
 import {
   activeOwnedLadderGroupIds,
@@ -20,7 +17,6 @@ import {
   ownedLadderBookOffers,
   reconstructOwnedLadderPublication
 } from '../../../src/infrastructure/ladder/ladder-active-publication.utils'
-import { createLadderGroupOwnership } from '../../../src/infrastructure/ladder/ladder-group-ownership.utils'
 import { buildLadderTree } from '../../../src/infrastructure/ladder/ladder-offer.utils'
 
 const marketId: Hex = `0x${'11'.repeat(32)}`
@@ -61,7 +57,7 @@ describe('ladder active publication indexing', () => {
     const reconstructed = reconstructOwnedLadderPublication(publication, groups)
 
     expect(reconstructed).toEqual(publication.quote)
-    expect(sameLadderQuoteSet(reconstructed!, publication.quote)).toBe(true)
+    expect(ladderIdentity(reconstructed!)).toBe(ladderIdentity(publication.quote))
   })
 
   test('keeps a used-up buy active until it is cancelled, since it can still be taken', () => {
@@ -327,18 +323,21 @@ describe('ownedLadderBookOffers near maturity', () => {
       maximumRateBps: 10_000n
     })
 
-  test('replays the published sell tick after a state round trip, not a re-encoding', async () => {
+  test('replays the published sell tick from ownership, not a re-encoding', async () => {
     const published = build(publishedAt)
     const [publishedSell] = published.bookOffers
     const nearMaturity = maturity - 3_600n
     expect(build(nearMaturity).bookOffers[0]!.tick).not.toBe(publishedSell!.tick)
 
-    const stateDirectory = await mkdtemp(join(tmpdir(), 'ladder-pending-ticks-'))
-    try {
-      const ownership = createLadderGroupOwnership({ chainId: 8453, maker }, { stateDirectory })
-      await ownership.reserve({ marketId, quote, groups: published.groups })
+    {
+      const publication: OwnedLadderPublication = {
+        marketId,
+        status: 'reserved',
+        quote,
+        groups: published.groups
+      }
 
-      expect(ownedLadderBookOffers(await ownership.read(), [], marketId)).toEqual([
+      expect(ownedLadderBookOffers([publication], [], marketId)).toEqual([
         {
           groupId: published.groups[0]!.groupId,
           marketId,
@@ -346,8 +345,6 @@ describe('ownedLadderBookOffers near maturity', () => {
           tick: publishedSell!.tick
         }
       ])
-    } finally {
-      await rm(stateDirectory, { recursive: true, force: true })
     }
   })
 })

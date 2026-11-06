@@ -5,11 +5,6 @@ import { decodeFunctionResult, encodeFunctionData } from 'viem'
 
 import type { CrossedMatch, TakeableOffer } from '../../domain/order-book'
 
-export interface ResolverEncoder {
-  encode(matches: readonly CrossedMatch[], minimumProfit: bigint): Hex
-  decodeProfit(data: Hex): bigint
-}
-
 function takeKey(takeable: TakeableOffer) {
   return encodeFunctionData({
     abi: CrossedBooksResolver.abi,
@@ -38,7 +33,7 @@ function aggregate(matches: readonly CrossedMatch[], side: 'ask' | 'bid') {
   }))
 }
 
-export class ViemResolverEncoder implements ResolverEncoder {
+export class ViemResolverEncoder {
   encode(matches: readonly CrossedMatch[], minimumProfit: bigint) {
     return encodeFunctionData({
       abi: CrossedBooksResolver.abi,

@@ -1,5 +1,6 @@
 import type { Hex } from 'viem'
 
+import type { LadderDebtConfig } from '../domain/debt-ceiling'
 import type { InventorySkewConfig, LadderConfig, ValidLadderConfig } from '../domain/ladder'
 import type { MaturityPremiumConfig } from '../domain/maturity-premium'
 import type { BootstrapConfig, ValidBootstrapConfig } from '../domain/position-bootstrap'
@@ -18,8 +19,8 @@ import {
 import { validateBootstrapConfig } from '../domain/position-bootstrap'
 import {
   BootstrapConfigurationError,
-  ConfigValidationError,
-  LadderConfigurationError
+  LadderConfigurationError,
+  ConfigValidationError
 } from '../errors'
 
 /** Minimal string environment shape used by pure market-id parsing. */
@@ -117,7 +118,8 @@ export const LADDER_MARKET_FIELDS = [
   'movementToleranceBps',
   'minimumRateBps',
   'maximumRateBps',
-  'inventorySkew'
+  'inventorySkew',
+  'debt'
 ] as const
 
 const plainRecord = (value: unknown, field: string): Record<string, unknown> => {
@@ -281,6 +283,28 @@ const inventorySkewValue = (value: unknown, field: string): InventorySkewConfig 
   }
 }
 
+const DEBT_FIELDS = ['maximumDebtUnits', 'stopBorrowingBeforeMaturitySeconds'] as const
+
+const debtValue = (value: unknown, field: string): LadderDebtConfig | undefined => {
+  if (value === undefined) return undefined
+  const record = exactRecord(value, field, DEBT_FIELDS)
+  const stopField = `${field}.stopBorrowingBeforeMaturitySeconds`
+  const stopBorrowingBeforeMaturitySeconds = Number(
+    integerBigInt(record.stopBorrowingBeforeMaturitySeconds, stopField, false)
+  )
+  if (!Number.isSafeInteger(stopBorrowingBeforeMaturitySeconds)) {
+    throw new ConfigValidationError(
+      stopField,
+      'out-of-range',
+      `${stopField} must be a non-negative safe integer`
+    )
+  }
+  return {
+    maximumDebtUnits: integerBigInt(record.maximumDebtUnits, `${field}.maximumDebtUnits`, false),
+    stopBorrowingBeforeMaturitySeconds
+  }
+}
+
 /**
  * Converts an exact bootstrap collection into production domain values using shared pure semantics.
  * @param value - Untrusted collection value at the JSON or YAML boundary.
@@ -437,8 +461,11 @@ const safeInteger = (value: unknown, field: string) => {
  * malformed integer or group mode, a malformed optional `maturityPremium` (unknown nested key,
  * unsupported shape, missing slope, non-positive slope or cap, or an unquoted integer), a
  * malformed optional `inventorySkew` (unknown nested key, missing `unitsPerStep`, or an unquoted
- * integer), a non-allowlisted or duplicate market, any domain shape invariant violation, and a hardcoded
- * target whose full shape no attainable premium can place inside the hard bounds.
+ * integer), a malformed optional `debt` (unknown nested key, a missing or non-positive
+ * `maximumDebtUnits`, or a missing, negative, fractional, or unsafe
+ * `stopBorrowingBeforeMaturitySeconds`), a non-allowlisted or duplicate market, any domain shape
+ * invariant violation, and a hardcoded target whose full shape no attainable premium can place
+ * inside the hard bounds.
  * @remarks Pure parsing and validation with no environment, provider, logging, or persistence
  * access; browser-safe, so the playground reuses it verbatim for editing and previews.
  */
@@ -455,7 +482,8 @@ export const ladderConfigsValue = (
       'targetRate',
       'maturityPremium',
       'bookCrossedCooldownSeconds',
-      'inventorySkew'
+      'inventorySkew',
+      'debt'
     ])
     const required = (name: (typeof LADDER_MARKET_FIELDS)[number]) => record[name]
     const marketValue = required('marketId')
@@ -472,6 +500,7 @@ export const ladderConfigsValue = (
       `${prefix}.maturityPremium`
     )
     const inventorySkew = inventorySkewValue(record.inventorySkew, `${prefix}.inventorySkew`)
+    const debt = debtValue(record.debt, `${prefix}.debt`)
     const loopIntervalSeconds = safeInteger(
       required('loopIntervalSeconds'),
       `${prefix}.loopIntervalSeconds`
@@ -530,7 +559,8 @@ export const ladderConfigsValue = (
       ),
       minimumRateBps: integerBigInt(required('minimumRateBps'), `${prefix}.minimumRateBps`, false),
       maximumRateBps: integerBigInt(required('maximumRateBps'), `${prefix}.maximumRateBps`, false),
-      ...(inventorySkew === undefined ? {} : { inventorySkew })
+      ...(inventorySkew === undefined ? {} : { inventorySkew }),
+      ...(debt === undefined ? {} : { debt })
     }
     if (!allowlistedMarkets.includes(config.marketId)) {
       throw new ConfigValidationError(

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 
 import type { SafeProviderFailure } from '../../../src/errors'
 
-import { ProviderReadError, SafeProviderError } from '../../../src/errors'
+import { SafeProviderError, ProviderReadError } from '../../../src/errors'
 import { retryTransientProviderRead } from '../../../src/infrastructure/provider/provider-retry.utils'
 
 const providerError = (failure: Omit<SafeProviderFailure, 'kind' | 'provider'>) =>

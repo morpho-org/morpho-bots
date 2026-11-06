@@ -5,9 +5,26 @@ import { MathLib } from '@morpho-org/morpho-ts'
 
 import type { MakerBookOffer, MakerOfferGroup } from '../provider/offer-groups.utils'
 
-import { remainingBuyAssets, remainingCap } from '../../domain/offer-cap'
+import { remainingCap } from '../../domain/offer-cap'
 
 const BPS_WAD = MathLib.WAD / 10_000n
+
+/** Active lend group projection required by bootstrap reconciliation. */
+export type BootstrapActiveGroup = {
+  id: Hex
+  marketId: Hex
+  assets: bigint
+  rateBps: bigint
+  /** Exact protocol tick when this projection represents a bootstrap offer. */
+  tick?: bigint
+  /** Original protocol group cap before cumulative consumption. */
+  maximumAssets?: bigint
+  /** Total number of offers sharing the protocol group. */
+  offerCount?: number
+  /** Maximum market continuous fee accepted by the resting protocol offer. */
+  continuousFeeCap?: bigint
+  referenceObservationId?: string
+}
 
 /**
  * Selects strategy groups using durable explicit ownership evidence.
@@ -49,35 +66,6 @@ export const bootstrapGroupRateBps = (parameters: {
     ? TickLib.tickToApr(parameters.tick, parameters.maturity - parameters.observedTimestamp) /
       BPS_WAD
     : 0n
-
-/**
- * Totals the unfilled cash reserve of every distinct live buy group.
- * @param groups - Canonical maker groups, which may contain one projection per offer market.
- * @param excludedGroupIds - Groups being replaced and therefore not reserved alongside the new offer.
- * @returns Aggregate {@link remainingBuyAssets} of distinct live buy groups.
- * @remarks Attribution deliberately does not filter this total; see `readExposureSnapshot` in
- * `../exposure/exposure-snapshot.utils.ts` for why exposure counts every live maker buy group.
- */
-export const bootstrapReservedLoanAssets = (
-  groups: readonly MakerOfferGroup[],
-  excludedGroupIds: ReadonlySet<Hex> = new Set()
-) => {
-  return [
-    ...new Map(
-      groups
-        .filter(group => !excludedGroupIds.has(group.id) && group.offers.some(offer => offer.buy))
-        .map(group => [group.id, group])
-    ).values()
-  ]
-    .map(group =>
-      remainingBuyAssets(
-        group.cap,
-        group.consumed,
-        group.offers.filter(offer => offer.buy).map(offer => offer.tick)
-      )
-    )
-    .reduce((total, assets) => total + assets, 0n)
-}
 
 /**
  * Flattens the provider book without re-expanding each multi-market group projection.

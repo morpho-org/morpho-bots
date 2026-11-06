@@ -246,7 +246,8 @@ async function main() {
     address: eoa,
     read: () => getBalance(client, { address: eoa }),
     everyBlocks: config.tuning.balanceEveryBlocks,
-    logger
+    logger,
+    chain: config.chain
   })
   using heartbeatMonitor = createHeartbeatMonitor({
     url: process.env.BETTERSTACK_HEARTBEAT_URL,

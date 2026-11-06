@@ -1,15 +1,11 @@
 import type { Address, Hex } from 'viem'
 
-import { waitForMonitorInterval } from '@repo/monitoring'
 import { withActiveSpan } from '@repo/telemetry'
 
 import type { SupportedChainId } from '../../config/supported-chains.utils'
+import type { LadderDebtConfig } from '../../domain/debt-ceiling'
 
-import {
-  SetupCheckAbortedError,
-  SetupFailedError,
-  SetupMonitorConfigurationError
-} from '../../errors'
+import { SetupCheckAbortedError, SetupFailedError } from '../../errors'
 import { operatorErrorName } from '../monitoring/operator-error-name.utils'
 import {
   booksCheck,
@@ -18,7 +14,7 @@ import {
   chainCheck,
   hasOnlyTransientProviderFailures,
   loanAllowanceCheck,
-  lossFactorCheck,
+  positionHealthCheck,
   providerFailure,
   readOnlySignerCheck,
   sameAddress,
@@ -26,23 +22,10 @@ import {
   unsafeOffersStatus
 } from './setup-check.utils'
 
-const SETUP_CHECK_MONITOR_INTERVAL_MS = 60_000
+/** How long readiness monitoring waits after one cycle ends before it starts the next. */
+export const SETUP_CHECK_MONITOR_INTERVAL_MS = 60_000
 const SETUP_CHECK_TRANSIENT_ATTEMPTS = 3
-
-/**
- * Consecutive transient-only unready cycles tolerated before the monitor halts.
- * @remarks Halting runs shutdown cleanup, which cancels every live offer, so a provider outage must
- * not cost the whole book. Ten cycles is ten minutes at the default interval. Invariant failures
- * ignore this budget and halt on the first cycle.
- */
-const SETUP_CHECK_TRANSIENT_CYCLES = 10
 type SetupCheckStatus = 'passed' | 'failed' | 'warning' | 'not-required'
-
-/** Decision accompanying one emitted readiness report. */
-export type SetupCycleContext = {
-  /** Whether this report ends monitoring, decided before the report is emitted. */
-  halting: boolean
-}
 
 /** Read-only operator instruction or exact transaction description; never executed by the checker. */
 export type SetupRemediation =
@@ -62,14 +45,12 @@ export type SetupCheck = {
     | 'native-balance'
     | 'signer-native-balance'
     | 'signer-authorization'
-    | 'signer-nonce'
     | 'loan-allowance'
     | 'ratifier'
     | 'books'
     | 'reference'
     | 'offers'
     | 'position-health'
-    | 'loss-factor'
   /** Whether the requirement passed, failed, warned without blocking readiness, or is outside V0 scope. */
   status: SetupCheckStatus
   /** Sanitized provider-derived value; URLs, credentials, and raw provider messages are excluded. */
@@ -87,37 +68,6 @@ export type SetupCheckReport = {
   /** All V0 checks in stable operator-facing order. */
   checks: SetupCheck[]
 }
-
-/** Final lifecycle report emitted after continuous setup monitoring stops. */
-export type SetupCheckMonitorReport =
-  | {
-      /** Monitoring stopped normally after the runtime signal. */
-      status: 'stopped'
-      /** Stable signal-based terminal reason. */
-      reason: 'signal'
-      /** Number of complete readiness reports emitted to the monitoring writer. */
-      cycles: number
-    }
-  | {
-      /** Monitoring halted because a cycle could not produce or emit a report. */
-      status: 'halted'
-      /** Stable unexpected-cycle terminal reason. */
-      reason: 'cycle-error'
-      /** Number of complete readiness reports emitted before the failed cycle. */
-      cycles: number
-      /** Sanitized unexpected error classification. */
-      cycleErrorName: string
-    }
-  | {
-      /** Monitoring halted because the latest complete readiness report failed. */
-      status: 'halted'
-      /** Stable readiness-failure terminal reason. */
-      reason: 'setup-failed'
-      /** Number of complete readiness reports emitted through the failed cycle. */
-      cycles: number
-      /** Complete sanitized readiness evidence from the failed terminal cycle. */
-      lastReport: SetupCheckReport
-    }
 
 /** Validated configuration required to evaluate quoter readiness on a supported chain. */
 export type SetupCheckConfig = {
@@ -148,6 +98,8 @@ export type SetupCheckConfig = {
    * @remarks Lending on a market halts whenever its loss factor differs from this value.
    */
   acceptedLossFactor?: ReadonlyMap<Hex, bigint>
+  /** Ladder markets whose sells may borrow, keyed by market; see {@link LadderDebtConfig}. */
+  debt?: ReadonlyMap<Hex, LadderDebtConfig>
 }
 
 /** API and onchain facts used to validate one configured Midnight Market. */
@@ -162,6 +114,20 @@ export type BookSetup = {
   loanAsset: Address
   /** Onchain tick spacing; must be positive. */
   tickSpacing: number
+}
+
+/** The maker's loan-asset collateral slot in one market, as setup qualifies it for borrowing. */
+export type LoanCollateralSetup = {
+  /** Maker collateral held in the slot. */
+  assets: bigint
+  /** WAD-scaled LLTV of the slot. */
+  lltv: bigint
+  /** keccak256 of the slot oracle's runtime bytecode, or `undefined` when nothing is deployed. */
+  oracleRuntimeHash: Hex | undefined
+  /** Whether the market's enter gate is unset or lets the maker increase debt. */
+  enterGateOpen: boolean
+  /** Whether the market has reached maturity, after which its debt waits on the operator. */
+  matured: boolean
 }
 
 /**
@@ -218,16 +184,8 @@ export interface SetupStateService {
    * @returns Whether the delegate is authorized for the maker.
    */
   getAuthorization(maker: Address, delegate: Address): Promise<boolean>
-  /**
-   * Reads latest and pending transaction counts for restart reconciliation.
-   * @param address - Signer address whose nonce state is read.
-   * @returns Mined and pending transaction counts.
-   */
-  getTransactionCounts(address: Address): Promise<{ latest: number; pending: number }>
   /** Cross-checks one Midnight Market. @param id - Midnight Market identifier. @returns Cross-checked API and onchain market facts. */
   getBook(id: Hex): Promise<BookSetup>
-  /** Reads one market's current loss factor. @param id - Midnight Market identifier. @returns The uint128 loss factor. */
-  getLossFactor(id: Hex): Promise<bigint>
   /** Checks historical reference-market readability. @returns Archive-readability and exact reference-market identity facts. */
   checkReference(): Promise<{ marketId: Hex; referenceReadable: boolean; archiveReadable: boolean }>
   /**
@@ -241,8 +199,20 @@ export interface SetupStateService {
     unknownMarketIds: readonly Hex[]
     invertedMarketIds: readonly Hex[]
   }>
-  /** Reports the intentionally excluded V0 health surface. @returns The explicit V0 not-required result; performs no writes. */
-  checkPositionHealth(): Promise<{ status: 'not-required'; reason: string }>
+  /**
+   * Reads the maker's face debt in one market.
+   * @param id - Midnight Market identifier.
+   * @param maker - Maker whose position is read.
+   * @returns The uint128 debt.
+   */
+  getDebt(id: Hex, maker: Address): Promise<bigint>
+  /**
+   * Reads the slot of one market whose collateral token is the loan asset.
+   * @param id - Midnight Market identifier.
+   * @param maker - Maker whose collateral and gate answer are read.
+   * @returns The slot's facts, or `undefined` when the market lists no loan-asset collateral.
+   */
+  getLoanCollateral(id: Hex, maker: Address): Promise<LoanCollateralSetup | undefined>
 }
 
 /** Application service that evaluates every V0 quoter readiness requirement without writes. */
@@ -278,67 +248,21 @@ export class SetupCheckService {
   }
 
   /**
-   * Repeats complete read-only readiness observations until shutdown is requested.
-   * @param parameters - Shutdown signal, optional report writer, and testable positive interval.
-   * @returns A terminal report containing the number of emitted setup observations.
-   * @throws `SetupMonitorConfigurationError` when the requested interval is not a positive safe integer.
-   * @remarks The halt decision is made before the report is emitted and carried on the cycle
-   * context, so a supervisor can stop its writers without waiting for delivery. Cycles never
-   * overlap. Explicitly transient provider-only failures receive three total
-   * read attempts within a cycle, and an unready report built only from them is emitted and then
-   * retried on the next interval for up to ten consecutive cycles.
-   * Invariant and mixed failures halt immediately. The signer nonce is intentionally omitted: a
-   * pending transaction can be owned by the concurrently running executor. No remediation,
-   * signing, transaction submission, or cleanup write is performed.
+   * One monitoring cycle: a complete readiness observation, retried within the cycle while its only
+   * failures are explicitly transient provider failures, under the cycle's telemetry span.
+   * @param signal - Shutdown signal that stops further transient retries.
+   * @returns The cycle's final report; `readinessVerdict` decides whether it halts.
    */
-  async runContinuously(parameters: {
-    signal: AbortSignal
-    onCycle?: (report: SetupCheckReport, context: SetupCycleContext) => void | Promise<void>
-    intervalMs?: number
-  }): Promise<SetupCheckMonitorReport> {
-    const intervalMs = parameters.intervalMs ?? SETUP_CHECK_MONITOR_INTERVAL_MS
-    if (!Number.isSafeInteger(intervalMs) || intervalMs <= 0) {
-      throw new SetupMonitorConfigurationError()
-    }
-
-    let cycles = 0
-    let transientCycles = 0
-    let cycleErrorName: string | undefined
-
-    while (!parameters.signal.aborted) {
-      try {
-        const report = await withActiveSpan(
-          {
-            name: 'quoter-bot.cycle',
-            attributes: { workflow: 'setup-check' },
-            errorName: operatorErrorName,
-            failed: checked => !checked.ready
-          },
-          () => this.checkWithTransientRetries(parameters.signal, false)
-        )
-        if (parameters.signal.aborted) break
-
-        const transientOnly = hasOnlyTransientProviderFailures(report)
-        transientCycles = transientOnly ? transientCycles + 1 : 0
-        const halting =
-          !report.ready && (!transientOnly || transientCycles >= SETUP_CHECK_TRANSIENT_CYCLES)
-
-        await parameters.onCycle?.(report, { halting })
-        cycles += 1
-        if (halting) {
-          return { status: 'halted', reason: 'setup-failed', cycles, lastReport: report }
-        }
-      } catch (error) {
-        cycleErrorName = operatorErrorName(error)
-        break
-      }
-
-      await waitForMonitorInterval(intervalMs, parameters.signal)
-    }
-
-    return cycleErrorName
-      ? { status: 'halted', reason: 'cycle-error', cycles, cycleErrorName }
-      : { status: 'stopped', reason: 'signal', cycles }
+  async cycle(signal: AbortSignal): Promise<SetupCheckReport> {
+    return withActiveSpan(
+      {
+        name: 'quoter-bot.cycle',
+        attributes: { workflow: 'setup-check' },
+        errorName: operatorErrorName,
+        failed: checked => !checked.ready
+      },
+      () => this.checkWithTransientRetries(signal, false)
+    )
   }
 
   private async checkWithTransientRetries(signal?: AbortSignal, startup = true) {
@@ -355,8 +279,7 @@ export class SetupCheckService {
   /**
    * Evaluates all setup surfaces while isolating provider failures into sanitized report entries.
    * @returns A complete report in stable check order; provider rejection does not short-circuit peers.
-   * @remarks Read-only. This one-time check includes signer-nonce reconciliation. All independent
-   * reads, including per-book reads, start before the outer `Promise.all` is awaited so latency is
+   * @remarks Read-only. All independent reads, including per-book reads, start before the outer `Promise.all` is awaited so latency is
    * bounded by the slowest check rather than their sum.
    */
   async check(): Promise<SetupCheckReport> {
@@ -369,9 +292,16 @@ export class SetupCheckService {
       requestedId,
       response: capture(() => this.state.getBook(requestedId))
     }))
-    const lossFactorReads = this.config.marketIds.map(requestedId => ({
+    const debtReads = this.config.marketIds.map(requestedId => ({
       requestedId,
-      response: capture(() => this.state.getLossFactor(requestedId))
+      debt: capture(() => this.state.getDebt(requestedId, this.config.maker)),
+      ...(this.config.debt?.has(requestedId)
+        ? {
+            loanCollateral: capture(() =>
+              this.state.getLoanCollateral(requestedId, this.config.maker)
+            )
+          }
+        : {})
     }))
     const derivedSignerRead = this.readOnly
       ? Promise.resolve(undefined)
@@ -396,8 +326,15 @@ export class SetupCheckService {
       Promise.all(bookReads.map(async book => ({ ...book, response: await book.response }))),
       referenceRead,
       capture(() => this.state.inspectOffers(this.config.maker), 'morpho-api'),
-      capture(() => this.state.checkPositionHealth()),
-      Promise.all(lossFactorReads.map(async read => ({ ...read, response: await read.response })))
+      Promise.all(
+        debtReads.map(async read => ({
+          requestedId: read.requestedId,
+          debt: await read.debt,
+          ...(read.loanCollateral === undefined
+            ? {}
+            : { loanCollateral: await read.loanCollateral })
+        }))
+      )
     ])
     const [
       chainId,
@@ -410,8 +347,7 @@ export class SetupCheckService {
       books,
       reference,
       offers,
-      positionHealth,
-      lossFactors
+      debtPositions
     ] = reads
 
     const signerRequirement =
@@ -453,14 +389,10 @@ export class SetupCheckService {
               : Promise.resolve(undefined),
             this.config.signerMode === 'aws'
               ? capture(() => this.state.getAuthorization(this.config.maker, signerAddress))
-              : Promise.resolve(undefined),
-            startup
-              ? capture(() => this.state.getTransactionCounts(signerAddress))
               : Promise.resolve(undefined)
           ])
     const signerNative = signerReads?.[0]
     const signerAuthorization = signerReads?.[1]
-    const signerNonce = signerReads?.[2]
     const signerNativeCheck =
       this.readOnly || this.config.signerMode !== 'aws'
         ? {
@@ -508,33 +440,6 @@ export class SetupCheckService {
                 signerAuthorization.value,
                 true,
                 'authorize the AWS signer for the configured maker through Midnight'
-              )
-    const signerNonceCheck = this.readOnly
-      ? {
-          name: 'signer-nonce' as const,
-          status: 'not-required' as const,
-          observed: { reason: 'read-only mode does not send transactions' },
-          required: 'only for write mode'
-        }
-      : !startup
-        ? {
-            name: 'signer-nonce' as const,
-            status: 'not-required' as const,
-            observed: {
-              reason: 'continuous monitoring permits executor-owned pending transactions'
-            },
-            required: 'one-time startup check'
-          }
-        : signerNonce === undefined
-          ? setupResult('signer-nonce', false, { derived: false }, 'latest equals pending')
-          : !signerNonce.ok
-            ? providerFailure('signer-nonce', signerNonce.error, 'latest equals pending')
-            : setupResult(
-                'signer-nonce',
-                signerNonce.value.latest === signerNonce.value.pending,
-                signerNonce.value,
-                'latest equals pending',
-                'wait for or replace the pending signer transaction before restarting'
               )
     const nativeCheck =
       nativeBalance === undefined
@@ -616,14 +521,6 @@ export class SetupCheckService {
           observed: offers.value,
           required: offersRequired
         }
-    const positionCheck = !positionHealth.ok
-      ? providerFailure('position-health', positionHealth.error, 'not-required for V0')
-      : {
-          name: 'position-health' as const,
-          status: positionHealth.value.status,
-          observed: positionHealth.value,
-          required: 'not-required for V0'
-        }
 
     const checks: SetupCheck[] = [
       chainCheck(this.config, chainId, midnightCode, referenceChainId),
@@ -631,14 +528,12 @@ export class SetupCheckService {
       nativeCheck,
       signerNativeCheck,
       signerAuthorizationCheck,
-      signerNonceCheck,
       allowanceCheck,
       ratifierCheck,
       booksCheck(this.config, books),
       referenceCheck,
       offersCheck,
-      positionCheck,
-      lossFactorCheck(this.config, lossFactors)
+      positionHealthCheck(this.config, debtPositions)
     ]
     return { ready: checks.every(check => check.status !== 'failed'), checks }
   }

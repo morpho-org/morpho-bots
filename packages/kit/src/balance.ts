@@ -1,4 +1,4 @@
-import type { Address } from 'viem'
+import type { Address, Chain } from 'viem'
 
 import { ensureError, tryCatch } from '@repo/utils'
 import { formatEther } from 'viem'
@@ -6,12 +6,13 @@ import { formatEther } from 'viem'
 import type { Logger } from './logger'
 
 import { createBlockSampler } from './block-cadence'
+import { blocksFor } from './block-time'
 
 /**
- * Default block cadence for the signer-balance metric. On ~2s Base blocks this ships roughly every
- * 60s — matching the daemon-era wall-clock cadence — so operators see EOA gas drain at a steady rate.
+ * Default cadence for the signer-balance metric, converted to each chain's blocks, so operators see
+ * EOA gas drain at a steady rate.
  */
-export const BALANCE_EVERY_BLOCKS = 30n
+export const BALANCE_EVERY_MS = 60_000
 
 /**
  * Emits the signer EOA's native balance as the `signer.balance` metric on a fixed block cadence.
@@ -23,9 +24,12 @@ export function createBalanceMonitor(deps: {
   address: Address
   read: () => Promise<bigint>
   logger: Logger
+  chain: Pick<Chain, 'id'>
   everyBlocks?: bigint
 }): { maybeLog: (blockNumber: bigint) => Promise<void> } {
-  const shouldLog = createBlockSampler(deps.everyBlocks ?? BALANCE_EVERY_BLOCKS)
+  const shouldLog = createBlockSampler(
+    deps.everyBlocks ?? BigInt(blocksFor(BALANCE_EVERY_MS, deps.chain))
+  )
   return {
     async maybeLog(blockNumber) {
       if (!shouldLog(blockNumber)) return

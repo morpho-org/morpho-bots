@@ -247,7 +247,10 @@ that lands after the plan's last notice is still logged, a reorg that lands the 
 not, and one that changes it is. A nonce record dropped at finality is a `final` activity naming its
 hashes, after which the reporter forgets them ("reports the step executed, and not cancelled, when
 its original wins after the cancel", "names a step that lands after its plan ended in its
-inclusions", "names the inclusion of a reverted step that compensates and prunes at once").
+inclusions", "names the inclusion of a reverted step that compensates and prunes at once"). A
+nonce's receipt, as first seen or as a reorg changes it, is a `resolved` activity whether or not a
+plan awaits it, so a candidate a restart restored is still reported once it lands ("reports no send
+or entry a restart restores, but still reports what happens to them next, its receipt included").
 
 A plan that finishes its last step is `settled`: every transaction step was included, every `sign`
 step signed, and every release answered, `unknown` included. It does not mean inclusion is final; a consumer that needs finality (a saga gate) waits for the nonce records to be

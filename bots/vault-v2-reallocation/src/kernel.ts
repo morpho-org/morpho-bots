@@ -2,7 +2,12 @@ import type { BotLogger } from '@repo/kit'
 import type { Address, LocalAccount } from 'viem'
 
 import { vaultV2Abi } from '@morpho-org/blue-sdk-viem'
-import { createHttpTransport, DEFAULT_MAX_GAS_LIMIT, transactionKernelSpec } from '@repo/kit'
+import {
+  blocksFor,
+  createHttpTransport,
+  DEFAULT_MAX_GAS_LIMIT,
+  transactionKernelSpec
+} from '@repo/kit'
 import { vaultV2ReallocationValidator } from '@repo/validators'
 import { createPublicClient, getAbiItem, toFunctionSelector } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
@@ -14,13 +19,11 @@ import { readValidMs } from './config'
 const KERNEL_EFFECT_TIMEOUT_MS = 10_000
 /** How long a sent transaction may wait for inclusion before the kernel replaces it at a higher fee. */
 const STUCK_MS = 8_000
-/** Base's block time, the fastest of the chains the bot supports. */
-const FASTEST_BLOCK_MS = 2_000
 const MULTICALL_SELECTOR = toFunctionSelector(getAbiItem({ abi: vaultV2Abi, name: 'multicall' }))
 
-/** Twice the blocks a vault read holds on the fastest chain, which also covers its preparation. */
-const evidenceAgeBlocks = (intervalMs: number) =>
-  2 * Math.ceil(readValidMs(intervalMs) / FASTEST_BLOCK_MS)
+/** Twice the blocks a vault read holds, which also covers its preparation. */
+const evidenceAgeBlocks = (config: Config) =>
+  blocksFor(2 * readValidMs(config.reallocationIntervalMs), config.chain)
 
 /** The reallocator's EOA. Only the kernel signs with it */
 export const reallocatorAccount = (config: Config) =>
@@ -48,7 +51,7 @@ export const reallocatorKernel = (options: {
       maxSpendWei,
       maxGasLimit: DEFAULT_MAX_GAS_LIMIT,
       stuckMs: STUCK_MS,
-      maxEvidenceAgeBlocks: evidenceAgeBlocks(config.reallocationIntervalMs)
+      maxEvidenceAgeBlocks: evidenceAgeBlocks(config)
     },
     validator: vaultV2ReallocationValidator({ adapters }),
     account,

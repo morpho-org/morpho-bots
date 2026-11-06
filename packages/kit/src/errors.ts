@@ -21,10 +21,10 @@ export class PolicyViolationError extends Error {
   }
 }
 
-/** A chain declares no block time, so a time bound cannot be converted to its blocks. */
+/** Kit has no block time for a chain, so a time bound cannot be converted to its blocks. */
 export class MissingBlockTimeError extends Error {
   constructor(readonly chainId: number) {
-    super(`chain ${chainId} declares no block time`)
+    super(`no block time is known for chain ${chainId}`)
     this.name = 'MissingBlockTimeError'
   }
 }
@@ -90,5 +90,25 @@ export class InvalidJournalRunCapError extends Error {
   constructor(minimum: number) {
     super(`JOURNAL_RUN_CAP_BYTES must be set to a whole number of bytes, at least ${minimum}`)
     this.name = 'InvalidJournalRunCapError'
+  }
+}
+
+/** Sanitized signer-construction or remote-signing failure. */
+export class SignerAccountError extends Error {
+  readonly name = 'SignerAccountError'
+
+  /**
+   * Creates a sanitized account failure from an allowlisted operation only.
+   * @param operation - Stable signer operation that failed without retaining secret material.
+   */
+  constructor(
+    readonly operation:
+      | 'signer-address'
+      | 'keystore-read'
+      | 'keystore-decrypt'
+      | 'kms-public-key'
+      | 'kms-sign'
+  ) {
+    super(`Signer account ${operation} failed`)
   }
 }

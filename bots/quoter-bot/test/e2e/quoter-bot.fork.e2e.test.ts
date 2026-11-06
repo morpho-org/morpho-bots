@@ -1,6 +1,7 @@
-import type { Address } from 'viem'
+import type { Address, LocalAccount } from 'viem'
 
 import {
+  MAX_CONTINUOUS_FEE,
   midnightAbi,
   Offer,
   OfferUtils,
@@ -10,32 +11,37 @@ import {
   Tree
 } from '@morpho-org/midnight-sdk'
 import { morphoViemExtension } from '@morpho-org/morpho-sdk'
+
+const discardingJournal = {
+  sink: { append: async () => {}, finalize: async () => {} },
+  capacityBytes: 100_000_000
+}
 import { getChainAddress } from '@morpho-org/morpho-ts'
 import { mkdir, mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
-import { createWalletClient, http, publicActions } from 'viem'
+import { createWalletClient, http, publicActions, toFunctionSelector } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
 import { base } from 'viem/chains'
 import { afterAll, beforeAll, beforeEach, describe, expect, test, vi } from 'vitest'
 
+import type { MonitoringEvent } from '../../src/application/monitoring/monitoring-event'
 import type { AnvilHandle } from './anvil'
 import type { RouterApiHandle } from './router-api'
 
-import { PositionBootstrapService } from '../../src/application/bootstrap/position-bootstrap.service'
-import { LadderQuoterService } from '../../src/application/ladder/ladder-quoter.service'
 import { createApplication } from '../../src/bootstrap'
 import { ConfigService } from '../../src/config/config.service'
-import { StartupCleanupFailedError } from '../../src/errors'
-import { createProductionBootstrapAdapters } from '../../src/infrastructure/bootstrap/production-bootstrap'
-import { createProductionOfferInvalidationPort } from '../../src/infrastructure/invalidation/production-offer-invalidation'
-import { createProductionLadderAdapters } from '../../src/infrastructure/ladder/production-ladder'
-import { createQuoterTransactionExecutor } from '../../src/infrastructure/transaction/quoter-transaction-executor'
+import { StartupCleanupFailedError, QuoterStartError } from '../../src/errors'
+import { createOfferInvalidation } from '../../src/infrastructure/invalidation/offer-invalidation'
+import { buildLadderTree } from '../../src/infrastructure/ladder/ladder-offer.utils'
+import { createSignerAccount } from '../../src/kernel'
+import { startQuoterEngine, type QuoterEngine } from '../../src/run'
 import { startAnvil, stopAnvil } from './anvil'
 import {
   ANVIL_DEFAULT_ACCOUNT,
   ANVIL_DEFAULT_PRIVATE_KEY,
+  ANVIL_TAKER_ACCOUNT,
   ECRECOVER_RATIFIER,
   MARKET_ID,
   MIDNIGHT,
@@ -45,6 +51,8 @@ import {
 } from './constants'
 import {
   clearMakerCash,
+  prepareMakerBorrowTake,
+  publishCollateralizedTree,
   publishMakerSell,
   redeemMakerCredit,
   repayTakerDebt,
@@ -54,7 +62,9 @@ import { startRouterApi, stopRouterApi } from './router-api'
 import { setupMaker } from './setup-maker'
 
 const PINNED_FORK_TIMESTAMP = 1_784_589_348n
-const PINNED_WALL_TIMESTAMP = PINNED_FORK_TIMESTAMP + 150n
+/** How far the pinned wall clock runs ahead of the fork's head, as a node's clock runs past its blocks. */
+const WALL_CLOCK_LEAD_SECONDS = 150n
+const PINNED_WALL_TIMESTAMP = PINNED_FORK_TIMESTAMP + WALL_CLOCK_LEAD_SECONDS
 const DELEGATED_SIGNER = privateKeyToAccount(
   '0x5de4111afa1c4b3ebab8959708c3fe2503b7e5146ff7e53ecf0c8d132d13e5de'
 )
@@ -116,8 +126,12 @@ const environment = (rpcUrl: string, apiBaseUrl: string) => ({
   REFERENCE_LOOKBACK_SECONDS: '21600',
   NATIVE_RESERVE_WEI: String(NATIVE_RESERVE),
   MAX_FEE_GWEI: '100',
-  PRIORITY_FEE_GWEI: '1',
   MAX_TRANSACTION_SPEND_WEI: '100000000000000000',
+  // Bootstrap accepts the market's live continuous fee, so the fork allows the protocol maximum.
+  MAX_CONTINUOUS_FEE_CAP: String(MAX_CONTINUOUS_FEE),
+  KERNEL_ENROLLMENT: 'enrolling',
+  // An automining fork mines only on a transaction, so finality one block deep is reached by mining.
+  FINALITY: '1',
   MAX_PUBLICATION_GAS: '5000000',
   MAX_PUBLICATION_DATA_BYTES: '65536',
   MAX_CANCELLATION_GAS: '100000',
@@ -159,17 +173,163 @@ const setMakerAuthorization = async (
   if (receipt.status !== 'success') throw new TypeError('Maker authorization reverted')
 }
 
-const createProductionLadderRuntime = async (config: ConfigService) => {
-  const adapters = await createProductionLadderAdapters(config)
-  const service = new LadderQuoterService(
-    adapters.positions,
-    adapters.rates,
-    adapters.make,
-    config.ladder
+const jsonBigint = (_: string, value: unknown) =>
+  typeof value === 'bigint' ? value.toString() : value
+
+/** Engines a test started; each is abandoned before the fork is reverted or the ledger reset. */
+const writers: QuoterEngine[] = []
+
+/**
+ * Pins the wall clock {@link WALL_CLOCK_LEAD_SECONDS} past the head again. Anvil adds a second per
+ * mined block, so a clock that stayed pinned would fall behind the head as the suite mines.
+ */
+const followHead = async (handle: AnvilHandle) => {
+  const { timestamp } = await handle.client.getBlock({ blockTag: 'latest' })
+  vi.setSystemTime(new Date(Number(timestamp + WALL_CLOCK_LEAD_SECONDS) * 1_000))
+}
+
+/** How far Anvil's `safe` block trails its head; automine adds no block without a transaction. */
+const ANVIL_SAFE_LAG_BLOCKS = 32
+
+/**
+ * Makes every transaction so far safe, as a fresh enrollment needs before the kernel takes a
+ * nonce, without mining while a one-shot command then reads the world.
+ */
+const finalizeHead = async (handle: AnvilHandle) => {
+  await handle.client.mine({ blocks: ANVIL_SAFE_LAG_BLOCKS })
+  await followHead(handle)
+}
+
+/**
+ * Mines while `work` runs, failing after `ms`. The kernel's start waits for the signer's nonce to
+ * be safe ({@link ANVIL_SAFE_LAG_BLOCKS}), and a clean stop for its cancellations to be final.
+ */
+const whileMining = async <T>(
+  handle: AnvilHandle,
+  work: Promise<T>,
+  what: string,
+  ms = 120_000
+) => {
+  const miner = setInterval(
+    () =>
+      void handle.client
+        .mine({ blocks: 1 })
+        .then(() => followHead(handle))
+        .catch(() => {}),
+    250
   )
+  let deadline: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      work,
+      new Promise<never>((_, reject) => {
+        deadline = setTimeout(() => reject(new Error(`timed out waiting for ${what}`)), ms)
+      })
+    ])
+  } finally {
+    clearTimeout(deadline)
+    clearInterval(miner)
+  }
+}
+
+/** Deadlines run on the monotonic clock, since the suite pins `Date`. */
+const until = async (done: () => boolean, what: string, ms = 120_000) => {
+  const deadline = performance.now() + ms
+  while (!done()) {
+    if (performance.now() > deadline) throw new Error(`timed out waiting for ${what}`)
+    await sleep(25)
+  }
+}
+
+type Strategy = 'ladder' | 'bootstrap'
+type Completed = Extract<MonitoringEvent, { event: 'cycle.completed' }>
+
+/**
+ * What each market did since the last check, from its liveness records: the first that is not a
+ * plain observation (an act's outcome, or a failure), else its last observation.
+ */
+const reportedResults = (records: readonly Completed[]) =>
+  [...new Set(records.map(record => record.marketId))].map(marketId => {
+    const own = records.filter(record => record.marketId === marketId)
+    const {
+      marketId: _,
+      status,
+      action,
+      reason
+    } = own.find(record => record.status !== 'observed') ?? own.at(-1)!
+    return {
+      marketId,
+      status,
+      ...(action === undefined ? {} : { action }),
+      ...(reason === undefined ? {} : { reason })
+    }
+  })
+
+/**
+ * Starts the engine a writer process runs, as composition does, and reports each strategy's cycles.
+ * The fork's clock is frozen, so a market is re-read only after one of the bot's own acts, or when a
+ * test asks for it after changing the world.
+ */
+const startWriter = async (
+  handle: AnvilHandle,
+  config: ConfigService,
+  strategies: Readonly<Record<Strategy, boolean>>,
+  account?: LocalAccount
+) => {
+  const identity = config.identity
+  if (identity.readOnly) throw new TypeError('a writer needs a signing identity')
+  // Every report since the last check; a market reports its act there, then rests while re-read.
+  const cycles: Partial<Record<Strategy, Completed[]>> = {}
+  const reported = (strategy: Strategy) => reportedResults(cycles[strategy] ?? [])
+  const signer = account ?? (await createSignerAccount(identity))
+  const engine = await whileMining(
+    handle,
+    startQuoterEngine({
+      config,
+      journal: discardingJournal,
+      strategies,
+      account: signer,
+      writeEvent: event => {
+        if (event.event.startsWith('kernel.')) console.info(JSON.stringify(event, jsonBigint))
+        if (event.event === 'cycle.completed' && event.workflow !== 'setup-check')
+          cycles[event.workflow] = [...(cycles[event.workflow] ?? []), event]
+      }
+    }),
+    'the kernel to start'
+  )
+  writers.push(engine)
+  /** Waits until every market is steady, and returns the cycle that shows it. */
+  const steady = async (strategy: Strategy) => {
+    await until(() => engine.steady() && cycles[strategy] !== undefined, `${strategy} to settle`)
+    const results = reported(strategy)
+    delete cycles[strategy]
+    return results
+  }
   return {
-    runOnce: () => service.runOnce(),
-    shutdown: (cleanup: boolean) => (cleanup ? adapters.make.cleanup() : Promise.resolve())
+    engine,
+    steady,
+    /**
+     * Reads the world again after a change the bot did not make, and waits for it to settle. A
+     * poll reports only a world read that differs from the last, so the read is taken at a new head.
+     */
+    recheck: async (strategy: Strategy) => {
+      delete cycles[strategy]
+      await handle.client.mine({ blocks: 1 })
+      await followHead(handle)
+      const head = Number(await handle.client.getBlockNumber({ cacheTime: 0 }))
+      await until(
+        () => (engine.kernelState()?.head?.number ?? 0) >= head,
+        'the kernel to see a new head'
+      )
+      engine.refresh()
+      await until(() => cycles[strategy] !== undefined, `a fresh ${strategy} reading`)
+      return steady(strategy)
+    },
+    /** Withdraws everything and stops, as a graceful shutdown does. */
+    stop: async () => {
+      engine.stop()
+      return whileMining(handle, engine.stopped, 'the kernel to stop')
+    }
   }
 }
 
@@ -180,6 +340,8 @@ describe('quoter-bot workflow on a pinned Base fork', () => {
   const originalStateHome = process.env.XDG_STATE_HOME
 
   const resetStateDirectory = async () => {
+    await Promise.all(writers.splice(0).map(engine => engine.abandon()))
+    if (anvil) await followHead(anvil)
     if (!stateDirectory) return
     await rm(stateDirectory, { recursive: true, force: true })
     await mkdir(stateDirectory, { recursive: true })
@@ -196,6 +358,10 @@ describe('quoter-bot workflow on a pinned Base fork', () => {
     // to a cancelled group; a real chain's timestamps strictly increase (Yellow Paper §4.3.4).
     await anvil.client.setBlockTimestampInterval({ interval: 1 })
     api = await startRouterApi(anvil.rpcUrl)
+    // Anvil's published keys carry live EIP-7702 delegations on Base, and the kernel refuses an
+    // account with code (https://eips.ethereum.org/EIPS/eip-7702).
+    for (const address of [ANVIL_DEFAULT_ACCOUNT.address, DELEGATED_SIGNER.address])
+      await anvil.client.setCode({ address, bytecode: '0x' })
     await setupMaker(anvil)
     await anvil.client.setBalance({ address: DELEGATED_SIGNER.address, value: 2n * NATIVE_RESERVE })
   }, 60_000)
@@ -221,14 +387,10 @@ describe('quoter-bot workflow on a pinned Base fork', () => {
     const externalOfferTimestamp = baselineBlock.timestamp + 1n
     await anvil.client.setNextBlockTimestamp({ timestamp: externalOfferTimestamp })
     await publishMakerSell(anvil, api, 6_744n)
-    const probeAdapters = await createProductionBootstrapAdapters(config)
-    const probe = new PositionBootstrapService(
-      probeAdapters.positions,
-      probeAdapters.rates,
-      probeAdapters.make,
-      config.bootstrap
-    )
-    expect(await probe.runOnce()).toMatchObject([{ status: 'applied', action: 'publish' }])
+    const probe = await startWriter(anvil, config, { ladder: false, bootstrap: true })
+    expect(await probe.steady('bootstrap')).toMatchObject([
+      { status: 'applied', action: 'publish' }
+    ])
     const published = await api.activeOffers()
     expect(published).toHaveLength(2)
     const buy = published.find(item => OfferUtils.toStruct({ offer: item.offer }).buy)
@@ -251,30 +413,8 @@ describe('quoter-bot workflow on a pinned Base fork', () => {
         await anvil.client.setNextBlockTimestamp({ timestamp: externalOfferTimestamp })
         expect((await publishMakerSell(anvil, api, spreadCase.sellTick)).status).toBe('success')
         expect(await api.activeOffers()).toHaveLength(1)
-        const adapters = await createProductionBootstrapAdapters(config)
-        let makeFailure: unknown
-        const make = {
-          reconcile: async (parameters: Parameters<typeof adapters.make.reconcile>[0]) => {
-            try {
-              await adapters.make.reconcile(parameters)
-            } catch (error) {
-              makeFailure = error
-              throw error
-            }
-          },
-          hardHalt: (parameters: Parameters<typeof adapters.make.hardHalt>[0]) =>
-            adapters.make.hardHalt(parameters),
-          cleanup: (parameters?: Parameters<typeof adapters.make.cleanup>[0]) =>
-            adapters.make.cleanup(parameters)
-        }
-        const bootstrap = new PositionBootstrapService(
-          adapters.positions,
-          adapters.rates,
-          make,
-          config.bootstrap
-        )
-        const result = await bootstrap.runOnce()
-        expect(makeFailure, spreadCase.label).toBeUndefined()
+        const writer = await startWriter(anvil, config, { ladder: false, bootstrap: true })
+        const result = await writer.steady('bootstrap')
         expect(result, spreadCase.label).toMatchObject([{ status: 'applied', action: 'publish' }])
         const active = await api.activeOffers()
         expect(active, spreadCase.label).toHaveLength(2)
@@ -300,12 +440,12 @@ describe('quoter-bot workflow on a pinned Base fork', () => {
     const baseline = await anvil.client.snapshot()
     try {
       const config = ConfigService.from(environment(anvil.rpcUrl, api.baseUrl))
-      const runtime = await createProductionLadderRuntime(config)
-      expect(await runtime.runOnce()).toMatchObject([{ action: 'publish' }])
+      const runtime = await startWriter(anvil, config, { ladder: true, bootstrap: false })
+      expect(await runtime.steady('ladder')).toMatchObject([{ action: 'publish' }])
       expect(await api.activeOffers()).toHaveLength(3)
       expect((await publishMakerSell(anvil, api, 6_744n)).status).toBe('success')
       expect(await api.activeOffers()).toHaveLength(4)
-      await runtime.shutdown(true)
+      expect((await runtime.stop()).outcome).toBe('clean')
       expect(await api.activeOffers()).toHaveLength(1)
     } finally {
       await anvil.client.revert({ id: baseline })
@@ -316,11 +456,15 @@ describe('quoter-bot workflow on a pinned Base fork', () => {
     try {
       const config = ConfigService.from(environment(anvil.rpcUrl, api.baseUrl))
       expect((await publishMakerSell(anvil, api, 0n)).status).toBe('success')
-      const runtime = await createProductionLadderRuntime(config)
-      expect(await runtime.runOnce()).toMatchObject([{ status: 'applied', action: 'publish' }])
+      const runtime = await startWriter(anvil, config, { ladder: true, bootstrap: false })
+      expect(await runtime.steady('ladder')).toMatchObject([
+        { status: 'applied', action: 'publish' }
+      ])
       // A tick-zero sell is worth zero assets, so it neither moves the buys nor counts as a cross.
       expect(await api.activeOffers()).toHaveLength(4)
-      expect(await runtime.runOnce()).toMatchObject([{ status: 'observed', action: 'rest' }])
+      expect(await runtime.recheck('ladder')).toMatchObject([
+        { status: 'observed', action: 'rest' }
+      ])
       expect(await api.activeOffers()).toHaveLength(4)
     } finally {
       await anvil.client.revert({ id: crossing })
@@ -333,6 +477,7 @@ describe('quoter-bot workflow on a pinned Base fork', () => {
     expect(api).toBeDefined()
     if (!anvil || !api) return
     const applicationEnvironment = environment(anvil.rpcUrl, api.baseUrl)
+    await finalizeHead(anvil)
     const result = await createApplication(applicationEnvironment).run(['bootstrap'])
 
     expect(result).toMatchObject([{ status: 'applied', action: 'publish' }])
@@ -340,36 +485,58 @@ describe('quoter-bot workflow on a pinned Base fork', () => {
     expect(publishedOffers).toHaveLength(1)
     const publishedOffer = OfferUtils.toStruct({ offer: publishedOffers[0]!.offer })
     expect(publishedOffer.maxUnits).toBe(500_000_000n)
+
+    // An enrolling start beside an existing ledger is refused, and the writer fails to start.
+    const refused = await startWriter(anvil, ConfigService.from(applicationEnvironment), {
+      ladder: false,
+      bootstrap: true
+    }).catch((error: unknown) => error)
+    expect(refused).toBeInstanceOf(QuoterStartError)
+    expect((refused as QuoterStartError).report.outcome).toBe('refused')
+    // A later process holds no quote for what it adopts, so it withdraws it before quoting again.
+    const config = ConfigService.from({ ...applicationEnvironment, KERNEL_ENROLLMENT: 'enrolled' })
+    const bootstrap = await startWriter(anvil, config, { ladder: false, bootstrap: true })
+    expect(await bootstrap.steady('bootstrap')).toMatchObject([
+      { status: 'applied', action: 'publish' }
+    ])
+    const republished = await api.activeOffers()
+    expect(republished).toHaveLength(1)
+    const resting = OfferUtils.toStruct({ offer: republished[0]!.offer })
+    expect(resting.group).not.toBe(publishedOffer.group)
     const fill = await takeMakerLend(anvil, api, 250_000_000n)
     expect(fill.receipt.status).toBe('success')
     expect(fill.makerPosition.credit).toBeGreaterThan(250_000_000n)
 
-    const partialResult = await createApplication(applicationEnvironment).run(['bootstrap'])
-    expect(partialResult).toEqual([{ marketId: MARKET_ID, status: 'observed', action: 'rest' }])
+    expect(await bootstrap.recheck('bootstrap')).toEqual([
+      { marketId: MARKET_ID, status: 'observed', action: 'rest' }
+    ])
     const partialOffers = await api.activeOffers()
     expect(partialOffers).toHaveLength(1)
-    expect(OfferUtils.toStruct({ offer: partialOffers[0]!.offer }).group).toBe(publishedOffer.group)
-    const remainingUnits = publishedOffer.maxUnits - fill.makerPosition.credit
+    expect(OfferUtils.toStruct({ offer: partialOffers[0]!.offer }).group).toBe(resting.group)
+    const remainingUnits = resting.maxUnits - fill.makerPosition.credit
     expect(remainingUnits).toBeGreaterThan(0n)
     expect(remainingUnits).toBeLessThan(250_000_000n)
 
     const completedFill = await takeMakerLend(anvil, api, { units: remainingUnits })
     expect(completedFill.makerPosition.credit).toBe(500_000_000n)
-    const completeResult = await createApplication(applicationEnvironment).run(['bootstrap'])
-    expect(completeResult).toEqual([
+    expect(await bootstrap.recheck('bootstrap')).toEqual([
       { marketId: MARKET_ID, status: 'observed', action: 'target-reached' }
     ])
     expect(await api.activeOffers()).toHaveLength(0)
 
     expect((await repayTakerDebt(anvil)).status).toBe('success')
     expect((await redeemMakerCredit(anvil, ANVIL_DEFAULT_ACCOUNT))?.status).toBe('success')
+    await resetStateDirectory()
     const strategySnapshot = await anvil.client.snapshot()
     const ladderEnvironment = {
       ...applicationEnvironment,
       LADDER_MARKETS: ladderConfiguration('0', '10', '1000000000')
     }
-    const ladderResult = await createApplication(ladderEnvironment).run(['ladder'])
-    expect(ladderResult).toEqual([
+    const ladder = await startWriter(anvil, ConfigService.from(ladderEnvironment), {
+      ladder: true,
+      bootstrap: false
+    })
+    expect(await ladder.steady('ladder')).toEqual([
       { marketId: MARKET_ID, status: 'applied', action: 'publish', reason: 'publish' }
     ])
     expect(await api.activeOffers()).toHaveLength(3)
@@ -383,36 +550,44 @@ describe('quoter-bot workflow on a pinned Base fork', () => {
       unknownMarketIds: [],
       invertedMarketIds: []
     })
-    const ladder = await createProductionLadderRuntime(ConfigService.from(ladderEnvironment))
-    expect(await ladder.runOnce()).toEqual([
+    expect(await ladder.recheck('ladder')).toEqual([
       { marketId: MARKET_ID, status: 'observed', action: 'rest' }
     ])
-    await ladder.shutdown(false)
     expect(await api.activeOffers()).toHaveLength(3)
+    await Promise.all(writers.splice(0).map(engine => engine.abandon()))
 
-    const recentered = await createProductionLadderRuntime(
+    const recentered = await startWriter(
+      anvil,
       ConfigService.from({
         ...ladderEnvironment,
+        KERNEL_ENROLLMENT: 'enrolled',
         LADDER_MARKETS: ladderConfiguration('500', '10', '1000000000')
-      })
+      }),
+      { ladder: true, bootstrap: false }
     )
-    expect(await recentered.runOnce()).toMatchObject([{ action: 'replace', reason: 'recenter' }])
+    expect(await recentered.steady('ladder')).toMatchObject([
+      { action: 'publish', reason: 'publish' }
+    ])
     expect(await api.activeOffers()).toHaveLength(3)
 
     await clearMakerCash(anvil)
-    expect(await recentered.runOnce()).toMatchObject([{ action: 'replace' }])
+    expect(await recentered.recheck('ladder')).toMatchObject([{ action: 'replace' }])
     expect(await api.activeOffers()).toHaveLength(0)
 
     await anvil.client.revert({ id: strategySnapshot })
     await resetStateDirectory()
     expect(await api.activeOffers()).toHaveLength(0)
-    const sellRuntime = await createProductionLadderRuntime(
+    const sellRuntime = await startWriter(
+      anvil,
       ConfigService.from({
         ...ladderEnvironment,
         LADDER_MARKETS: ladderConfiguration('-100', '1000', '1000000000')
-      })
+      }),
+      { ladder: true, bootstrap: false }
     )
-    expect(await sellRuntime.runOnce()).toMatchObject([{ action: 'publish', reason: 'publish' }])
+    expect(await sellRuntime.steady('ladder')).toMatchObject([
+      { action: 'publish', reason: 'publish' }
+    ])
     const restartOffers = await api.activeOffers()
     expect(restartOffers).toHaveLength(3)
     expect(restartOffers.map(item => OfferUtils.toStruct({ offer: item.offer }).buy)).toEqual([
@@ -420,11 +595,38 @@ describe('quoter-bot workflow on a pinned Base fork', () => {
       true,
       true
     ])
-    await sellRuntime.shutdown(true)
+    expect((await sellRuntime.stop()).outcome).toBe('clean')
     expect(await api.activeOffers()).toHaveLength(0)
-  }, 180_000)
+  }, 300_000)
 
-  test('cancels owned buys behind a latched nonce before a writer exits', async () => {
+  test('previews a bootstrap publication read-only through the real world reads, sending nothing', async () => {
+    expect(anvil).toBeDefined()
+    expect(api).toBeDefined()
+    if (!anvil || !api) return
+    const handle = anvil
+    const maker = ANVIL_DEFAULT_ACCOUNT.address
+    const nonce = await handle.client.getTransactionCount({ address: maker })
+
+    const result = await whileMining(
+      handle,
+      createApplication({
+        ...environment(handle.rpcUrl, api.baseUrl),
+        MAKER_PRIVATE_KEY: undefined
+      }).run(['--readonly', 'bootstrap'], {
+        writeEvent: event => {
+          const record = event as { event?: string }
+          if (record.event?.startsWith('kernel.')) console.info(JSON.stringify(event, jsonBigint))
+        }
+      }),
+      'a read-only bootstrap'
+    )
+
+    expect(result).toMatchObject([{ action: 'publish' }])
+    expect(await api.activeOffers()).toHaveLength(0)
+    expect(await handle.client.getTransactionCount({ address: maker })).toBe(nonce)
+  }, 240_000)
+
+  test('refuses to start beside a transaction its ledger never recorded, leaving the book to the operator', async () => {
     expect(anvil).toBeDefined()
     expect(api).toBeDefined()
     if (!anvil || !api) return
@@ -435,94 +637,37 @@ describe('quoter-bot workflow on a pinned Base fork', () => {
       chain: base,
       transport: http(handle.rpcUrl)
     })
-    const latchNonce = async () => {
-      await handle.client.setAutomine(false)
-      await wallet.sendTransaction({ to: maker, value: 0n })
-    }
-    const pendingCount = () =>
-      handle.client.getTransactionCount({ address: maker, blockTag: 'pending' })
-    const releaseMempool = async () => {
-      await handle.client.request({ method: 'anvil_dropAllTransactions' } as never)
-      await handle.client.setAutomine(true)
-    }
     const ladderEnvironment = {
       ...environment(handle.rpcUrl, api.baseUrl),
       BOOTSTRAP_MARKETS: '[]'
     }
 
-    const confirmed = await handle.client.snapshot()
+    const snapshot = await handle.client.snapshot()
     try {
+      await finalizeHead(handle)
       expect(await createApplication(ladderEnvironment).run(['ladder'])).toMatchObject([
         { status: 'applied', action: 'publish' }
       ])
       expect(await api.activeOffers()).toHaveLength(3)
-      await latchNonce()
-      const queuedBehind = (await pendingCount()) + 1
-      const written: unknown[] = []
-      const run = createApplication(ladderEnvironment)
-        .run(['ladder'], { writeEvent: value => void written.push(value) })
-        .catch((error: unknown) => error)
-      const queueDeadline = performance.now() + 30_000
-      while ((await pendingCount()) < queuedBehind) {
-        if (performance.now() > queueDeadline)
-          throw new TypeError('Startup cleanup was never queued')
-        await sleep(100)
-      }
-      await handle.client.mine({ blocks: 1 })
+      // A transaction the kernel never signed, pending at the signer's next nonce.
+      await handle.client.setAutomine(false)
+      await wallet.sendTransaction({ to: maker, value: 0n })
 
-      expect(await run).toMatchObject({
-        name: 'QuoterTransactionError',
-        operation: 'unknown-pending-nonce'
-      })
-      expect(written).toContainEqual(
-        expect.objectContaining({
-          event: 'startup.owned-offers-cancelled',
-          ladder: {
-            status: 'succeeded',
-            transactions: [expect.objectContaining({ operation: 'cancel' })]
-          },
-          bootstrap: { status: 'succeeded', transactions: [] }
-        })
-      )
-      expect(await api.activeOffers()).toHaveLength(0)
-    } finally {
-      await releaseMempool()
-      await handle.client.revert({ id: confirmed })
-      await resetStateDirectory()
-    }
-
-    const stuck = await handle.client.snapshot()
-    try {
-      expect(await createApplication(ladderEnvironment).run(['ladder'])).toMatchObject([
-        { status: 'applied', action: 'publish' }
-      ])
-      await latchNonce()
-      // A receipt deadline needs a moving clock; the pinned wall clock never reaches it.
-      vi.useRealTimers()
-      const error = await createApplication({
-        ...ladderEnvironment,
-        TRANSACTION_RECEIPT_TIMEOUT_MS: '3000'
-      })
+      const error = await createApplication(ladderEnvironment)
         .run(['ladder'])
         .catch((value: unknown) => value)
 
       expect(error).toBeInstanceOf(StartupCleanupFailedError)
-      const report = (error as StartupCleanupFailedError).report
-      expect(report).toMatchObject({
-        errorName: 'QuoterTransactionError',
-        adapterOperation: 'unknown-pending-nonce',
-        ladder: { status: 'failed', errorName: 'LadderHardHaltError' },
-        bootstrap: { status: 'succeeded' }
+      expect((error as StartupCleanupFailedError).report).toMatchObject({
+        errorName: 'KernelRefusedError',
+        ladder: { status: 'failed', errorName: 'KernelStopError' },
+        bootstrap: { status: 'failed', errorName: 'KernelStopError' }
       })
-      expect(report.ladder).toHaveProperty('unresolvedGroupIds')
-      expect(
-        (report.ladder as { unresolvedGroupIds: readonly string[] }).unresolvedGroupIds.length
-      ).toBeGreaterThan(0)
       expect(await api.activeOffers()).toHaveLength(3)
     } finally {
-      vi.setSystemTime(new Date(Number(PINNED_WALL_TIMESTAMP) * 1_000))
-      await releaseMempool()
-      await handle.client.revert({ id: stuck })
+      await handle.client.request({ method: 'anvil_dropAllTransactions' } as never)
+      await handle.client.setAutomine(true)
+      await handle.client.revert({ id: snapshot })
       await resetStateDirectory()
     }
   }, 240_000)
@@ -536,22 +681,16 @@ describe('quoter-bot workflow on a pinned Base fork', () => {
     try {
       await setMakerAuthorization(anvil, DELEGATED_SIGNER.address, true)
       const config = ConfigService.from(delegatedEnvironment(anvil.rpcUrl, api.baseUrl))
-      const executor = createQuoterTransactionExecutor(config, DELEGATED_SIGNER)
-      const adapters = await createProductionBootstrapAdapters(
+      const bootstrap = await startWriter(
+        anvil,
         config,
-        undefined,
-        DELEGATED_SIGNER,
-        [],
-        executor
-      )
-      const bootstrap = new PositionBootstrapService(
-        adapters.positions,
-        adapters.rates,
-        adapters.make,
-        config.bootstrap
+        { ladder: false, bootstrap: true },
+        DELEGATED_SIGNER
       )
 
-      expect(await bootstrap.runOnce()).toMatchObject([{ status: 'applied', action: 'publish' }])
+      expect(await bootstrap.steady('bootstrap')).toMatchObject([
+        { status: 'applied', action: 'publish' }
+      ])
       const published = await api.activeOffers()
       expect(published).toHaveLength(1)
       expect(OfferUtils.toStruct({ offer: published[0]!.offer }).maker).toBe(
@@ -567,21 +706,15 @@ describe('quoter-bot workflow on a pinned Base fork', () => {
     try {
       await setMakerAuthorization(anvil, DELEGATED_SIGNER.address, true)
       const config = ConfigService.from(delegatedEnvironment(anvil.rpcUrl, api.baseUrl))
-      const executor = createQuoterTransactionExecutor(config, DELEGATED_SIGNER)
-      const adapters = await createProductionBootstrapAdapters(
+      const bootstrap = await startWriter(
+        anvil,
         config,
-        undefined,
-        DELEGATED_SIGNER,
-        [],
-        executor
+        { ladder: false, bootstrap: true },
+        DELEGATED_SIGNER
       )
-      const bootstrap = new PositionBootstrapService(
-        adapters.positions,
-        adapters.rates,
-        adapters.make,
-        config.bootstrap
-      )
-      expect(await bootstrap.runOnce()).toMatchObject([{ status: 'applied', action: 'publish' }])
+      expect(await bootstrap.steady('bootstrap')).toMatchObject([
+        { status: 'applied', action: 'publish' }
+      ])
       const published = await api.activeOffers()
       const offer = OfferUtils.toStruct({ offer: published[0]!.offer })
 
@@ -589,30 +722,30 @@ describe('quoter-bot workflow on a pinned Base fork', () => {
       await expect(takeMakerLend(anvil, api, 100_000_000n)).rejects.toBeDefined()
 
       await setMakerAuthorization(anvil, DELEGATED_SIGNER.address, true)
-      const invalidation = await createProductionOfferInvalidationPort(
-        config,
-        DELEGATED_SIGNER,
-        executor
-      )
+      // The quoting process ends; the operator's command is a later process over the same ledger.
+      await Promise.all(writers.splice(0).map(engine => engine.abandon()))
+      const enrolled = ConfigService.from({
+        ...delegatedEnvironment(anvil.rpcUrl, api.baseUrl),
+        KERNEL_ENROLLMENT: 'enrolled'
+      })
+      const invalidation = createOfferInvalidation(enrolled, {
+        writer: {
+          signer: DELEGATED_SIGNER.address,
+          start: options =>
+            startQuoterEngine({
+              config: enrolled,
+              strategies: { ladder: false, bootstrap: false },
+              account: DELEGATED_SIGNER,
+              journal: discardingJournal,
+              ...options
+            })
+        }
+      })
       await anvil.client.setBalance({ address: ANVIL_DEFAULT_ACCOUNT.address, value: 0n })
-      const localInvalidation = await createProductionOfferInvalidationPort(
-        ConfigService.from(environment(anvil.rpcUrl, api.baseUrl)),
-        ANVIL_DEFAULT_ACCOUNT
-      )
-      await expect(localInvalidation.preflight()).rejects.toMatchObject({
-        operation: 'preflight'
+      await expect(invalidation.run({ groupId: offer.group })).resolves.toMatchObject({
+        status: 'applied',
+        invalidatedGroups: [{ groupId: offer.group, txHash: expect.any(String) }]
       })
-      await anvil.client.setBalance({
-        address: DELEGATED_SIGNER.address,
-        value: NATIVE_RESERVE - 1n
-      })
-      await expect(invalidation.preflight()).rejects.toMatchObject({ operation: 'preflight' })
-      await anvil.client.setBalance({
-        address: DELEGATED_SIGNER.address,
-        value: 2n * NATIVE_RESERVE
-      })
-      await invalidation.preflight()
-      await expect(invalidation.invalidate(offer.group)).resolves.toBeDefined()
       expect(await api.activeOffers()).toHaveLength(0)
     } finally {
       await anvil.client.revert({ id: revocationSnapshot })
@@ -677,6 +810,71 @@ describe('quoter-bot workflow on a pinned Base fork', () => {
         })
       ).toBe(true)
       expect((await takeMakerLend(anvil, api, 100_000_000n)).receipt.status).toBe('success')
+    } finally {
+      await anvil.client.revert({ id: snapshot })
+      await resetStateDirectory()
+    }
+  }, 180_000)
+
+  // Last in the suite: it moves the fork's clock to the borrowing cutoff.
+  test('lets a borrowing sell be taken at its cutoff and leaves nothing to take one second later', async () => {
+    expect(anvil).toBeDefined()
+    expect(api).toBeDefined()
+    if (!anvil || !api) return
+    const snapshot = await anvil.client.snapshot()
+    try {
+      const head = await anvil.client.getBlock({ blockTag: 'latest' })
+      const cutoff = head.timestamp + 600n
+      const marketData = await createWalletClient({
+        chain: base,
+        transport: http(anvil.rpcUrl)
+      })
+        .extend(publicActions)
+        .extend(morphoViemExtension({ supportSignature: true, supportDeployless: true }))
+        .morpho.midnight(base.id)
+        .getMarketData(MARKET_ID)
+      const { tree } = buildLadderTree({
+        quote: {
+          marketId: MARKET_ID,
+          centerRateBps: 500n,
+          groupMode: 'shared-rung',
+          lower: [{ index: 0, rateBps: 400n, assets: 1_000_000n }],
+          higher: [],
+          debtCapable: true
+        },
+        market: marketData,
+        maker: ANVIL_TAKER_ACCOUNT.address,
+        ratifier: ECRECOVER_RATIFIER,
+        now: head.timestamp,
+        minimumRateBps: 1n,
+        maximumRateBps: 100_000n,
+        debt: {
+          maximumDebtUnits: 1_000_000n,
+          stopBorrowingBeforeMaturitySeconds: Number(marketData.params.maturity - cutoff)
+        }
+      })
+      expect(tree.offers.map(offer => [offer.reduceOnly, offer.expiry])).toEqual([[false, cutoff]])
+      expect((await publishCollateralizedTree(anvil, tree)).status).toBe('success')
+      const take = await prepareMakerBorrowTake(anvil, api, 500_000n)
+
+      const atCutoff = await anvil.client.snapshot()
+      await anvil.client.setNextBlockTimestamp({ timestamp: cutoff })
+      const hash = await take.send()
+      expect((await anvil.client.waitForTransactionReceipt({ hash })).status).toBe('success')
+      await anvil.client.revert({ id: atCutoff })
+
+      await anvil.client.setNextBlockTimestamp({ timestamp: cutoff + 1n })
+      await anvil.client.mine({ blocks: 1 })
+      const failure = await take.send().then(
+        () => undefined,
+        (error: unknown) => error
+      )
+      expect(failure).toBeInstanceOf(Error)
+      // takeLend's bundle swallows each take's OfferExpired and reverts OutOfOffers when unfilled:
+      // https://github.com/morpho-org/bundles/blob/main/src/midnight/MidnightBundlesV1.sol
+      expect((failure as Error).message.toLowerCase()).toContain(
+        toFunctionSelector('OutOfOffers()').slice(2)
+      )
     } finally {
       await anvil.client.revert({ id: snapshot })
       await resetStateDirectory()

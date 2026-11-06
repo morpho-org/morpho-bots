@@ -75,7 +75,6 @@ const environmentKeys = [
   'NATIVE_RESERVE_WEI',
   'SIGNER_NATIVE_RESERVE_WEI',
   'MAX_FEE_GWEI',
-  'PRIORITY_FEE_GWEI',
   'MAX_TRANSACTION_SPEND_WEI',
   'MAX_PUBLICATION_GAS',
   'MAX_PUBLICATION_DATA_BYTES',
@@ -83,6 +82,9 @@ const environmentKeys = [
   'MAX_BATCH_CANCELLATION_GAS',
   'MAX_BATCH_CANCELLATION_DATA_BYTES',
   'MAX_RATIFICATION_GAS',
+  'MAX_CONTINUOUS_FEE_CAP',
+  'FINALITY',
+  'KERNEL_ENROLLMENT',
   'MORPHO_API_BASE_URL',
   'ROUTER_API_BASE_URL',
   'V0_OFFER_GROUP_IDS',
@@ -116,7 +118,6 @@ const yamlKeys = {
     'nativeReserveWei',
     'signerNativeReserveWei',
     'maxFeeGwei',
-    'priorityFeeGwei',
     'maxTransactionSpendWei',
     'maxPublicationGas',
     'maxPublicationDataBytes',
@@ -124,6 +125,9 @@ const yamlKeys = {
     'maxBatchCancellationGas',
     'maxBatchCancellationDataBytes',
     'maxRatificationGas',
+    'maxContinuousFeeCap',
+    'finality',
+    'kernelEnrollment',
     'requestTimeoutMs',
     'transactionReceiptTimeoutMs'
   ],
@@ -166,24 +170,38 @@ const yamlKeys = {
 } as const
 
 /** Inputs an earlier release read, each with its YAML path; setting one now fails loud. */
-const retiredKeys = [{ environment: 'OFFER_CAP_KIND', yaml: ['markets', 'offerCapKind'] }] as const
+const retiredKeys = [
+  {
+    environment: 'OFFER_CAP_KIND',
+    yaml: ['markets', 'offerCapKind'],
+    because: 'every offer is capped in credit units',
+    see: 'Upgrading to unit-capped offers'
+  },
+  {
+    environment: 'PRIORITY_FEE_GWEI',
+    yaml: ['setup', 'priorityFeeGwei'],
+    because: "the kernel tips from the chain's recent fees",
+    see: 'Upgrading to the kernel'
+  }
+] as const
 
-const retiredKeyError = (field: string) =>
+const retiredKeyError = (field: string, retired: (typeof retiredKeys)[number]) =>
   new ConfigValidationError(
     field,
     'retired',
-    `${field} was removed: every offer is capped in credit units. Unset it; see "Upgrading to unit-capped offers" in the README`
+    `${field} was removed: ${retired.because}. Unset it; see "${retired.see}" in the README`
   )
 
 const rejectRetiredKeys = (environment: Environment, yaml: unknown) => {
-  for (const { environment: key, yaml: path } of retiredKeys) {
-    if (environment[key] !== undefined) throw retiredKeyError(key)
+  for (const retired of retiredKeys) {
+    const { environment: key, yaml: path } = retired
+    if (environment[key] !== undefined) throw retiredKeyError(key, retired)
     const group =
       typeof yaml === 'object' && yaml !== null
         ? (yaml as Record<string, unknown>)[path[0]]
         : undefined
     if (typeof group === 'object' && group !== null && path[1] in group) {
-      throw retiredKeyError(path.join('.'))
+      throw retiredKeyError(path.join('.'), retired)
     }
   }
 }
@@ -229,12 +247,13 @@ const yamlIntegerEnvironmentKeys = new Set([
   'MAX_BATCH_CANCELLATION_GAS',
   'MAX_BATCH_CANCELLATION_DATA_BYTES',
   'MAX_RATIFICATION_GAS',
+  'MAX_CONTINUOUS_FEE_CAP',
   'REQUEST_TIMEOUT_MS',
   'TRANSACTION_RECEIPT_TIMEOUT_MS'
 ])
 
 /** Fee bounds are decimal gwei; see `positiveGweiWeiValue` in `config.utils.ts`. */
-const yamlDecimalEnvironmentKeys = new Set(['MAX_FEE_GWEI', 'PRIORITY_FEE_GWEI'])
+const yamlDecimalEnvironmentKeys = new Set(['MAX_FEE_GWEI'])
 
 const scalar = (value: unknown, field: string) => {
   if (typeof value !== 'string' && typeof value !== 'number' && typeof value !== 'bigint') {
@@ -325,7 +344,6 @@ const yamlSource = (input: unknown, readOnly: boolean): ConfigurationSource => {
     nativeReserveWei: 'NATIVE_RESERVE_WEI',
     signerNativeReserveWei: 'SIGNER_NATIVE_RESERVE_WEI',
     maxFeeGwei: 'MAX_FEE_GWEI',
-    priorityFeeGwei: 'PRIORITY_FEE_GWEI',
     maxTransactionSpendWei: 'MAX_TRANSACTION_SPEND_WEI',
     maxPublicationGas: 'MAX_PUBLICATION_GAS',
     maxPublicationDataBytes: 'MAX_PUBLICATION_DATA_BYTES',
@@ -333,6 +351,9 @@ const yamlSource = (input: unknown, readOnly: boolean): ConfigurationSource => {
     maxBatchCancellationGas: 'MAX_BATCH_CANCELLATION_GAS',
     maxBatchCancellationDataBytes: 'MAX_BATCH_CANCELLATION_DATA_BYTES',
     maxRatificationGas: 'MAX_RATIFICATION_GAS',
+    maxContinuousFeeCap: 'MAX_CONTINUOUS_FEE_CAP',
+    finality: 'FINALITY',
+    kernelEnrollment: 'KERNEL_ENROLLMENT',
     requestTimeoutMs: 'REQUEST_TIMEOUT_MS',
     transactionReceiptTimeoutMs: 'TRANSACTION_RECEIPT_TIMEOUT_MS'
   })
@@ -459,7 +480,6 @@ const yamlEnvironmentPaths: Partial<
   NATIVE_RESERVE_WEI: ['setup', 'nativeReserveWei'],
   SIGNER_NATIVE_RESERVE_WEI: ['setup', 'signerNativeReserveWei'],
   MAX_FEE_GWEI: ['setup', 'maxFeeGwei'],
-  PRIORITY_FEE_GWEI: ['setup', 'priorityFeeGwei'],
   MAX_TRANSACTION_SPEND_WEI: ['setup', 'maxTransactionSpendWei'],
   MAX_PUBLICATION_GAS: ['setup', 'maxPublicationGas'],
   MAX_PUBLICATION_DATA_BYTES: ['setup', 'maxPublicationDataBytes'],
@@ -467,6 +487,9 @@ const yamlEnvironmentPaths: Partial<
   MAX_BATCH_CANCELLATION_GAS: ['setup', 'maxBatchCancellationGas'],
   MAX_BATCH_CANCELLATION_DATA_BYTES: ['setup', 'maxBatchCancellationDataBytes'],
   MAX_RATIFICATION_GAS: ['setup', 'maxRatificationGas'],
+  MAX_CONTINUOUS_FEE_CAP: ['setup', 'maxContinuousFeeCap'],
+  FINALITY: ['setup', 'finality'],
+  KERNEL_ENROLLMENT: ['setup', 'kernelEnrollment'],
   MORPHO_API_BASE_URL: ['apis', 'morphoBaseUrl'],
   ROUTER_API_BASE_URL: ['apis', 'routerBaseUrl'],
   V0_OFFER_GROUP_IDS: ['markets', 'v0OfferGroupIds'],

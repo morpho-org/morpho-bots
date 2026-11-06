@@ -1,5 +1,7 @@
-import type { Hex } from 'viem'
+import type { Address, Hex } from 'viem'
 
+import { getChainAddress } from '@morpho-org/morpho-ts'
+import { isAddressEqual } from 'viem'
 import { base, mainnet } from 'viem/chains'
 
 /** Ethereum mainnet chain ID served by the quoter-bot bot. */
@@ -48,6 +50,23 @@ export type SupportedChainId = keyof typeof SUPPORTED_CHAINS
  */
 export const ratifierRuntimeHash = (chainId: SupportedChainId, type: 'ecrecover' | 'setter'): Hex =>
   RATIFIER_RUNTIME_HASHES[chainId][type]
+
+/**
+ * The kind of `ratifier` when it is that chain's canonical deployment, else `undefined`: ratifier
+ * addresses differ per chain, so one canonical elsewhere is not accepted here.
+ * @param ratifier - Configured ratifier address.
+ * @param chainId - Chain whose canonical deployments it is compared against.
+ * @returns `setter` or `ecrecover` for a canonical ratifier, else `undefined`.
+ */
+export const ratifierType = (
+  ratifier: Address,
+  chainId: SupportedChainId
+): 'ecrecover' | 'setter' | undefined =>
+  isAddressEqual(ratifier, getChainAddress(chainId, 'setterRatifier'))
+    ? 'setter'
+    : isAddressEqual(ratifier, getChainAddress(chainId, 'ecrecoverRatifier'))
+      ? 'ecrecover'
+      : undefined
 
 /** Every supported chain ID, ordered for stable operator-facing messages. */
 export const SUPPORTED_CHAIN_IDS: readonly SupportedChainId[] = [MAINNET_CHAIN_ID, BASE_CHAIN_ID]

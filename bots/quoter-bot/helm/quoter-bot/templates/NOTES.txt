@@ -22,9 +22,8 @@ on rotation; otherwise run:
 
 {{- if not .Values.persistence.enabled }}
 
-WARNING: persistence is disabled. Durable offer-group ownership state is lost on every
-restart, and previously bot-issued groups become unknown, which fails readiness until an
-operator invalidates or adopts them.
+WARNING: persistence is disabled. The kernel ledger is lost on every restart, so an enrolled
+start refuses to start and the offers the ledger held are orphaned.
 {{- end }}
 
 Follow the JSON Lines log stream:
@@ -36,8 +35,8 @@ Operational notes:
     second release against the same maker, and never force delete the pod or its Node
     (kubectl delete --force / --grace-period=0) — force deletion is Kubernetes' documented
     exception to StatefulSet at-most-one semantics. Fence a failed node before replacement.
-  - Shutdown drains the in-flight cycle, then invalidates owned bootstrap and ladder groups
-    serially, each wait bounded by the receipt timeout; the pod may legitimately take minutes
+  - Shutdown drains the in-flight cycle, then stops the kernel, which withdraws every offer it
+    holds and waits for each withdrawal to be final; the pod may legitimately take minutes
     to stop (for a chart-managed config the grace period budgets one receipt-bounded wait per serialized shutdown step, derived from the configured markets and groups).
   - The image is only re-pulled when the pod template changes: after a mutable tag such as
     `latest` moves, roll the pod with `kubectl rollout restart`, or set

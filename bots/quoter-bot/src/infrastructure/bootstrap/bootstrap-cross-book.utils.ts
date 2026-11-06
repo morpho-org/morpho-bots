@@ -43,20 +43,16 @@ const encodedRateWad = (projection: BootstrapCrossBookOffer) => {
  * of who owns it. Existing crossings between retained third-party offers do not implicate the
  * prospective buy and are ignored. When tick rounding leaves the repriced buy at or above the sell
  * tick, the buy steps to exactly one tick spacing below it and adopts that tick's encoded rate. The
- * final projection always describes the returned offer, so a transport caching its latest
- * projection for publication can never observe a reference projection at the crossing sell tick
- * last; because each projection may read a newer block timestamp, that final projection's encoded
- * APR is re-validated against the hard bounds at full precision before the offer is returned.
+ * final projection always describes the returned offer, so a projector keeping its latest projection
+ * for publication never keeps the reference projection at the crossing sell tick, and that final
+ * projection's encoded APR is re-validated against the hard bounds at full precision.
  */
-export const resolveBootstrapProspectiveOffer = async (parameters: {
+export const resolveBootstrapProspectiveOffer = (parameters: {
   desiredOffer: BootstrapOffer
   prospective: BootstrapCrossBookOffer
   replacedGroupIds: ReadonlySet<Hex>
   book: readonly BootstrapCrossBookOffer[]
-  toProspectiveBookOffer: (
-    offer: BootstrapOffer,
-    exactTick?: bigint
-  ) => Promise<BootstrapCrossBookOffer>
+  toProspectiveBookOffer: (offer: BootstrapOffer, exactTick?: bigint) => BootstrapCrossBookOffer
   minimumRateBps: bigint
   maximumRateBps: bigint
 }) => {
@@ -80,10 +76,7 @@ export const resolveBootstrapProspectiveOffer = async (parameters: {
     return { offer: parameters.desiredOffer, prospective }
   }
 
-  const reference = await parameters.toProspectiveBookOffer(
-    parameters.desiredOffer,
-    highestRateSellTick
-  )
+  const reference = parameters.toProspectiveBookOffer(parameters.desiredOffer, highestRateSellTick)
   let offer = {
     ...parameters.desiredOffer,
     rateBps: clampRateBps(
@@ -92,17 +85,17 @@ export const resolveBootstrapProspectiveOffer = async (parameters: {
       parameters.maximumRateBps
     )
   }
-  let adjusted = await parameters.toProspectiveBookOffer(offer)
+  let adjusted = parameters.toProspectiveBookOffer(offer)
   if (adjusted.tick >= highestRateSellTick) {
     const tickSpacing = adjusted.tickSpacing ?? reference.tickSpacing
     if (tickSpacing === undefined || tickSpacing <= 0n) throw evidenceMissing()
     const clearedTick = highestRateSellTick - tickSpacing
     if (clearedTick < 0n) return undefined
-    const cleared = await parameters.toProspectiveBookOffer(offer, clearedTick)
+    const cleared = parameters.toProspectiveBookOffer(offer, clearedTick)
     const clearedRateWad = encodedRateWad(cleared)
     if (!isAprWadInRange(clearedRateWad, parameters)) return undefined
     offer = { ...offer, rateBps: clearedRateWad / BPS_WAD }
-    adjusted = await parameters.toProspectiveBookOffer(offer, clearedTick)
+    adjusted = parameters.toProspectiveBookOffer(offer, clearedTick)
     if (!isAprWadInRange(encodedRateWad(adjusted), parameters)) return undefined
   }
   if (adjusted.tick >= highestRateSellTick) throw negativeSpread()

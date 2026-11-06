@@ -1,11 +1,8 @@
-import { enhanceVerboseArgv } from '@repo/observability'
+import { SignerAccountError } from '@repo/kit'
 import { describe, expect, test, vi } from 'vitest'
 
-import { ConfigFileError, SignerAccountError, StartupCleanupFailedError } from '../../../src/errors'
-import {
-  QUOTER_BOT_VERBOSE_COMMANDS,
-  runQuoterBotEntrypoint
-} from '../../../src/infrastructure/cli/quoter-bot-entrypoint'
+import { StartupCleanupFailedError, ConfigFileError } from '../../../src/errors'
+import { runQuoterBotEntrypoint } from '../../../src/infrastructure/cli/quoter-bot-entrypoint'
 
 describe('runQuoterBotEntrypoint observability', () => {
   test('ships only allowlisted monitoring records, not every named one', async () => {
@@ -84,15 +81,14 @@ describe('runQuoterBotEntrypoint observability', () => {
     expect(unexpected).toHaveBeenCalledTimes(0)
   })
 
-  test('ships a failed startup cleanup and prints its unresolved groups', async () => {
+  test('ships a failed startup cleanup and warns that offers may still be live', async () => {
     const stderr: string[] = []
     const record = vi.fn((_value: unknown) => undefined)
     const unexpected = vi.fn((_error: unknown, _origin: 'entrypoint') => undefined)
-    const groupId = `0x${'a1'.repeat(32)}` as const
     const error = new StartupCleanupFailedError({
       reason: 'startup-cleanup-failed',
       errorName: 'SetupFailedError',
-      ladder: { status: 'failed', errorName: 'LadderHardHaltError', unresolvedGroupIds: [groupId] },
+      ladder: { status: 'failed', errorName: 'KernelStopError' },
       bootstrap: { status: 'succeeded', transactions: [] }
     })
 
@@ -106,7 +102,6 @@ describe('runQuoterBotEntrypoint observability', () => {
 
     expect(exitCode).toBe(1)
     expect(stderr.join('')).toContain('Startup failed and owned offers may still be live')
-    expect(stderr.join('')).toContain(groupId)
     expect(record.mock.calls).toEqual([
       [
         {
@@ -141,23 +136,6 @@ describe('runQuoterBotEntrypoint observability', () => {
     expect(stderr).toEqual(['Error: UnknownError'])
     expect(unexpected).toHaveBeenCalledWith(error, 'entrypoint')
     expect(stderr.join('')).not.toContain('hostile provider')
-  })
-
-  test('enables verbose diagnostics for exactly the writer commands', () => {
-    const env = {
-      BETTERSTACK_SOURCE_TOKEN: 'source-token',
-      BETTERSTACK_INGESTING_HOST: 's1.betterstackdata.com'
-    }
-
-    expect(QUOTER_BOT_VERBOSE_COMMANDS).toEqual(['start', 'bootstrap', 'ladder'])
-    for (const command of QUOTER_BOT_VERBOSE_COMMANDS) {
-      expect(enhanceVerboseArgv([command], { commands: QUOTER_BOT_VERBOSE_COMMANDS, env })).toEqual(
-        [command, '--verbose']
-      )
-    }
-    expect(
-      enhanceVerboseArgv(['setup-check'], { commands: QUOTER_BOT_VERBOSE_COMMANDS, env })
-    ).toEqual(['setup-check'])
   })
 
   test('preserves audited configuration diagnostics while still classifying the failure', async () => {

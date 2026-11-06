@@ -312,8 +312,10 @@ export const bootstrapSizeCapacity = (
  * @returns The decision, plus rate-range and size-cap diagnostics for a rate-derived decision.
  * @throws BootstrapConfigurationError when a configured maturity premium is missing its maturity
  * observation.
- * @remarks Diagnostics are absent for transition decisions, which never reach rate derivation.
- * Exists so an out-of-range rate stays observable without a logger reaching into this pure module.
+ * @remarks The hard range is an admissibility envelope: a premium-adjusted rate failing
+ * {@link violatedRateBound}, or a range that holds no aligned tick at the snapshot, publishes
+ * nothing and invalidates any active offer, never a clamped one, and neither halts the strategy.
+ * Diagnostics are absent for transition decisions, which never reach rate derivation.
  */
 export const decidePositionBootstrapWithDiagnostics = ({
   config,
@@ -386,19 +388,3 @@ export const decidePositionBootstrapWithDiagnostics = ({
 
   return { decision: decision(), diagnostics }
 }
-
-/**
- * Computes the deterministic bootstrap action from current chain and Mempool truth.
- * @param parameters - Validated configuration, fresh position and loss factor, reference rate,
- * active offer, reconciliation requirement, and initial-target completion state.
- * @returns The exact observe, invalidate, rest, replace, or publish action for this snapshot.
- * @throws BootstrapConfigurationError when a configured maturity premium is missing its maturity
- * observation.
- * @remarks The hard range is an admissibility envelope: a premium-adjusted rate failing
- * {@link violatedRateBound}, or a range that holds no aligned tick at the snapshot, publishes
- * nothing and invalidates any active offer, never a clamped one, and neither halts the strategy. Use
- * {@link decidePositionBootstrapWithDiagnostics} when that must be observable.
- */
-export const decidePositionBootstrap = (
-  parameters: PositionBootstrapParameters
-): PositionBootstrapDecision => decidePositionBootstrapWithDiagnostics(parameters).decision

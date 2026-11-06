@@ -15,6 +15,10 @@ export default defineConfig({
     testTimeout: 30_000,
     // The e2e suite forks Base and reads RPC_URL_8453; see the liquidation bots' configs for why
     // loadEnv is safe when the file is absent.
-    env: loadEnv('test', BOT_DIR, '')
+    env: {
+      QUOTER_BOT_BUILD_REVISION: 'abcdef0123456789',
+      QUOTER_BOT_BUILD_IMAGE_TAG: 'test-deployment',
+      ...loadEnv('test', BOT_DIR, '')
+    }
   }
 })

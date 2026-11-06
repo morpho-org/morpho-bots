@@ -6,19 +6,15 @@ import { getChainAddress } from '@morpho-org/morpho-ts'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import {
-  decodeFunctionData,
-  encodeFunctionResult,
-  multicall3Abi,
-  pad,
-  toFunctionSelector
-} from 'viem'
+import { decodeFunctionData, encodeFunctionResult, multicall3Abi, pad } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
 import { afterEach, describe, expect, test, vi } from 'vitest'
 
 import type { LadderQuoteSet } from '../../../src/domain/ladder'
 
 import { ConfigService } from '../../../src/config/config.service'
+import { createWorldReads } from '../../../src/infrastructure/engine/world-reads'
+import { holdingsOf } from '../../../src/infrastructure/kernel/quoter-holdings'
 import { createProductionLadderAdapters } from '../../../src/infrastructure/ladder/production-ladder'
 
 const privateKey: Hex = `0x${'11'.repeat(32)}`
@@ -77,8 +73,9 @@ const environment = {
   MARKET_IDS: marketId,
   NATIVE_RESERVE_WEI: '1',
   MAX_FEE_GWEI: '100',
-  PRIORITY_FEE_GWEI: '1',
   MAX_TRANSACTION_SPEND_WEI: '100000000000000000',
+  MAX_CONTINUOUS_FEE_CAP: '0',
+  KERNEL_ENROLLMENT: 'enrolling',
   MAX_PUBLICATION_GAS: '5000000',
   MAX_PUBLICATION_DATA_BYTES: '65536',
   MAX_CANCELLATION_GAS: '100000',
@@ -154,7 +151,7 @@ describe('createProductionLadderAdapters Ecrecover disclosure', () => {
     vi.unstubAllEnvs()
   })
 
-  test('sends no signed payload to Mempool validation before admission withholds it', async () => {
+  test('prepares and validates the replacement tree unsigned without sending a transaction', async () => {
     const stateDirectory = await mkdtemp(join(tmpdir(), 'ladder-disclosure-'))
     vi.stubEnv('XDG_STATE_HOME', stateDirectory)
     const validations: Hex[] = []
@@ -186,11 +183,24 @@ describe('createProductionLadderAdapters Ecrecover disclosure', () => {
     })
 
     try {
-      const adapters = await createProductionLadderAdapters(ConfigService.from(environment))
+      const config = ConfigService.from(environment)
+      const adapters = createProductionLadderAdapters(config, {
+        reads: createWorldReads(config)
+      })
 
-      const result = await adapters.make.reconcile({ marketId, desired: quote, reason: 'publish' })
+      const prepared = await adapters.prepareReplacement({
+        marketId,
+        block: 0,
+        desired: quote,
+        reason: 'publish',
+        ownership: holdingsOf(undefined, [], config.v0OfferGroupIds)
+      })
 
-      expect(result).toMatchObject({ publicationWithheld: { reason: 'capacity-changed' } })
+      expect(prepared).toMatchObject({
+        reconciliation: { applied: true },
+        publication: { quote: { higher: quote.higher }, witness: expect.anything() }
+      })
+      expect(prepared.publication?.groups.length).toBeGreaterThan(0)
       expect(transactions).toEqual([])
       expect(validations.length).toBeGreaterThan(0)
       for (const payload of validations) {
@@ -200,47 +210,5 @@ describe('createProductionLadderAdapters Ecrecover disclosure', () => {
     } finally {
       await rm(stateDirectory, { recursive: true, force: true })
     }
-  })
-})
-
-describe('createProductionLadderAdapters lend guard', () => {
-  afterEach(() => {
-    vi.restoreAllMocks()
-  })
-
-  test('reads the market loss factor alone and pairs it with the accepted value', async () => {
-    const selector = toFunctionSelector('lossFactor(bytes32)')
-    const calls: Hex[] = []
-    vi.spyOn(globalThis, 'fetch').mockImplementation(async (_input, init) => {
-      const body = JSON.parse(init?.body as string) as {
-        id: number
-        method: string
-        params?: unknown[]
-      }
-      const data = (body.params?.[0] as { data?: Hex } | undefined)?.data
-      if (body.method === 'eth_call' && data) calls.push(data.slice(0, 10) as Hex)
-      return Response.json({
-        jsonrpc: '2.0',
-        id: body.id,
-        result:
-          body.method === 'eth_call' && data?.startsWith(selector)
-            ? pad('0x7')
-            : rpcResult(body.method, body.params)
-      })
-    })
-
-    const adapters = await createProductionLadderAdapters(
-      ConfigService.from(
-        { ...environment, ACCEPTED_LOSS_FACTOR: JSON.stringify({ [marketId]: '7' }) },
-        { readOnly: true }
-      )
-    )
-
-    expect(await adapters.positions.readLendGuard(marketId)).toEqual({
-      lossFactor: 7n,
-      acceptedLossFactor: 7n,
-      defaulted: false
-    })
-    expect(calls).toEqual([selector])
   })
 })

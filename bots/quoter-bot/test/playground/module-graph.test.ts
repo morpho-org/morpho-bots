@@ -42,6 +42,7 @@ describe('playground browser module graph', () => {
       'src/domain/frozen-copy.ts',
       'src/domain/ladder.ts',
       'src/domain/loss-factor.ts',
+      'src/domain/market-maturity.ts',
       'src/domain/maturity-premium.ts',
       'src/domain/position-bootstrap.ts',
       'src/domain/rate-range.ts',

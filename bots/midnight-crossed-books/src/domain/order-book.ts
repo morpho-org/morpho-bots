@@ -60,13 +60,3 @@ export interface CrossedMatch {
   bid: TakeableOffer
   units: bigint
 }
-
-export interface PreparedResolution {
-  marketId: MarketId
-  data: Hex
-  profit: bigint
-}
-
-export type SimulationResult =
-  | { status: 'ok'; prepared: PreparedResolution }
-  | { status: 'revert'; reason: string }

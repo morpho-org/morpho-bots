@@ -1,7 +1,16 @@
+import type { Tree } from '@morpho-org/midnight-sdk'
 import type { Address, Hex } from 'viem'
 
-import { midnightAbi, midnightBundlesAbi, Offer, OfferUtils, Tree } from '@morpho-org/midnight-sdk'
+import {
+  EcrecoverRatifierUtils,
+  midnightAbi,
+  midnightBundlesAbi,
+  Offer,
+  OfferUtils,
+  Payload
+} from '@morpho-org/midnight-sdk'
 import { morphoViemExtension } from '@morpho-org/morpho-sdk'
+import { getChainAddress } from '@morpho-org/morpho-ts'
 import {
   createWalletClient,
   decodeFunctionData,
@@ -22,9 +31,8 @@ import { base } from 'viem/chains'
 import type { AnvilHandle } from './anvil'
 import type { RouterApiHandle } from './router-api'
 
-import { prepareBootstrapRequirements } from '../../src/infrastructure/bootstrap/bootstrap-requirements.utils'
-import { bootstrapMakeLendArguments } from '../../src/infrastructure/bootstrap/production-bootstrap'
 import {
+  ANVIL_BORROWER_ACCOUNT,
   ANVIL_DEFAULT_ACCOUNT,
   ANVIL_TAKER_ACCOUNT,
   CBBTC,
@@ -74,6 +82,17 @@ const sellExactUnits = <T extends { data: Hex }>(transaction: T, units: bigint):
  * @throws When the Router has no buy offer or any SDK requirement/simulation/transaction fails.
  * @remarks Funds only the disposable fork taker through a pinned token storage-layout fixture.
  */
+/** Signs a fixture maker's own root-signature requirements; the bot under test never signs this way. */
+const signFixtureRequirements = (wallet: unknown, requirements: readonly unknown[]) =>
+  Promise.all(
+    requirements.map(requirement =>
+      (requirement as { sign: (wallet: unknown, account: Address) => Promise<unknown> }).sign(
+        wallet,
+        ANVIL_TAKER_ACCOUNT.address
+      )
+    )
+  )
+
 export const takeMakerLend = async (
   anvil: AnvilHandle,
   router: RouterApiHandle,
@@ -237,26 +256,17 @@ const seedExternalMakerCredit = async (anvil: AnvilHandle, router: RouterApiHand
     maxAssets: 1_000_000n,
     continuousFeeCap: BigInt(marketData.continuousFee)
   })
-  const publication = await midnight.makeLend(
-    bootstrapMakeLendArguments({
-      accountAddress: ANVIL_TAKER_ACCOUNT.address,
-      offers: [lendOffer],
-      validation: { apiUrl: `${router.baseUrl}/v0/midnight` },
-      loanToken: USDC,
-      loanAssets: 1_000_000n,
-      reservedLoanAssets: 0n
-    })
-  )
-  const { signatures: publicationSignatures } = await prepareBootstrapRequirements(
-    await publication.getRequirements(),
-    (requirement, account) => requirement.sign(wallet, account) as never,
-    {
-      kind: 'ecrecover',
-      target: ECRECOVER_RATIFIER,
-      root: Tree.create([lendOffer]).root,
-      signer: ANVIL_TAKER_ACCOUNT.address,
-      offers: 1
-    }
+  const publication = await midnight.makeLend({
+    accountAddress: ANVIL_TAKER_ACCOUNT.address,
+    offers: [lendOffer],
+    validation: { apiUrl: `${router.baseUrl}/v0/midnight` },
+    loanToken: USDC,
+    loanAssets: 1_000_000n,
+    reservedLoanAssets: 0n
+  })
+  const publicationSignatures = await signFixtureRequirements(
+    wallet,
+    await publication.getRequirements()
   )
   const publicationHash = await wallet.sendTransaction(
     publication.buildTx(publicationSignatures as Parameters<typeof publication.buildTx>[0])
@@ -272,11 +282,11 @@ const seedExternalMakerCredit = async (anvil: AnvilHandle, router: RouterApiHand
   if (!item) throw new TypeError('Expected external maker seed offer')
   await anvil.client.setStorageAt({
     address: CBBTC,
-    index: tokenBalanceStorageKey(ANVIL_DEFAULT_ACCOUNT.address),
+    index: tokenBalanceStorageKey(ANVIL_BORROWER_ACCOUNT.address),
     value: pad(toHex(TAKER_COLLATERAL), { size: 32 })
   })
   const borrower = createWalletClient({
-    account: ANVIL_DEFAULT_ACCOUNT,
+    account: ANVIL_BORROWER_ACCOUNT,
     chain: base,
     transport: http(anvil.rpcUrl)
   })
@@ -284,7 +294,7 @@ const seedExternalMakerCredit = async (anvil: AnvilHandle, router: RouterApiHand
     .extend(morphoViemExtension({ supportSignature: true, supportDeployless: true }))
   const seedOffer = OfferUtils.toStruct({ offer: item.offer })
   const take = borrower.morpho.midnight(base.id).supplyCollateralTakeBorrow({
-    accountAddress: ANVIL_DEFAULT_ACCOUNT.address,
+    accountAddress: ANVIL_BORROWER_ACCOUNT.address,
     marketData,
     collateralAssets: TAKER_COLLATERAL,
     loanAssets: 1_000_000n,
@@ -351,17 +361,7 @@ export const publishMakerSell = async (
     offers: [offer],
     validation: { apiUrl: `${router.baseUrl}/v0/midnight` }
   })
-  const { signatures } = await prepareBootstrapRequirements(
-    await output.getRequirements(),
-    (requirement, account) => requirement.sign(wallet, account) as never,
-    {
-      kind: 'ecrecover',
-      target: ECRECOVER_RATIFIER,
-      root: Tree.create([offer]).root,
-      signer: ANVIL_TAKER_ACCOUNT.address,
-      offers: 1
-    }
-  )
+  const signatures = await signFixtureRequirements(wallet, await output.getRequirements())
   const hash = await wallet.sendTransaction(
     output.buildTx(signatures as Parameters<typeof output.buildTx>[0])
   )
@@ -377,3 +377,104 @@ export const clearMakerCash = (anvil: AnvilHandle) =>
     index: tokenBalanceStorageKey(ANVIL_DEFAULT_ACCOUNT.address),
     value: pad(toHex(0n), { size: 32 })
   })
+
+const fixtureWallet = (anvil: AnvilHandle, account: typeof ANVIL_TAKER_ACCOUNT) =>
+  createWalletClient({ account, chain: base, transport: http(anvil.rpcUrl) })
+    .extend(publicActions)
+    .extend(morphoViemExtension({ supportSignature: true, supportDeployless: true }))
+
+const sendRequirements = async (
+  wallet: ReturnType<typeof fixtureWallet>,
+  requirements: readonly unknown[],
+  what: string
+) => {
+  for (const requirement of requirements) {
+    if (typeof requirement === 'object' && requirement !== null && 'sign' in requirement)
+      throw new TypeError(`Unexpected signing requirement for ${what}`)
+    const { to, data, value } = requirement as { to: Address; data: Hex; value?: bigint }
+    const hash = await wallet.sendTransaction({ to, data, value })
+    if ((await wallet.waitForTransactionReceipt({ hash })).status !== 'success') {
+      throw new TypeError(`${what} requirement reverted`)
+    }
+  }
+}
+
+/**
+ * Publishes a tree the fixture maker signs, after supplying cbBTC collateral so its non-reduce-only
+ * sells borrow when taken.
+ */
+export const publishCollateralizedTree = async (anvil: AnvilHandle, tree: Tree) => {
+  const maker = ANVIL_TAKER_ACCOUNT
+  const wallet = fixtureWallet(anvil, maker)
+  const midnight = wallet.morpho.midnight(base.id)
+  const authorizationHash = await wallet.writeContract({
+    address: MARKET.midnight,
+    abi: midnightAbi,
+    functionName: 'setIsAuthorized',
+    args: [ECRECOVER_RATIFIER, true, maker.address]
+  })
+  if ((await wallet.waitForTransactionReceipt({ hash: authorizationHash })).status !== 'success') {
+    throw new TypeError('Fixture maker authorization reverted')
+  }
+  await anvil.client.setStorageAt({
+    address: CBBTC,
+    index: tokenBalanceStorageKey(maker.address),
+    value: pad(toHex(TAKER_COLLATERAL), { size: 32 })
+  })
+  const supply = midnight.supplyCollateral({
+    accountAddress: maker.address,
+    marketData: await midnight.getMarketData(MARKET_ID),
+    collateralAssets: TAKER_COLLATERAL
+  })
+  await sendRequirements(wallet, await supply.getRequirements(), 'collateral supply')
+  const supplyHash = await wallet.sendTransaction(supply.buildTx())
+  if ((await wallet.waitForTransactionReceipt({ hash: supplyHash })).status !== 'success') {
+    throw new TypeError('Fixture maker collateral supply reverted')
+  }
+  const typedData = EcrecoverRatifierUtils.typedData({ tree, chainId: base.id })
+  const signature = await maker.signTypedData(
+    typedData as Parameters<typeof maker.signTypedData>[0]
+  )
+  const items = await EcrecoverRatifierUtils.ratify({ tree, account: maker.address, signature })
+  const hash = await wallet.sendTransaction({
+    to: getChainAddress(base.id, 'midnightMempool'),
+    data: await Payload.encode(items)
+  })
+  const receipt = await wallet.waitForTransactionReceipt({ hash })
+  if (receipt.status !== 'success') throw new TypeError('Fixture tree publication reverted')
+  return receipt
+}
+
+/**
+ * Prepares a lender's take of the first active sell offer, funding and approving it, without
+ * sending the take itself.
+ * @returns A function that sends the take, rejecting when its gas estimate reverts.
+ */
+export const prepareMakerBorrowTake = async (
+  anvil: AnvilHandle,
+  router: RouterApiHandle,
+  assets: bigint
+) => {
+  const active = await router.activeOffers()
+  const item = active.find(candidate => !OfferUtils.toStruct({ offer: candidate.offer }).buy)
+  if (!item) throw new TypeError('Expected an active maker-borrow offer')
+  await anvil.client.setStorageAt({
+    address: USDC,
+    index: tokenBalanceStorageKey(ANVIL_BORROWER_ACCOUNT.address),
+    value: pad(toHex(assets), { size: 32 })
+  })
+  const wallet = fixtureWallet(anvil, ANVIL_BORROWER_ACCOUNT)
+  const midnight = wallet.morpho.midnight(base.id)
+  const offer = OfferUtils.toStruct({ offer: item.offer })
+  const output = midnight.takeLend({
+    accountAddress: ANVIL_BORROWER_ACCOUNT.address,
+    marketData: await midnight.getMarketData(MARKET_ID),
+    assets,
+    minUnits: 0n,
+    takeableOffers: [{ units: offer.maxUnits, offer, ratifierData: item.ratifierData }],
+    deadline: maxUint256
+  })
+  await sendRequirements(wallet, await output.getRequirements(), 'maker-borrow take')
+  const transaction = output.buildTx()
+  return { offer, send: () => wallet.sendTransaction(transaction) }
+}

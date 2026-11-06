@@ -45,6 +45,7 @@ export type InventorySkewInput = {
   neutralCredit?: string
   maxSkewBps?: string
 }
+export type DebtInput = { maximumDebtUnits: string; stopBorrowingBeforeMaturitySeconds: string }
 export type BootstrapInput = Record<
   Exclude<
     (typeof BOOTSTRAP_MARKET_FIELDS)[number],
@@ -55,13 +56,14 @@ export type BootstrapInput = Record<
 export type LadderInput = Record<
   Exclude<
     (typeof LADDER_MARKET_FIELDS)[number],
-    'targetRate' | 'maturityPremium' | 'inventorySkew'
+    'targetRate' | 'maturityPremium' | 'inventorySkew' | 'debt'
   >,
   string
 > & {
   targetRate: TargetRateInput
   maturityPremium?: MaturityPremiumInput
   inventorySkew?: InventorySkewInput
+  debt?: DebtInput
 }
 
 export type PlaygroundState = {
@@ -369,7 +371,15 @@ const ladderInput = (config: TargetRateConfigured<LadderConfig>): LadderInput =>
   maximumRateBps: String(config.maximumRateBps),
   ...(config.inventorySkew === undefined
     ? {}
-    : { inventorySkew: inventorySkewInput(config.inventorySkew) })
+    : { inventorySkew: inventorySkewInput(config.inventorySkew) }),
+  ...(config.debt === undefined
+    ? {}
+    : {
+        debt: {
+          maximumDebtUnits: String(config.debt.maximumDebtUnits),
+          stopBorrowingBeforeMaturitySeconds: String(config.debt.stopBorrowingBeforeMaturitySeconds)
+        }
+      })
 })
 
 const allowlist = (items: readonly { marketId: string }[]) =>

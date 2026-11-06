@@ -125,10 +125,10 @@ describe('reallocatorKernel', () => {
       caps: { native: 4n * MAX_SPEND_WEI },
       observedResources: [],
       feeReserve: MAX_SPEND_WEI,
-      maxSimLagBlocks: 3,
-      stuckBlocks: 4,
-      maxEvidenceAgeBlocks: 1200,
-      latchBoundBlocks: 100,
+      maxSimLagBlocks: 30,
+      stuckBlocks: 40,
+      maxEvidenceAgeBlocks: 12_000,
+      latchBoundBlocks: 1_000,
       recoveryBoundMs: 15 * 60_000,
       revokeAfterStaleMs: 60 * 60_000,
       maxRecoveryAttempts: 3,
@@ -151,7 +151,7 @@ describe('reallocatorKernel', () => {
       enrollment: 'enrolling',
       pollMs: 2_000,
       effectTimeoutMs: 10_000,
-      reorgDepth: 150
+      reorgDepth: 3_000
     })
   })
 

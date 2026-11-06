@@ -20,8 +20,14 @@ type BootstrapOfferMarket = {
 
 type BootstrapRateBounds = { minimumRateBps?: bigint; maximumRateBps?: bigint }
 
+/** The market terms a tick derives from: maturity and tick spacing. */
+type BootstrapMarketTerms = {
+  params: Pick<IMarketParams, 'maturity'>
+  tickSpacing: number
+}
+
 const bootstrapTickRange = (
-  market: Pick<BootstrapOfferMarket, 'params' | 'tickSpacing'>,
+  market: BootstrapMarketTerms,
   derivation: BootstrapRateBounds & { now: bigint }
 ) => ({
   ...(derivation.minimumRateBps === undefined ? {} : { minimumRateBps: derivation.minimumRateBps }),
@@ -40,24 +46,16 @@ const bootstrapTickRange = (
  * `rate-window-empty`.
  */
 export const bootstrapRateWindowIsEmpty = (
-  market: Pick<BootstrapOfferMarket, 'params' | 'tickSpacing'>,
+  market: BootstrapMarketTerms,
   derivation: BootstrapRateBounds & { now: bigint }
 ) => {
   const range = bootstrapTickRange(market, derivation)
   return range.timeToMaturity > 0n && isEmptyTickWindow(rateTickWindow(range))
 }
 
-/**
- * Recognizes the failure {@link createBootstrapOffer} raises when the hard range holds no tick.
- * @param error - Any thrown value.
- * @returns Whether the publication must be withheld rather than counted as a failure.
- */
-export const isRateWindowEmpty = (error: unknown) =>
-  error instanceof BootstrapAdapterError && error.operation === 'rate-window-empty'
-
 const bootstrapOfferTick = (
   rateBps: bigint,
-  market: Pick<BootstrapOfferMarket, 'params' | 'tickSpacing'>,
+  market: BootstrapMarketTerms,
   derivation: BootstrapRateBounds & { now: bigint }
 ) => {
   const range = bootstrapTickRange(market, derivation)
@@ -96,7 +94,7 @@ export const bootstrapContinuousFeeCap = (market: { continuousFee: unknown }) =>
  * inclusive hard rate bounds, and an optional exact tick that bypasses derivation entirely.
  * @returns A Midnight buy offer with the exact requested tick or live maturity-adjusted tick and fee cap.
  * @throws `BootstrapAdapterError` when a required live market fee is malformed, the hard rate
- * range contains no aligned tick ({@link isRateWindowEmpty}), or a derived rate is outside it
+ * range contains no aligned tick (`rate-window-empty`), or a derived rate is outside it
  * (`rate-out-of-range`); SDK validation failures propagate.
  * @remarks A derived rate is encoded by {@link admissibleRateTick}, so tick rounding never carries
  * the published APR past a bound. The fresh block timestamp prevents a later publication

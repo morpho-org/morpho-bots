@@ -8,6 +8,7 @@ import type { OwnedOverlapBookOffer } from '../../../src/domain/intentional-over
 import {
   bookCrossesRestingLadder,
   clearableOpposingBook,
+  ownBootstrapBuyTickCeiling,
   retainedOpposingBookTicks
 } from '../../../src/infrastructure/ladder/ladder-cross-book.utils'
 
@@ -314,5 +315,28 @@ describe('clearableOpposingBook', () => {
         tickSpacing: 5n
       })
     ).toEqual({ lower: true, higher: true })
+  })
+})
+
+describe('ownBootstrapBuyTickCeiling', () => {
+  test('selects the highest durably marked bootstrap-buy tick of the quoted market', () => {
+    expect(
+      ownBootstrapBuyTickCeiling(
+        [
+          { marketId, buy: true, tick: 90n, overlapOwner: 'bootstrap-buy' },
+          { marketId, buy: true, tick: 95n, overlapOwner: 'bootstrap-buy' },
+          { marketId, buy: true, tick: 120n },
+          { marketId: otherMarketId, buy: true, tick: 130n, overlapOwner: 'bootstrap-buy' },
+          { marketId, buy: false, tick: 140n, overlapOwner: 'ladder-sell' }
+        ],
+        marketId
+      )
+    ).toBe(95n)
+  })
+
+  test('reports no ceiling without a marked own bootstrap buy', () => {
+    expect(
+      ownBootstrapBuyTickCeiling([{ marketId, buy: true, tick: 120n }], marketId)
+    ).toBeUndefined()
   })
 })

@@ -1,16 +1,40 @@
+# Runs the crossed-books resolver on Base. Build with BUILD_REVISION=$(git rev-parse HEAD) so the
+# journal names the source it ran. Write mode needs RESOLVER_PRIVATE_KEY, MAX_FEE_GWEI,
+# MAX_SPEND_ETH, MAX_GAS_LIMIT, FINALITY_8453 and KERNEL_ENROLLMENT (`enrolling` on the first start, `enrolled` after, so a lost volume refuses to
+# start instead of starting blank). READONLY=true needs only SIMULATION_CALLER_ADDRESS.
 services:
   bot:
     build:
       context: ../..
       dockerfile: bots/midnight-crossed-books/Dockerfile
+      args:
+        BUILD_REVISION: ${BUILD_REVISION:?set BUILD_REVISION=$(git rev-parse HEAD)}
     environment:
       CHAIN_ID: '8453'
       RPC_URL: ${RPC_URL:?set RPC_URL}
+      RPC_URL_FALLBACK: ${RPC_URL_FALLBACK:-}
       READONLY: ${READONLY:-false}
       SIMULATION_CALLER_ADDRESS: ${SIMULATION_CALLER_ADDRESS:-}
       RESOLVER_PRIVATE_KEY: ${RESOLVER_PRIVATE_KEY:-}
       RESOLVER_ADDRESS: ${RESOLVER_ADDRESS:-}
+      FINALITY_8453: ${FINALITY_8453:-}
+      KERNEL_STATE_DIR: /repo/state
+      KERNEL_ENROLLMENT: ${KERNEL_ENROLLMENT:-}
+      JOURNAL_RUN_CAP_BYTES: ${JOURNAL_RUN_CAP_BYTES:-1073741824}
+      MAX_FEE_GWEI: ${MAX_FEE_GWEI:-}
+      MAX_SPEND_ETH: ${MAX_SPEND_ETH:-}
+      MAX_GAS_LIMIT: ${MAX_GAS_LIMIT:-}
       API_BASE_URL: ${API_BASE_URL:-https://api.morpho.org}
       ROUTER_API_BASE_URL: ${ROUTER_API_BASE_URL:-}
       MIN_PROFIT_ASSETS: ${MIN_PROFIT_ASSETS:-1}
       MAX_MATCHES: ${MAX_MATCHES:-10}
+      SCAN_INTERVAL_MS: ${SCAN_INTERVAL_MS:-15000}
+      BETTERSTACK_SOURCE_TOKEN: ${BETTERSTACK_SOURCE_TOKEN:-}
+      BETTERSTACK_INGESTING_HOST: ${BETTERSTACK_INGESTING_HOST:-}
+      BETTERSTACK_HEARTBEAT_URL: ${BETTERSTACK_HEARTBEAT_URL:-}
+    volumes:
+      - bot-state:/repo/state
+    restart: unless-stopped
+
+volumes:
+  bot-state:

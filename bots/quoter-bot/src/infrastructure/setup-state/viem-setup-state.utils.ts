@@ -1,15 +1,22 @@
 import type { Hex } from 'viem'
 
-import { bytesToHex, getAddress, hexToBytes, isAddress, isHex, size } from 'viem'
+import {
+  bytesToHex,
+  getAddress,
+  hexToBytes,
+  isAddress,
+  isAddressEqual,
+  isHex,
+  size,
+  maxUint128
+} from 'viem'
 
 import type { OwnedOverlapBookOffer } from '../../domain/intentional-overlap'
 
 import { hasInvalidOwnedBootstrapLadderSpread } from '../../domain/intentional-overlap'
-import { ProviderResponseError, SafeProviderError } from '../../errors'
+import { ProviderResponseError } from '../../errors'
 
 export const PAGE_SIZE = 100
-export const MAX_OFFER_PAGES = 100
-export const MAX_OFFER_ITEMS = 100_000
 export const DEFAULT_REQUEST_TIMEOUT_MS = 10_000
 // Per-chain ratifier runtime hashes live in config/supported-chains.utils.ts, beside the chain's
 // Midnight addresses, because the ratifier runtime embeds its immutable Midnight target.
@@ -112,6 +119,36 @@ export const marketFromContract = (value: unknown) => {
 }
 
 /**
+ * Projects the terms a maker borrows under from a `Midnight.toMarket` response.
+ * @param value - Untrusted `toMarket` response.
+ * @returns The index, LLTV, and oracle of the collateral slot whose token is the loan token (absent
+ * when the market lists none), plus the market's enter gate and maturity.
+ * @throws When the response or any collateral entry is malformed.
+ */
+export const borrowTermsFromContract = (value: unknown) => {
+  const market = objectValue(value, 'Midnight.toMarket response')
+  const loanToken = addressValue(market.loanToken, 'market.loanToken')
+  const slots = arrayValue(market.collateralParams, 'market.collateralParams').map(item => {
+    const slot = objectValue(item, 'market.collateralParams item')
+    return {
+      token: addressValue(slot.token, 'collateral token'),
+      lltv: bigintValue(slot.lltv, 'collateral lltv'),
+      oracle: addressValue(slot.oracle, 'collateral oracle')
+    }
+  })
+  const index = slots.findIndex(slot => isAddressEqual(slot.token, loanToken))
+  return {
+    ...(index === -1
+      ? {}
+      : {
+          loanSlot: { index: BigInt(index), lltv: slots[index]!.lltv, oracle: slots[index]!.oracle }
+        }),
+    enterGate: addressValue(market.enterGate, 'market.enterGate'),
+    maturity: bigintValue(market.maturity, 'market.maturity')
+  }
+}
+
+/**
  * Extracts canonical market rows from the documented markets endpoint.
  * @param value - Untrusted markets response.
  * @param chainId - Configured chain every accepted row must identify.
@@ -140,50 +177,14 @@ export const apiMarkets = (value: unknown, chainId: number) => {
   })
 }
 
-/**
- * Parses one nested active offer needed for setup safety checks.
- * @param value - One untrusted active offer from an offer group.
- * @param group - Canonical parent offer-group ID.
- * @returns Canonical market, maker, group, side, and tick fields.
- * @throws When required Router fields are malformed.
- */
-export const offerFromApi = (value: unknown, group: Hex) => {
-  const offer = objectValue(value, 'Router active offer')
-  return {
-    marketId: bytes32Value(offer.market_id, 'offer market_id'),
-    maker: addressValue(offer.maker, 'offer maker'),
-    group,
-    buy: booleanValue(offer.buy, 'offer buy'),
-    tick: integerValue(offer.tick, 'offer tick')
-  }
-}
-
-/**
- * Parses and flattens one active offer-group page from the Router endpoint.
- * @param value - Untrusted page data array.
- * @param chainId - Configured chain every accepted group must identify.
- * @returns Canonical group IDs paired with every nested active offer.
- * @throws When a group ID, nested offer list, or offer field is malformed.
- * @remarks Groups naming any other chain are skipped, so foreign-chain offers can never enter the
- * overlap and exposure checks computed from this page.
- */
-export const offersFromGroups = (value: unknown, chainId: number) =>
-  arrayValue(value, 'Router data').flatMap(groupValue => {
-    const group = objectValue(groupValue, 'Router offer group')
-    const groupChainId = integerValue(group.chain_id, 'offer group chain_id')
-    if (groupChainId !== chainId) return []
-    const groupId = bytes32Value(group.id, 'offer group id')
-    return arrayValue(group.offers, 'Router active offers').map(offer =>
-      offerFromApi(offer, groupId)
-    )
-  })
-
 type OverlapOwnership = {
   bootstrapBuyGroupIds?: ReadonlySet<Hex>
   ladderSellGroupIds?: ReadonlySet<Hex>
 }
 
-const ownedOverlapRole = (offer: ReturnType<typeof offerFromApi>, ownership: OverlapOwnership) => {
+type SetupOffer = Readonly<{ marketId: Hex; group: Hex; buy: boolean; tick: bigint }>
+
+const ownedOverlapRole = (offer: SetupOffer, ownership: OverlapOwnership) => {
   if (offer.buy && ownership.bootstrapBuyGroupIds?.has(offer.group)) {
     return 'bootstrap-buy' as const
   }
@@ -200,7 +201,7 @@ const ownedOverlapRole = (offer: ReturnType<typeof offerFromApi>, ownership: Ove
  * @returns Canonical IDs having a highest buy tick at or above the lowest sell tick.
  */
 export const invertedMarketIds = (
-  offers: readonly ReturnType<typeof offerFromApi>[],
+  offers: readonly SetupOffer[],
   ownership: OverlapOwnership = {}
 ) => {
   const offersByMarket = new Map<Hex, OwnedOverlapBookOffer[]>()
@@ -209,7 +210,7 @@ export const invertedMarketIds = (
     const projected = {
       marketId: offer.marketId,
       buy: offer.buy,
-      tick: BigInt(offer.tick),
+      tick: offer.tick,
       ...(overlapOwner === undefined ? {} : { overlapOwner })
     }
     const marketOffers = offersByMarket.get(offer.marketId)
@@ -222,14 +223,15 @@ export const invertedMarketIds = (
 }
 
 /**
- * Creates a sanitized aggregate Morpho API deadline failure.
- * @returns A provider-safe timeout error without URL or response metadata.
+ * Validates a protocol position balance at the setup provider boundary.
+ * @param value - Untrusted RPC result.
+ * @param operation - Safe operation identifier for a malformed response.
+ * @returns The balance when it fits the protocol's uint128 storage.
+ * @throws `ProviderResponseError` with safe operation metadata when the balance is malformed.
  */
-export const morphoApiTimeout = () =>
-  new SafeProviderError({
-    kind: 'provider-error',
-    provider: 'morpho-api',
-    name: 'TimeoutError',
-    code: 'REQUEST_TIMEOUT',
-    context: 'request'
-  })
+export const uint128Value = (value: unknown, operation: string) => {
+  if (typeof value !== 'bigint' || value < 0n || value > maxUint128) {
+    throw new ProviderResponseError('rpc', operation, `${operation} response must be a uint128`)
+  }
+  return value
+}

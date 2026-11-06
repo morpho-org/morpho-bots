@@ -1,4 +1,5 @@
 import { parseEther } from 'viem'
+import { base, mainnet } from 'viem/chains'
 import { describe, expect, it } from 'vitest'
 
 import type { Logger, LogLevel } from '../src/logger'
@@ -28,6 +29,7 @@ describe('createBalanceMonitor', () => {
       address: ADDRESS,
       read: async () => parseEther('1'),
       logger,
+      chain: base,
       everyBlocks: 10n
     })
     await monitor.maybeLog(100n)
@@ -48,6 +50,7 @@ describe('createBalanceMonitor', () => {
         return parseEther('1')
       },
       logger,
+      chain: base,
       everyBlocks: 10n
     })
     await monitor.maybeLog(100n) // first call always logs
@@ -66,6 +69,7 @@ describe('createBalanceMonitor', () => {
         throw new Error('rpc unavailable')
       },
       logger,
+      chain: base,
       everyBlocks: 10n
     })
     await monitor.maybeLog(100n)
@@ -73,5 +77,22 @@ describe('createBalanceMonitor', () => {
     const failed = events.find(e => e.event === 'signer.balance_failed')
     expect(failed?.level).toBe('warn')
     expect(failed?.fields?.address).toBe(ADDRESS)
+  })
+
+  it("defaults to a minute of the chain's blocks", async () => {
+    const logged = async (chain: typeof base | typeof mainnet, at: bigint[]) => {
+      const { logger, events } = captureLogger()
+      const monitor = createBalanceMonitor({
+        address: ADDRESS,
+        read: async () => 1n,
+        logger,
+        chain
+      })
+      for (const block of at) await monitor.maybeLog(block)
+      return events.filter(e => e.event === 'signer.balance').length
+    }
+    expect(await logged(base, [0n, 299n, 300n])).toBe(2)
+    expect(await logged(mainnet, [0n, 4n, 5n])).toBe(2)
+    expect(await logged(base, [0n, 299n])).toBe(1)
   })
 })

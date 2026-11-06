@@ -33,7 +33,7 @@ type RouterOffer = {
  * @returns Router-compatible nested offer DTO.
  * @remarks The explicit continuous-fee-cap field keeps the fixture aligned with production parsing.
  */
-export const routerOfferDto = (offer: RouterOffer) => ({
+const routerOfferDto = (offer: RouterOffer) => ({
   market_id: MARKET_ID,
   maker: offer.maker,
   buy: offer.buy,

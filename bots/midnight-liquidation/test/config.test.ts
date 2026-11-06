@@ -2,8 +2,9 @@ import type { Address } from 'viem'
 
 import { Executor } from '@repo/contracts'
 import {
-  BALANCE_EVERY_BLOCKS,
+  BALANCE_EVERY_MS,
   blocksFor,
+  blockTimeMs,
   bumpFees,
   feeCeiling,
   initialFees,
@@ -38,7 +39,7 @@ const CHAIN_MAP: Record<number, ChainConfig> = {
     midnight: MIDNIGHT,
     wrappedNative: getAddress('0x4200000000000000000000000000000000000006'),
     worldValidMs: 30_000,
-    rebids: 3,
+    sendLifeMs: 40_000,
     tuning: FIXTURE_TUNING,
     defaults: {
       seizeCapMarginBps: 30,
@@ -51,7 +52,7 @@ const CHAIN_MAP: Record<number, ChainConfig> = {
 const deps = { chainMap: CHAIN_MAP }
 
 // The values every shipped chain row must resolve to, end to end. Mainnet's block counts are Base's
-// wall-clock intents at ~6x the block time. The fee ceiling is no row's: `MAX_FEE_GWEI` is required.
+// wall-clock intents at 60x the block time. The fee ceiling is no row's: `MAX_FEE_GWEI` is required.
 const SHIPPED_ROWS: Record<
   number,
   {
@@ -65,13 +66,13 @@ const SHIPPED_ROWS: Record<
 > = {
   [base.id]: {
     midnight: getAddress('0xAdedD8ab6dE832766Fedf0FaC4992E5C4D3EA18A'),
-    sendLifeMs: 40_000,
+    sendLifeMs: 32_800,
     tuning: {
-      balanceEveryBlocks: 30n
+      balanceEveryBlocks: 300n
     },
     seizeCapMarginBps: 30,
-    backoffBaseBlocks: 2n,
-    backoffMaxBlocks: 64n
+    backoffBaseBlocks: 20n,
+    backoffMaxBlocks: 640n
   },
   [mainnet.id]: {
     // A DIFFERENT address than Base's, so this must not be shared.
@@ -193,11 +194,11 @@ describe('loadConfig', () => {
     }
   )
 
-  // Base is the chain bot-kit's default was calibrated for, so it is where the two must agree.
-  it("matches bot-kit's balance cadence on the chain it was calibrated for", () => {
+  // Base is the chain kit's default was calibrated for, so it is where the two must agree.
+  it("matches kit's balance cadence on the chain it was calibrated for", () => {
     const { tuning } = loadConfig(baseEnv({ CHAIN_ID: '8453' }))
 
-    expect(tuning.balanceEveryBlocks).toBe(BALANCE_EVERY_BLOCKS)
+    expect(tuning.balanceEveryBlocks).toBe(BigInt(blocksFor(BALANCE_EVERY_MS, base)))
   })
 
   it.each([
@@ -592,7 +593,9 @@ describe('loadConfig', () => {
 /** The re-bids a send life spans, each a stuck threshold apart, at a flat `baseFee`, before one drops. */
 const rebidsUnder = (config: Config, baseFee: bigint) => {
   const cap = stepCap(feeCeiling(config.maxFeePerGasWei, config.maxSpendWei))
-  const rebids = config.sendLifeMs / (blocksFor(STUCK_MS, config.chain) * config.chain.blockTime!)
+  const rebids = Math.floor(
+    config.sendLifeMs / (blocksFor(STUCK_MS, config.chain) * blockTimeMs(config.chain.id))
+  )
   let fees = initialFees(baseFee, cap)
   for (let bid = 0; bid < rebids; bid++) {
     const next = bumpFees({ ...fees, baseFee, maxFeePerGasWei: cap })
@@ -604,7 +607,7 @@ const rebidsUnder = (config: Config, baseFee: bigint) => {
 
 describe('the release fee values', () => {
   it.each([
-    { chainId: '8453', maxFeeGwei: '0.5', tip: 111_111_112n, edgeGwei: '0.0677', over: '0.0678' },
+    { chainId: '8453', maxFeeGwei: '0.5', tip: 111_111_112n, edgeGwei: '0.0831', over: '0.0832' },
     { chainId: '1', maxFeeGwei: '50', tip: parseGwei('1'), edgeGwei: '3.772', over: '3.773' }
   ])(
     'tips and re-bids a whole send life for chain $chainId up to a $edgeGwei gwei base fee',

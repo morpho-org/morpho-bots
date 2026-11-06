@@ -1,5 +1,6 @@
 import type { Hex } from 'viem'
 
+import type { LadderDebtConfig } from './debt-ceiling'
 import type { MaturityPremiumConfig } from './maturity-premium'
 import type { RateRange } from './rate-range'
 
@@ -7,6 +8,7 @@ import { LadderConfigurationError } from '../errors'
 import { isBytes32 } from './bytes32'
 import { CROSS_BOOK_CLEARANCE_BPS } from './cross-book'
 import { frozenCopy } from './frozen-copy'
+import { borrowingOpen } from './market-maturity'
 import {
   hasAttainableMaturityPremiumBps,
   highestReachableMaturityPremiumBps,
@@ -67,6 +69,8 @@ export type LadderConfig = {
   minimumRateBps: bigint
   maximumRateBps: bigint
   inventorySkew?: InventorySkewConfig
+  /** Present only on loan-as-collateral markets whose sells may borrow. */
+  debt?: LadderDebtConfig
 }
 
 declare const validLadderConfig: unique symbol
@@ -102,6 +106,9 @@ export type LadderBookSideCrossing = { crossed: boolean; clearable: boolean }
  *
  * `withdrawnSides` are sides whose rate range held no aligned tick at the snapshot block; generation
  * ignores it, and the caller drops those sides from the generated quote.
+ *
+ * On a market with a {@link LadderDebtConfig}, `debtAssets` and `debtCeilingAssets` report the
+ * position; while {@link borrowingOpen}, lower-rate capacity is the debt the maker may still take on.
  */
 export type LadderMarketState = {
   lowerRateCapacityAssets?: bigint
@@ -119,6 +126,8 @@ export type LadderMarketState = {
   observedTimestamp?: bigint
   minimumOfferUnits?: bigint
   withdrawnSides?: readonly LadderWithdrawnSide[]
+  debtAssets?: bigint
+  debtCeilingAssets?: bigint
 }
 
 /**
@@ -149,6 +158,8 @@ export type LadderQuoteSet = {
   higher: readonly LadderRung[]
   /** Inventory skew added to every higher rung before the range check; absent means zero. */
   higherSkewBps?: bigint
+  /** Sells may borrow past credit; absent means every sell is reduce-only. */
+  debtCapable?: true
 }
 
 type LadderOfferCapInput = Pick<LadderQuoteSet, 'groupMode' | 'lower' | 'higher'>
@@ -266,6 +277,21 @@ const assertSideBudgetsCoverOfferFloor = (config: LadderConfig) => {
   }
 }
 
+const assertDebtLimit = (config: LadderConfig) => {
+  if (config.debt === undefined) return
+  positive(config.debt.maximumDebtUnits, 'debt.maximumDebtUnits')
+  const stop = config.debt.stopBorrowingBeforeMaturitySeconds
+  if (!Number.isSafeInteger(stop) || stop < 0) {
+    throw new LadderConfigurationError(
+      'debt.stopBorrowingBeforeMaturitySeconds',
+      'must be a non-negative safe integer'
+    )
+  }
+  if (isLendOnlyLadder(config)) {
+    throw new LadderConfigurationError('debt', 'requires a nonzero lowerRateBudgetAssets')
+  }
+}
+
 /**
  * Validates one complete static ladder shape before any provider read.
  * @param input - Untrusted strategy configuration to validate.
@@ -298,6 +324,7 @@ export const validateLadderConfig = <Config extends LadderConfig>(input: Config)
   positive(config.maximumTotalExposureAssets, 'maximumTotalExposureAssets')
   positive(config.minimumOfferAssets, 'minimumOfferAssets')
   assertSideBudgetsCoverOfferFloor(config)
+  assertDebtLimit(config)
   if (config.targetMarketExposureAssets > config.maximumTotalExposureAssets) {
     throw new LadderConfigurationError(
       'targetMarketExposureAssets',
@@ -489,31 +516,6 @@ const higherShapedRateBps = (
 ) => centerRateBps + config.spreadBps / 2n + BigInt(index) * config.stepBps + skewBps
 
 /**
- * Reports whether a fresh credit observation would publish any planned lend rung at a higher rate.
- * @param config - Configuration the quote was generated with.
- * @param quote - Planned quote set, carrying the skew it was generated at.
- * @param creditAssets - Fresh maker face credit in the market.
- * @returns `true` when the fresh skew exceeds `quote.higherSkewBps` and at least one higher rung is
- * planned, including a rung the fresh skew would push above `maximumRateBps` and so omit; always
- * `false` without a skew.
- * @throws LadderConfigurationError when a skew is configured and `creditAssets` is negative.
- * @remarks A lower fresh skew is never reported: the planned buys are then dearer than needed,
- * which is safe.
- */
-export const higherRungsRepriced = (
-  config: ValidLadderConfig,
-  quote: Pick<LadderQuoteSet, 'centerRateBps' | 'higher' | 'higherSkewBps'>,
-  creditAssets: bigint
-) => {
-  const freshSkewBps = inventorySkewBps(config, creditAssets)
-  if (freshSkewBps <= (quote.higherSkewBps ?? 0n)) return false
-  return quote.higher.some(
-    rung =>
-      higherShapedRateBps(config, quote.centerRateBps, rung.index, freshSkewBps) > rung.rateBps
-  )
-}
-
-/**
  * Guardrail counts observed while generating one ladder side.
  * @remarks Aggregates, never per-rung records: a side may hold up to 512 rungs and regenerate every
  * second. `fundedRungs` counts rungs allocated before omission, so the published count is
@@ -651,7 +653,8 @@ export const generateLadderWithDiagnostics = (
       groupMode: config.groupMode,
       lower: lower.rungs,
       higher: higher.rungs,
-      ...(skew === undefined ? {} : { higherSkewBps })
+      ...(skew === undefined ? {} : { higherSkewBps }),
+      ...(borrowingOpen(config.debt, capacities) ? { debtCapable: true as const } : {})
     },
     diagnostics: {
       lower: lower.diagnostics,

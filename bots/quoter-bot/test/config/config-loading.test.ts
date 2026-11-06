@@ -29,8 +29,9 @@ const environment = {
   REFERENCE_MARKET_ID: referenceMarketId,
   NATIVE_RESERVE_WEI: '10',
   MAX_FEE_GWEI: '100',
-  PRIORITY_FEE_GWEI: '1',
   MAX_TRANSACTION_SPEND_WEI: '100000000000000000',
+  MAX_CONTINUOUS_FEE_CAP: '0',
+  KERNEL_ENROLLMENT: 'enrolling',
   MAX_PUBLICATION_GAS: '5000000',
   MAX_PUBLICATION_DATA_BYTES: '65536',
   MAX_CANCELLATION_GAS: '100000',
@@ -105,8 +106,9 @@ markets:
 setup:
   nativeReserveWei: "10"
   maxFeeGwei: "100"
-  priorityFeeGwei: "1"
   maxTransactionSpendWei: "100000000000000000"
+  maxContinuousFeeCap: "0"
+  kernelEnrollment: enrolling
   maxPublicationGas: "5000000"
   maxPublicationDataBytes: "65536"
   maxCancellationGas: "100000"
@@ -223,27 +225,27 @@ describe('ConfigService YAML and environment loading', () => {
   })
 
   test.each([
-    ['bare', '  priorityFeeGwei: 0.005'],
-    ['quoted', '  priorityFeeGwei: "0.005"']
-  ] as const)('loads a %s decimal YAML priorityFeeGwei', async (_form, replacement) => {
+    ['bare', '  maxFeeGwei: 0.5'],
+    ['quoted', '  maxFeeGwei: "0.5"']
+  ] as const)('loads a %s decimal YAML maxFeeGwei', async (_form, replacement) => {
     const directory = await temporaryDirectory()
     const path = join(directory, 'operator.yaml')
-    await writeFile(path, yaml().replace('  priorityFeeGwei: "1"', replacement))
+    await writeFile(path, yaml().replace('  maxFeeGwei: "100"', replacement))
 
     const config = await ConfigService.load({}, { configPath: path })
 
-    expect(config.writePolicy?.priorityFeePerGasWei).toBe(5_000_000n)
+    expect(config.writePolicy?.maxFeePerGasWei).toBe(500_000_000n)
   })
 
-  test('rejects a YAML priorityFeeGwei in exponent notation', async () => {
+  test('rejects a YAML maxFeeGwei in exponent notation', async () => {
     const directory = await temporaryDirectory()
     const path = join(directory, 'operator.yaml')
-    await writeFile(path, yaml().replace('  priorityFeeGwei: "1"', '  priorityFeeGwei: 5e-7'))
+    await writeFile(path, yaml().replace('  maxFeeGwei: "100"', '  maxFeeGwei: 5e-7'))
 
     const error = await ConfigService.load({}, { configPath: path }).catch(error => error)
 
     expect(error).toBeInstanceOf(ConfigValidationError)
-    expect(error).toMatchObject({ field: 'priorityFeeGwei', reason: 'invalid-decimal' })
+    expect(error).toMatchObject({ field: 'maxFeeGwei', reason: 'invalid-decimal' })
   })
 
   test('keeps rejecting a decimal in a YAML field that must stay integral', async () => {
@@ -446,6 +448,27 @@ describe('ConfigService YAML and environment loading', () => {
     const config = await ConfigService.load(environment, { cwd: directory })
     expect(config.rpcUrl).toBe(environment.RPC_URL)
     expect(config.bootstrap).toEqual([])
+  })
+
+  test('rejects the retired PRIORITY_FEE_GWEI from the environment and setup.priorityFeeGwei from YAML', async () => {
+    const directory = await temporaryDirectory()
+    const error = await ConfigService.load(
+      { ...environment, PRIORITY_FEE_GWEI: '0.01' },
+      { cwd: directory }
+    ).catch((caught: unknown) => caught)
+    expect(error).toBeInstanceOf(ConfigValidationError)
+    expect(error).toMatchObject({ field: 'PRIORITY_FEE_GWEI', reason: 'retired' })
+    expect((error as Error).message).toContain('Upgrading to the kernel')
+
+    const path = join(directory, 'operator.yaml')
+    await writeFile(
+      path,
+      yaml().replace('  maxFeeGwei: "100"', '  maxFeeGwei: "100"\n  priorityFeeGwei: "1"')
+    )
+    const fromYaml = await ConfigService.load({}, { configPath: path }).catch(
+      (caught: unknown) => caught
+    )
+    expect(fromYaml).toMatchObject({ field: 'setup.priorityFeeGwei', reason: 'retired' })
   })
 
   test('rejects the retired OFFER_CAP_KIND from the environment and markets.offerCapKind from YAML', async () => {

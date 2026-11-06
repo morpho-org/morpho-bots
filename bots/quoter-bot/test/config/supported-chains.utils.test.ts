@@ -9,6 +9,7 @@ import {
   MAINNET_CHAIN_ID,
   observabilityChainId,
   ratifierRuntimeHash,
+  ratifierType,
   SUPPORTED_CHAIN_IDS,
   supportedChain
 } from '../../src/config/supported-chains.utils'
@@ -66,7 +67,9 @@ describe('Midnight addresses from the Morpho SDK registry', () => {
     expect(getChainAddress(MAINNET_CHAIN_ID, 'morpho')).toBe(
       getAddress('0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb')
     )
-    expect(getChainAddress(BASE_CHAIN_ID, 'morpho')).toBeDefined()
+    expect(getChainAddress(BASE_CHAIN_ID, 'morpho')).toBe(
+      getAddress('0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb')
+    )
   })
 
   test('gives each chain a distinct Midnight singleton and mempool', () => {
@@ -129,6 +132,25 @@ describe('observabilityChainId', () => {
       '9007199254740992'
     ]) {
       expect(observabilityChainId({ CHAIN_ID: value })).toBe(BASE_CHAIN_ID)
+    }
+  })
+})
+
+describe('ratifierType', () => {
+  const other = '0x1111111111111111111111111111111111111111'
+
+  test("names only each chain's canonical ratifiers", () => {
+    for (const chainId of SUPPORTED_CHAIN_IDS) {
+      expect(ratifierType(getChainAddress(chainId, 'setterRatifier'), chainId)).toBe('setter')
+      expect(ratifierType(getChainAddress(chainId, 'ecrecoverRatifier'), chainId)).toBe('ecrecover')
+      expect(ratifierType(other, chainId)).toBeUndefined()
+    }
+  })
+
+  test('rejects a ratifier canonical on the other chain', () => {
+    for (const kind of ['setterRatifier', 'ecrecoverRatifier'] as const) {
+      expect(ratifierType(getChainAddress(base.id, kind), mainnet.id)).toBeUndefined()
+      expect(ratifierType(getChainAddress(mainnet.id, kind), base.id)).toBeUndefined()
     }
   })
 })

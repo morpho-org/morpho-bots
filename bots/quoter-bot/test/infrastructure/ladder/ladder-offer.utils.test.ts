@@ -121,6 +121,72 @@ describe('buildLadderTree', () => {
     )
   })
 
+  describe('with a debt config', () => {
+    const maturity = BigInt(market.params.maturity)
+    const build = (
+      quoteOverrides: Partial<LadderQuoteSet>,
+      stopBorrowingBeforeMaturitySeconds = 86_400
+    ) =>
+      buildLadderTree({
+        quote: { ...quote('shared-rung'), ...quoteOverrides },
+        market,
+        maker,
+        ratifier,
+        now,
+        minimumRateBps: 1n,
+        maximumRateBps: 10_000n,
+        debt: { maximumDebtUnits: 100n, stopBorrowingBeforeMaturitySeconds }
+      }).tree.offers
+
+    test('publishes borrowing sells only for a debt-capable quote, leaving buys unchanged', () => {
+      expect(build({}).map(offer => offer.reduceOnly)).toEqual([true, true, false, false])
+      expect(build({ debtCapable: true }).map(offer => offer.reduceOnly)).toEqual([
+        false,
+        false,
+        false,
+        false
+      ])
+    })
+
+    test('expires borrowing sells at the cutoff and buys at maturity', () => {
+      expect(build({ debtCapable: true }).map(offer => offer.expiry)).toEqual([
+        maturity - 86_400n,
+        maturity - 86_400n,
+        maturity,
+        maturity
+      ])
+    })
+
+    test('expires every offer of a closed quote at maturity', () => {
+      expect(build({}).map(offer => offer.expiry)).toEqual([maturity, maturity, maturity, maturity])
+    })
+
+    test('builds a zero-cutoff borrowing ladder whose sells expire at maturity', () => {
+      expect(
+        build({ debtCapable: true }, 0).map(offer => [offer.reduceOnly, offer.expiry])
+      ).toEqual([
+        [false, maturity],
+        [false, maturity],
+        [false, maturity],
+        [false, maturity]
+      ])
+    })
+  })
+
+  test('refuses a debt-capable quote without a debt config', () => {
+    expect(() =>
+      buildLadderTree({
+        quote: { ...quote('shared-rung'), debtCapable: true },
+        market,
+        maker,
+        ratifier,
+        now,
+        minimumRateBps: 1n,
+        maximumRateBps: 10_000n
+      })
+    ).toThrow(expect.objectContaining({ operation: 'configuration' }))
+  })
+
   test('derives fresh group IDs for a later publication of the same quote', () => {
     const first = buildLadderTree({
       quote: quote('shared-rung'),

@@ -2,7 +2,6 @@ import type { Address, Hex } from 'viem'
 
 import { getAddress, isAddress, isHex } from 'viem'
 
-import type { OrderBookService } from '../../application/crossed-books-bot.service'
 import type {
   BookSide,
   MarketId,
@@ -77,7 +76,7 @@ function toTakeableOffer(wire: WireTakeableOffer): TakeableOffer {
   }
 }
 
-export class RouterApiService implements OrderBookService {
+export class RouterApiService {
   constructor(private readonly client: RouterApiClient) {}
 
   async getTakeableBook(marketId: MarketId): Promise<TakeableBook> {

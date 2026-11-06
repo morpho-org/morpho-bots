@@ -1,20 +1,16 @@
 /** Raised when an operator-provided runtime value cannot be used safely. */
-export class InvalidConfigurationError extends Error {}
-
-/** Raised when a simulation caller is missing, malformed, or the zero address. */
-export class InvalidSimulationCallerAddressError extends InvalidConfigurationError {
-  /** Creates a credential-free caller validation failure. */
-  constructor() {
-    super('SIMULATION_CALLER_ADDRESS must be a public non-zero EVM address')
-    this.name = 'InvalidSimulationCallerAddressError'
+export class InvalidConfigurationError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'InvalidConfigurationError'
   }
 }
 
-/** Raised when write-mode composition is missing resolver signing authority. */
-export class ResolverPrivateKeyRequiredError extends Error {
-  /** Creates a credential-free configuration invariant failure. */
+/** Raised when the configured resolver is not built for the configured Midnight. */
+export class ResolverMismatchError extends Error {
   constructor() {
-    super('Write mode requires a resolver private key')
+    super('RESOLVER_ADDRESS does not resolve against the configured Midnight')
+    this.name = 'ResolverMismatchError'
   }
 }
 
@@ -67,13 +63,5 @@ export class MorphoApiError extends UpstreamApiError {
 export class RouterApiError extends UpstreamApiError {
   constructor(parameters: UpstreamApiErrorParameters) {
     super('RouterApiError', `Router API request failed: ${parameters.endpoint}`, parameters)
-  }
-}
-
-/** Raised when a readonly resolver transport is asked to mutate chain state. */
-export class ReadonlyMutationError extends Error {
-  /** Creates a credential-free, operator-safe readonly mutation failure. */
-  constructor() {
-    super('Readonly resolver transport cannot submit transactions')
   }
 }

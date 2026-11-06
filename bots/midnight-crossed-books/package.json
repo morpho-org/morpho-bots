@@ -13,9 +13,13 @@
     "typecheck": "pnpm run generate:api && tsc --noEmit"
   },
   "dependencies": {
-    "@repo/bot-kit": "workspace:*",
     "@repo/contracts": "workspace:*",
+    "@repo/controller": "workspace:*",
+    "@repo/engine": "workspace:*",
+    "@repo/kernel": "workspace:*",
+    "@repo/kit": "workspace:*",
     "@repo/utils": "workspace:*",
+    "@repo/validators": "workspace:*",
     "openapi-fetch": "catalog:",
     "viem": "catalog:"
   },

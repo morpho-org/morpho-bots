@@ -67,7 +67,7 @@ describe('liquidatorKernel', () => {
     ).resolves.toMatchObject({ hash: expect.stringMatching(/^0x/) })
   })
 
-  it('converts each block window from a time, with floors that bind on Base', () => {
+  it('converts each block window from a time on each chain', () => {
     const windows = (chainId: number) => {
       const { config, reorgDepth } = kernelOn(chainId).live
       return {
@@ -78,16 +78,16 @@ describe('liquidatorKernel', () => {
       }
     }
     expect(windows(8453)).toEqual({
-      maxEvidenceAgeBlocks: 256,
-      maxSimLagBlocks: 3,
-      stuckBlocks: 4,
-      reorgDepth: 150
+      maxEvidenceAgeBlocks: 340,
+      maxSimLagBlocks: 30,
+      stuckBlocks: 40,
+      reorgDepth: 3_000
     })
     expect(windows(4663)).toEqual({
       maxEvidenceAgeBlocks: 680,
       maxSimLagBlocks: 60,
       stuckBlocks: 80,
-      reorgDepth: 3_000
+      reorgDepth: 6_000
     })
   })
 })

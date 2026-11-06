@@ -7,11 +7,8 @@ import type { MakerOfferGroup } from '../../../src/infrastructure/provider/offer
 
 import { BootstrapAdapterError } from '../../../src/errors'
 import {
-  pendingBootstrapOffers,
-  readLivePendingBootstrapOffers,
-  readOwnedGroupIdsForCleanup,
-  readUncanceledGroupIds,
-  readUncanceledGroupIdsForCleanup
+  livePendingBootstrapOffers,
+  pendingBootstrapOffers
 } from '../../../src/infrastructure/bootstrap/bootstrap-pending-offer.utils'
 
 const marketId: Hex = `0x${'11'.repeat(32)}`
@@ -49,109 +46,53 @@ describe('pendingBootstrapOffers', () => {
   )
 })
 
-describe('readUncanceledGroupIds', () => {
-  test('excludes only groups conclusively canceled at the SDK cap', async () => {
-    const activeGroupId: Hex = `0x${'44'.repeat(32)}`
-    const consumedByGroup = new Map<Hex, bigint>([
-      [groupId, MAX_OFFER_CAP],
-      [activeGroupId, MAX_OFFER_CAP - 1n]
-    ])
-
-    const result = await readUncanceledGroupIds({
-      groupIds: [groupId, activeGroupId],
-      readGroupConsumed: async id => consumedByGroup.get(id) ?? 0n
-    })
-
-    expect(result).toEqual([activeGroupId])
-  })
-
-  test('sanitizes consumption read failures', async () => {
-    const error = await readUncanceledGroupIds({
-      groupIds: [groupId],
-      readGroupConsumed: async () => {
-        throw new Error('provider URL and response body')
-      }
-    }).catch(cause => cause)
-
-    expect(error).toBeInstanceOf(BootstrapAdapterError)
-    expect(error).toMatchObject({ operation: 'group-consumption-read' })
-  })
-})
-
-describe('readUncanceledGroupIdsForCleanup', () => {
-  test('keeps unreadable groups eligible for cancellation while excluding confirmed cancellations', async () => {
-    const unreadableGroupId: Hex = `0x${'44'.repeat(32)}`
-
-    const result = await readUncanceledGroupIdsForCleanup({
-      groupIds: [groupId, unreadableGroupId],
-      readGroupConsumed: async id => {
-        if (id === unreadableGroupId) throw new Error('transient provider failure')
-        return MAX_OFFER_CAP
-      }
-    })
-
-    expect(result).toEqual([unreadableGroupId])
-  })
-})
-
-describe('readOwnedGroupIdsForCleanup', () => {
-  test('keeps every owned group eligible for cancellation when the block read fails', async () => {
-    const secondGroupId: Hex = `0x${'55'.repeat(32)}`
-
-    const result = await readOwnedGroupIdsForCleanup({
-      readOwnedGroupIds: async () => [groupId, secondGroupId],
-      readBlockNumber: async () => {
-        throw new Error('transient block read failure')
-      },
-      readGroupConsumed: async () => MAX_OFFER_CAP
-    })
-
-    expect(result).toEqual([groupId, secondGroupId])
-  })
-})
-
-describe('readLivePendingBootstrapOffers', () => {
-  test('accepts an API-missing configured group after confirmed cancellation', async () => {
-    const result = await readLivePendingBootstrapOffers({
-      groups: [],
-      ownedGroupIds: [groupId],
-      offers: [],
-      readGroupConsumed: async () => MAX_OFFER_CAP
-    })
-
-    expect(result).toEqual([])
-  })
-
-  test('fails closed for an API-missing configured group without cancellation or intent', async () => {
-    const error = await readLivePendingBootstrapOffers({
-      groups: [],
-      ownedGroupIds: [groupId],
-      offers: [],
-      readGroupConsumed: async () => MAX_OFFER_CAP - 1n
-    }).catch(cause => cause)
-
-    expect(error).toBeInstanceOf(BootstrapAdapterError)
-    expect(error).toMatchObject({ operation: 'missing-owned-group-intent' })
-  })
-
-  test('projects remaining persisted intent while provider indexing is pending', async () => {
-    const result = await readLivePendingBootstrapOffers({
-      groups: [],
-      ownedGroupIds: [groupId],
-      offers: [offer],
-      readGroupConsumed: async () => 25n
-    })
-
-    expect(result).toEqual([{ ...offer, maximumAssets: 100n, assets: 75n }])
-  })
-
-  test('drops a pending intent once its consumed units reach its size', async () => {
+describe('livePendingBootstrapOffers', () => {
+  test('accepts an API-missing configured group after confirmed cancellation', () => {
     expect(
-      await readLivePendingBootstrapOffers({
+      livePendingBootstrapOffers({
+        groups: [],
+        ownedGroupIds: [groupId],
+        offers: [],
+        consumed: { [groupId]: MAX_OFFER_CAP }
+      })
+    ).toEqual([])
+  })
+
+  test('fails closed for an API-missing configured group without cancellation or intent', () => {
+    expect(() =>
+      livePendingBootstrapOffers({
+        groups: [],
+        ownedGroupIds: [groupId],
+        offers: [],
+        consumed: { [groupId]: MAX_OFFER_CAP - 1n }
+      })
+    ).toThrow(expect.objectContaining({ operation: 'missing-owned-group-intent' }))
+  })
+
+  test('fails closed for a group whose consumption was not read', () => {
+    expect(() =>
+      livePendingBootstrapOffers({ groups: [], ownedGroupIds: [], offers: [offer], consumed: {} })
+    ).toThrow(BootstrapAdapterError)
+  })
+
+  test('projects remaining persisted intent while provider indexing is pending', () => {
+    expect(
+      livePendingBootstrapOffers({
         groups: [],
         ownedGroupIds: [groupId],
         offers: [offer],
-        readGroupConsumed: async () => offer.assets
+        consumed: { [groupId]: 25n }
+      })
+    ).toEqual([{ ...offer, maximumAssets: 100n, assets: 75n }])
+  })
+
+  test('drops a pending intent once its consumed units reach its size', () => {
+    expect(
+      livePendingBootstrapOffers({
+        groups: [],
+        ownedGroupIds: [groupId],
+        offers: [offer],
+        consumed: { [groupId]: offer.assets }
       })
     ).toEqual([])
   })

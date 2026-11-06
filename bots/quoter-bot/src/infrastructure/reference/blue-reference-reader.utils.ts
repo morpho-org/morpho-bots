@@ -2,15 +2,12 @@ import type { Hex } from 'viem'
 
 import { fetchMarket } from '@morpho-org/morpho-sdk/fetch'
 import { MathLib } from '@morpho-org/morpho-ts'
+import { blockTimeMs } from '@repo/kit'
 
 import type { SupportedChainId } from '../../config/supported-chains.utils'
-import type {
-  BlueReferenceReader,
-  BlueSupplyCheckpoint
-} from '../bootstrap/bootstrap-reference-rate.service'
 import type { BlockHeader } from '../provider/historical-block.utils'
+import type { BlueReferenceReader, BlueSupplyCheckpoint } from './reference-rates'
 
-import { supportedChain } from '../../config/supported-chains.utils'
 import { ReferenceAdapterError } from '../../errors'
 import { findBlockAtOrBefore } from '../provider/historical-block.utils'
 
@@ -46,7 +43,6 @@ export const createBlueReferenceReader = (
   client: HistoricalBlockReader,
   chainId: SupportedChainId
 ): BlueReferenceReader => {
-  const blockTimeMs = supportedChain(chainId).blockTime
   const latestHeader = async (): Promise<BlockHeader> => {
     const block = await client.getBlock({ blockTag: 'latest' })
     if (block.number === null) throw new ReferenceAdapterError('latest-block')
@@ -79,7 +75,7 @@ export const createBlueReferenceReader = (
         latest: { number: head.blockNumber, timestamp: head.timestamp },
         target,
         getBlock: blockNumber => client.getBlock({ blockNumber }),
-        blockTimeMs
+        blockTimeMs: blockTimeMs(chainId)
       })
       if (block === undefined) throw new ReferenceAdapterError('reference-history')
       return checkpoint(block)

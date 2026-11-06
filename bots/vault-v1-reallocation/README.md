@@ -170,8 +170,8 @@ after it, so a lost ledger refuses to start instead of starting blank. A fresh `
 also waits in `starting`, signing nothing, until the account's nonce at the chain's `safe` block
 matches its latest one. Switch to `enrolled` only once the bot logs `kernel.running` and
 `KERNEL_STATE_DIR` holds `kernel-<id>-<account>.json`: before that the kernel has written no ledger,
-and an `enrolled` restart refuses. Finality must lag the head by less than the kernel's 5-minute
-reorg window, at least 128 blocks (128 on mainnet, 150 on Base), so mainnet's `finalized` fits: the
+and an `enrolled` restart refuses. Finality must lag the head by less than the kernel's 10-minute
+reorg window, at least 128 blocks (128 on mainnet, 3,000 on Base), so mainnet's `finalized` fits: the
 kernel refuses to start past it, and holds finality with one `kernel.alarm` if it falls behind while
 running.
 
@@ -198,7 +198,7 @@ BetterStack shipping and heartbeat are opt-in via the env vars above.
 
 Names that changed with the framework port, for queries written against the earlier bot:
 `tx.confirmed` is now `tx.included`; the `tx.*` fee fields `maxFee` and `priority` are now
-`maxFeePerGasWei` and `priorityFeePerGasWei`; `tick.end`'s `submitted` is now `broadcast`, and it no longer carries `duration_ms`. The
+`maxFeePerGasWei` and `priorityFeePerGasWei`; `tick.end`'s `submitted` is now `broadcast`, and its `duration_ms` is now the framework's `source.read` `durationMs`. The
 queue-only events `tx.replace_failed`, `tx.send_aborted`, `tx.observer_failed` and
 `tx.onblock_error` are gone.
 

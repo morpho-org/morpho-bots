@@ -29,56 +29,30 @@ describe('terminalMonitoringEvents', () => {
     expect(events).not.toContainEqual(expect.objectContaining({ check: 'chain' }))
   })
 
-  test('identifies which supervised workflow ended the fail-together lifecycle', () => {
-    const events = terminalMonitoringEvents(
-      {
-        status: 'halted',
-        reason: 'workflow-error',
-        workflows: {
-          setupCheck: { status: 'fulfilled', report: { status: 'stopped', reason: 'signal' } },
-          bootstrap: { status: 'rejected', errorName: 'BootstrapAdapterError' },
-          ladder: {
-            status: 'fulfilled',
-            report: {
-              status: 'halted',
-              reason: 'cycle-failed',
-              cycleErrorName: 'LadderAdapterError'
-            }
-          }
-        }
-      },
-      'QuoterBotMonitorHaltedError'
-    )
-
-    expect(events).toContainEqual({
-      event: 'bot.failed',
-      workflow: 'bootstrap',
-      reason: 'workflow-error',
-      errorName: 'BootstrapAdapterError'
-    })
-    expect(events).toContainEqual({
-      event: 'bot.failed',
-      workflow: 'ladder',
-      reason: 'cycle-failed',
-      errorName: 'LadderAdapterError'
-    })
-    expect(events.filter(event => event.event === 'bot.failed')).toHaveLength(3)
+  test('names why a quoter run stopped, and the cause it classified itself', () => {
+    expect(
+      terminalMonitoringEvents(
+        { status: 'halted', reason: 'halted', halt: 'market-failure-budget: ladder' },
+        'QuoterRunFailedError'
+      )
+    ).toEqual([{ event: 'bot.failed', reason: 'halted', errorName: 'QuoterRunFailedError' }])
+    expect(
+      terminalMonitoringEvents(
+        { status: 'halted', reason: 'graph-error', errorName: 'TypeError' },
+        'QuoterRunFailedError'
+      )
+    ).toEqual([{ event: 'bot.failed', reason: 'graph-error', errorName: 'TypeError' }])
+    expect(
+      terminalMonitoringEvents(
+        { status: 'halted', reason: 'cleanup-failed', errorName: 'KernelStopError' },
+        'QuoterRunFailedError'
+      )
+    ).toEqual([{ event: 'bot.failed', reason: 'cleanup-failed', errorName: 'KernelStopError' }])
   })
 
   test('still reports a top-level failure for an unrecognized report shape', () => {
     expect(terminalMonitoringEvents(undefined, 'UnknownError')).toEqual([
       { event: 'bot.failed', reason: 'unclassified', errorName: 'UnknownError' }
-    ])
-  })
-
-  test('uses cleanup error names for standalone failures', () => {
-    const events = terminalMonitoringEvents(
-      { status: 'halted', reason: 'cleanup-failed', cleanup: { errorName: 'CleanupError' } },
-      'LadderMonitorHaltedError'
-    )
-
-    expect(events).toEqual([
-      { event: 'bot.failed', reason: 'cleanup-failed', errorName: 'CleanupError' }
     ])
   })
 
@@ -88,45 +62,27 @@ describe('terminalMonitoringEvents', () => {
     ).toEqual([{ event: 'bot.failed', reason: 'cycle-failed', errorName: 'CycleError' }])
   })
 
-  test('uses cleanup error names for combined workflow failures', () => {
-    const events = terminalMonitoringEvents(
-      {
-        status: 'halted',
-        reason: 'workflow-error',
-        workflows: {
-          setupCheck: { status: 'fulfilled', report: { status: 'stopped', reason: 'signal' } },
-          bootstrap: {
-            status: 'fulfilled',
-            report: {
-              status: 'halted',
-              reason: 'cleanup-failed',
-              cleanup: { status: 'failed', errorName: 'BootstrapCleanupError' }
-            }
-          },
-          ladder: {
-            status: 'fulfilled',
-            report: {
-              status: 'halted',
-              reason: 'cleanup-failed',
-              cleanup: { status: 'failed', errorName: 'LadderCleanupError' }
-            }
-          }
-        }
-      },
-      'QuoterBotMonitorHaltedError'
-    )
+  test("uses a monitor's own cycle error name", () => {
+    expect(
+      terminalMonitoringEvents(
+        { status: 'halted', reason: 'cycle-error', cycleErrorName: 'HttpRequestError' },
+        'QuoterRunFailedError'
+      )
+    ).toEqual([{ event: 'bot.failed', reason: 'cycle-error', errorName: 'HttpRequestError' }])
+  })
 
-    expect(events).toContainEqual({
-      event: 'bot.failed',
-      workflow: 'bootstrap',
-      reason: 'cleanup-failed',
-      errorName: 'BootstrapCleanupError'
-    })
-    expect(events).toContainEqual({
-      event: 'bot.failed',
-      workflow: 'ladder',
-      reason: 'cleanup-failed',
-      errorName: 'LadderCleanupError'
-    })
+  test('keeps the wrapper classification for a startup cleanup failure', () => {
+    expect(
+      terminalMonitoringEvents(
+        { reason: 'startup-cleanup-failed', errorName: 'SetupFailedError' },
+        'StartupCleanupFailedError'
+      )
+    ).toEqual([
+      {
+        event: 'bot.failed',
+        reason: 'startup-cleanup-failed',
+        errorName: 'StartupCleanupFailedError'
+      }
+    ])
   })
 })

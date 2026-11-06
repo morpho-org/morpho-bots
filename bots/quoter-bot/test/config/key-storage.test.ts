@@ -22,8 +22,9 @@ const baseEnvironment = {
   NATIVE_RESERVE_WEI: '10',
   SIGNER_NATIVE_RESERVE_WEI: '10',
   MAX_FEE_GWEI: '100',
-  PRIORITY_FEE_GWEI: '1',
   MAX_TRANSACTION_SPEND_WEI: '100000000000000000',
+  MAX_CONTINUOUS_FEE_CAP: '0',
+  KERNEL_ENROLLMENT: 'enrolling',
   MAX_PUBLICATION_GAS: '5000000',
   MAX_PUBLICATION_DATA_BYTES: '65536',
   MAX_CANCELLATION_GAS: '100000',
@@ -35,7 +36,7 @@ const baseEnvironment = {
 const directories: string[] = []
 
 const configurationYaml = (identity: string) =>
-  `chain:\n  id: 8453\n  rpcUrl: https://yaml-rpc.example\n  archiveRpcUrl: https://archive.example\nidentity:\n${identity}\ncontracts:\n  midnightAddress: 0x2222222222222222222222222222222222222222\n  loanAssetAddress: 0x3333333333333333333333333333333333333333\n  ratifierAddress: 0xd6e70365C8E8DDa9a4ca662C07bbE663b017755E\napis:\n  morphoBaseUrl: https://api.example\n  routerBaseUrl: https://router.example\nmarkets:\n  allowlist: [0x${'55'.repeat(32)}]\n  referenceMarketId: 0x${'77'.repeat(32)}\nsetup:\n  nativeReserveWei: 10\n  signerNativeReserveWei: 10\n  maxFeeGwei: 100\n  priorityFeeGwei: 1\n  maxTransactionSpendWei: 100000000000000000\n  maxPublicationGas: 5000000\n  maxPublicationDataBytes: 65536\n  maxCancellationGas: 100000\n  maxBatchCancellationGas: 1000000\n  maxBatchCancellationDataBytes: 65536\n`
+  `chain:\n  id: 8453\n  rpcUrl: https://yaml-rpc.example\n  archiveRpcUrl: https://archive.example\nidentity:\n${identity}\ncontracts:\n  midnightAddress: 0x2222222222222222222222222222222222222222\n  loanAssetAddress: 0x3333333333333333333333333333333333333333\n  ratifierAddress: 0xd6e70365C8E8DDa9a4ca662C07bbE663b017755E\napis:\n  morphoBaseUrl: https://api.example\n  routerBaseUrl: https://router.example\nmarkets:\n  allowlist: [0x${'55'.repeat(32)}]\n  referenceMarketId: 0x${'77'.repeat(32)}\nsetup:\n  nativeReserveWei: 10\n  signerNativeReserveWei: 10\n  maxFeeGwei: 100\n  maxTransactionSpendWei: 100000000000000000\n  maxContinuousFeeCap: 0\n  kernelEnrollment: enrolling\n  maxPublicationGas: 5000000\n  maxPublicationDataBytes: 65536\n  maxCancellationGas: 100000\n  maxBatchCancellationGas: 1000000\n  maxBatchCancellationDataBytes: 65536\n`
 
 afterEach(async () => {
   vi.restoreAllMocks()
@@ -193,7 +194,6 @@ describe('signer key storage configuration', () => {
 
   test.each([
     'MAX_FEE_GWEI',
-    'PRIORITY_FEE_GWEI',
     'MAX_TRANSACTION_SPEND_WEI',
     'MAX_PUBLICATION_GAS',
     'MAX_PUBLICATION_DATA_BYTES',
@@ -204,17 +204,6 @@ describe('signer key storage configuration', () => {
     expect(() =>
       ConfigService.from({ ...baseEnvironment, MAKER_PRIVATE_KEY: privateKey, [field]: '0' })
     ).toThrow(expect.objectContaining({ field, reason: 'out-of-range' }))
-  })
-
-  test('requires fee-bump headroom below the maximum fee', () => {
-    expect(() =>
-      ConfigService.from({
-        ...baseEnvironment,
-        MAKER_PRIVATE_KEY: privateKey,
-        MAX_FEE_GWEI: '1',
-        PRIORITY_FEE_GWEI: '1'
-      })
-    ).toThrow(expect.objectContaining({ field: 'PRIORITY_FEE_GWEI', reason: 'incoherent-bounds' }))
   })
 
   test('rejects the removed middleware signing method', () => {
@@ -285,7 +274,7 @@ describe('signer key storage configuration', () => {
     const path = join(directory, 'operator.yaml')
     await writeFile(
       path,
-      `chain:\n  id: 8453\n  rpcUrl: https://yaml-rpc.example\n  archiveRpcUrl: https://archive.example\nidentity:\n  makerAddress: 0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A\n  keyStorageMethod: private-key\n  makerPrivateKey: ${privateKey}\ncontracts:\n  midnightAddress: 0x2222222222222222222222222222222222222222\n  loanAssetAddress: 0x3333333333333333333333333333333333333333\n  ratifierAddress: 0xd6e70365C8E8DDa9a4ca662C07bbE663b017755E\napis:\n  morphoBaseUrl: https://api.example\n  routerBaseUrl: https://router.example\nmarkets:\n  allowlist: [0x${'55'.repeat(32)}]\n  referenceMarketId: 0x${'77'.repeat(32)}\nsetup:\n  nativeReserveWei: 10\n  signerNativeReserveWei: 10\n  maxFeeGwei: 100\n  priorityFeeGwei: 1\n  maxTransactionSpendWei: 100000000000000000\n  maxPublicationGas: 5000000\n  maxPublicationDataBytes: 65536\n  maxCancellationGas: 100000\n  maxBatchCancellationGas: 1000000\n  maxBatchCancellationDataBytes: 65536\n`
+      `chain:\n  id: 8453\n  rpcUrl: https://yaml-rpc.example\n  archiveRpcUrl: https://archive.example\nidentity:\n  makerAddress: 0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A\n  keyStorageMethod: private-key\n  makerPrivateKey: ${privateKey}\ncontracts:\n  midnightAddress: 0x2222222222222222222222222222222222222222\n  loanAssetAddress: 0x3333333333333333333333333333333333333333\n  ratifierAddress: 0xd6e70365C8E8DDa9a4ca662C07bbE663b017755E\napis:\n  morphoBaseUrl: https://api.example\n  routerBaseUrl: https://router.example\nmarkets:\n  allowlist: [0x${'55'.repeat(32)}]\n  referenceMarketId: 0x${'77'.repeat(32)}\nsetup:\n  nativeReserveWei: 10\n  signerNativeReserveWei: 10\n  maxFeeGwei: 100\n  maxTransactionSpendWei: 100000000000000000\n  maxContinuousFeeCap: 0\n  kernelEnrollment: enrolling\n  maxPublicationGas: 5000000\n  maxPublicationDataBytes: 65536\n  maxCancellationGas: 100000\n  maxBatchCancellationGas: 1000000\n  maxBatchCancellationDataBytes: 65536\n`
     )
     const config = await ConfigService.load(
       {

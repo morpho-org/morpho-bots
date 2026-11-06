@@ -3,7 +3,6 @@ import type { FetchPage } from '@repo/utils'
 import { collectPages } from '@repo/utils'
 import { isHex } from 'viem'
 
-import type { ListedMarketsService } from '../../application/crossed-books-bot.service'
 import type { ListedMarket, MarketId } from '../../domain/order-book'
 import type { MorphoApiClient } from './client'
 import type { paths } from './generated/morpho-api.types'
@@ -28,7 +27,7 @@ function toMarketId(value: string): MarketId {
   return value
 }
 
-export class MorphoApiService implements ListedMarketsService {
+export class MorphoApiService {
   constructor(
     private readonly client: MorphoApiClient,
     private readonly chainId: 8453

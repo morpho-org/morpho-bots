@@ -23,7 +23,7 @@ import { FakeChain } from '@repo/kernel/testing'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { describe, expect, it } from 'vitest'
 
-import type { Bot, FactNode, KernelHandle, PrepareOutcome, PrepareRequest } from '../src'
+import type { Bot, FactNode, KernelHandle, LogSink, PrepareOutcome, PrepareRequest } from '../src'
 
 import { declareView, defineBot, kernelDomain, parseIntentId, tasks, task } from '../src'
 import { configFor, dryHosting, dryWorld, EXECUTOR, FEE, until } from './fixtures'
@@ -127,6 +127,8 @@ const track = (
 
 /** How long a read the test writes stays valid on the tests' clock, which stands at 0. */
 const READ_VALID_MS = 60_000
+
+const SILENT: LogSink = { info: () => {}, warn: () => {} }
 
 const HOSTING = dryHosting(configFor(executorValidator, { native: 4n * FEE }))
 
@@ -445,6 +447,9 @@ const sourced = (
 ) => {
   const chain = new FakeChain()
   const reads: string[] = []
+  const logged: unknown[][] = []
+  const log = (_event: string, fields?: Record<string, unknown>) =>
+    void logged.push(Object.values(fields ?? {}))
   const bot = defineBot('sourced', b => {
     const kernel = b.kernel({ ...HOSTING, chain, effects: chain.effects })
     const world = b.source('world', {
@@ -452,6 +457,7 @@ const sourced = (
       at: 'head',
       queue: 8,
       validForMs,
+      logger: { info: log, warn: log },
       read: async head => {
         reads.push(`${head.number}/${head.hash}`)
         await read(head)
@@ -464,7 +470,7 @@ const sourced = (
     })
     return { kernel, level: world.level }
   })(undefined)
-  return { chain, reads, bot }
+  return { chain, reads, logged, bot }
 }
 
 const started = async (bot: ReturnType<typeof sourced>['bot'], now = () => 0) => {
@@ -477,7 +483,7 @@ const started = async (bot: ReturnType<typeof sourced>['bot'], now = () => 0) =>
 describe('a source read at each head', () => {
   it('skips a queued head the kernel replaced at the same height', async () => {
     const held = Promise.withResolvers<void>()
-    const { chain, reads, bot } = sourced(head =>
+    const { chain, reads, logged, bot } = sourced(head =>
       head.number === 2 ? held.promise : Promise.resolve()
     )
     const runner = await started(bot)
@@ -489,14 +495,15 @@ describe('a source read at each head', () => {
     chain.blockAt = number => (number === 3 ? { ...blockAt(3), hash: '0x3b' } : blockAt(number))
     await until(() => runner.read(bot.kernel.nodes.state)?.head?.hash === '0x3b', 'the reorg to 3b')
     held.resolve()
-    await until(() => reads.includes('3/0x3b'), 'the read of 3b')
+    await until(() => keyed(runner.read(bot.level)) === '0x3b', 'the level at 3b')
     expect(reads).not.toContain('3/0x3')
+    expect(logged).toHaveLength(reads.length)
     await runner.abandon()
   })
 
   it('reads only the newest of a burst of heads, past its queue bound', async () => {
     const held = Promise.withResolvers<void>()
-    const { chain, reads, bot } = sourced(head =>
+    const { chain, reads, logged, bot } = sourced(head =>
       head.number === 2 ? held.promise : Promise.resolve()
     )
     const runner = await started(bot)
@@ -507,9 +514,10 @@ describe('a source read at each head', () => {
     chain.height += 50
     await until(() => runner.read(bot.kernel.nodes.state)?.head?.number === 52, 'the burst')
     held.resolve()
-    await until(() => reads.includes('52/0x34'), 'the read of the newest head')
+    await until(() => keyed(runner.read(bot.level)) === '0x34', 'the level at the newest head')
     expect(failure).toBeUndefined()
     expect(reads.slice(reads.indexOf('2/0x2'))).toStrictEqual(['2/0x2', '52/0x34'])
+    expect(logged).toHaveLength(reads.length)
     await runner.abandon()
   })
 
@@ -542,6 +550,20 @@ describe('a source', () => {
     await until(() => reads.includes('2/0x2'), 'the read of 2')
     await until(() => keyed(runner.read(bot.level)) === '0x2', 'the level at 2')
     expect(runner.read(bot.level)?.keys.head).toMatchObject({ expiry: 1_100 })
+    await runner.abandon()
+  })
+
+  it('logs each landed read with its source, block, duration and coverage', async () => {
+    const clock = { now: 0 }
+    const { chain, reads, logged, bot } = sourced(async () => {
+      clock.now += 7
+    })
+    const runner = await started(bot, () => clock.now)
+    clock.now = 1_000
+    chain.mine()
+    await until(() => reads.includes('2/0x2'), 'the read of 2')
+    await until(() => keyed(runner.read(bot.level)) === '0x2', 'the level at 2')
+    expect(logged).toContainEqual(expect.arrayContaining(['world', 2, 7, 'complete']))
     await runner.abandon()
   })
 
@@ -582,6 +604,7 @@ describe('a source', () => {
         queue: 8,
         validForMs: READ_VALID_MS,
         samples: { listing },
+        logger: SILENT,
         read: async (head, _now, samples) => {
           if (head.number === 2) {
             seen.push(Object.keys(samples), samples.listing())
@@ -622,6 +645,7 @@ describe('a source', () => {
           queue: 8,
           validForMs: READ_VALID_MS,
           samples: { state },
+          logger: SILENT,
           read: async head => ({ coverage: 'complete', entries: {}, basis: { block: head.number } })
         })
       })(undefined)

@@ -42,6 +42,7 @@
     ],
     "repo/comment-hygiene": "error",
     "repo/errors-file": "error",
+    "repo/kernel-only-signing": "error",
     "repo/no-as-address": "error",
     "repo/no-hex-template": "error",
     "repo/no-local-math-constant": "error",

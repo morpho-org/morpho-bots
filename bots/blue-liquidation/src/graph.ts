@@ -80,6 +80,7 @@ export const declareLiquidator = defineBot('blue-liquidation', (b, o: Liquidator
     at: 'head',
     queue: WORLD_QUEUE,
     validForMs: o.worldValidMs,
+    logger,
     read: readPositions({ ...o.world, stats, logger })
   })
   const positions = world.level

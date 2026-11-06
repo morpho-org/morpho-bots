@@ -1,37 +1,70 @@
+import type { Entry } from '@repo/kernel'
 import type { Address, Hex } from 'viem'
 
+import { MarketUtils, Offer, Tree } from '@morpho-org/midnight-sdk'
+import { getChainAddress } from '@morpho-org/morpho-ts'
+import { midnightPublicationPlan, midnightTreeWitness } from '@repo/validators'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { setTimeout as sleep } from 'node:timers/promises'
-import { maxUint256 } from 'viem'
+import { maxUint256, zeroAddress } from 'viem'
 import { afterAll, beforeAll, describe, expect, test, vi } from 'vitest'
 
+import type { MarketReport } from '../src/application/engine/market-report'
 import type {
   SetupCheckReport,
   SetupStateService
 } from '../src/application/setup/setup-check.service'
+import type { ConfigService as RuntimeConfig } from '../src/config/config.service'
+import type { BootstrapAdapters } from '../src/infrastructure/bootstrap/production-bootstrap'
+import type { WorldReads } from '../src/infrastructure/engine/world-reads'
+import type { LadderAdapters } from '../src/infrastructure/ladder/production-ladder'
+import type { ReferenceRates } from '../src/infrastructure/reference/reference-rates'
 
-import { createApplication } from '../src/bootstrap'
+import { createMarketProjection } from '../src/application/monitoring/market-monitoring.utils'
+import { createApplication as composeApplication } from '../src/bootstrap'
+import { ConfigService } from '../src/config/config.service'
 import {
-  ConfigValidationError,
-  LadderAdapterError,
-  LadderHardHaltError,
   SetupFailedError,
-  StartupCleanupFailedError,
-  StrategyStateVersionError
+  ConfigValidationError,
+  BootstrapMempoolValidationError,
+  StrategyStateVersionError,
+  QuoterStartError,
+  SetupCheckAbortedError
 } from '../src/errors'
 import { runQuoterBotEntrypoint } from '../src/infrastructure/cli/quoter-bot-entrypoint'
+import { productionReferenceRates } from '../src/infrastructure/reference/reference-rates'
+import { dryHosting, quoterKernelConfig } from '../src/kernel'
+import { startQuoterEngine, type StartupWithdrawal } from '../src/run'
 
+const CHAIN_ID = 8453
 const maker: Address = '0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A'
 const delegatedSigner: Address = '0x1563915e194D8CfBA1943570603F7606A3115508'
 const midnight: Address = '0x2222222222222222222222222222222222222222'
 const loanAsset: Address = '0x3333333333333333333333333333333333333333'
 const ratifier: Address = '0xd6e70365C8E8DDa9a4ca662C07bbE663b017755E'
-const marketId: Hex = `0x${'55'.repeat(32)}`
+const market = {
+  chainId: BigInt(CHAIN_ID),
+  midnight: getChainAddress(CHAIN_ID, 'midnight'),
+  loanToken: loanAsset,
+  collateralParams: [
+    {
+      token: '0x4200000000000000000000000000000000000006' as Address,
+      lltv: 770_000_000_000_000_000n,
+      liquidationCursor: 250_000_000_000_000_000n,
+      oracle: '0x0000000000000000000000000000000000008000' as Address
+    }
+  ],
+  maturity: BigInt(Date.UTC(2027, 0, 1, 15) / 1000),
+  rcfThreshold: 0n,
+  enterGate: zeroAddress,
+  liquidatorGate: zeroAddress
+}
+/** The configured Market is a real Midnight Market, so the kernel's validator admits its offers. */
+const marketId = MarketUtils.toId(market)
 const referenceMarketId: Hex = `0x${'77'.repeat(32)}`
 const environment = {
-  CHAIN_ID: '8453',
+  CHAIN_ID: String(CHAIN_ID),
   RPC_URL: 'https://rpc.example',
   REFERENCE_RPC_URL: 'https://archive.example',
   MAKER_PRIVATE_KEY: `0x${'11'.repeat(32)}`,
@@ -43,8 +76,9 @@ const environment = {
   REFERENCE_MARKET_ID: referenceMarketId,
   NATIVE_RESERVE_WEI: '10',
   MAX_FEE_GWEI: '100',
-  PRIORITY_FEE_GWEI: '1',
   MAX_TRANSACTION_SPEND_WEI: '100000000000000000',
+  MAX_CONTINUOUS_FEE_CAP: '0',
+  KERNEL_ENROLLMENT: 'enrolling',
   MAX_PUBLICATION_GAS: '5000000',
   MAX_PUBLICATION_DATA_BYTES: '65536',
   MAX_CANCELLATION_GAS: '100000',
@@ -84,15 +118,24 @@ const bootstrapConfiguration = {
   maximumRateBps: '1000',
   autoRefill: false
 }
+const ladderEnvironment = { ...environment, LADDER_MARKETS: JSON.stringify([ladderConfiguration]) }
+const bootstrapEnvironment = {
+  ...environment,
+  BOOTSTRAP_MARKETS: JSON.stringify([bootstrapConfiguration])
+}
+const combinedEnvironment = {
+  ...environment,
+  BOOTSTRAP_MARKETS: JSON.stringify([bootstrapConfiguration]),
+  LADDER_MARKETS: JSON.stringify([ladderConfiguration])
+}
 
 const readyState = (): SetupStateService => {
   return {
-    getChainId: async () => 8453,
-    getReferenceChainId: async () => 8453,
+    getChainId: async () => CHAIN_ID,
+    getReferenceChainId: async () => CHAIN_ID,
     getCode: async () => '0x1234',
     getDerivedSigner: async () => maker,
     getAuthorization: async () => true,
-    getTransactionCounts: async () => ({ latest: 0, pending: 0 }),
     getNativeBalance: async () => 10n,
     getLoanAllowance: async () => ({ spender: midnight, amount: maxUint256 }),
     getRatifier: async () => ({
@@ -109,7 +152,6 @@ const readyState = (): SetupStateService => {
       loanAsset,
       tickSpacing: 4
     }),
-    getLossFactor: async () => 0n,
     checkReference: async () => ({
       marketId: referenceMarketId,
       referenceReadable: true,
@@ -120,8 +162,197 @@ const readyState = (): SetupStateService => {
       unknownMarketIds: [],
       invertedMarketIds: []
     }),
-    checkPositionHealth: async () => ({ status: 'not-required', reason: 'V0 has no debt' })
+    getDebt: async () => 0n,
+    getLoanCollateral: async () => undefined
   }
+}
+
+const failingReadiness = () => {
+  const state = readyState()
+  state.getChainId = async () => 1
+  return state
+}
+
+const offerTree = (buy: boolean, start = 1n) =>
+  Tree.create([
+    Offer.create({
+      market,
+      buy,
+      maker,
+      start,
+      expiry: market.maturity,
+      ratifier: getChainAddress(CHAIN_ID, 'ecrecoverRatifier'),
+      tick: 6_000n,
+      maxUnits: 10n,
+      continuousFeeCap: 0n
+    } as Parameters<typeof Offer.create>[0])
+  ])
+
+const noCrossing = { crossed: false, clearable: false } as const
+const NOW = BigInt(Date.UTC(2026, 9, 1) / 1000)
+
+/** A world with `cash` and no credit on the configured market, and nothing indexed or on its book. */
+const worldReads = (cash = 0n): WorldReads => ({
+  readLatestBlock: async () => ({ number: 1n, hash: `0x${'01'.repeat(32)}`, timestamp: NOW }),
+  readMarket: async () => {
+    throw new Error('these reads prepare nothing')
+  },
+  readGroups: async () => [],
+  readBook: async () => [],
+  readPosition: async id => ({
+    marketId: id,
+    credit: 0n,
+    debt: 0n,
+    lossFactor: 0n,
+    maturity: market.maturity,
+    tickSpacing: 4,
+    continuousFee: 0
+  }),
+  readCash: async () => ({ cashBalance: cash, allowance: cash }),
+  readConsumed: async groupIds => groupIds.map(() => 0n)
+})
+
+/** Enough cash for either strategy to publish. */
+const fundedWorld = () => worldReads(100n)
+
+const staticRates =
+  (rateBps = 500n): ReferenceRates =>
+  async markets =>
+    markets.map(() => ({
+      ok: true,
+      value: { mode: 'static', rateBps, observationId: `static:${rateBps}` }
+    }))
+
+/** Ladder preparation that never proves a publication safe. */
+const ladderAdapters = (overrides: Partial<LadderAdapters> = {}): LadderAdapters => ({
+  prepareReplacement: async () => {
+    throw new Error('these readers prepare nothing')
+  },
+  validateRatified: async () => {},
+  ...overrides
+})
+
+/** Ladder preparation that publishes the desired buys; its kept publication reads back as active. */
+const publishingLadderAdapters = (onPrepare?: () => void): LadderAdapters => {
+  const tree = offerTree(true, 2n)
+  return ladderAdapters({
+    prepareReplacement: vi.fn<LadderAdapters['prepareReplacement']>(async ({ desired }) => {
+      onPrepare?.()
+      return {
+        reconciliation: {
+          preparedAtTimestamp: 1n,
+          applied: true,
+          bookCrossing: { lower: noCrossing, higher: noCrossing }
+        },
+        publication: {
+          quote: desired,
+          groups: [
+            {
+              groupId: tree.offers[0]!.group,
+              side: 'higher',
+              rungIndexes: desired.higher.map(rung => rung.index),
+              ticks: [6_000n]
+            }
+          ],
+          witness: midnightTreeWitness(tree)
+        }
+      }
+    })
+  })
+}
+
+/** Bootstrap preparation that never proves a publication safe. */
+const bootstrapAdapters = (overrides: Partial<BootstrapAdapters> = {}): BootstrapAdapters => ({
+  prepareReplacement: async () => {
+    throw new Error('a position without cash prepares nothing')
+  },
+  validateRatified: async () => {},
+  ...overrides
+})
+
+/** Bootstrap preparation that publishes the desired offer; its kept intent reads back as active. */
+const publishingBootstrapAdapters = (onPrepare?: () => void): BootstrapAdapters => {
+  const tree = offerTree(true)
+  return bootstrapAdapters({
+    prepareReplacement: vi.fn<BootstrapAdapters['prepareReplacement']>(async ({ desiredOffer }) => {
+      onPrepare?.()
+      return {
+        offer: desiredOffer,
+        publication: {
+          groupId: tree.offers[0]!.group,
+          tick: 6_000n,
+          continuousFeeCap: 0n,
+          witness: midnightTreeWitness(tree)
+        }
+      }
+    })
+  })
+}
+
+const dryKernel = (config: RuntimeConfig) => dryHosting(config)
+
+/**
+ * A dry kernel for `--readonly` built from the writer configuration, since `quoterKernelConfig`
+ * reads the write policy a read-only configuration lacks; the pinned failure below tracks that.
+ */
+const readOnlyKernel = async (readOnlyEnvironment: Record<string, string | undefined>) => {
+  const writer = await ConfigService.load({
+    ...readOnlyEnvironment,
+    MAKER_PRIVATE_KEY: environment.MAKER_PRIVATE_KEY
+  })
+  return () => dryHosting(writer)
+}
+
+/** One live publication an earlier run left in the kernel's ledger, as the dry kernel records it. */
+const earlierRunEntries = (config: RuntimeConfig): Record<string, Entry> => {
+  const kernelConfig = quoterKernelConfig(config, maker)
+  const [step] = midnightPublicationPlan({
+    chainId: CHAIN_ID,
+    maker,
+    signer: maker,
+    tree: offerTree(true),
+    ratifier: 'ecrecover'
+  }).steps
+  const validator = kernelConfig.validators[0]!
+  const reading = validator.read(step!.payload!, step!.witness, {
+    account: maker,
+    chainId: CHAIN_ID
+  })
+  if (!reading.ok) throw new Error(reading.reason)
+  return Object.fromEntries(
+    reading.creates.map(spec => [
+      spec.id,
+      {
+        spec,
+        state: 'live',
+        intentId: 'earlier-run',
+        validator: `${validator.id}@${validator.version}`,
+        creators: [],
+        deadCreators: [],
+        origin: { payload: step!.payload!, witness: step!.witness },
+        consumedFinal: 0n,
+        recoveryAttempts: 0,
+        stuck: false,
+        compensate: false,
+        affirmedAt: Date.now()
+      } satisfies Entry
+    ])
+  )
+}
+
+const createApplication: typeof composeApplication = (environment, dependencies) =>
+  composeApplication(environment, {
+    kernel: dryKernel,
+    createWorldReads: () => worldReads(),
+    createReferenceRates: () => staticRates(),
+    ...dependencies
+  })
+
+type Written = { event: string; notice?: string; [field: string]: unknown }
+
+const recorder = () => {
+  const written: Written[] = []
+  return { written, writeEvent: (value: unknown) => void written.push(value as Written) }
 }
 
 describe('createApplication', () => {
@@ -145,7 +376,24 @@ describe('createApplication', () => {
     const output = await application.run(['setup-check'])
 
     expect(output).toMatchObject({ ready: true })
-    expect((output as { checks: unknown[] }).checks).toHaveLength(13)
+    expect(
+      (output as { checks: { name: string; status: string }[] }).checks.map(check => [
+        check.name,
+        check.status
+      ])
+    ).toEqual([
+      ['chain', 'passed'],
+      ['signer', 'passed'],
+      ['native-balance', 'passed'],
+      ['signer-native-balance', 'not-required'],
+      ['signer-authorization', 'not-required'],
+      ['loan-allowance', 'passed'],
+      ['ratifier', 'passed'],
+      ['books', 'passed'],
+      ['reference', 'not-required'],
+      ['offers', 'passed'],
+      ['position-health', 'not-required']
+    ])
   })
 
   test('refuses to start on strategy state an earlier version wrote, naming the procedure', async () => {
@@ -270,7 +518,7 @@ describe('createApplication', () => {
       const configPath = join(directory, 'operator.yaml')
       await writeFile(
         configPath,
-        `chain:\n  id: 8453\n  rpcUrl: https://rpc.example\n  archiveRpcUrl: https://archive.example\nidentity:\n  makerAddress: ${maker}\n  keyStorageMethod: keystore\n  keystorePath: /yaml/maker.json\n  ${yamlPasswordMode}\ncontracts:\n  midnightAddress: ${midnight}\n  loanAssetAddress: ${loanAsset}\n  ratifierAddress: ${ratifier}\napis:\n  morphoBaseUrl: https://api.example\n  routerBaseUrl: https://router.example\nmarkets:\n  allowlist: [${marketId}]\n  referenceMarketId: ${referenceMarketId}\nsetup:\n  nativeReserveWei: 10\n  maxFeeGwei: 100\n  priorityFeeGwei: 1\n  maxTransactionSpendWei: 100000000000000000\n  maxPublicationGas: 5000000\n  maxPublicationDataBytes: 65536\n  maxCancellationGas: 100000\n  maxBatchCancellationGas: 1000000\n  maxBatchCancellationDataBytes: 65536\n  maxRatificationGas: 100000\n`
+        `chain:\n  id: 8453\n  rpcUrl: https://rpc.example\n  archiveRpcUrl: https://archive.example\nidentity:\n  makerAddress: ${maker}\n  keyStorageMethod: keystore\n  keystorePath: /yaml/maker.json\n  ${yamlPasswordMode}\ncontracts:\n  midnightAddress: ${midnight}\n  loanAssetAddress: ${loanAsset}\n  ratifierAddress: ${ratifier}\napis:\n  morphoBaseUrl: https://api.example\n  routerBaseUrl: https://router.example\nmarkets:\n  allowlist: [${marketId}]\n  referenceMarketId: ${referenceMarketId}\nsetup:\n  nativeReserveWei: 10\n  maxFeeGwei: 100\n  maxTransactionSpendWei: 100000000000000000\n  maxContinuousFeeCap: 0\n  kernelEnrollment: enrolling\n  maxPublicationGas: 5000000\n  maxPublicationDataBytes: 65536\n  maxCancellationGas: 100000\n  maxBatchCancellationGas: 1000000\n  maxBatchCancellationDataBytes: 65536\n  maxRatificationGas: 100000\n`
       )
       let password: string | undefined
       try {
@@ -325,25 +573,15 @@ describe('createApplication', () => {
       createState: () => {
         throw new Error('setup state must not be constructed')
       },
-      createInvalidationPort: config => ({
-        mode: () => (config.readOnly ? 'readonly' : 'write'),
-        preflight: async () => {
-          events.push('preflight')
-        },
-        listActiveGroupIds: async () => {
-          events.push('list')
-          return [groupId]
-        },
-        invalidateBatch: async groupIds => {
-          events.push(`invalidateBatch:${groupIds.join(',')}`)
-          return txHash
-        },
-        invalidate: async selectedGroupId => {
-          events.push(`invalidate:${selectedGroupId}`)
-          return txHash
-        },
-        forgetGroups: async groupIds => {
-          events.push(`forget:${groupIds.join(',')}`)
+      createInvalidation: () => ({
+        run: async () => {
+          events.push('run')
+          return {
+            status: 'applied',
+            scope: 'all',
+            matchedGroups: 1,
+            invalidatedGroups: [{ groupId, txHash }]
+          }
         }
       })
     })
@@ -354,250 +592,157 @@ describe('createApplication', () => {
       matchedGroups: 1,
       invalidatedGroups: [{ groupId, txHash }]
     })
-    expect(events).toEqual(['preflight', 'list', `invalidateBatch:${groupId}`, `forget:${groupId}`])
+    expect(events).toEqual(['run'])
   })
 
-  test('quoter-bot bootstrap passes readiness before composing one bootstrap cycle', async () => {
+  test('quoter-bot bootstrap passes readiness before the kernel admits its publication', async () => {
     const events: string[] = []
-    const removedGroupId: Hex = `0x${'99'.repeat(32)}`
     const state = readyState()
     state.getChainId = async () => {
       events.push('readiness')
-      return 8453
+      return CHAIN_ID
     }
-    const environmentWithLadder = {
-      ...environment,
-      BOOTSTRAP_MARKETS: JSON.stringify([bootstrapConfiguration]),
-      LADDER_MARKETS: JSON.stringify([ladderConfiguration])
-    }
-    const application = createApplication(environmentWithLadder, {
+    const application = createApplication(bootstrapEnvironment, {
       createState: () => state,
-      createLadderAdapters: () => ({
-        positions: {
-          readLendGuard: async () => ({ lossFactor: 0n, acceptedLossFactor: 0n, defaulted: true }),
-          readMarket: async () => ({})
-        },
-        rates: { readRate: async () => 500n },
-        make: {
-          cleanupRemovedMarkets: async () => {
-            events.push('cleanup')
-            return [removedGroupId]
-          },
-          readActive: async () => undefined,
-          reconcile: async () => {},
-          cancelBuys: async () => ({ submittedTransactions: [] }),
-          hardHalt: async () => {},
-          cleanup: async () => {}
-        }
-      }),
-      createBootstrapAdapters: (_config, ignoredOfferGroupIds) => {
-        events.push('bootstrap')
-        expect(ignoredOfferGroupIds).toEqual([removedGroupId])
-        return {
-          positions: {
-            readPosition: async () => ({
-              credit: 0n,
-              debt: 0n,
-              lossFactor: { lossFactor: 0n, acceptedLossFactor: 0n, defaulted: true },
-              cashBalance: 0n,
-              marketExposure: 0n,
-              totalExposure: 0n
-            })
-          },
-          rates: {
-            readRate: async () => ({
-              mode: 'static',
-              rateBps: 500n,
-              observationId: 'static:500'
-            })
-          },
-          make: {
-            reconcile: async () => {},
-            hardHalt: async () => {},
-            cleanup: async () => {}
-          }
-        }
+      createWorldReads: fundedWorld,
+      createBootstrapAdapters: () => publishingBootstrapAdapters(() => events.push('prepare'))
+    })
+
+    expect(
+      await application.run(['bootstrap'], {
+        writeEvent: value =>
+          void events.push(`${(value as Written).event}:${(value as Written).notice}`)
+      })
+    ).toEqual([
+      {
+        workflow: 'bootstrap',
+        marketId,
+        status: 'applied',
+        action: 'publish',
+        transactions: [{ operation: 'publish', txHash: 'dry-tx-0-1' }]
       }
+    ])
+    expect(events.indexOf('readiness')).toBe(0)
+    expect(events.indexOf('kernel.notice:admitted')).toBeGreaterThan(events.indexOf('prepare'))
+  })
+
+  test('withholds a cash-bound bootstrap buy below the Router minimum, and halts on any other cap', async () => {
+    const belowMinimum = () =>
+      bootstrapAdapters({
+        prepareReplacement: async () => {
+          throw new BootstrapMempoolValidationError([
+            { rule: 'min_offer_assets_usd', minimumAssets: 100n }
+          ])
+        }
+      })
+    const cashBound = createApplication(bootstrapEnvironment, {
+      createState: readyState,
+      createWorldReads: () => worldReads(5n),
+      createBootstrapAdapters: belowMinimum
+    })
+    const { written, writeEvent } = recorder()
+
+    const reports = (await cashBound.run(['bootstrap'], { writeEvent })) as MarketReport[]
+    expect(reports).toEqual([
+      {
+        workflow: 'bootstrap',
+        marketId,
+        status: 'observed',
+        action: 'publication-withheld',
+        reason: 'below-minimum-offer',
+        minimumAssets: '100'
+      }
+    ])
+    expect(written).toEqual(expect.arrayContaining([...createMarketProjection()(reports)]))
+
+    const sizeBound = createApplication(bootstrapEnvironment, {
+      createState: readyState,
+      createWorldReads: fundedWorld,
+      createBootstrapAdapters: belowMinimum
+    })
+    await expect(sizeBound.run(['bootstrap'])).rejects.toMatchObject({
+      name: 'QuoterRunFailedError',
+      report: { status: 'halted', halt: 'bootstrap-decision-failed' }
+    })
+  })
+
+  test('quoter-bot ladder passes readiness before the kernel admits its publication', async () => {
+    const events: string[] = []
+    const state = readyState()
+    state.getChainId = async () => {
+      events.push('readiness')
+      return CHAIN_ID
+    }
+    const application = createApplication(ladderEnvironment, {
+      kernel: dryKernel,
+      createState: () => state,
+      createWorldReads: fundedWorld,
+      createLadderAdapters: () => publishingLadderAdapters(() => events.push('prepare'))
+    })
+
+    expect(
+      await application.run(['ladder'], {
+        writeEvent: value =>
+          void events.push(`${(value as Written).event}:${(value as Written).notice}`)
+      })
+    ).toEqual([
+      {
+        workflow: 'ladder',
+        marketId,
+        status: 'applied',
+        action: 'publish',
+        reason: 'publish',
+        transactions: [{ operation: 'publish', txHash: 'dry-tx-0-1' }]
+      }
+    ])
+    expect(events.indexOf('readiness')).toBe(0)
+    expect(events.indexOf('kernel.notice:admitted')).toBeGreaterThan(events.indexOf('prepare'))
+  })
+
+  test('reports a one-shot cycle whose readings arrive before readiness completes', async () => {
+    const application = createApplication(bootstrapEnvironment, {
+      createState: readyState,
+      createBootstrapAdapters: () => bootstrapAdapters()
     })
 
     expect(await application.run(['bootstrap'])).toEqual([
-      { status: 'observed', marketId, action: 'no-capacity' }
+      { workflow: 'bootstrap', marketId, status: 'observed', action: 'no-capacity' }
     ])
-    expect(events).toEqual(['cleanup', 'readiness', 'bootstrap'])
   })
 
   test('does not run a bootstrap cycle when shutdown arrives during bootstrap adapter composition', async () => {
     const controller = new AbortController()
-    const reconcile = vi.fn(async () => {})
-    const application = createApplication(
-      {
-        ...environment,
-        BOOTSTRAP_MARKETS: JSON.stringify([bootstrapConfiguration]),
-        LADDER_MARKETS: JSON.stringify([ladderConfiguration])
-      },
-      {
-        createState: readyState,
-        createLadderAdapters: () => ({
-          positions: {
-            readLendGuard: async () => ({
-              lossFactor: 0n,
-              acceptedLossFactor: 0n,
-              defaulted: true
-            }),
-            readMarket: async () => ({})
-          },
-          rates: { readRate: async () => 500n },
-          make: {
-            cleanupRemovedMarkets: async () => [],
-            readActive: async () => undefined,
-            reconcile: async () => {},
-            cancelBuys: async () => ({ submittedTransactions: [] }),
-            hardHalt: async () => {},
-            cleanup: async () => {}
-          }
-        }),
-        createBootstrapAdapters: () => {
-          controller.abort()
-          return {
-            positions: {
-              readPosition: async () => ({
-                credit: 0n,
-                debt: 0n,
-                lossFactor: { lossFactor: 0n, acceptedLossFactor: 0n, defaulted: true },
-                cashBalance: 0n,
-                marketExposure: 0n,
-                totalExposure: 0n
-              })
-            },
-            rates: {
-              readRate: async () => ({
-                mode: 'static',
-                rateBps: 500n,
-                observationId: 'static:500'
-              })
-            },
-            make: { reconcile, hardHalt: async () => {}, cleanup: async () => {} }
-          }
-        }
+    const adapters = publishingBootstrapAdapters()
+    const application = createApplication(combinedEnvironment, {
+      createState: readyState,
+      createLadderAdapters: () => ladderAdapters(),
+      createBootstrapAdapters: () => {
+        controller.abort()
+        return adapters
       }
-    )
+    })
 
     await expect(
       application.run(['bootstrap'], { signal: controller.signal })
     ).rejects.toMatchObject({ name: 'AbortError' })
-    expect(reconcile).not.toHaveBeenCalled()
+    expect(adapters.prepareReplacement).not.toHaveBeenCalled()
   })
 
-  test('does not clean ladder publications when no bootstrap market is configured', async () => {
-    const cleanupRemovedMarkets = vi.fn(async () => [marketId])
+  test('rejects a bootstrap command with no bootstrap market before composing any reader', async () => {
+    const createLadderAdapters = vi.fn(() => ladderAdapters())
     const application = createApplication(
       {
         ...environment,
         BOOTSTRAP_MARKETS: '[]',
         LADDER_MARKETS: JSON.stringify([ladderConfiguration])
       },
-      {
-        createState: readyState,
-        createLadderAdapters: () => ({
-          positions: {
-            readLendGuard: async () => ({
-              lossFactor: 0n,
-              acceptedLossFactor: 0n,
-              defaulted: true
-            }),
-            readMarket: async () => ({})
-          },
-          rates: { readRate: async () => 500n },
-          make: {
-            cleanupRemovedMarkets,
-            readActive: async () => undefined,
-            reconcile: async () => {},
-            cancelBuys: async () => ({ submittedTransactions: [] }),
-            hardHalt: async () => {},
-            cleanup: async () => {}
-          }
-        }),
-        createBootstrapAdapters: () => ({
-          positions: {
-            readPosition: async () => ({
-              credit: 0n,
-              debt: 0n,
-              lossFactor: { lossFactor: 0n, acceptedLossFactor: 0n, defaulted: true },
-              cashBalance: 0n,
-              marketExposure: 0n,
-              totalExposure: 0n
-            })
-          },
-          rates: {
-            readRate: async () => ({ mode: 'static', rateBps: 500n, observationId: 'static:500' })
-          },
-          make: {
-            reconcile: async () => {},
-            hardHalt: async () => {},
-            cleanup: async () => {}
-          }
-        })
-      }
+      { createState: readyState, createLadderAdapters }
     )
 
-    await expect(application.run(['bootstrap'])).resolves.toEqual([])
-    expect(cleanupRemovedMarkets).not.toHaveBeenCalled()
-  })
-
-  test('does not clean persisted ladder publications for a bootstrap-only configuration', async () => {
-    const cleanupRemovedMarkets = vi.fn(async () => [marketId])
-    const application = createApplication(
-      {
-        ...environment,
-        BOOTSTRAP_MARKETS: JSON.stringify([bootstrapConfiguration]),
-        LADDER_MARKETS: '[]'
-      },
-      {
-        createState: readyState,
-        createLadderAdapters: () => ({
-          positions: {
-            readLendGuard: async () => ({
-              lossFactor: 0n,
-              acceptedLossFactor: 0n,
-              defaulted: true
-            }),
-            readMarket: async () => ({})
-          },
-          rates: { readRate: async () => 500n },
-          make: {
-            cleanupRemovedMarkets,
-            readActive: async () => undefined,
-            reconcile: async () => {},
-            cancelBuys: async () => ({ submittedTransactions: [] }),
-            hardHalt: async () => {},
-            cleanup: async () => {}
-          }
-        }),
-        createBootstrapAdapters: () => ({
-          positions: {
-            readPosition: async () => ({
-              credit: 100n,
-              debt: 0n,
-              lossFactor: { lossFactor: 0n, acceptedLossFactor: 0n, defaulted: true },
-              cashBalance: 0n,
-              marketExposure: 100n,
-              totalExposure: 100n
-            })
-          },
-          rates: {
-            readRate: async () => ({ mode: 'static', rateBps: 500n, observationId: 'static:500' })
-          },
-          make: {
-            reconcile: async () => {},
-            hardHalt: async () => {},
-            cleanup: async () => {}
-          }
-        })
-      }
-    )
-
-    await expect(application.run(['bootstrap'])).resolves.toBeDefined()
-    expect(cleanupRemovedMarkets).not.toHaveBeenCalled()
+    await expect(application.run(['bootstrap'])).rejects.toMatchObject({
+      name: 'BootstrapConfigurationError'
+    })
+    expect(createLadderAdapters).not.toHaveBeenCalled()
   })
 
   test('starts a hardcoded-only bootstrap workflow without Blue reference readiness', async () => {
@@ -626,30 +771,14 @@ describe('createApplication', () => {
       },
       {
         createState: () => state,
-        createBootstrapAdapters: () => ({
-          positions: {
-            readPosition: async () => ({
-              credit: 100n,
-              debt: 0n,
-              lossFactor: { lossFactor: 0n, acceptedLossFactor: 0n, defaulted: true },
-              cashBalance: 0n,
-              marketExposure: 100n,
-              totalExposure: 100n
-            })
-          },
-          rates: {
-            readRate: async () => ({ mode: 'static', rateBps: 400n, observationId: 'static:400' })
-          },
-          make: {
-            reconcile: async () => {},
-            hardHalt: async () => {},
-            cleanup: async () => {}
-          }
-        })
+        createBootstrapAdapters: () => bootstrapAdapters(),
+        createReferenceRates: productionReferenceRates
       }
     )
 
-    await expect(application.run(['bootstrap'])).resolves.toBeDefined()
+    await expect(application.run(['bootstrap'])).resolves.toEqual([
+      { workflow: 'bootstrap', marketId, status: 'observed', action: 'no-capacity' }
+    ])
     expect(checkReference).not.toHaveBeenCalled()
     await expect(application.run(['ladder'])).rejects.toBeInstanceOf(ConfigValidationError)
   })
@@ -670,34 +799,19 @@ describe('createApplication', () => {
           }
         ])
       },
-      { createState: () => state }
+      { createState: () => state, createBootstrapAdapters: () => bootstrapAdapters() }
     )
 
     await expect(application.run(['bootstrap'])).rejects.toBeInstanceOf(SetupFailedError)
     expect(checkReference).toHaveBeenCalledTimes(1)
   })
 
-  test('cleans removed ladder markets before keeping Blue reference readiness fail-closed', async () => {
+  test('keeps Blue reference readiness fail-closed for a variable-rate ladder', async () => {
     const state = readyState()
     const checkReference = vi.fn(async () => {
       throw new Error('Blue archive unavailable')
     })
-    const cleanupRemovedMarkets = vi.fn(async () => {})
-    const createLadderAdapters = vi.fn(() => ({
-      positions: {
-        readLendGuard: async () => ({ lossFactor: 0n, acceptedLossFactor: 0n, defaulted: true }),
-        readMarket: async () => ({})
-      },
-      rates: { readRate: async () => 500n },
-      make: {
-        cleanupRemovedMarkets,
-        readActive: async () => undefined,
-        reconcile: async () => {},
-        cancelBuys: async () => ({ submittedTransactions: [] }),
-        hardHalt: async () => {},
-        cleanup: async () => {}
-      }
-    }))
+    const createLadderAdapters = vi.fn(() => ladderAdapters())
     state.checkReference = checkReference
     const application = createApplication(
       {
@@ -716,53 +830,6 @@ describe('createApplication', () => {
     await expect(application.run(['ladder'])).rejects.toBeInstanceOf(SetupFailedError)
     expect(checkReference).toHaveBeenCalledTimes(1)
     expect(createLadderAdapters).toHaveBeenCalledTimes(1)
-    expect(cleanupRemovedMarkets).toHaveBeenCalledTimes(1)
-  })
-
-  test('refuses an unknown pending signer nonce before removed-market cleanup', async () => {
-    const state = readyState()
-    state.getTransactionCounts = async () => ({ latest: 2, pending: 3 })
-    const cleanupRemovedMarkets = vi.fn(async () => [])
-    const application = createApplication(
-      {
-        ...environment,
-        BOOTSTRAP_MARKETS: '[]',
-        LADDER_MARKETS: JSON.stringify([
-          {
-            ...ladderConfiguration,
-            targetRate: { strategy: 'hardcoded', hardcodedRateBps: '475' }
-          }
-        ])
-      },
-      {
-        createState: () => state,
-        createLadderAdapters: () => ({
-          positions: {
-            readLendGuard: async () => ({
-              lossFactor: 0n,
-              acceptedLossFactor: 0n,
-              defaulted: true
-            }),
-            readMarket: async () => ({})
-          },
-          rates: { readRate: async () => 475n },
-          make: {
-            cleanupRemovedMarkets,
-            readActive: async () => undefined,
-            reconcile: async () => {},
-            cancelBuys: async () => ({ submittedTransactions: [] }),
-            hardHalt: async () => {},
-            cleanup: async () => {}
-          }
-        })
-      }
-    )
-
-    await expect(application.run(['ladder'])).rejects.toMatchObject({
-      name: 'QuoterTransactionError',
-      operation: 'unknown-pending-nonce'
-    })
-    expect(cleanupRemovedMarkets).not.toHaveBeenCalled()
   })
 
   test('starts a hardcoded-only ladder workflow without Blue reference readiness', async () => {
@@ -791,28 +858,17 @@ describe('createApplication', () => {
       },
       {
         createState: () => state,
-        createLadderAdapters: () => ({
-          positions: {
-            readLendGuard: async () => ({
-              lossFactor: 0n,
-              acceptedLossFactor: 0n,
-              defaulted: true
-            }),
-            readMarket: async () => ({})
-          },
-          rates: { readRate: async () => 475n },
-          make: {
-            readActive: async () => undefined,
-            reconcile: async () => {},
-            cancelBuys: async () => ({ submittedTransactions: [] }),
-            hardHalt: async () => {},
-            cleanup: async () => {}
-          }
-        })
+        createLadderAdapters: () => ladderAdapters(),
+        createWorldReads: fundedWorld,
+        createReferenceRates: productionReferenceRates
       }
     )
 
-    await expect(application.run(['ladder'])).resolves.toBeDefined()
+    // These readers prepare nothing, so the run ends on that failure rather than on the reference.
+    await expect(application.run(['ladder'])).rejects.toMatchObject({
+      name: 'QuoterRunFailedError',
+      report: { markets: [{ workflow: 'ladder', marketId, status: 'failed', stage: 'reconcile' }] }
+    })
     expect(checkReference).not.toHaveBeenCalled()
     await expect(application.run(['bootstrap'])).rejects.toBeInstanceOf(ConfigValidationError)
   })
@@ -879,422 +935,174 @@ describe('createApplication', () => {
     await expect(application.run(['setup-check'])).rejects.toBeInstanceOf(ConfigValidationError)
   })
 
-  test('quoter-bot ladder cleans removed markets before readiness and runs one ladder cycle', async () => {
-    const events: string[] = []
-    const state = readyState()
-    state.getChainId = async () => {
-      events.push('readiness')
-      return 8453
-    }
-    const application = createApplication(
-      { ...environment, LADDER_MARKETS: JSON.stringify([ladderConfiguration]) },
-      {
-        createState: () => state,
-        createLadderAdapters: () => ({
-          positions: {
-            readLendGuard: async () => ({
-              lossFactor: 0n,
-              acceptedLossFactor: 0n,
-              defaulted: true
-            }),
-            readMarket: async () => {
-              events.push('ladder')
-              return {}
-            }
-          },
-          rates: { readRate: async () => 500n },
-          make: {
-            cleanupRemovedMarkets: async () => {
-              events.push('cleanup')
-            },
-            readActive: async () => undefined,
-            reconcile: async () => {},
-            cancelBuys: async () => ({ submittedTransactions: [] }),
-            hardHalt: async () => {},
-            cleanup: async () => {}
-          }
-        })
-      }
-    )
-
-    expect(await application.run(['ladder'])).toEqual([
-      { marketId, status: 'applied', action: 'publish', reason: 'publish' }
-    ])
-    expect(events).toEqual(['cleanup', 'readiness', 'cleanup', 'ladder'])
-  })
-
   describe('writer startup failure', () => {
-    const ladderBuyGroup: Hex = `0x${'a1'.repeat(32)}`
-    const bootstrapBuyGroup: Hex = `0x${'b2'.repeat(32)}`
-    const ladderCancel: Hex = `0x${'c3'.repeat(32)}`
-    const bootstrapCancel: Hex = `0x${'d4'.repeat(32)}`
-    const writerEnvironment = {
-      ...environment,
-      BOOTSTRAP_MARKETS: JSON.stringify([bootstrapConfiguration]),
-      LADDER_MARKETS: JSON.stringify([ladderConfiguration])
-    }
-
-    const ownedBuys = () => {
-      const live = new Set([ladderBuyGroup, bootstrapBuyGroup])
-      const ladderCleanup = vi.fn(async () => {
-        live.delete(ladderBuyGroup)
-        return { submittedTransactions: [{ operation: 'cancel' as const, txHash: ladderCancel }] }
-      })
-      const bootstrapCleanup = vi.fn(async () => {
-        live.delete(bootstrapBuyGroup)
-        return {
-          submittedTransactions: [{ operation: 'cancel' as const, txHash: bootstrapCancel }]
-        }
-      })
-      const ladderMutations = {
-        reconcile: vi.fn(async () => {}),
-        cancelBuys: vi.fn(async () => ({ submittedTransactions: [] })),
-        hardHalt: vi.fn(async () => {})
-      }
-      const cleanupRemovedMarkets = vi.fn(async (): Promise<readonly Hex[]> => [])
-      const dependencies = (state: SetupStateService) => ({
-        createState: () => state,
-        createLadderAdapters: () => ({
-          positions: {
-            readLendGuard: async () => ({
-              lossFactor: 6n,
-              acceptedLossFactor: 5n,
-              defaulted: false
-            }),
-            readMarket: async () => ({})
-          },
-          rates: { readRate: async () => 500n },
-          make: {
-            cleanupRemovedMarkets,
-            readActive: async () => undefined,
-            ...ladderMutations,
-            cleanup: ladderCleanup
-          }
-        }),
-        createBootstrapAdapters: () => ({
-          positions: {
-            readPosition: async () => ({
-              credit: 0n,
-              debt: 0n,
-              lossFactor: { lossFactor: 0n, acceptedLossFactor: 0n, defaulted: true },
-              cashBalance: 0n,
-              marketExposure: 0n,
-              totalExposure: 0n
-            })
-          },
-          rates: {
-            readRate: async () => ({
-              mode: 'static' as const,
-              rateBps: 500n,
-              observationId: 'static:500'
-            })
-          },
-          make: { reconcile: async () => {}, hardHalt: async () => {}, cleanup: bootstrapCleanup }
-        })
-      })
-      return {
-        live,
-        ladderCleanup,
-        bootstrapCleanup,
-        ladderMutations,
-        cleanupRemovedMarkets,
-        dependencies
-      }
-    }
-
-    const cancelledEvent = (errorName: string, adapterOperation?: string) => ({
+    const withdrawnEvent = {
       event: 'startup.owned-offers-cancelled',
-      errorName,
-      ...(adapterOperation === undefined ? {} : { adapterOperation }),
-      ladder: {
-        status: 'succeeded',
-        transactions: [{ operation: 'cancel', txHash: ladderCancel }]
-      },
-      bootstrap: {
-        status: 'succeeded',
-        transactions: [{ operation: 'cancel', txHash: bootstrapCancel }]
-      }
-    })
+      errorName: 'SetupFailedError',
+      ladder: { status: 'succeeded', transactions: [] },
+      bootstrap: { status: 'succeeded', transactions: [] }
+    }
 
-    test.each(['bootstrap', 'ladder', 'start'])(
-      'cancels both strategies before %s exits on a failed readiness check',
+    const earlierRunKernel = (config: RuntimeConfig) =>
+      dryHosting(config, earlierRunEntries(config))
+
+    test.each(['bootstrap', 'ladder'])(
+      'withdraws what an earlier run left before %s surfaces a failed readiness check',
       async command => {
-        const owned = ownedBuys()
-        const state = readyState()
-        state.getChainId = async () => 1
-        const written: unknown[] = []
-        const application = createApplication(writerEnvironment, owned.dependencies(state))
-
-        await expect(
-          application.run([command], { writeEvent: value => void written.push(value) })
-        ).rejects.toBeInstanceOf(SetupFailedError)
-        expect(owned.live.size).toBe(0)
-        expect(owned.ladderCleanup).toHaveBeenCalledTimes(1)
-        expect(owned.bootstrapCleanup).toHaveBeenCalledTimes(1)
-        expect(written).toContainEqual(cancelledEvent('SetupFailedError'))
-      }
-    )
-
-    test.each(['bootstrap', 'ladder', 'start'])(
-      'cancels both strategies behind a latched nonce before %s exits',
-      async command => {
-        const owned = ownedBuys()
-        const state = readyState()
-        state.getTransactionCounts = async () => ({ latest: 2, pending: 3 })
-        const written: unknown[] = []
-        const application = createApplication(writerEnvironment, owned.dependencies(state))
-
-        await expect(
-          application.run([command], { writeEvent: value => void written.push(value) })
-        ).rejects.toMatchObject({
-          name: 'QuoterTransactionError',
-          operation: 'unknown-pending-nonce'
+        const { written, writeEvent } = recorder()
+        const application = createApplication(combinedEnvironment, {
+          createState: failingReadiness,
+          kernel: earlierRunKernel,
+          createLadderAdapters: () => publishingLadderAdapters(),
+          createBootstrapAdapters: () => publishingBootstrapAdapters()
         })
-        expect(owned.cleanupRemovedMarkets).not.toHaveBeenCalled()
-        expect(owned.live.size).toBe(0)
-        expect(written).toContainEqual(
-          cancelledEvent('QuoterTransactionError', 'unknown-pending-nonce')
+
+        await expect(application.run([command], { writeEvent })).rejects.toBeInstanceOf(
+          SetupFailedError
         )
+        const notices = written.filter(event => event.event === 'kernel.notice')
+        expect(notices.map(event => event.notice)).toEqual(['admitted', 'settled'])
+        expect(new Set(notices.map(event => event.intentId)).size).toBe(1)
+        expect(written.at(-1)).toEqual(withdrawnEvent)
       }
     )
 
-    test.each(['bootstrap', 'ladder', 'start'])(
-      'cancels both strategies when startup removed-market cleanup fails in %s',
-      async command => {
-        const owned = ownedBuys()
-        owned.cleanupRemovedMarkets.mockRejectedValue(
-          new LadderAdapterError('removed-market-cleanup')
-        )
-        const readiness = vi.fn(async () => 8453)
-        const state = readyState()
-        state.getChainId = readiness
-        const written: unknown[] = []
-        const application = createApplication(writerEnvironment, owned.dependencies(state))
-
-        await expect(
-          application.run([command], { writeEvent: value => void written.push(value) })
-        ).rejects.toMatchObject({ name: 'LadderAdapterError', operation: 'removed-market-cleanup' })
-        expect(readiness).not.toHaveBeenCalled()
-        expect(owned.ladderMutations.cancelBuys).not.toHaveBeenCalled()
-        expect(owned.live.size).toBe(0)
-        expect(written).toContainEqual(
-          cancelledEvent('LadderAdapterError', 'removed-market-cleanup')
-        )
-      }
-    )
-
-    test('exits loudly with the unresolved groups when a cleanup fails, still attempting the other', async () => {
-      const owned = ownedBuys()
-      owned.ladderCleanup.mockRejectedValue(
-        new LadderHardHaltError([{ groupId: ladderBuyGroup, errorName: 'LadderAdapterError' }])
-      )
-      const state = readyState()
-      state.getChainId = async () => 1
-      const written: unknown[] = []
-      const application = createApplication(writerEnvironment, owned.dependencies(state))
-
-      const error = await application
-        .run(['start'], { writeEvent: value => void written.push(value) })
-        .catch((value: unknown) => value)
-
-      expect(error).toBeInstanceOf(StartupCleanupFailedError)
-      expect((error as StartupCleanupFailedError).report).toEqual({
-        reason: 'startup-cleanup-failed',
-        errorName: 'SetupFailedError',
-        ladder: {
-          status: 'failed',
-          errorName: 'LadderHardHaltError',
-          unresolvedGroupIds: [ladderBuyGroup]
-        },
-        bootstrap: {
-          status: 'succeeded',
-          transactions: [{ operation: 'cancel', txHash: bootstrapCancel }]
-        }
+    test('start reports the startup withdrawal before surfacing a failed readiness check', async () => {
+      const { written, writeEvent } = recorder()
+      const application = createApplication(combinedEnvironment, {
+        createState: failingReadiness,
+        createLadderAdapters: () => ladderAdapters(),
+        createBootstrapAdapters: () => bootstrapAdapters()
       })
-      expect(owned.bootstrapCleanup).toHaveBeenCalledTimes(1)
-      expect(written).not.toContainEqual(
-        expect.objectContaining({ event: 'startup.owned-offers-cancelled' })
-      )
-    })
 
-    test('never mutates in read-only mode when readiness fails', async () => {
-      const owned = ownedBuys()
-      const state = readyState()
-      state.getChainId = async () => 1
-      const application = createApplication(
-        { ...writerEnvironment, MAKER_PRIVATE_KEY: undefined },
-        owned.dependencies(state)
-      )
-
-      await expect(application.run(['--readonly', 'start'])).rejects.toBeInstanceOf(
+      await expect(application.run(['start'], { writeEvent })).rejects.toBeInstanceOf(
         SetupFailedError
       )
-      expect(owned.ladderCleanup).not.toHaveBeenCalled()
-      expect(owned.bootstrapCleanup).not.toHaveBeenCalled()
-      expect(owned.cleanupRemovedMarkets).not.toHaveBeenCalled()
-      expect(Object.values(owned.ladderMutations).every(mock => mock.mock.calls.length === 0)).toBe(
-        true
-      )
-      expect(owned.live.size).toBe(2)
+      expect(written).toContainEqual(withdrawnEvent)
     })
 
-    test('does not clean up after an operator abort during readiness', async () => {
-      const owned = ownedBuys()
+    test('never acts in read-only mode when readiness fails', async () => {
+      const readOnlyEnvironment = { ...combinedEnvironment, MAKER_PRIVATE_KEY: undefined }
+      const { written, writeEvent } = recorder()
+      const ladder = publishingLadderAdapters()
+      const bootstrap = publishingBootstrapAdapters()
+      const application = createApplication(readOnlyEnvironment, {
+        createState: failingReadiness,
+        kernel: await readOnlyKernel(readOnlyEnvironment),
+        createLadderAdapters: () => ladder,
+        createBootstrapAdapters: () => bootstrap
+      })
+
+      await expect(application.run(['--readonly', 'start'], { writeEvent })).rejects.toBeInstanceOf(
+        SetupFailedError
+      )
+      expect(written.map(event => event.event)).not.toContain('readonly.make')
+      expect(written.map(event => event.event)).not.toContain('kernel.notice')
+    })
+
+    test('surfaces an operator abort during readiness as an abort', async () => {
       const controller = new AbortController()
       const state = readyState()
       state.getChainId = async () => {
         controller.abort()
         throw Object.assign(new Error('aborted'), { name: 'AbortError' })
       }
-      const application = createApplication(writerEnvironment, owned.dependencies(state))
+      const application = createApplication(combinedEnvironment, {
+        createState: () => state,
+        createLadderAdapters: () => ladderAdapters(),
+        createBootstrapAdapters: () => bootstrapAdapters()
+      })
 
       await expect(application.run(['start'], { signal: controller.signal })).rejects.toMatchObject(
         { name: 'AbortError' }
       )
-      expect(owned.ladderCleanup).not.toHaveBeenCalled()
-      expect(owned.bootstrapCleanup).not.toHaveBeenCalled()
     })
 
-    test('does not clean up on a configuration error before the signer is available', async () => {
-      const owned = ownedBuys()
+    test('does not start a kernel on a configuration error before the signer is available', async () => {
+      const kernel = vi.fn(dryKernel)
       const application = createApplication(
         {
-          ...writerEnvironment,
+          ...combinedEnvironment,
           REFERENCE_MARKET_ID: undefined,
           LADDER_MARKETS: JSON.stringify([
             { ...ladderConfiguration, targetRate: { strategy: 'variable_rate_avg' } }
           ])
         },
-        owned.dependencies(readyState())
+        { createState: readyState, kernel }
       )
 
       await expect(application.run(['start'])).rejects.toBeInstanceOf(ConfigValidationError)
-      expect(owned.ladderCleanup).not.toHaveBeenCalled()
-      expect(owned.bootstrapCleanup).not.toHaveBeenCalled()
+      expect(kernel).not.toHaveBeenCalled()
     })
   })
 
-  test('rejects an empty ladder config without cleaning persisted ladder publications', async () => {
-    const events: string[] = []
-    let readinessReads = 0
-    const state = readyState()
-    state.getChainId = async () => {
-      events.push('readiness')
-      readinessReads += 1
-      return 8453
-    }
-    const application = createApplication(environment, {
-      createState: () => state,
-      createLadderAdapters: () => ({
-        positions: {
-          readLendGuard: async () => ({ lossFactor: 0n, acceptedLossFactor: 0n, defaulted: true }),
-          readMarket: async () => ({})
-        },
-        rates: { readRate: async () => 500n },
-        make: {
-          cleanupRemovedMarkets: async () => {
-            events.push('cleanup')
-          },
-          readActive: async () => undefined,
-          reconcile: async () => {},
-          cancelBuys: async () => ({ submittedTransactions: [] }),
-          hardHalt: async () => {},
-          cleanup: async () => {}
-        }
-      })
-    })
-
-    const error = await application.run(['ladder']).catch(value => value)
-
-    expect(error).toMatchObject({
-      name: 'LadderConfigurationError',
-      field: 'ladder'
-    })
-    expect(readinessReads).toBe(1)
-    expect(events).toEqual(['readiness'])
-  })
-
-  test('rejects empty ladder monitoring without cleaning persisted ladder publications', async () => {
-    const cleanupRemovedMarkets = vi.fn(async () => {})
+  test('rejects an empty ladder config before composing a writer', async () => {
+    const kernel = vi.fn(dryKernel)
     const application = createApplication(environment, {
       createState: readyState,
-      createLadderAdapters: () => ({
-        positions: {
-          readLendGuard: async () => ({ lossFactor: 0n, acceptedLossFactor: 0n, defaulted: true }),
-          readMarket: async () => ({})
-        },
-        rates: { readRate: async () => 500n },
-        make: {
-          cleanupRemovedMarkets,
-          readActive: async () => undefined,
-          reconcile: async () => {},
-          cancelBuys: async () => ({ submittedTransactions: [] }),
-          hardHalt: async () => {},
-          cleanup: async () => {}
-        }
-      })
+      kernel,
+      createLadderAdapters: () => ladderAdapters()
     })
 
-    await expect(application.run(['ladder', '--monitor'])).rejects.toMatchObject({
+    await expect(application.run(['ladder'])).rejects.toMatchObject({
       name: 'LadderConfigurationError',
       field: 'ladder'
     })
-    expect(cleanupRemovedMarkets).not.toHaveBeenCalled()
+    expect(kernel).not.toHaveBeenCalled()
   })
 
-  test('rejects an empty bootstrap before removed-market cleanup', async () => {
-    const cleanupRemovedMarkets = vi.fn(async () => {})
+  test('rejects empty ladder monitoring before composing a writer', async () => {
+    const kernel = vi.fn(dryKernel)
     const application = createApplication(environment, {
-      createLadderAdapters: () => ({
-        positions: {
-          readLendGuard: async () => ({ lossFactor: 0n, acceptedLossFactor: 0n, defaulted: true }),
-          readMarket: async () => ({})
-        },
-        rates: { readRate: async () => 500n },
-        make: {
-          cleanupRemovedMarkets,
-          readActive: async () => undefined,
-          reconcile: async () => {},
-          cancelBuys: async () => ({ submittedTransactions: [] }),
-          hardHalt: async () => {},
-          cleanup: async () => {}
-        }
-      })
+      createState: readyState,
+      kernel,
+      createLadderAdapters: () => ladderAdapters()
+    })
+
+    await expect(
+      application.run(['ladder', '--monitor'], { signal: AbortSignal.timeout(100) })
+    ).rejects.toMatchObject({ name: 'LadderConfigurationError', field: 'ladder' })
+    expect(kernel).not.toHaveBeenCalled()
+  })
+
+  test('accepts a ladder-only combined writer through its readiness gate', async () => {
+    const createLadderAdapters = vi.fn(() => ladderAdapters())
+    const createBootstrapAdapters = vi.fn(() => bootstrapAdapters())
+    const controller = new AbortController()
+    const state = readyState()
+    state.getChainId = async () => {
+      controller.abort()
+      return CHAIN_ID
+    }
+    const application = createApplication(ladderEnvironment, {
+      kernel: dryKernel,
+      createState: () => state,
+      createLadderAdapters,
+      createBootstrapAdapters
+    })
+
+    await expect(
+      application.run(['--readonly', 'start'], { signal: controller.signal })
+    ).rejects.toMatchObject({ name: 'AbortError' })
+    expect(createLadderAdapters).toHaveBeenCalledTimes(1)
+    expect(createBootstrapAdapters).not.toHaveBeenCalled()
+  })
+
+  test.each([
+    ['no market', environment],
+    ['only a bootstrap market', bootstrapEnvironment]
+  ])('refuses a combined writer with %s before composing it', async (_name, configured) => {
+    const kernel = vi.fn(dryKernel)
+    const application = createApplication(configured, {
+      kernel,
+      createLadderAdapters: () => ladderAdapters()
     })
 
     await expect(application.run(['start'])).rejects.toMatchObject({
-      name: 'BootstrapConfigurationError',
-      field: 'bootstrap'
+      name: 'LadderConfigurationError',
+      field: 'ladder'
     })
-    expect(cleanupRemovedMarkets).not.toHaveBeenCalled()
-  })
-
-  test('default-composes PositionBootstrapService when only its production ports are replaced', async () => {
-    const application = createApplication(environment, {
-      createState: readyState,
-      createBootstrapAdapters: () => ({
-        positions: {
-          readPosition: async () => ({
-            credit: 1_000n,
-            debt: 0n,
-            lossFactor: { lossFactor: 0n, acceptedLossFactor: 0n, defaulted: true },
-            cashBalance: 1_000n,
-            marketExposure: 0n,
-            totalExposure: 0n
-          })
-        },
-        rates: {
-          readRate: async () => ({ mode: 'static', rateBps: 500n, observationId: 'static:500' })
-        },
-        make: {
-          reconcile: async () => {},
-          hardHalt: async () => {},
-          cleanup: async () => {}
-        }
-      })
-    })
-
-    expect(await application.run(['bootstrap'])).toEqual([])
+    expect(kernel).not.toHaveBeenCalled()
   })
 
   test('wires --readonly without loading a maker private key', async () => {
@@ -1318,254 +1126,118 @@ describe('createApplication', () => {
     ).toEqual(['not-required', 'passed', 'not-required', 'not-required'])
   })
 
-  test('routes --readonly bootstrap make operations to terminal output', async () => {
-    const reconcile = vi.fn(async () => {})
-    const hardHalt = vi.fn(async () => {})
-    const events: unknown[] = []
-    const bootstrapEnvironment = {
-      ...environment,
-      MAKER_PRIVATE_KEY: undefined,
-      BOOTSTRAP_MARKETS: JSON.stringify([
-        {
-          marketId,
-          creditTarget: '100',
-          acceptanceAssets: '0',
-          offerSize: '10',
-          premiumBps: '0',
-          maximumMarketExposure: '100',
-          maximumTotalExposure: '100',
-          minimumRateBps: '100',
-          maximumRateBps: '1000',
-          autoRefill: false
-        }
-      ])
+  test('runs a read-only writer command over a dry kernel', async () => {
+    const application = composeApplication(
+      { ...bootstrapEnvironment, MAKER_PRIVATE_KEY: undefined },
+      {
+        kernel: dryKernel,
+        createState: readyState,
+        createWorldReads: () => worldReads(),
+        createReferenceRates: () => staticRates(),
+        createBootstrapAdapters: () => bootstrapAdapters()
+      }
+    )
+
+    expect(await application.run(['--readonly', 'bootstrap'])).toEqual([
+      { workflow: 'bootstrap', marketId, status: 'observed', action: 'no-capacity' }
+    ])
+  })
+
+  test('logs a --readonly bootstrap publication over a dry kernel that follows a moving chain', async () => {
+    const readOnlyEnvironment = { ...bootstrapEnvironment, MAKER_PRIVATE_KEY: undefined }
+    const config = await ConfigService.load(readOnlyEnvironment, { readOnly: true })
+    const block = (number: number) => ({
+      number,
+      hash: `0x${number.toString(16).padStart(64, 'b')}`,
+      parentHash: `0x${(number - 1).toString(16).padStart(64, 'b')}`,
+      timestamp: 1_000_000n + BigInt(number)
+    })
+    let head = 1_000
+    const miner = setInterval(() => (head += 1), 1_500)
+    const follow = {
+      latest: async () => ({
+        head: block(head),
+        finalized: { number: head - 1, timestamp: block(head - 1).timestamp }
+      }),
+      block: async (number: number) => block(number),
+      safe: async () => block(head - 1)
     }
-    const application = createApplication(bootstrapEnvironment, {
+    const application = createApplication(readOnlyEnvironment, {
       createState: readyState,
-      createBootstrapAdapters: () => ({
-        positions: {
-          readPosition: async () => ({
-            credit: 0n,
-            debt: 0n,
-            lossFactor: { lossFactor: 0n, acceptedLossFactor: 0n, defaulted: true },
-            cashBalance: 100n,
-            marketExposure: 0n,
-            totalExposure: 0n
-          })
-        },
-        rates: {
-          readRate: async () => ({ mode: 'static', rateBps: 500n, observationId: 'static:500' })
-        },
-        make: { reconcile, hardHalt, cleanup: async () => {} }
-      })
+      kernel: () => dryHosting(config, {}, undefined, follow),
+      createWorldReads: fundedWorld,
+      createBootstrapAdapters: () => publishingBootstrapAdapters()
     })
-
-    expect(
-      await application.run(['--readonly', 'bootstrap'], {
-        writeEvent: event => {
-          events.push(event)
-        }
-      })
-    ).toEqual([{ marketId, status: 'logged', action: 'publish' }])
-    expect(reconcile).not.toHaveBeenCalled()
-    expect(hardHalt).not.toHaveBeenCalled()
-    expect(events).toEqual([
-      expect.objectContaining({ event: 'readonly.make', workflow: 'bootstrap' })
-    ])
+    try {
+      expect(await application.run(['--readonly', 'bootstrap'])).toMatchObject([
+        { marketId, action: 'publish' }
+      ])
+    } finally {
+      clearInterval(miner)
+    }
   })
 
-  test('waits for async read-only bootstrap event writes before completing the command', async () => {
-    const writeStarted = Promise.withResolvers<void>()
-    const releaseWrite = Promise.withResolvers<void>()
-    const application = createApplication(
-      {
-        ...environment,
-        MAKER_PRIVATE_KEY: undefined,
-        BOOTSTRAP_MARKETS: JSON.stringify([
-          {
-            marketId,
-            creditTarget: '100',
-            acceptanceAssets: '0',
-            offerSize: '10',
-            premiumBps: '0',
-            maximumMarketExposure: '100',
-            maximumTotalExposure: '100',
-            minimumRateBps: '100',
-            maximumRateBps: '1000',
-            autoRefill: false
-          }
-        ])
-      },
-      {
-        createState: readyState,
-        createBootstrapAdapters: () => ({
-          positions: {
-            readPosition: async () => ({
-              credit: 0n,
-              debt: 0n,
-              lossFactor: { lossFactor: 0n, acceptedLossFactor: 0n, defaulted: true },
-              cashBalance: 100n,
-              marketExposure: 0n,
-              totalExposure: 0n
-            })
-          },
-          rates: {
-            readRate: async () => ({
-              mode: 'static',
-              rateBps: 500n,
-              observationId: 'static:500'
-            })
-          },
-          make: { reconcile: async () => {}, hardHalt: async () => {}, cleanup: async () => {} }
-        })
-      }
-    )
-    const run = application.run(['--readonly', 'bootstrap'], {
-      writeEvent: async () => {
-        writeStarted.resolve()
-        await releaseWrite.promise
-      }
+  test('reports --readonly bootstrap acts as logged, with the condition it would sign', async () => {
+    const readOnlyEnvironment = { ...bootstrapEnvironment, MAKER_PRIVATE_KEY: undefined }
+    const { written, writeEvent } = recorder()
+    const adapters = publishingBootstrapAdapters()
+    const application = createApplication(readOnlyEnvironment, {
+      createState: readyState,
+      kernel: await readOnlyKernel(readOnlyEnvironment),
+      createWorldReads: fundedWorld,
+      createBootstrapAdapters: () => adapters
     })
-    await writeStarted.promise
-    const state = await Promise.race([
-      run.then(() => 'completed' as const),
-      sleep(20).then(() => 'pending' as const)
-    ])
-    releaseWrite.resolve()
 
-    expect(state).toBe('pending')
-    expect(await run).toEqual([{ marketId, status: 'logged', action: 'publish' }])
+    const results = await application.run(['--readonly', 'bootstrap'], { writeEvent })
+
+    expect(results).toMatchObject([{ marketId, action: 'publish' }])
+    expect(adapters.prepareReplacement).toHaveBeenCalledTimes(1)
+    expect(written).toContainEqual(
+      expect.objectContaining({
+        event: 'cycle.completed',
+        workflow: 'bootstrap',
+        status: 'logged',
+        condition: expect.any(String)
+      })
+    )
   })
 
-  test('routes --readonly ladder make operations to terminal output', async () => {
-    const reconcile = vi.fn(async () => {})
-    const hardHalt = vi.fn(async () => {})
-    const validateReconcile = vi.fn(async () => undefined)
-    const events: unknown[] = []
-    const application = createApplication(
-      {
-        ...environment,
-        MAKER_PRIVATE_KEY: undefined,
-        LADDER_MARKETS: JSON.stringify([ladderConfiguration])
-      },
-      {
-        createState: readyState,
-        createLadderAdapters: () => ({
-          positions: {
-            readLendGuard: async () => ({
-              lossFactor: 0n,
-              acceptedLossFactor: 0n,
-              defaulted: true
-            }),
-            readMarket: async () => ({})
-          },
-          rates: { readRate: async () => 500n },
-          make: {
-            readActive: async () => undefined,
-            reconcile,
-            cancelBuys: async () => ({ submittedTransactions: [] }),
-            hardHalt,
-            cleanup: async () => {}
-          },
-          validateReconcile
-        })
-      }
-    )
+  test('reports --readonly ladder acts as logged after preparing the publication', async () => {
+    const readOnlyEnvironment = { ...ladderEnvironment, MAKER_PRIVATE_KEY: undefined }
+    const { written, writeEvent } = recorder()
+    const adapters = publishingLadderAdapters()
+    const application = createApplication(readOnlyEnvironment, {
+      createState: readyState,
+      kernel: await readOnlyKernel(readOnlyEnvironment),
+      createWorldReads: fundedWorld,
+      createLadderAdapters: () => adapters
+    })
 
-    expect(
-      await application.run(['--readonly', 'ladder'], {
-        writeEvent: event => {
-          events.push(event)
-        }
-      })
-    ).toEqual([{ marketId, status: 'logged', action: 'publish', reason: 'publish' }])
-    expect(reconcile).not.toHaveBeenCalled()
-    expect(hardHalt).not.toHaveBeenCalled()
-    expect(validateReconcile).toHaveBeenCalledWith(
+    const results = await application.run(['--readonly', 'ladder'], { writeEvent })
+
+    expect(results).toMatchObject([{ marketId, action: 'publish', reason: 'publish' }])
+    expect(adapters.prepareReplacement).toHaveBeenCalledWith(
       expect.objectContaining({ marketId, reason: 'publish' })
     )
-    expect(events).toEqual([
-      expect.objectContaining({ event: 'readonly.make', workflow: 'ladder' })
-    ])
-  })
-
-  test('rejects the read-only ladder command when an async event write rejects', async () => {
-    const writeError = new Error('event sink unavailable')
-    const application = createApplication(
-      {
-        ...environment,
-        MAKER_PRIVATE_KEY: undefined,
-        LADDER_MARKETS: JSON.stringify([ladderConfiguration])
-      },
-      {
-        createState: readyState,
-        createLadderAdapters: () => ({
-          positions: {
-            readLendGuard: async () => ({
-              lossFactor: 0n,
-              acceptedLossFactor: 0n,
-              defaulted: true
-            }),
-            readMarket: async () => ({})
-          },
-          rates: { readRate: async () => 500n },
-          make: {
-            readActive: async () => undefined,
-            reconcile: async () => {},
-            cancelBuys: async () => ({ submittedTransactions: [] }),
-            hardHalt: async () => {},
-            cleanup: async () => {}
-          }
-        })
-      }
-    )
-
-    await expect(
-      application.run(['--readonly', 'ladder'], {
-        writeEvent: async () => {
-          throw writeError
-        }
+    expect(written).toContainEqual(
+      expect.objectContaining({
+        event: 'cycle.completed',
+        workflow: 'ladder',
+        status: 'logged',
+        condition: expect.any(String)
       })
-    ).rejects.toMatchObject({
-      name: 'LadderCycleHaltedError',
-      code: 'LADDER_CYCLE_HALTED'
-    })
+    )
   })
 
   test('does not start the read-only ladder monitor after an aborted setup check', async () => {
-    const reconcile = vi.fn(async () => {})
-    const hardHalt = vi.fn(async () => {})
-    const cleanup = vi.fn(async () => {})
+    const createLadderAdapters = vi.fn(() => ladderAdapters())
+    const kernel = vi.fn(dryKernel)
     const terminal = vi.spyOn(console, 'log').mockImplementation(() => {})
     const controller = new AbortController()
     controller.abort()
     const application = createApplication(
-      {
-        ...environment,
-        MAKER_PRIVATE_KEY: undefined,
-        LADDER_MARKETS: JSON.stringify([ladderConfiguration])
-      },
-      {
-        createState: readyState,
-        createLadderAdapters: () => ({
-          positions: {
-            readLendGuard: async () => ({
-              lossFactor: 0n,
-              acceptedLossFactor: 0n,
-              defaulted: true
-            }),
-            readMarket: async () => ({})
-          },
-          rates: { readRate: async () => 500n },
-          make: {
-            readActive: async () => undefined,
-            reconcile,
-            cancelBuys: async () => ({ submittedTransactions: [] }),
-            hardHalt,
-            cleanup
-          }
-        })
-      }
+      { ...ladderEnvironment, MAKER_PRIVATE_KEY: undefined },
+      { createState: readyState, kernel, createLadderAdapters }
     )
 
     try {
@@ -1574,267 +1246,64 @@ describe('createApplication', () => {
           signal: controller.signal
         })
       ).rejects.toMatchObject({ name: 'AbortError' })
-      expect(reconcile).not.toHaveBeenCalled()
-      expect(hardHalt).not.toHaveBeenCalled()
-      expect(cleanup).not.toHaveBeenCalled()
+      expect(createLadderAdapters).not.toHaveBeenCalled()
+      expect(kernel).not.toHaveBeenCalled()
       expect(terminal).not.toHaveBeenCalled()
     } finally {
       terminal.mockRestore()
     }
   })
 
-  test('does not compose combined writers or cleanups after an aborted setup check', async () => {
-    const bootstrapCleanup = vi.fn(async () => {})
-    const ladderCleanup = vi.fn(async () => {})
+  test('does not compose combined writers after an aborted setup check', async () => {
+    const createBootstrapAdapters = vi.fn(() => bootstrapAdapters())
+    const createLadderAdapters = vi.fn(() => ladderAdapters())
+    const kernel = vi.fn(dryKernel)
     const controller = new AbortController()
     controller.abort()
-    const application = createApplication(
-      {
-        ...environment,
-        BOOTSTRAP_MARKETS: JSON.stringify([bootstrapConfiguration]),
-        LADDER_MARKETS: JSON.stringify([ladderConfiguration])
-      },
-      {
-        createState: readyState,
-        createBootstrapAdapters: () => ({
-          positions: {
-            readPosition: async () => ({
-              credit: 0n,
-              debt: 0n,
-              lossFactor: { lossFactor: 0n, acceptedLossFactor: 0n, defaulted: true },
-              cashBalance: 100n,
-              marketExposure: 0n,
-              totalExposure: 0n
-            })
-          },
-          rates: {
-            readRate: async () => ({
-              mode: 'static',
-              rateBps: 500n,
-              observationId: 'static:500'
-            })
-          },
-          make: {
-            reconcile: async () => {},
-            hardHalt: async () => {},
-            cleanup: bootstrapCleanup
-          }
-        }),
-        createLadderAdapters: () => ({
-          positions: {
-            readLendGuard: async () => ({
-              lossFactor: 0n,
-              acceptedLossFactor: 0n,
-              defaulted: true
-            }),
-            readMarket: async () => ({})
-          },
-          rates: { readRate: async () => 500n },
-          make: {
-            readActive: async () => undefined,
-            reconcile: async () => {},
-            cancelBuys: async () => ({ submittedTransactions: [] }),
-            hardHalt: async () => {},
-            cleanup: ladderCleanup
-          }
-        })
-      }
-    )
+    const application = createApplication(combinedEnvironment, {
+      createState: readyState,
+      kernel,
+      createBootstrapAdapters,
+      createLadderAdapters
+    })
 
     await expect(application.run(['start'], { signal: controller.signal })).rejects.toMatchObject({
       name: 'AbortError'
     })
-    expect(bootstrapCleanup).not.toHaveBeenCalled()
-    expect(ladderCleanup).not.toHaveBeenCalled()
+    expect(createBootstrapAdapters).not.toHaveBeenCalled()
+    expect(createLadderAdapters).not.toHaveBeenCalled()
+    expect(kernel).not.toHaveBeenCalled()
   })
 
-  test('does not enter combined-service cleanup when shutdown arrives during bootstrap adapter composition', async () => {
-    const bootstrapCleanup = vi.fn(async () => {})
-    const ladderCleanup = vi.fn(async () => {})
+  test('surfaces a shutdown during adapter composition as an abort, before any cycle', async () => {
     const controller = new AbortController()
-    const application = createApplication(
-      {
-        ...environment,
-        BOOTSTRAP_MARKETS: JSON.stringify([bootstrapConfiguration]),
-        LADDER_MARKETS: JSON.stringify([ladderConfiguration])
+    const bootstrap = publishingBootstrapAdapters()
+    const ladder = publishingLadderAdapters()
+    const application = createApplication(combinedEnvironment, {
+      createState: readyState,
+      createBootstrapAdapters: () => {
+        controller.abort()
+        return bootstrap
       },
-      {
-        createState: readyState,
-        createBootstrapAdapters: () => {
-          controller.abort()
-          return {
-            positions: {
-              readPosition: async () => ({
-                credit: 0n,
-                debt: 0n,
-                lossFactor: { lossFactor: 0n, acceptedLossFactor: 0n, defaulted: true },
-                cashBalance: 100n,
-                marketExposure: 0n,
-                totalExposure: 0n
-              })
-            },
-            rates: {
-              readRate: async () => ({
-                mode: 'static',
-                rateBps: 500n,
-                observationId: 'static:500'
-              })
-            },
-            make: {
-              reconcile: async () => {},
-              hardHalt: async () => {},
-              cleanup: bootstrapCleanup
-            }
-          }
-        },
-        createLadderAdapters: () => ({
-          positions: {
-            readLendGuard: async () => ({
-              lossFactor: 0n,
-              acceptedLossFactor: 0n,
-              defaulted: true
-            }),
-            readMarket: async () => ({})
-          },
-          rates: { readRate: async () => 500n },
-          make: {
-            cleanupRemovedMarkets: async () => [],
-            readActive: async () => undefined,
-            reconcile: async () => {},
-            cancelBuys: async () => ({ submittedTransactions: [] }),
-            hardHalt: async () => {},
-            cleanup: ladderCleanup
-          }
-        })
-      }
-    )
+      createLadderAdapters: () => ladder
+    })
 
     await expect(application.run(['start'], { signal: controller.signal })).rejects.toMatchObject({
       name: 'AbortError'
     })
-    expect(bootstrapCleanup).not.toHaveBeenCalled()
-    expect(ladderCleanup).not.toHaveBeenCalled()
   })
 
-  test.each(['bootstrap', 'ladder', 'start'])(
-    'does not run removed-market cleanup when %s starts with an aborted signal',
-    async command => {
-      const cleanupRemovedMarkets = vi.fn(async () => [marketId])
-      const createLadderAdapters = vi.fn(() => ({
-        positions: {
-          readLendGuard: async () => ({ lossFactor: 0n, acceptedLossFactor: 0n, defaulted: true }),
-          readMarket: async () => ({})
-        },
-        rates: { readRate: async () => 500n },
-        make: {
-          cleanupRemovedMarkets,
-          readActive: async () => undefined,
-          reconcile: async () => {},
-          cancelBuys: async () => ({ submittedTransactions: [] }),
-          hardHalt: async () => {},
-          cleanup: async () => {}
-        }
-      }))
-      const controller = new AbortController()
-      controller.abort()
-      const application = createApplication(
-        {
-          ...environment,
-          BOOTSTRAP_MARKETS: JSON.stringify([bootstrapConfiguration]),
-          LADDER_MARKETS: JSON.stringify([ladderConfiguration])
-        },
-        { createState: readyState, createLadderAdapters }
-      )
-
-      await expect(application.run([command], { signal: controller.signal })).rejects.toMatchObject(
-        {
-          name: 'AbortError'
-        }
-      )
-      expect(cleanupRemovedMarkets).not.toHaveBeenCalled()
-    }
-  )
-
-  test.each(['bootstrap', 'ladder', 'start'])(
-    'does not run removed-market cleanup when %s is aborted while creating ladder adapters',
-    async command => {
-      const cleanupRemovedMarkets = vi.fn(async () => [marketId])
-      const controller = new AbortController()
-      const createLadderAdapters = vi.fn(() => {
-        controller.abort()
-        return {
-          positions: {
-            readLendGuard: async () => ({
-              lossFactor: 0n,
-              acceptedLossFactor: 0n,
-              defaulted: true
-            }),
-            readMarket: async () => ({})
-          },
-          rates: { readRate: async () => 500n },
-          make: {
-            cleanupRemovedMarkets,
-            readActive: async () => undefined,
-            reconcile: async () => {},
-            cancelBuys: async () => ({ submittedTransactions: [] }),
-            hardHalt: async () => {},
-            cleanup: async () => {}
-          }
-        }
-      })
-      const application = createApplication(
-        {
-          ...environment,
-          BOOTSTRAP_MARKETS: JSON.stringify([bootstrapConfiguration]),
-          LADDER_MARKETS: JSON.stringify([ladderConfiguration])
-        },
-        { createState: readyState, createLadderAdapters }
-      )
-
-      await expect(application.run([command], { signal: controller.signal })).rejects.toMatchObject(
-        {
-          name: 'AbortError'
-        }
-      )
-      expect(cleanupRemovedMarkets).not.toHaveBeenCalled()
-    }
-  )
-
-  test('rejects an empty ladder before cleaning persisted ladder publications', async () => {
-    const cleanupRemovedMarkets = vi.fn(async () => [marketId])
+  test('rejects an empty ladder before composing the combined writer', async () => {
+    const kernel = vi.fn(dryKernel)
     const application = createApplication(
-      {
-        ...environment,
-        BOOTSTRAP_MARKETS: JSON.stringify([bootstrapConfiguration]),
-        LADDER_MARKETS: '[]'
-      },
-      {
-        createLadderAdapters: () => ({
-          positions: {
-            readLendGuard: async () => ({
-              lossFactor: 0n,
-              acceptedLossFactor: 0n,
-              defaulted: true
-            }),
-            readMarket: async () => ({})
-          },
-          rates: { readRate: async () => 500n },
-          make: {
-            cleanupRemovedMarkets,
-            readActive: async () => undefined,
-            reconcile: async () => {},
-            cancelBuys: async () => ({ submittedTransactions: [] }),
-            hardHalt: async () => {},
-            cleanup: async () => {}
-          }
-        })
-      }
+      { ...bootstrapEnvironment, LADDER_MARKETS: '[]' },
+      { kernel, createLadderAdapters: () => ladderAdapters() }
     )
 
     await expect(application.run(['start'])).rejects.toMatchObject({
       name: 'LadderConfigurationError'
     })
-    expect(cleanupRemovedMarkets).not.toHaveBeenCalled()
+    expect(kernel).not.toHaveBeenCalled()
   })
 
   test('aborted combined start skips Blue reference readiness and writer composition', async () => {
@@ -1868,51 +1337,11 @@ describe('createApplication', () => {
         createState: () => state,
         createBootstrapAdapters: () => {
           started.push('bootstrap')
-          return {
-            positions: {
-              readPosition: async () => ({
-                credit: 0n,
-                debt: 0n,
-                lossFactor: { lossFactor: 0n, acceptedLossFactor: 0n, defaulted: true },
-                cashBalance: 100n,
-                marketExposure: 0n,
-                totalExposure: 0n
-              })
-            },
-            rates: {
-              readRate: async () => ({
-                mode: 'static',
-                rateBps: 400n,
-                observationId: 'static:400'
-              })
-            },
-            make: {
-              reconcile: async () => {},
-              hardHalt: async () => {},
-              cleanup: async () => {}
-            }
-          }
+          return bootstrapAdapters()
         },
         createLadderAdapters: () => {
           started.push('ladder')
-          return {
-            positions: {
-              readLendGuard: async () => ({
-                lossFactor: 0n,
-                acceptedLossFactor: 0n,
-                defaulted: true
-              }),
-              readMarket: async () => ({})
-            },
-            rates: { readRate: async () => 475n },
-            make: {
-              readActive: async () => undefined,
-              reconcile: async () => {},
-              cancelBuys: async () => ({ submittedTransactions: [] }),
-              hardHalt: async () => {},
-              cleanup: async () => {}
-            }
-          }
+          return ladderAdapters()
         }
       }
     )
@@ -1984,8 +1413,9 @@ markets:
 setup:
   nativeReserveWei: "10"
   maxFeeGwei: "100"
-  priorityFeeGwei: "1"
   maxTransactionSpendWei: "100000000000000000"
+  maxContinuousFeeCap: "0"
+  kernelEnrollment: enrolling
   maxPublicationGas: "5000000"
   maxPublicationDataBytes: "65536"
   maxCancellationGas: "100000"
@@ -2021,10 +1451,109 @@ setup:
   })
 
   test('rejects setup-check readiness before any writer workflow can start', async () => {
-    const state = readyState()
-    state.getChainId = async () => 1
-    const application = createApplication(environment, { createState: () => state })
+    const application = createApplication(environment, { createState: failingReadiness })
 
     await expect(application.run(['setup-check'])).rejects.toBeInstanceOf(SetupFailedError)
+  })
+})
+
+describe('startup cancellation through the kernel', () => {
+  const unheld: Hex = `0x${'99'.repeat(32)}`
+  const memoryJournal = {
+    sink: { append: async () => {}, finalize: async () => {} },
+    capacityBytes: 100_000_000
+  }
+
+  const start = async (entries: Record<string, Entry>, cancel: readonly Hex[]) => {
+    const config = ConfigService.from(combinedEnvironment)
+    const { written, writeEvent } = recorder()
+    let startup: StartupWithdrawal | undefined
+    const engine = await startQuoterEngine({
+      config,
+      strategies: { ladder: false, bootstrap: false },
+      kernel: dryHosting(config, entries),
+      journal: memoryJournal,
+      cancel,
+      writeEvent,
+      onStartup: withdrawal => (startup = withdrawal)
+    })
+    return { engine, written, startup: () => startup, config }
+  }
+
+  test('cancels a group no ledger holds as cancel-only, in the same transaction as the held ones', async () => {
+    const config = ConfigService.from(combinedEnvironment)
+    const entries = earlierRunEntries(config)
+    const run = await start(entries, [unheld])
+
+    expect(run.startup()?.notice).toBe('settled')
+    expect(run.startup()?.included).toHaveLength(1)
+    expect(run.engine.held()).toEqual([])
+    const notices = run.written.filter(event => event.event === 'kernel.notice')
+    expect(notices.map(event => event.notice)).toEqual(['admitted', 'settled'])
+    run.engine.stop()
+    expect((await run.engine.stopped).outcome).toBe('clean')
+  })
+
+  test('cancels only unheld groups when the ledger holds none', async () => {
+    const run = await start({}, [unheld])
+
+    expect(run.startup()?.notice).toBe('settled')
+    expect(run.startup()?.included).toHaveLength(1)
+    run.engine.stop()
+    expect((await run.engine.stopped).outcome).toBe('clean')
+  })
+
+  test('stops cleanly once its journal file reaches the run cap', async () => {
+    const config = ConfigService.from(combinedEnvironment)
+    const stateDirectory = await mkdtemp(join(tmpdir(), 'quoter-bot-journal-cap-'))
+    const { written, writeEvent } = recorder()
+    try {
+      const engine = await startQuoterEngine({
+        config,
+        strategies: { ladder: false, bootstrap: false },
+        kernel: dryHosting(config, {}),
+        journal: { build: { revision: 'abcdef0123456789', imageTag: 'test' }, runCapBytes: 1 },
+        stateDirectory,
+        writeEvent
+      })
+      expect(await engine.stopped).toEqual({ outcome: 'clean', reason: 'stop requested' })
+      expect(written).toContainEqual({
+        event: 'journal.capped',
+        bytes: expect.any(Number),
+        runCapBytes: 1
+      })
+    } finally {
+      await rm(stateDirectory, { recursive: true, force: true })
+    }
+  })
+
+  test('stops the kernel when shutdown is requested while it is still starting', async () => {
+    const config = ConfigService.from(combinedEnvironment)
+    const operator = new AbortController()
+    const unreachable = () => Promise.reject(new Error('unreachable'))
+    const error = await startQuoterEngine({
+      config,
+      strategies: { ladder: false, bootstrap: false },
+      kernel: dryHosting(config, {}, () => operator.abort(), {
+        latest: unreachable,
+        block: unreachable,
+        safe: unreachable
+      }),
+      journal: memoryJournal,
+      signal: operator.signal
+    }).catch((value: unknown) => value)
+
+    expect(error).toBeInstanceOf(QuoterStartError)
+    expect((error as QuoterStartError).cause).toBeInstanceOf(SetupCheckAbortedError)
+    expect((error as QuoterStartError).report.outcome).toBe('clean')
+  })
+
+  test('submits nothing at startup without held or requested groups', async () => {
+    const run = await start({}, [])
+
+    expect(run.startup()).toBeUndefined()
+    expect(run.written.filter(event => event.event === 'kernel.notice')).toEqual([])
+    run.engine.stop()
+    expect((await run.engine.stopped).outcome).toBe('clean')
   })
 })

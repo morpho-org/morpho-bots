@@ -1,28 +1,28 @@
-import { readFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { describe, expect, test } from 'vitest'
 
-import { QUOTER_BOT_ROOT_VALUE_OPTIONS } from '../../../src/infrastructure/cli/quoter-bot-entrypoint'
+import { VersionService } from '../../../src/application/quoter-bot/version.service'
+import { Cli } from '../../../src/infrastructure/cli/cli'
+import { QUOTER_BOT_ROOT_VALUE_OPTIONS } from '../../../src/infrastructure/cli/verbose-argv.utils'
 
-const CLI_SOURCE = join(
-  dirname(fileURLToPath(import.meta.url)),
-  '../../../src/infrastructure/cli/cli.ts'
-)
+const runs = () => ({
+  runOnce: async () => [],
+  runContinuously: async () => ({ status: 'stopped' as const, reason: 'signal' as const })
+})
 
 describe('QUOTER_BOT_ROOT_VALUE_OPTIONS', () => {
-  test('covers every value-taking option the CLI declares', () => {
-    const declaredValueFlags = [
-      ...readFileSync(CLI_SOURCE, 'utf8').matchAll(/\.option\(\s*'([^']+?)<[^']*'/g)
-    ].flatMap(match =>
-      match[1]!
-        .split(',')
-        .map(flag => flag.trim().split(' ')[0]!)
-        .filter(flag => flag.startsWith('-'))
+  test('names exactly the value-taking root options the CLI declares', async () => {
+    const cli = new Cli(
+      new VersionService(),
+      () => ({ assertReady: async () => ({ ready: true, checks: [] }) }),
+      () => runs(),
+      () => runs()
     )
-    expect(declaredValueFlags.length).toBeGreaterThanOrEqual(5)
-    for (const flag of declaredValueFlags) {
-      expect(QUOTER_BOT_ROOT_VALUE_OPTIONS).toContain(flag)
-    }
+    const help = String(await cli.run(['--help']))
+    const options = help.slice(help.indexOf('Options:'), help.indexOf('Commands:'))
+    const valueFlags = [...options.matchAll(/^ {2}(-\S.*?) <[^>]+>/gm)].flatMap(match =>
+      match[1]!.split(', ')
+    )
+
+    expect(valueFlags.toSorted()).toEqual([...QUOTER_BOT_ROOT_VALUE_OPTIONS].toSorted())
   })
 })

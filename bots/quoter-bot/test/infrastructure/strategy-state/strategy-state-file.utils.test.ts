@@ -4,12 +4,7 @@ import { join } from 'node:path'
 import { describe, expect, test } from 'vitest'
 
 import { StrategyStateVersionError } from '../../../src/errors'
-import {
-  assertCurrentStrategyStates,
-  STRATEGY_STATE_VERSION
-} from '../../../src/infrastructure/strategy-state/strategy-state-file.utils'
-
-const stateName = (byte: string) => `0x${byte.repeat(32)}.json`
+import { assertNoLegacyStrategyState } from '../../../src/infrastructure/strategy-state/strategy-state-file.utils'
 
 const withDirectory = async (
   files: Record<string, string>,
@@ -26,39 +21,22 @@ const withDirectory = async (
   }
 }
 
-describe('assertCurrentStrategyStates', () => {
-  test('accepts a missing directory and current state beside unrelated files', async () => {
+describe('assertNoLegacyStrategyState', () => {
+  test('accepts a missing directory, and kernel ledgers beside unrelated files', async () => {
     await expect(
-      assertCurrentStrategyStates(join(tmpdir(), 'missing-strategy-state'))
+      assertNoLegacyStrategyState(join(tmpdir(), 'missing-strategy-state'))
     ).resolves.toBeUndefined()
     await withDirectory(
-      {
-        [stateName('aa')]: JSON.stringify({ version: STRATEGY_STATE_VERSION }),
-        'notes.json': JSON.stringify({ version: 1 })
-      },
+      { [`kernel-8453-0x${'11'.repeat(20)}.json`]: '{}', 'notes.json': '{}' },
       async directory => {
-        await expect(assertCurrentStrategyStates(directory)).resolves.toBeUndefined()
+        await expect(assertNoLegacyStrategyState(directory)).resolves.toBeUndefined()
       }
     )
   })
 
-  test('fails loud on earlier state under any key, including one no longer derived', async () => {
-    await withDirectory(
-      {
-        [stateName('aa')]: JSON.stringify({ version: STRATEGY_STATE_VERSION }),
-        [stateName('bb')]: JSON.stringify({ version: 6, offers: [{ capKind: 'assets' }] })
-      },
-      async directory => {
-        await expect(assertCurrentStrategyStates(directory)).rejects.toBeInstanceOf(
-          StrategyStateVersionError
-        )
-      }
-    )
-  })
-
-  test('fails closed on a truncated state file rather than skipping it', async () => {
-    await withDirectory({ [stateName('cc')]: '{"version": 6, "offers": [' }, async directory => {
-      await expect(assertCurrentStrategyStates(directory)).rejects.toBeInstanceOf(
+  test('refuses to start beside ownership a pre-kernel version wrote, whose groups no kernel owns', async () => {
+    await withDirectory({ [`0x${'aa'.repeat(32)}.json`]: '{"version":7}' }, async directory => {
+      await expect(assertNoLegacyStrategyState(directory)).rejects.toBeInstanceOf(
         StrategyStateVersionError
       )
     })

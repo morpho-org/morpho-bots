@@ -1,3 +1,4 @@
+import type { BookOffer } from '@repo/offers'
 import type { Address, Hex } from 'viem'
 
 import { TakeAmountsLib, TickLib } from '@morpho-org/midnight-sdk'
@@ -5,10 +6,12 @@ import { batchProspectiveBook } from '@repo/offers'
 import { isAddressEqual } from 'viem'
 
 import type { OwnedOverlapBookOffer } from '../../domain/intentional-overlap'
-import type { LadderBookSideCrossing } from '../../domain/ladder'
+import type { LadderBookSideCrossing, ValidLadderConfig } from '../../domain/ladder'
 import type { TickWindow } from '../../domain/tick-window'
+import type { OwnedLadderPublication } from './ladder-group-ownership.utils'
 
-import { alignTickDown, alignTickUp, LOWEST_TICK } from '../../domain/tick-window'
+import { alignTickDown, alignTickUp, LOWEST_TICK, rateTickWindow } from '../../domain/tick-window'
+import { activeOwnedLadderGroupIdsBySide } from './ladder-active-publication.utils'
 
 /**
  * Best opposing retained ticks a prospective ladder must clear on each side.
@@ -165,6 +168,72 @@ export const clearableOpposingBook = (parameters: {
 }
 
 /**
+ * Per side, whether a third party crosses the resting ladder and whether the configured rate window
+ * can still clear it, as {@link bookCrossesRestingLadder} and {@link clearableOpposingBook} decide
+ * them over one complete book with the active ladder groups replaced.
+ * @param parameters - The market, maker, complete book, own publications, the active groups being
+ * replaced, rate and depth config, seconds to maturity, and tick spacing.
+ * @returns Per side, whether the ladder is crossed and whether the rate window can clear it.
+ */
+export const ladderBookCrossing = (parameters: {
+  marketId: Hex
+  maker: Address
+  book: readonly OwnedOverlapBookOffer[]
+  publications: readonly OwnedLadderPublication[]
+  activeLadderGroupIds: ReadonlySet<Hex>
+  config: Pick<ValidLadderConfig, 'minimumOfferAssets' | 'minimumRateBps' | 'maximumRateBps'>
+  timeToMaturity: bigint
+  tickSpacing: bigint
+}): Record<'lower' | 'higher', LadderBookSideCrossing> => {
+  const { marketId, maker, book, config, tickSpacing } = parameters
+  const crossed = bookCrossesRestingLadder({
+    marketId,
+    maker,
+    book,
+    activeLadderGroupIds: activeOwnedLadderGroupIdsBySide(
+      parameters.publications,
+      marketId,
+      parameters.activeLadderGroupIds
+    ),
+    minimumOpposingAssets: config.minimumOfferAssets
+  })
+  const clearable = clearableOpposingBook({
+    ticks: retainedOpposingBookTicks({
+      marketId,
+      replacedGroupIds: parameters.activeLadderGroupIds,
+      book,
+      depthFloor: { maker, minimumOpposingAssets: config.minimumOfferAssets }
+    }),
+    window: rateTickWindow({
+      minimumRateBps: config.minimumRateBps,
+      maximumRateBps: config.maximumRateBps,
+      timeToMaturity: parameters.timeToMaturity,
+      tickSpacing
+    }),
+    tickSpacing
+  })
+  return {
+    lower: { crossed: crossed.lower, clearable: clearable.lower },
+    higher: { crossed: crossed.higher, clearable: clearable.higher }
+  }
+}
+
+/**
+ * Selects the highest live own bootstrap-buy tick that prospective ladder sells must clear.
+ * @param book - Complete selected-market book with durable bootstrap ownership marks attached.
+ * @param marketId - Canonical market being quoted.
+ * @returns The highest marked bootstrap-buy tick, or `undefined` without any live own bootstrap buy.
+ */
+export const ownBootstrapBuyTickCeiling = (book: readonly OwnedOverlapBookOffer[], marketId: Hex) =>
+  highestTick(
+    book
+      .filter(
+        offer => offer.marketId === marketId && offer.buy && offer.overlapOwner === 'bootstrap-buy'
+      )
+      .map(offer => offer.tick)
+  )
+
+/**
  * Whether one of the given sides reports a crossing the configured rate window can still clear.
  * @param crossing - Per-side crossing and feasibility observed on one book read.
  * @param sides - Sides the decision admitted the replacement for; defaults to both.
@@ -175,3 +244,36 @@ export const hasClearableCrossing = (
   crossing: { lower: LadderBookSideCrossing; higher: LadderBookSideCrossing },
   sides: readonly ('lower' | 'higher')[] = ['lower', 'higher']
 ) => sides.some(side => crossing[side].crossed && crossing[side].clearable)
+
+/**
+ * Every group durably owned as a bootstrap buy: configured V0 groups, owned groups, and groups with
+ * a persisted offer intent.
+ * @param parameters - Configured V0 group ids, owned group ids, and persisted offer intents.
+ * @returns The union of their group ids.
+ */
+export const durableBootstrapGroupIds = (parameters: {
+  v0OfferGroupIds: readonly Hex[]
+  ownedGroupIds: readonly Hex[]
+  persistedOffers: readonly { groupId: Hex }[]
+}) =>
+  new Set<Hex>([
+    ...parameters.v0OfferGroupIds,
+    ...parameters.ownedGroupIds,
+    ...parameters.persistedOffers.map(offer => offer.groupId)
+  ])
+
+/**
+ * Marks every buy of a durably owned bootstrap group as the bootstrap's own.
+ * @param book - Book offers to mark.
+ * @param bootstrapGroupIds - Durably owned bootstrap group ids.
+ * @returns The book in order, matching buys carrying `overlapOwner: 'bootstrap-buy'`.
+ */
+export const markOwnBootstrapBuys = <T extends BookOffer>(
+  book: readonly T[],
+  bootstrapGroupIds: ReadonlySet<Hex>
+): (T & { overlapOwner?: 'bootstrap-buy' })[] =>
+  book.map(offer =>
+    offer.buy && offer.groupId !== undefined && bootstrapGroupIds.has(offer.groupId)
+      ? { ...offer, overlapOwner: 'bootstrap-buy' as const }
+      : offer
+  )

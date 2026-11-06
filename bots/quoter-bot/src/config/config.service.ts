@@ -1,7 +1,7 @@
+import type { Finality } from '@repo/kit'
 import type { Address, Hex } from 'viem'
 
 import { getChainAddress } from '@morpho-org/morpho-ts'
-import { hasBumpHeadroom } from '@repo/bot-kit'
 import { inspect } from 'node:util'
 import { isAddressEqual } from 'viem'
 
@@ -20,6 +20,9 @@ import {
   acceptedLossFactorValue,
   addressValue,
   chainIdValue,
+  continuousFeeCapValue,
+  enrollmentValue,
+  finalityValue,
   optionalBytes32Value,
   optionalUrlValue,
   positiveBigIntValue,
@@ -40,7 +43,6 @@ export type { SignerIdentity } from './signer-identity.utils'
 /** Explicit transaction ceilings applied before any quoter transaction is signed. */
 export type QuoterWritePolicy = {
   maxFeePerGasWei: bigint
-  priorityFeePerGasWei: bigint
   maxTransactionSpendWei: bigint
   maxPublicationGas: bigint
   maxPublicationDataBytes: number
@@ -48,6 +50,10 @@ export type QuoterWritePolicy = {
   maxBatchCancellationGas: bigint
   maxBatchCancellationDataBytes: number
   maxRatificationGas?: bigint
+  /** The highest market continuous fee, per second, any signed offer may accept. */
+  maxContinuousFeeCap: bigint
+  /** Whether the signer's kernel ledger must already exist; see `KERNEL_ENROLLMENT`. */
+  enrollment: 'enrolling' | 'enrolled'
 }
 
 const writePolicyValue = (
@@ -57,17 +63,8 @@ const writePolicyValue = (
   chainId: SetupCheckConfig['chainId']
 ): QuoterWritePolicy => {
   const maxFeePerGasWei = positiveGweiWeiValue(environment, 'MAX_FEE_GWEI')
-  const priorityFeePerGasWei = positiveGweiWeiValue(environment, 'PRIORITY_FEE_GWEI')
-  if (!hasBumpHeadroom(priorityFeePerGasWei, maxFeePerGasWei)) {
-    throw new ConfigValidationError(
-      'PRIORITY_FEE_GWEI',
-      'incoherent-bounds',
-      'PRIORITY_FEE_GWEI must leave room for a replacement below MAX_FEE_GWEI'
-    )
-  }
   return {
     maxFeePerGasWei,
-    priorityFeePerGasWei,
     maxTransactionSpendWei: positiveBigIntValue(environment, 'MAX_TRANSACTION_SPEND_WEI'),
     maxPublicationGas: positiveBigIntValue(environment, 'MAX_PUBLICATION_GAS'),
     maxPublicationDataBytes: positiveIntegerValue(environment, 'MAX_PUBLICATION_DATA_BYTES'),
@@ -77,6 +74,8 @@ const writePolicyValue = (
       environment,
       'MAX_BATCH_CANCELLATION_DATA_BYTES'
     ),
+    maxContinuousFeeCap: continuousFeeCapValue(environment),
+    enrollment: enrollmentValue(environment),
     ...(requiresMaxRatificationGas(method, ratifier, chainId)
       ? { maxRatificationGas: positiveBigIntValue(environment, 'MAX_RATIFICATION_GAS') }
       : {})
@@ -189,7 +188,10 @@ export class ConfigService {
         marketIds,
         referenceMarketId: optionalBytes32Value(environment, 'REFERENCE_MARKET_ID'),
         requiredAllowance: calculateRequiredAllowance({ ladder, bootstrap }),
-        acceptedLossFactor: acceptedLossFactorValue(source.acceptedLossFactor, marketIds)
+        acceptedLossFactor: acceptedLossFactorValue(source.acceptedLossFactor, marketIds),
+        debt: new Map(
+          ladder.flatMap(item => (item.debt === undefined ? [] : [[item.marketId, item.debt]]))
+        )
       },
       rpcUrl: urlValue(environment, 'RPC_URL'),
       referenceRpcUrl: optionalUrlValue(environment, 'REFERENCE_RPC_URL'),
@@ -197,6 +199,7 @@ export class ConfigService {
       morphoApiBaseUrl: urlValue(environment, 'MORPHO_API_BASE_URL'),
       v0OfferGroupIds: hexListValue(environment, 'V0_OFFER_GROUP_IDS', false),
       requestTimeoutMs: requestTimeoutValue(environment),
+      finality: finalityValue(environment),
       transactionReceiptTimeoutMs: transactionReceiptTimeoutValue(environment),
       writePolicy,
       bootstrap,
@@ -214,6 +217,7 @@ export class ConfigService {
       morphoApiBaseUrl: string
       v0OfferGroupIds: readonly Hex[]
       requestTimeoutMs: number
+      finality: Finality
       transactionReceiptTimeoutMs: number
       writePolicy?: QuoterWritePolicy
       bootstrap: readonly TargetRateConfigured<ValidBootstrapConfig>[]
@@ -294,6 +298,11 @@ export class ConfigService {
    */
   get referenceLookbackSeconds() {
     return this.values.referenceLookbackSeconds
+  }
+
+  /** Exposes which block the kernel treats as final. @returns The configured rule, `safe` unless `FINALITY` says otherwise. */
+  get finality() {
+    return this.values.finality
   }
 
   /** Exposes the post-submission confirmation deadline. @returns Bounded receipt timeout in milliseconds, between 1 and 900,000 inclusive. */

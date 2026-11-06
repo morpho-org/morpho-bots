@@ -17,6 +17,7 @@
   },
   "dependencies": {
     "@morpho-org/blue-sdk": "catalog:",
+    "@morpho-org/midnight-sdk": "catalog:",
     "@morpho-org/morpho-ts": "catalog:",
     "@repo/contracts": "workspace:*",
     "@repo/kernel": "workspace:*",

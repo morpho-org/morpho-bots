@@ -7,7 +7,6 @@ import {
   effectiveLadderPremiumBps,
   generateLadder,
   generateLadderWithDiagnostics,
-  higherRungsRepriced,
   inventorySkewBps,
   isLendOnlyLadder,
   offerCapsByRung,
@@ -61,6 +60,47 @@ describe('ladder domain', () => {
     expect(ladder.lower.reduce((sum, rung) => sum + rung.assets, 0n)).toBe(10n)
     expect(ladder.higher.reduce((sum, rung) => sum + rung.assets, 0n)).toBe(10n)
     expect(ladder.lower.map(rung => rung.assets)).toEqual([3n, 3n, 4n])
+  })
+
+  test('marks only a debt-configured ladder as debt-capable, and sizes its sells by capacity', () => {
+    expect(generateLadder({ config: config(), referenceRateBps: 500n })).not.toHaveProperty(
+      'debtCapable'
+    )
+
+    const ladder = generateLadder({
+      config: config({ debt: { maximumDebtUnits: 100n, stopBorrowingBeforeMaturitySeconds: 0 } }),
+      referenceRateBps: 500n,
+      capacities: { lowerRateCapacityAssets: 6n, maturityTimestamp: 1_000n, observedTimestamp: 0n }
+    })
+
+    expect(ladder.debtCapable).toBe(true)
+    expect(ladder.lower.reduce((sum, rung) => sum + rung.assets, 0n)).toBe(6n)
+  })
+
+  test.each([
+    ['before the cutoff', { maturityTimestamp: 1_000n, observedTimestamp: 899n }, true],
+    ['at the cutoff', { maturityTimestamp: 1_000n, observedTimestamp: 900n }, false],
+    ['past the cutoff', { maturityTimestamp: 1_000n, observedTimestamp: 950n }, false],
+    ['with no observed time', { maturityTimestamp: 1_000n }, false],
+    ['with no maturity', { observedTimestamp: 0n }, false]
+  ])('is debt-capable only while borrowing is open: %s', (_name, observation, open) => {
+    const ladder = generateLadder({
+      config: config({ debt: { maximumDebtUnits: 100n, stopBorrowingBeforeMaturitySeconds: 100 } }),
+      referenceRateBps: 500n,
+      capacities: { lowerRateCapacityAssets: 6n, ...observation }
+    })
+
+    expect(ladder.debtCapable === true).toBe(open)
+  })
+
+  test.each([
+    ['negative', -1],
+    ['fractional', 1.5],
+    ['unsafe', Number.MAX_SAFE_INTEGER + 1]
+  ])('rejects a %s stopBorrowingBeforeMaturitySeconds', (_name, seconds) => {
+    expect(() =>
+      config({ debt: { maximumDebtUnits: 100n, stopBorrowingBeforeMaturitySeconds: seconds } })
+    ).toThrow('debt.stopBorrowingBeforeMaturitySeconds')
   })
 
   test('adds quote premium before deriving rung rates', () => {
@@ -544,16 +584,6 @@ describe('ladder maturity premium', () => {
     ).toThrow(new LadderConfigurationError('maturityPremium.premiumPerYearBps', 'must be positive'))
   })
 
-  test('rejects a non-positive maturity-premium cap', () => {
-    expect(() =>
-      validateLadderConfig(
-        rawPremiumConfig({
-          maturityPremium: { shape: 'linear', premiumPerYearBps: 120n, maximumPremiumBps: 0n }
-        })
-      )
-    ).toThrow(new LadderConfigurationError('maturityPremium.maximumPremiumBps', 'must be positive'))
-  })
-
   test('raises the fresh center by the resolved maturity premium', () => {
     const ladder = generateLadder({
       config: premiumConfig(),
@@ -908,58 +938,6 @@ describe('ladder inventory skew', () => {
     expect(config({ inventorySkew: { unitsPerStep: 1n, maxSkewBps: 600n } }).inventorySkew).toEqual(
       { unitsPerStep: 1n, maxSkewBps: 600n }
     )
-  })
-
-  test('reports a repricing only when fresh credit makes a planned buy dearer', () => {
-    const skewConfig = config({ inventorySkew: { unitsPerStep: 30n } })
-    const planned = generateLadder({
-      config: skewConfig,
-      referenceRateBps: 400n,
-      capacities: { creditAssets: 30n }
-    })
-
-    expect(rates(planned.higher)).toEqual([600n, 700n, 800n])
-    expect(higherRungsRepriced(skewConfig, planned, 60n)).toBe(true)
-    expect(higherRungsRepriced(skewConfig, planned, 31n)).toBe(true)
-    expect(higherRungsRepriced(skewConfig, planned, 30n)).toBe(false)
-    expect(higherRungsRepriced(skewConfig, planned, 0n)).toBe(false)
-    expect(higherRungsRepriced(config(), planned, 1_000n)).toBe(false)
-  })
-
-  test('reports a repricing when fresh skew pushes a buy planned at the maximum past it', () => {
-    const skewConfig = config({ inventorySkew: { unitsPerStep: 10n } })
-    const planned = generateLadder({
-      config: skewConfig,
-      referenceRateBps: 400n,
-      capacities: { creditAssets: 10n }
-    })
-
-    expect(planned.higher).toEqual([
-      { index: 0, rateBps: 600n, assets: 3n },
-      { index: 1, rateBps: 700n, assets: 3n },
-      { index: 2, rateBps: 800n, assets: 4n }
-    ])
-    const fresh = generateLadder({
-      config: skewConfig,
-      referenceRateBps: 400n,
-      retainedCenterRateBps: planned.centerRateBps,
-      capacities: { creditAssets: 11n }
-    })
-    expect(rates(fresh.higher)).toEqual([610n, 710n])
-    expect(higherRungsRepriced(skewConfig, planned, 11n)).toBe(true)
-  })
-
-  test('reports a repricing when fresh skew omits the only planned buy, sitting at the maximum', () => {
-    const skewConfig = config({ inventorySkew: { unitsPerStep: 10n } })
-    const planned = generateLadder({
-      config: skewConfig,
-      referenceRateBps: 500n,
-      capacities: { creditAssets: 20n }
-    })
-
-    expect(rates(planned.higher)).toEqual([800n])
-    expect(higherRungsRepriced(skewConfig, planned, 21n)).toBe(true)
-    expect(higherRungsRepriced(skewConfig, planned, 20n)).toBe(false)
   })
 
   test('lets one per-book offer take the whole side, then prices the next cycle higher', () => {

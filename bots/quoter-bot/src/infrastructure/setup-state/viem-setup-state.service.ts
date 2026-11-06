@@ -4,33 +4,44 @@ import { ecrecoverRatifierAbi, midnightAbi, setterRatifierAbi } from '@morpho-or
 import { blueAbi } from '@morpho-org/morpho-sdk/abis'
 import { restructure } from '@morpho-org/morpho-sdk/utils'
 import { getChainAddress } from '@morpho-org/morpho-ts'
-import { erc20Abi, isAddress, isAddressEqual, keccak256, zeroAddress, zeroHash } from 'viem'
-import { privateKeyToAccount } from 'viem/accounts'
+import { blockTimeMs } from '@repo/kit'
+import {
+  erc20Abi,
+  isAddress,
+  isAddressEqual,
+  keccak256,
+  parseAbi,
+  zeroAddress,
+  zeroHash
+} from 'viem'
 
-import type { BookSetup, SetupStateService } from '../../application/setup/setup-check.service'
+import type {
+  BookSetup,
+  LoanCollateralSetup,
+  SetupStateService
+} from '../../application/setup/setup-check.service'
 import type { SupportedChainId } from '../../config/supported-chains.utils'
 import type { JsonRequest } from '../provider/http-json.utils'
-import type { offerFromApi } from './viem-setup-state.utils'
 
-import { ratifierRuntimeHash, supportedChain } from '../../config/supported-chains.utils'
-import { MAX_LOSS_FACTOR } from '../../domain/loss-factor'
-import { ProviderPaginationError, ProviderResponseError } from '../../errors'
+import { ratifierRuntimeHash, ratifierType } from '../../config/supported-chains.utils'
+import { ProviderResponseError, OfferGroupsReadError } from '../../errors'
 import { findBlockAtOrBefore } from '../provider/historical-block.utils'
+import { readMakerOfferGroups } from '../provider/offer-groups.utils'
 import { executeProviderRead } from '../provider/provider-read.utils'
 import {
   addressValue,
   apiMarkets,
+  borrowTermsFromContract,
   DEFAULT_REQUEST_TIMEOUT_MS,
   invertedMarketIds,
   marketFromContract,
-  MAX_OFFER_ITEMS,
-  MAX_OFFER_PAGES,
   objectValue,
-  offersFromGroups,
   PAGE_SIZE,
   bigintValue,
-  morphoApiTimeout
+  uint128Value
 } from './viem-setup-state.utils'
+
+const enterGateAbi = parseAbi(['function canIncreaseDebt(address account) view returns (bool)'])
 
 /** Minimal read-only viem surface required by the setup-state adapter. */
 export interface ChainReader {
@@ -54,16 +65,6 @@ export interface ChainReader {
    * @throws When the RPC transport rejects or returns a malformed balance.
    */
   getBalance(parameters: { address: Address }): Promise<bigint>
-  /**
-   * Reads the mined or pending transaction count for an account.
-   * @param parameters - Account address and requested block state.
-   * @returns The account transaction count at that state.
-   * @throws When the RPC transport rejects or returns a malformed count.
-   */
-  getTransactionCount(parameters: {
-    address: Address
-    blockTag: 'latest' | 'pending'
-  }): Promise<number>
   /**
    * Reads a latest or historical block from the RPC provider.
    * @param parameters - Latest-block tag or exact historical block number.
@@ -91,26 +92,19 @@ type SetupStateOptions = {
   marketIds: readonly Hex[]
   v0OfferGroupIds: readonly Hex[]
   readOwnedGroupIds: () => Promise<readonly Hex[]>
-  ignoredOfferGroupIds?: readonly Hex[]
+  /** Groups the kernel withdrew, whose offers a lagging index may still list. */
+  readWithdrawnGroupIds?: () => Promise<readonly Hex[]>
   readBootstrapGroupIds?: () => Promise<readonly Hex[]>
   readLadderSellGroupIds?: () => Promise<readonly Hex[]>
   referenceMarketId: Hex
   referenceLookbackSeconds: bigint
   requestTimeoutMs?: number
-  now?: () => number
-} & (
-  | { readOnly: true }
-  | { readOnly?: false; privateKey: Hex }
-  | { readOnly?: false; signerAddress: Address }
-  | { readOnly?: false; deriveSignerAddress: () => Promise<Address> }
-)
+} & ({ readOnly: true } | { readOnly?: false; deriveSignerAddress: () => Promise<Address> })
 
 /** Read-only viem/API adapter that gathers setup facts and validates provider agreement. */
 export class ViemSetupStateService implements SetupStateService {
-  private readonly derivedSigner: Address | undefined
-
   /**
-   * Creates a state adapter and derives the maker only when write authority is configured.
+   * Creates a state adapter that derives the signer only when write authority is configured.
    * @param chain - Current-state Base reader.
    * @param reference - Archive-capable Base reader.
    * @param request - JSON transport receiving only fixed provider IDs and explicit timeouts.
@@ -123,16 +117,7 @@ export class ViemSetupStateService implements SetupStateService {
     private readonly reference: Pick<ChainReader, 'getChainId' | 'getBlock' | 'readContract'>,
     private readonly request: JsonRequest,
     private readonly options: SetupStateOptions
-  ) {
-    this.derivedSigner =
-      options.readOnly || 'deriveSignerAddress' in options
-        ? undefined
-        : 'privateKey' in options
-          ? privateKeyToAccount(options.privateKey).address
-          : 'signerAddress' in options
-            ? options.signerAddress
-            : undefined
-  }
+  ) {}
 
   /**
    * Reads the connected chain identity through the current-state provider.
@@ -172,13 +157,12 @@ export class ViemSetupStateService implements SetupStateService {
 
   /**
    * Resolves the configured signer address for the captured setup maker check.
-   * @returns The locally derived or lazily resolved maker, or `undefined` in read-only mode.
+   * @returns The lazily resolved signer, or `undefined` in read-only mode.
    * @throws The sanitized signer-construction failure when lazy keystore or KMS resolution fails.
    * @remarks Lazy resolution may read a keystore or call KMS, but performs no signing or chain write.
    */
   async getDerivedSigner() {
-    if ('deriveSignerAddress' in this.options) return this.options.deriveSignerAddress()
-    return this.derivedSigner
+    return 'deriveSignerAddress' in this.options ? this.options.deriveSignerAddress() : undefined
   }
 
   /**
@@ -192,23 +176,6 @@ export class ViemSetupStateService implements SetupStateService {
     return executeProviderRead('rpc', 'native-balance', () =>
       this.chain.getBalance({ address: owner })
     )
-  }
-
-  /**
-   * Reads mined and pending nonce state concurrently for restart reconciliation.
-   * @param address - Signer address whose nonce state is read.
-   * @returns Mined and pending transaction counts.
-   */
-  async getTransactionCounts(address: Address) {
-    const [latest, pending] = await Promise.all([
-      executeProviderRead('rpc', 'signer-latest-nonce', () =>
-        this.chain.getTransactionCount({ address, blockTag: 'latest' })
-      ),
-      executeProviderRead('rpc', 'signer-pending-nonce', () =>
-        this.chain.getTransactionCount({ address, blockTag: 'pending' })
-      )
-    ])
-    return { latest, pending }
   }
 
   /**
@@ -295,11 +262,7 @@ export class ViemSetupStateService implements SetupStateService {
       )
     }
     const chainId = this.options.chainId
-    const type = isAddressEqual(ratifier, getChainAddress(chainId, 'setterRatifier'))
-      ? ('setter' as const)
-      : isAddressEqual(ratifier, getChainAddress(chainId, 'ecrecoverRatifier'))
-        ? ('ecrecover' as const)
-        : undefined
+    const type = ratifierType(ratifier, chainId)
     const listed = type !== undefined
     const deployed = code !== undefined && code !== '0x'
     const expectedRuntimeHash = type === undefined ? undefined : ratifierRuntimeHash(chainId, type)
@@ -482,7 +445,7 @@ export class ViemSetupStateService implements SetupStateService {
         executeProviderRead('archive-rpc', 'reference-historical-block', () =>
           this.reference.getBlock({ blockNumber })
         ),
-      blockTimeMs: supportedChain(this.options.chainId).blockTime
+      blockTimeMs: blockTimeMs(this.options.chainId)
     })
     if (historical === undefined) {
       throw new ProviderResponseError(
@@ -604,118 +567,44 @@ export class ViemSetupStateService implements SetupStateService {
   }
 
   /**
-   * Traverses every active offer group for a maker and detects unknown groups, unconfigured markets,
-   * or crossed books, including fresh offers whose takeable amount has not been measured yet.
+   * Reads every active offer group for a maker through {@link readMakerOfferGroups} and detects
+   * unknown groups, unconfigured markets, or crossed books, including fresh offers whose takeable
+   * amount has not been measured yet.
    * @param maker - Maker whose complete active offer-group set is inspected.
    * @returns Deduplicated unknown namespaces, unconfigured markets, and all crossed market IDs.
-   * @throws `ProviderReadError` on a sanitized Morpho API rejection; `ProviderResponseError` or
-   * `ProviderPaginationError` on malformed or unbounded data; or a safe timeout error when the
-   * single absolute request deadline expires.
-   * @remarks Uses the authoritative cursor-paginated `/users/{maker}/offer-groups` source with an
-   * explicit Base chain filter and validates each returned group chain before projecting offers.
-   * Pagination is necessarily sequential because each cursor depends on the previous page; only
-   * explicit null terminates traversal, and one aggregate absolute deadline covers the whole
-   * read-only traversal. midnight-sdk 1.2.0 has no offer-group endpoint/entity, so only this bounded
-   * transport and strict response projection remain local.
+   * @throws `ProviderResponseError` naming the failed offer-group operation, or what the request
+   * throws.
+   * @remarks Read-only: no writes. One aggregate absolute deadline of `requestTimeoutMs` covers the
+   * whole traversal of every page.
    */
-  // oxlint-disable-next-line complexity
   async inspectOffers(maker: Address) {
-    const offers: ReturnType<typeof offerFromApi>[] = []
-    const seenCursors = new Set<string>()
-    const requestTimeoutMs = this.options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS
-    const now = this.options.now ?? performance.now.bind(performance)
-    const deadline = now() + requestTimeoutMs
-    let pageCount = 0
-    let cursor: string | null = null
-    do {
-      if (pageCount >= MAX_OFFER_PAGES) {
-        throw new ProviderPaginationError(
-          'morpho-api',
-          'page-limit',
-          'Morpho API offer page limit exceeded'
-        )
-      }
-      const remainingMs = Math.floor(deadline - now())
-      if (remainingMs <= 0) throw morphoApiTimeout()
-      pageCount += 1
-      const query = new URLSearchParams({
-        chain_ids: String(this.options.chainId),
-        limit: String(PAGE_SIZE)
-      })
-      if (cursor !== null) query.set('cursor', cursor)
-      const response = objectValue(
-        await executeProviderRead('morpho-api', 'offer-groups', () =>
-          this.request(
-            `${this.options.morphoApiBaseUrl}/v0/midnight/users/${encodeURIComponent(maker)}/offer-groups?${query.toString()}`,
-            'morpho-api',
-            Math.min(requestTimeoutMs, remainingMs)
+    const groups = await readMakerOfferGroups(
+      {
+        adapterError: OfferGroupsReadError,
+        chainId: this.options.chainId,
+        maker,
+        requestTimeoutMs: this.options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS,
+        morphoApiBaseUrl: this.options.morphoApiBaseUrl
+      },
+      {
+        request: (url, provider, timeoutMs) =>
+          executeProviderRead('morpho-api', 'offer-groups', () =>
+            this.request(url, provider, timeoutMs)
           )
-        ),
-        'Morpho API response'
-      )
-      const groups = response.data
-      if (!Array.isArray(groups)) {
-        throw new ProviderResponseError(
-          'morpho-api',
-          'offer-groups',
-          'Morpho API data must be an array'
-        )
       }
-      if (groups.length > PAGE_SIZE) {
-        throw new ProviderPaginationError(
-          'morpho-api',
-          'page-size',
-          'Morpho API offer-group page size exceeded'
-        )
-      }
-      const pageOffers = offersFromGroups(groups, this.options.chainId)
-      if (offers.length + pageOffers.length > MAX_OFFER_ITEMS) {
-        throw new ProviderPaginationError(
-          'morpho-api',
-          'item-limit',
-          'Morpho API offer item limit exceeded'
-        )
-      }
-      offers.push(...pageOffers)
-      if (response.cursor !== null && typeof response.cursor !== 'string') {
-        throw new ProviderResponseError(
-          'morpho-api',
-          'cursor',
-          'Morpho API cursor must be a string or null'
-        )
-      }
-      if (typeof response.cursor === 'string' && response.cursor.trim().length === 0) {
-        throw new ProviderResponseError(
-          'morpho-api',
-          'cursor',
-          'Morpho API cursor must be a non-empty opaque string or null'
-        )
-      }
-      cursor = typeof response.cursor === 'string' ? response.cursor : null
-      if (cursor !== null && seenCursors.has(cursor)) {
-        throw new ProviderPaginationError(
-          'morpho-api',
-          'repeated-cursor',
-          'Morpho API cursor repeated'
-        )
-      }
-      if (cursor !== null) seenCursors.add(cursor)
-    } while (cursor !== null)
-
-    if (offers.some(offer => !isAddressEqual(offer.maker, maker))) {
-      throw new ProviderResponseError(
-        'morpho-api',
-        'offer-maker',
-        'Morpho API active offer maker does not match requested maker'
-      )
-    }
-    const ignoredGroups = new Set(this.options.ignoredOfferGroupIds ?? [])
-    const inspectedOffers = offers.filter(offer => !ignoredGroups.has(offer.group))
-    const [ownedGroupIds, bootstrapGroupIds, ladderSellGroupIds] = await Promise.all([
-      this.options.readOwnedGroupIds(),
-      this.options.readBootstrapGroupIds?.() ?? Promise.resolve([]),
-      this.options.readLadderSellGroupIds?.() ?? Promise.resolve([])
-    ])
+    )
+    const offers = groups.flatMap(group =>
+      group.offers.map(offer => ({ ...offer, group: group.id }))
+    )
+    const [withdrawnGroupIds, ownedGroupIds, bootstrapGroupIds, ladderSellGroupIds] =
+      await Promise.all([
+        this.options.readWithdrawnGroupIds?.() ?? Promise.resolve([]),
+        this.options.readOwnedGroupIds(),
+        this.options.readBootstrapGroupIds?.() ?? Promise.resolve([]),
+        this.options.readLadderSellGroupIds?.() ?? Promise.resolve([])
+      ])
+    const withdrawn = new Set(withdrawnGroupIds.map(groupId => groupId.toLowerCase()))
+    const inspectedOffers = offers.filter(offer => !withdrawn.has(offer.group.toLowerCase()))
     const knownGroups = new Set([...this.options.v0OfferGroupIds, ...ownedGroupIds])
     const configuredMarkets = new Set(this.options.marketIds)
     return {
@@ -739,37 +628,89 @@ export class ViemSetupStateService implements SetupStateService {
   }
 
   /**
-   * Reads one market's current loss factor.
+   * Reads the maker's face debt in one market.
    * @param id - Configured market ID.
-   * @returns The loss factor as a uint128.
+   * @param maker - Maker whose position is read.
+   * @returns The debt as a uint128.
    * @throws `ProviderReadError` on a sanitized RPC rejection, or `ProviderResponseError` when the
    * response is not a uint128.
+   * @remarks Read-only; performs no writes.
    */
-  async getLossFactor(id: Hex) {
-    const lossFactor = await executeProviderRead('rpc', 'market-loss-factor', () =>
+  async getDebt(id: Hex, maker: Address) {
+    const debt = await executeProviderRead('rpc', 'position-debt', () =>
       this.chain.readContract({
         address: this.options.midnight,
         abi: midnightAbi,
-        functionName: 'lossFactor',
-        args: [id]
+        functionName: 'debt',
+        args: [id, maker]
       })
     )
-    if (typeof lossFactor !== 'bigint' || lossFactor < 0n || lossFactor > MAX_LOSS_FACTOR) {
-      throw new ProviderResponseError(
-        'rpc',
-        'market-loss-factor',
-        'lossFactor response must be a uint128'
-      )
-    }
-    return lossFactor
+    return uint128Value(debt, 'position-debt')
   }
 
   /**
-   * Reports the intentionally excluded V0 position-health surface.
-   * @returns A stable not-required result because V0 creates no collateralized debt.
-   * @remarks Pure and read-only; no provider request is made.
+   * Reads the collateral slot of one market whose token is the market's loan asset.
+   * @param id - Configured market ID.
+   * @param maker - Maker whose collateral and enter-gate answer are read.
+   * @returns The maker's collateral in the slot, its LLTV and oracle runtime hash, whether the enter
+   * gate lets the maker borrow, and whether the market has matured; `undefined` without such a slot.
+   * @throws `ProviderReadError` on a sanitized RPC rejection, including a gate that reverts, or
+   * `ProviderResponseError` for a malformed response.
+   * @remarks Read-only; performs no writes. The gate is asked on every check: its address is
+   * immutable, but its answer is not.
    */
-  async checkPositionHealth() {
-    return { status: 'not-required' as const, reason: 'V0 does not create collateralized debt' }
+  async getLoanCollateral(id: Hex, maker: Address): Promise<LoanCollateralSetup | undefined> {
+    const [market, block] = await Promise.all([
+      executeProviderRead('rpc', 'borrow-market', () =>
+        this.chain.readContract({
+          address: this.options.midnight,
+          abi: midnightAbi,
+          functionName: 'toMarket',
+          args: [id]
+        })
+      ),
+      executeProviderRead('rpc', 'borrow-block', () => this.chain.getBlock({ blockTag: 'latest' }))
+    ])
+    const terms = borrowTermsFromContract(market)
+    if (terms.loanSlot === undefined) return undefined
+    const { loanSlot } = terms
+    const [assets, oracleCode, enterGateOpen] = await Promise.all([
+      executeProviderRead('rpc', 'loan-collateral', () =>
+        this.chain.readContract({
+          address: this.options.midnight,
+          abi: midnightAbi,
+          functionName: 'collateral',
+          args: [id, maker, loanSlot.index]
+        })
+      ),
+      executeProviderRead('rpc', 'loan-collateral-oracle', () =>
+        this.chain.getCode({ address: loanSlot.oracle })
+      ),
+      isAddressEqual(terms.enterGate, zeroAddress)
+        ? true
+        : executeProviderRead('rpc', 'enter-gate', () =>
+            this.chain.readContract({
+              address: terms.enterGate,
+              abi: enterGateAbi,
+              functionName: 'canIncreaseDebt',
+              args: [maker]
+            })
+          )
+    ])
+    if (typeof enterGateOpen !== 'boolean') {
+      throw new ProviderResponseError(
+        'rpc',
+        'enter-gate',
+        'enter gate canIncreaseDebt response must be a boolean'
+      )
+    }
+    return {
+      assets: uint128Value(assets, 'loan-collateral'),
+      lltv: loanSlot.lltv,
+      oracleRuntimeHash:
+        oracleCode === undefined || oracleCode === '0x' ? undefined : keccak256(oracleCode),
+      enterGateOpen,
+      matured: block.timestamp > terms.maturity
+    }
   }
 }

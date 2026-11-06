@@ -631,10 +631,22 @@ export type KernelActivity =
       nonce: number
       hash: Hash
       status: Exclude<SendStatus, 'unsent'>
+      /** The candidate recorded before it at its nonce. */
+      replaces?: Hash
     } & GasFees)
   | { type: 'released'; intentId: Id; step: number; outcome: 'ok' | 'unknown' }
   | ({ type: 'included'; intentId: Id } & Inclusion)
-  | { type: 'entry'; id: Id; intentId: Id; from?: EntryState; to: EntryState | 'dropped' }
+  /** A nonce's receipt as first seen, or as a reorg changed it, whether or not a plan awaits it. */
+  | ({ type: 'resolved'; nonce: number } & Resolution)
+  | {
+      type: 'entry'
+      id: Id
+      intentId: Id
+      from?: EntryState
+      to: EntryState | 'dropped'
+      /** Why it retired, on a move to `retired`. */
+      reason?: string
+    }
   | ({ type: 'notice' } & NoticeBody)
   | { type: 'alarm'; reason: string }
   /** A nonce record dropped once its resolution is final: nothing of its candidates changes again. */

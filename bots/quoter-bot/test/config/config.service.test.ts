@@ -1,5 +1,6 @@
 import type { Address, Hex } from 'viem'
 
+import { MAX_CONTINUOUS_FEE } from '@morpho-org/midnight-sdk'
 import { bytesToHex, hexToBytes } from 'viem'
 import { describe, expect, test } from 'vitest'
 
@@ -26,8 +27,9 @@ const environment = {
   REFERENCE_MARKET_ID: referenceMarketId,
   NATIVE_RESERVE_WEI: '10',
   MAX_FEE_GWEI: '100',
-  PRIORITY_FEE_GWEI: '1',
   MAX_TRANSACTION_SPEND_WEI: '100000000000000000',
+  MAX_CONTINUOUS_FEE_CAP: '0',
+  KERNEL_ENROLLMENT: 'enrolling',
   MAX_PUBLICATION_GAS: '5000000',
   MAX_PUBLICATION_DATA_BYTES: '65536',
   MAX_CANCELLATION_GAS: '100000',
@@ -80,20 +82,12 @@ describe('ConfigService', () => {
       marketIds: [marketId],
       referenceMarketId,
       requiredAllowance: 0n,
-      acceptedLossFactor: new Map()
+      acceptedLossFactor: new Map(),
+      debt: new Map()
     })
     expect(config.v0OfferGroupIds).toEqual([groupId])
     expect(config.requestTimeoutMs).toBe(10_000)
     expect(config.transactionReceiptTimeoutMs).toBe(180_000)
-  })
-
-  test('does not require the retired Router API configuration', () => {
-    const { ROUTER_API_BASE_URL: _retired, ...withoutRouterApi } = environment
-
-    expect(() => ConfigService.from(withoutRouterApi)).not.toThrow()
-    expect(() =>
-      ConfigService.from({ ...withoutRouterApi, ROUTER_API_BASE_URL: 'ignored legacy value' })
-    ).not.toThrow()
   })
 
   test('canonicalizes equivalent mixed-case market, group, and reference IDs', () => {
@@ -192,6 +186,40 @@ describe('ConfigService', () => {
     ).toThrow('TRANSACTION_RECEIPT_TIMEOUT_MS must be between 1 and 900000')
   })
 
+  test('reads the kernel finality rule, safe unless it says otherwise', () => {
+    expect(ConfigService.from(environment).finality).toBe('safe')
+    expect(ConfigService.from({ ...environment, FINALITY: 'finalized' }).finality).toBe('finalized')
+    expect(ConfigService.from({ ...environment, FINALITY: '12' }).finality).toEqual({ depth: 12 })
+    for (const FINALITY of ['latest', '0', '-1', '1.5'])
+      expect(() => ConfigService.from({ ...environment, FINALITY })).toThrow(
+        'FINALITY must be safe, finalized, or a positive block depth'
+      )
+  })
+
+  test('requires the kernel enrollment, and a continuous-fee cap within the protocol maximum', () => {
+    expect(ConfigService.from(environment).writePolicy).toMatchObject({
+      enrollment: 'enrolling',
+      maxContinuousFeeCap: 0n
+    })
+    expect(() => ConfigService.from({ ...environment, KERNEL_ENROLLMENT: undefined })).toThrow(
+      'KERNEL_ENROLLMENT'
+    )
+    expect(() => ConfigService.from({ ...environment, KERNEL_ENROLLMENT: 'yes' })).toThrow(
+      'KERNEL_ENROLLMENT must be enrolling or enrolled'
+    )
+    for (const unset of [undefined, '', ' '])
+      expect(
+        ConfigService.from({ ...environment, MAX_CONTINUOUS_FEE_CAP: unset }).writePolicy
+          ?.maxContinuousFeeCap
+      ).toBe(MAX_CONTINUOUS_FEE)
+    expect(() => ConfigService.from({ ...environment, MAX_CONTINUOUS_FEE_CAP: '-1' })).toThrow(
+      'MAX_CONTINUOUS_FEE_CAP'
+    )
+    expect(() =>
+      ConfigService.from({ ...environment, MAX_CONTINUOUS_FEE_CAP: '317097920' })
+    ).toThrow('MAX_CONTINUOUS_FEE_CAP must not exceed the protocol maximum continuous fee')
+  })
+
   test('rejects malformed private keys and unsigned integer settings', () => {
     expect(() => ConfigService.from({ ...environment, MAKER_PRIVATE_KEY: '0x12' })).toThrow(
       'MAKER_PRIVATE_KEY must be a 0x-prefixed 32-byte hex string'
@@ -209,20 +237,10 @@ describe('ConfigService', () => {
     ['1', 1_000_000_000n],
     ['  0.005\t', 5_000_000n],
     ['0.000000001', 1n]
-  ] as const)('parses PRIORITY_FEE_GWEI=%j as decimal gwei', (value, expected) => {
-    const config = ConfigService.from({ ...environment, PRIORITY_FEE_GWEI: value })
+  ] as const)('parses MAX_FEE_GWEI=%j as decimal gwei', (value, expected) => {
+    const config = ConfigService.from({ ...environment, MAX_FEE_GWEI: value })
 
-    expect(config.writePolicy?.priorityFeePerGasWei).toBe(expected)
-  })
-
-  test('parses MAX_FEE_GWEI as decimal gwei', () => {
-    const config = ConfigService.from({
-      ...environment,
-      MAX_FEE_GWEI: '0.5',
-      PRIORITY_FEE_GWEI: '0.005'
-    })
-
-    expect(config.writePolicy?.maxFeePerGasWei).toBe(500_000_000n)
+    expect(config.writePolicy?.maxFeePerGasWei).toBe(expected)
   })
 
   test.each([
@@ -234,40 +252,16 @@ describe('ConfigService', () => {
     ['1.0000000005', 'invalid-decimal'],
     ['0', 'out-of-range'],
     ['0.000000000', 'out-of-range']
-  ] as const)('rejects PRIORITY_FEE_GWEI=%j', (value, reason) => {
+  ] as const)('rejects MAX_FEE_GWEI=%j', (value, reason) => {
     let error: unknown
     try {
-      ConfigService.from({ ...environment, PRIORITY_FEE_GWEI: value })
+      ConfigService.from({ ...environment, MAX_FEE_GWEI: value })
     } catch (caught) {
       error = caught
     }
 
     expect(error).toBeInstanceOf(ConfigValidationError)
-    expect(error).toMatchObject({ field: 'PRIORITY_FEE_GWEI', reason })
-  })
-
-  test('still rejects a decimal tip that leaves no room to bump under the ceiling', () => {
-    let error: unknown
-    try {
-      ConfigService.from({ ...environment, MAX_FEE_GWEI: '0.005', PRIORITY_FEE_GWEI: '0.005' })
-    } catch (caught) {
-      error = caught
-    }
-
-    expect(error).toBeInstanceOf(ConfigValidationError)
-    expect(error).toMatchObject({ field: 'PRIORITY_FEE_GWEI', reason: 'incoherent-bounds' })
-  })
-
-  test('rejects a 32-byte value that is not a valid secp256k1 private key', () => {
-    let error: unknown
-    try {
-      ConfigService.from({ ...environment, MAKER_PRIVATE_KEY: `0x${'00'.repeat(32)}` })
-    } catch (value) {
-      error = value
-    }
-
-    expect(error).toBeInstanceOf(ConfigValidationError)
-    expect(error).toMatchObject({ field: 'MAKER_PRIVATE_KEY', reason: 'invalid-private-key' })
+    expect(error).toMatchObject({ field: 'MAX_FEE_GWEI', reason })
   })
 
   test('uses a stable typed config error with safe field and reason metadata', () => {
@@ -285,5 +279,44 @@ describe('ConfigService', () => {
       reason: 'invalid-bytes32'
     })
     expect(JSON.stringify(error)).not.toContain('private-secret')
+  })
+})
+
+describe('ConfigService private-key validation', () => {
+  test.each([
+    [`0x${'00'.repeat(32)}`, 'zero'],
+    ['0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141', 'curve order'],
+    [`0x${'1'.repeat(63)}`, 'odd length']
+  ])('rejects an unusable secp256k1 private key (%s, %s)', privateKey => {
+    let error: unknown
+    try {
+      ConfigService.from({ ...environment, MAKER_PRIVATE_KEY: privateKey })
+    } catch (value) {
+      error = value
+    }
+    expect(error).toBeInstanceOf(ConfigValidationError)
+    expect(error).toMatchObject({ field: 'MAKER_PRIVATE_KEY', reason: 'invalid-private-key' })
+    expect(JSON.stringify(error)).not.toContain(privateKey)
+  })
+
+  test('accepts a usable secp256k1 private key', () => {
+    expect(ConfigService.from(environment).privateKey).toBe(environment.MAKER_PRIVATE_KEY as Hex)
+  })
+
+  test('uses only the maker address in read-only mode', () => {
+    const config = ConfigService.from(
+      { ...environment, MAKER_PRIVATE_KEY: 'ignored-private-key' },
+      { readOnly: true }
+    )
+
+    expect(config.readOnly).toBe(true)
+    expect(config.identity).toEqual({ readOnly: true, maker: environment.MAKER_ADDRESS })
+    expect(config.privateKey).toBeUndefined()
+  })
+
+  test('still requires the private key when read-only mode is absent', () => {
+    expect(() => ConfigService.from({ ...environment, MAKER_PRIVATE_KEY: undefined })).toThrow(
+      'Missing required env var: MAKER_PRIVATE_KEY'
+    )
   })
 })

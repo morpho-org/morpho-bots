@@ -29,6 +29,7 @@ import {
 import { declareKernelHost } from '@repo/kernel'
 
 import type { FactNode, KernelDomain } from './act'
+import type { LogSink } from './log'
 import type { KernelView } from './view'
 
 import { kernelDomain } from './act'
@@ -86,6 +87,8 @@ type SourceSpec<T, S extends Sampled> = Readonly<{
   /** How long a read's keys hold, from when the read started: its write's expiry is no later. */
   validForMs: number
   samples?: S
+  /** Where each landed read is logged as `source.read`. */
+  logger: LogSink
   read: (head: KernelHead, now: () => number, samples: Samples<S>) => Promise<KeyedWrite<T>>
 }>
 
@@ -100,8 +103,9 @@ export type Bot = Readonly<{
   kernel: (options: Omit<KernelHostOptions, 'facts'>) => KernelHandle
   /**
    * The effect `id` on lane `id`, writing `${id}.reads` folded into `level`; `everyMs` adds
-   * `${level}.interval` and `${level}.due`. Reads run one at a time in head order, and a throw
-   * fails the graph. `samples` are not pinned to `head`: see `docs/framework/AUTHORING.md` §4.
+   * `${level}.interval` and `${level}.due`. Reads run one at a time in head order, each landed one
+   * is logged to `logger` as `source.read`, and a throw fails the graph. `samples` are not pinned
+   * to `head`: see `docs/framework/AUTHORING.md` §4.
    * @throws GraphDefinitionError - for an invalid `validForMs` or a sample named `state`.
    */
   source: <T, S extends Sampled = Record<never, never>>(
@@ -241,11 +245,14 @@ export const defineBot =
             const samples = Object.fromEntries(
               Object.entries(context.samples).filter(([name]) => name !== KERNEL_STATE_SAMPLE)
             ) as Samples<S>
-            const write = await spec.read(
-              from === 'head' ? head : (current ?? head),
-              context.now,
-              samples
-            )
+            const at = from === 'head' ? head : (current ?? head)
+            const write = await spec.read(at, context.now, samples)
+            spec.logger.info('source.read', {
+              source: sourceId,
+              block: at.number,
+              durationMs: context.now() - startedAt,
+              coverage: write.coverage
+            })
             context.write(expiringBy(write, startedAt + spec.validForMs))
           }
         })

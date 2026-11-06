@@ -9,7 +9,6 @@
     "packages/typescript-config": {},
     "packages/utils": {},
     "packages/contracts": {},
-    "packages/bot-kit": {},
     "packages/kit": {},
     "framework/engine": {},
     "framework/kernel": {},
@@ -27,9 +26,6 @@
         "src/checks/orchestrate/*.ts"
       ]
     },
-    "packages/logging": {},
-    "packages/monitoring": {},
-    "packages/observability": {},
     "packages/telemetry": {},
     "packages/offers": {},
     "packages/oxlint-plugin": {},

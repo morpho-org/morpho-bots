@@ -160,6 +160,10 @@ jobs:
           push: true
           # Only the immutable commit tag: `latest` is decided after this multi-minute build, below.
           tags: ${{ vars.DOCKER_USERNAME }}/${{ vars.DOCKER_REPOSITORY }}:${{ steps.commit.outputs.sha }}
+          # The quoter's journal names the build that wrote it.
+          build-args: |
+            BUILD_REVISION=${{ steps.commit.outputs.sha }}
+            BUILD_IMAGE_TAG=${{ steps.commit.outputs.sha }}
           # Attach a full SLSA provenance attestation naming this repository and run, so the image's
           # origin is verifiable rather than inferred from the labels below.
           provenance: mode=max

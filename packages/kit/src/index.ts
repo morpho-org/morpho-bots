@@ -1,15 +1,9 @@
 export { withLogging } from '@morpho-org/viem-dlc'
-export { BALANCE_EVERY_BLOCKS, createBalanceMonitor } from './balance'
+export { BALANCE_EVERY_MS, createBalanceMonitor } from './balance'
+export { blocksFor, blockTimeMs } from './block-time'
 export { withDlcFacts } from './chain-facts'
 export { assertContractDeployed, createDeploylessClient } from './client'
-export {
-  bumpFees,
-  feeCeiling,
-  hasBumpHeadroom,
-  initialFees,
-  stepCap,
-  blocksFor
-} from './fee-policy'
+export { bumpFees, feeCeiling, hasBumpHeadroom, initialFees, stepCap } from './fee-policy'
 export type { EndpointKind } from './gas-limits'
 export { ethCallGasCap } from './gas-limits'
 export { createHeartbeatMonitor, HEARTBEAT_INTERVAL_MS, HEARTBEAT_TIMEOUT_MS } from './heartbeat'
@@ -22,7 +16,8 @@ export {
   JournalFileError,
   MissingBuildIdentityError,
   NoCommitmentsError,
-  PolicyViolationError
+  PolicyViolationError,
+  SignerAccountError
 } from './errors'
 export type {
   JournalBuildIdentity,
@@ -53,10 +48,13 @@ export type { ShippingConfigState } from './shipping-config'
 export { classifyShippingConfig } from './shipping-config'
 export type { Signer } from './signer'
 export { createAccountSigner } from './signer'
+export type { KeystoreDependencies, KmsSigner } from './signer-account'
+export { createKeystoreAccount, createKmsAccount, isValidPrivateKey } from './signer-account'
 export type { SimulateResult } from './simulate'
 export { simulateCall, simulateLiquidationExec } from './simulate'
 export type { TransactionKernelLimits, TransactionKernelOptions } from './transaction-kernel'
 export {
+  reorgDepthFor,
   TRANSACTION_KERNEL_RESERVATIONS,
   transactionKernelConfig,
   transactionKernelSpec

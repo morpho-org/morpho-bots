@@ -5,13 +5,12 @@ import { MathLib } from '@morpho-org/morpho-ts'
 import { describe, expect, test } from 'vitest'
 
 import {
-  decidePositionBootstrap,
+  decidePositionBootstrapWithDiagnostics,
   validateBootstrapConfig
 } from '../../../src/domain/position-bootstrap'
 import {
   bootstrapRateWindowIsEmpty,
-  createBootstrapOffer,
-  isRateWindowEmpty
+  createBootstrapOffer
 } from '../../../src/infrastructure/bootstrap/bootstrap-offer.utils'
 
 const WAD = MathLib.WAD
@@ -63,7 +62,7 @@ const fullTake = (offer: { tick: bigint; maxUnits: bigint }) => ({
 })
 
 const takeBootstrap = (rateBps: bigint, timeToMaturity: bigint, availableCash = cashBalance) => {
-  const decision = decidePositionBootstrap({
+  const { decision } = decidePositionBootstrapWithDiagnostics({
     config,
     position: {
       credit: 0n,
@@ -221,7 +220,5 @@ describe('bootstrap rate window', () => {
     })()
 
     expect(thrown).toMatchObject({ operation: 'rate-window-empty' })
-    expect(isRateWindowEmpty(thrown)).toBe(true)
-    expect(isRateWindowEmpty(new Error('rate-window-empty'))).toBe(false)
   })
 })

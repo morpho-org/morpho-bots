@@ -23,8 +23,9 @@ const baseEnvironment = {
   REFERENCE_MARKET_ID: `0x${'77'.repeat(32)}`,
   NATIVE_RESERVE_WEI: '10',
   MAX_FEE_GWEI: '100',
-  PRIORITY_FEE_GWEI: '1',
   MAX_TRANSACTION_SPEND_WEI: '100000000000000000',
+  MAX_CONTINUOUS_FEE_CAP: '0',
+  KERNEL_ENROLLMENT: 'enrolling',
   MAX_PUBLICATION_GAS: '5000000',
   MAX_PUBLICATION_DATA_BYTES: '65536',
   MAX_CANCELLATION_GAS: '100000',
@@ -431,6 +432,103 @@ describe('ladder configuration loading', () => {
           LADDER_MARKETS: JSON.stringify([item({ inventorySkew })])
         })
       ).toThrow(message)
+    })
+  })
+
+  describe('debt', () => {
+    test('loads a LADDER_MARKETS debt block and feeds its cap to setup qualification', () => {
+      const config = ConfigService.from({
+        ...baseEnvironment,
+        LADDER_MARKETS: JSON.stringify([
+          item({ debt: { maximumDebtUnits: '5000', stopBorrowingBeforeMaturitySeconds: '86400' } })
+        ])
+      })
+      const debt = { maximumDebtUnits: 5000n, stopBorrowingBeforeMaturitySeconds: 86_400 }
+
+      expect(config.ladder[0]?.debt).toStrictEqual(debt)
+      expect(config.setup.debt).toEqual(new Map([[marketId, debt]]))
+    })
+
+    test('accepts zero stopBorrowingBeforeMaturitySeconds as borrowing until maturity', () => {
+      const config = ConfigService.from({
+        ...baseEnvironment,
+        LADDER_MARKETS: JSON.stringify([
+          item({ debt: { maximumDebtUnits: '5000', stopBorrowingBeforeMaturitySeconds: '0' } })
+        ])
+      })
+
+      expect(config.ladder[0]?.debt?.stopBorrowingBeforeMaturitySeconds).toBe(0)
+    })
+
+    test('leaves debt absent when the block is omitted', () => {
+      const config = ConfigService.from({
+        ...baseEnvironment,
+        LADDER_MARKETS: JSON.stringify([item()])
+      })
+
+      expect(config.ladder[0]).not.toHaveProperty('debt')
+      expect(config.setup.debt).toEqual(new Map())
+    })
+
+    test.each([
+      [
+        'unsupported nested key',
+        { maximumDebtUnits: '5', stopBorrowingBeforeMaturitySeconds: '0', bufferBps: '1' },
+        'ladder[0].debt contains an unsupported key'
+      ],
+      ['missing maximumDebtUnits', {}, 'ladder[0].debt.maximumDebtUnits is required'],
+      [
+        'missing stopBorrowingBeforeMaturitySeconds',
+        { maximumDebtUnits: '5' },
+        'ladder[0].debt.stopBorrowingBeforeMaturitySeconds is required'
+      ],
+      [
+        'negative stopBorrowingBeforeMaturitySeconds',
+        { maximumDebtUnits: '5', stopBorrowingBeforeMaturitySeconds: '-1' },
+        'ladder[0].debt.stopBorrowingBeforeMaturitySeconds must be an integer'
+      ],
+      [
+        'fractional stopBorrowingBeforeMaturitySeconds',
+        { maximumDebtUnits: '5', stopBorrowingBeforeMaturitySeconds: '1.5' },
+        'ladder[0].debt.stopBorrowingBeforeMaturitySeconds must be an integer'
+      ],
+      [
+        'unsafe stopBorrowingBeforeMaturitySeconds',
+        { maximumDebtUnits: '5', stopBorrowingBeforeMaturitySeconds: '9007199254740993' },
+        'ladder[0].debt.stopBorrowingBeforeMaturitySeconds must be a non-negative safe integer'
+      ],
+      [
+        'zero maximumDebtUnits',
+        { maximumDebtUnits: '0', stopBorrowingBeforeMaturitySeconds: '0' },
+        'ladder[0].debt.maximumDebtUnits must be positive'
+      ],
+      [
+        'number token maximumDebtUnits',
+        { maximumDebtUnits: 5, stopBorrowingBeforeMaturitySeconds: '0' },
+        'ladder[0].debt.maximumDebtUnits must be an integer'
+      ],
+      ['non-object block', '5', 'ladder[0].debt must be an object']
+    ])('rejects an invalid LADDER_MARKETS debt block: %s', (_name, debt, message) => {
+      expect(() =>
+        ConfigService.from({
+          ...baseEnvironment,
+          LADDER_MARKETS: JSON.stringify([item({ debt })])
+        })
+      ).toThrow(message)
+    })
+
+    test('rejects debt on a lend-only ladder, which never sells', () => {
+      expect(() =>
+        ConfigService.from({
+          ...baseEnvironment,
+          LADDER_MARKETS: JSON.stringify([
+            item({
+              lowerRateBudgetAssets: '0',
+              debt: { maximumDebtUnits: '5', stopBorrowingBeforeMaturitySeconds: '0' }
+            })
+          ])
+        })
+      ).toThrow('ladder[0].debt requires a nonzero lowerRateBudgetAssets')
     })
   })
 

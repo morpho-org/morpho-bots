@@ -365,7 +365,7 @@ export type ReadAt = Readonly<{ blockHash: Hex }> | Readonly<{ blockNumber: bigi
  *
  * Throws whatever the lens reverted with — the caller (one vault per call, see `fetchVaultV2Data`)
  * treats that as that vault's failure. The `client` must use viem-dlc's deployless transport (built
- * by bot-kit's `createDeploylessClient`).
+ * by kit's `createDeploylessClient`).
  */
 export const readVaultV2Lens = async (
   client: Client<Transport<BatchLensTransportType>>,

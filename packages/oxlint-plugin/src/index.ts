@@ -1,6 +1,7 @@
 import { commentHygiene } from './comment-hygiene.ts'
 import { copyStyle } from './copy-style.ts'
 import { errorsFile } from './errors-file.ts'
+import { kernelOnlySigning } from './kernel-only-signing.ts'
 import { noAsAddress } from './no-as-address.ts'
 import { noHexTemplate } from './no-hex-template.ts'
 import { noLocalMathConstant } from './no-local-math-constant.ts'
@@ -16,6 +17,7 @@ export default {
     'comment-hygiene': commentHygiene,
     'copy-style': copyStyle,
     'errors-file': errorsFile,
+    'kernel-only-signing': kernelOnlySigning,
     'no-as-address': noAsAddress,
     'no-hex-template': noHexTemplate,
     'no-local-math-constant': noLocalMathConstant,

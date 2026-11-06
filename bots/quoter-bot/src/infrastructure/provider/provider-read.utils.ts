@@ -1,6 +1,6 @@
 import type { ProviderId, ProviderOperation, SafeProviderReadMetadata } from '../../errors'
 
-import { ProviderReadError, ProviderResponseError, SafeProviderError } from '../../errors'
+import { SafeProviderError, ProviderReadError, ProviderResponseError } from '../../errors'
 import { retryTransientProviderRead } from './provider-retry.utils'
 
 const SAFE_NAMES = new Set<NonNullable<SafeProviderReadMetadata['name']>>([

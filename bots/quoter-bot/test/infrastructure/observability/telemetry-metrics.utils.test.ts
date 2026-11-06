@@ -10,9 +10,7 @@ import {
 import { withDeltaObservableGauges } from '@repo/telemetry'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
 
-import type { LadderRunResult } from '../../../src/application/ladder/ladder-quoter.service'
-
-import { ladderMonitoringEvents } from '../../../src/application/monitoring/ladder-monitoring.utils'
+import { ladderFactEvents } from '../../../src/application/monitoring/ladder-monitoring.utils'
 import { createTelemetryRecordObserver } from '../../../src/infrastructure/observability/telemetry-metrics.utils'
 
 const MARKET_ID = '0x5555555555555555555555555555555555555555555555555555555555555555' as const
@@ -64,7 +62,7 @@ describe('createTelemetryRecordObserver', () => {
   const metricByName = (collected: CollectedMetric[], name: string) =>
     collected.find(metric => metric.name === name)
 
-  test('maps cycle results to a counter and a duration histogram', async () => {
+  test('maps cycle results to a counter', async () => {
     const observer = createTelemetryRecordObserver()
     observer.record({
       event: 'cycle.completed',
@@ -72,7 +70,6 @@ describe('createTelemetryRecordObserver', () => {
       marketId: MARKET_ID,
       status: 'applied',
       action: 'recenter',
-      durationMs: 1234,
       errorName: 'ShouldNeverBecomeAnAttribute'
     })
     const collected = await collect()
@@ -87,13 +84,7 @@ describe('createTelemetryRecordObserver', () => {
         value: 1
       }
     ])
-    const duration = metricByName(collected, 'quoter_bot.cycle.duration')?.dataPoints[0]
-    expect(duration?.attributes).toEqual({
-      workflow: 'ladder',
-      status: 'applied',
-      marketId: MARKET_ID
-    })
-    expect(duration?.value).toMatchObject({ count: 1, sum: 1234 })
+    expect(metricByName(collected, 'quoter_bot.cycle.duration')).toBeUndefined()
   })
 
   test('counts a batched submission sharing one hash as one transaction', async () => {
@@ -106,18 +97,14 @@ describe('createTelemetryRecordObserver', () => {
       })
     }
     observer.record({
-      event: 'ladder.transaction-submitted',
-      operation: 'publish',
-      marketId: MARKET_ID,
+      event: 'offer-invalidation.transaction-submitted',
+      groupId: '0xdd',
       txHash: '0xotherhash'
     })
     const submitted = metricByName(await collect(), 'quoter_bot.transactions')
       ?.dataPoints.filter(dataPoint => dataPoint.attributes.phase === 'submitted')
       .map(dataPoint => ({ workflow: dataPoint.attributes.workflow, value: dataPoint.value }))
-    expect(submitted).toEqual([
-      { workflow: 'offer-invalidation', value: 1 },
-      { workflow: 'ladder', value: 1 }
-    ])
+    expect(submitted).toEqual([{ workflow: 'offer-invalidation', value: 2 }])
   })
 
   test('maps guardrails, transactions, fills, and setup checks to counters', async () => {
@@ -141,12 +128,6 @@ describe('createTelemetryRecordObserver', () => {
       side: 'lower',
       clearable: true,
       suppressed: false
-    })
-    observer.record({
-      event: 'ladder.transaction-submitted',
-      operation: 'publish',
-      marketId: MARKET_ID,
-      txHash: '0xdeadbeef'
     })
     observer.record({
       event: 'transaction.settled',
@@ -201,15 +182,6 @@ describe('createTelemetryRecordObserver', () => {
     expect(metricByName(collected, 'quoter_bot.transactions')?.dataPoints).toEqual([
       {
         attributes: {
-          phase: 'submitted',
-          workflow: 'ladder',
-          operation: 'publish',
-          marketId: MARKET_ID
-        },
-        value: 1
-      },
-      {
-        attributes: {
           phase: 'settled',
           workflow: 'ladder',
           operation: 'publish',
@@ -232,22 +204,11 @@ describe('createTelemetryRecordObserver', () => {
   test('zeroes total units when a quoting book side empties with no active quote', async () => {
     const observer = createTelemetryRecordObserver()
     const project = (activeQuote?: object) =>
-      ladderMonitoringEvents([
-        {
-          marketId: MARKET_ID,
-          status: 'observed',
-          action: 'rest',
-          verbose: {
-            config: { marketId: MARKET_ID },
-            currentState: { status: 'observed', market: {} },
-            stateAfterCheck: {
-              status: 'observed',
-              market: {},
-              ...(activeQuote ? { activeQuote } : {})
-            }
-          }
-        } as unknown as LadderRunResult
-      ])
+      ladderFactEvents(MARKET_ID, {
+        bounds: { minimumRateBps: 0n, maximumRateBps: 1_000n },
+        market: {},
+        ...(activeQuote ? { activeQuote: activeQuote as never } : {})
+      })
     const quote = {
       centerRateBps: 500n,
       lower: [{ rateBps: 450n, assets: 100n }],
@@ -372,26 +333,15 @@ describe('createTelemetryRecordObserver', () => {
   test('a projected one-sided quote removes every empty-side rate', async () => {
     const observer = createTelemetryRecordObserver()
     const project = (higher: { rateBps: bigint; assets: bigint }[]) =>
-      ladderMonitoringEvents([
-        {
-          marketId: MARKET_ID,
-          status: 'observed',
-          action: 'rest',
-          verbose: {
-            config: { marketId: MARKET_ID },
-            currentState: {
-              status: 'observed',
-              market: {},
-              activeQuote: {
-                centerRateBps: 500n,
-                lower: [{ rateBps: 450n, assets: 100n }],
-                higher
-              }
-            },
-            stateAfterCheck: { status: 'failed', errorName: 'ProviderReadError' }
-          }
-        } as unknown as LadderRunResult
-      ])
+      ladderFactEvents(MARKET_ID, {
+        bounds: { minimumRateBps: 0n, maximumRateBps: 1_000n },
+        market: {},
+        activeQuote: {
+          centerRateBps: 500n,
+          lower: [{ rateBps: 450n, assets: 100n }],
+          higher
+        } as never
+      })
     for (const event of project([{ rateBps: 550n, assets: 100n }])) observer.record(event)
     const before = await collect()
     expect(metricByName(before, 'quoter_bot.book.center_rate_bps')?.dataPoints).toEqual([
@@ -435,8 +385,8 @@ describe('createTelemetryRecordObserver', () => {
       errorName: 'LadderAdapterError'
     })
     observer.record({
-      event: 'ladder.transaction-submitted',
-      operation: 'cancel',
+      event: 'offer-invalidation.transaction-submitted',
+      groupId: '0xaa',
       txHash: '0xfeedface'
     })
     observer.record({

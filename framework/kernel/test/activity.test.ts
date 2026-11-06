@@ -31,6 +31,8 @@ const shape = (activity: readonly KernelActivity[]) =>
         return `notice ${a.intentId} ${a.notice}`
       case 'alarm':
         return `alarm ${a.reason}`
+      case 'resolved':
+        return `resolved ${a.nonce} ${a.success ? 'success' : 'reverted'}`
       case 'final':
         return `final ${a.nonce}`
       case 'running':
@@ -74,6 +76,7 @@ describe('activity', () => {
       'notice liq admitted',
       'sent liq#0 step accepted',
       'included liq#0',
+      'resolved 0 success',
       'notice liq settled'
     ])
   })
@@ -127,7 +130,7 @@ describe('activity', () => {
     ).toEqual(['0@5', '0@6', `1@${h.block}`])
   })
 
-  it('reports no send or entry a restart restores, but still reports what happens to them next', () => {
+  it('reports no send or entry a restart restores, but still reports what happens to them next, its receipt included', () => {
     const h = new Harness().start()
     const t = tree(offer('g1', 300n))
     h.send({ type: 'Submit', plan: ecrecoverPlan('q', t) })
@@ -144,7 +147,11 @@ describe('activity', () => {
     h.nonceAt(h.state.nextNonce!)
     h.send({ type: 'Seen', hash: published })
     h.mine(published)
-    expect(shape(h.activity)).toEqual(['sent q#1 step accepted', 'entry exposed>live'])
+    expect(shape(h.activity)).toEqual([
+      'sent q#1 step accepted',
+      'resolved 0 success',
+      'entry exposed>live'
+    ])
   })
 
   it("surfaces the neutralizer a stop sends on its own, which no bot's plan names", () => {
@@ -166,10 +173,12 @@ describe('activity', () => {
       'entry live>revoking',
       expect.stringMatching(/^sent recovery:neutralizer:\S+#0 neutralizer accepted$/),
       expect.stringMatching(/^included recovery:neutralizer:/),
+      'resolved 1 success',
       'final 0',
       'final 1',
       'entry revoking>retired'
     ])
+    expect(h.activity.at(-1)).toMatchObject({ reason: expect.any(String) })
   })
 
   it('raises no alarm for a requested stop, even one that ends unsafe with an entry open', () => {
@@ -294,12 +303,38 @@ describe('activity', () => {
     h.drive()
     h.head(h.block + 1, h.block + 1)
     h.mine(h.candidate('0xexec').hash, { status: 'reverted' })
-    expect(shape(h.activity).slice(-4)).toEqual([
+    expect(shape(h.activity).slice(-5)).toEqual([
       'included liq#0',
+      'resolved 0 reverted',
       'final 0',
       'notice liq compensating',
       'notice liq compensated'
     ])
+  })
+
+  it('names the receipt of a step mined at finality before pruning its nonce', () => {
+    const h = new Harness().start()
+    h.send({ type: 'Submit', plan: liquidationPlan('liq') })
+    h.drive()
+    h.head(h.block + 1, h.block + 1)
+    h.mine(h.candidate('0xexec').hash)
+    expect(h.state.nonces).toEqual({})
+    expect(shape(h.activity).slice(-4)).toEqual([
+      'included liq#0',
+      'resolved 0 success',
+      'final 0',
+      'notice liq settled'
+    ])
+  })
+
+  it('names the candidate a send follows at its nonce', () => {
+    const h = new Harness().start()
+    h.send({ type: 'Submit', plan: liquidationPlan('liq') })
+    h.drive('rejected')
+    h.drive()
+    const [first, second] = h.activity.filter(a => a.type === 'sent')
+    expect(first).not.toHaveProperty('replaces')
+    expect(second).toMatchObject({ nonce: 0, replaces: first!.hash })
   })
 
   it('names an entry dropped when its plan fails before exposure', () => {

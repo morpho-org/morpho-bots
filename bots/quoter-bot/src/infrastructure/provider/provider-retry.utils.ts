@@ -1,7 +1,7 @@
 import { delay } from '@repo/utils'
 
-/** Attempts a transient provider read, or a head that has not yet caught up, is given. */
-export const PROVIDER_READ_ATTEMPTS = 3
+/** Attempts a transient provider read is given. */
+const PROVIDER_READ_ATTEMPTS = 3
 const BASE_DELAY_MS = 500
 const MAX_DELAY_MS = 4_000
 const JITTER_SHARE = 0.5
@@ -24,7 +24,7 @@ const isTransientFailure = (error: unknown) => {
  * @param failures - Attempts that have already failed, starting at one.
  * @returns Milliseconds to wait before the next attempt.
  */
-export const providerBackoffDelayMs = (failures: number) => {
+const providerBackoffDelayMs = (failures: number) => {
   const capped = Math.min(MAX_DELAY_MS, BASE_DELAY_MS * 2 ** (failures - 1))
   const fixed = capped * (1 - JITTER_SHARE)
   return fixed + Math.random() * (capped - fixed)
@@ -41,7 +41,7 @@ export const providerBackoffDelayMs = (failures: number) => {
  * failures — so callers keep today's halt behavior and operator-visible metadata. Non-transient
  * failures (any error that is not a timeout, network fault, or HTTP 408/429/5xx `SafeProviderError`)
  * are rethrown immediately without a retry.
- * @remarks Waits {@link providerBackoffDelayMs} between attempts. An aggregate deadline shortens the final wait and prevents a further attempt after it expires.
+ * @remarks Waits `providerBackoffDelayMs` between attempts. An aggregate deadline shortens the final wait and prevents a further attempt after it expires.
  */
 export const retryTransientProviderRead = async <Result>(
   attempt: (remainingMs?: number) => Promise<Result>,

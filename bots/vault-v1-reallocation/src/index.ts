@@ -134,7 +134,8 @@ async function main() {
   const balanceMonitor = createBalanceMonitor({
     address: eoa,
     read: () => getBalance(client, { address: eoa }),
-    logger
+    logger,
+    chain: config.chain
   })
   using heartbeatMonitor = createHeartbeatMonitor({
     url: process.env.BETTERSTACK_HEARTBEAT_URL,

@@ -3,12 +3,14 @@ import type { Address, Hex } from 'viem'
 
 import { Group, Offer, Tree } from '@morpho-org/midnight-sdk'
 
+import type { LadderDebtConfig } from '../../domain/debt-ceiling'
 import type { LadderMarketState, LadderQuoteSet, LadderRung } from '../../domain/ladder'
 import type { TickWindow } from '../../domain/tick-window'
 import type { OpposingBookTicks } from './ladder-cross-book.utils'
 import type { LadderGroupReference } from './ladder-group-ownership.utils'
 
 import { offerCapsByRung } from '../../domain/ladder'
+import { borrowingCutoff } from '../../domain/market-maturity'
 import { unitsForBuyerAssetsAtTick } from '../../domain/offer-cap'
 import {
   admissibleRateTick,
@@ -33,6 +35,8 @@ type BuildLadderTreeParameters = {
   maximumRateBps: bigint
   ownBootstrapBuyTickCeiling?: bigint
   opposingBookTicks?: OpposingBookTicks
+  /** The market's debt config; required to publish a `debtCapable` quote. */
+  debt?: LadderDebtConfig
 }
 
 /** Complete locally built ladder tree plus group/rung ownership metadata. */
@@ -131,6 +135,13 @@ const mergedSideTicks = (
   return { entries: [...merged.values()], clearedByBook }
 }
 
+const sellExpiry = (parameters: BuildLadderTreeParameters) => {
+  const maturity = BigInt(parameters.market.params.maturity)
+  if (parameters.quote.debtCapable !== true) return maturity
+  if (parameters.debt === undefined) throw new LadderAdapterError('configuration')
+  return borrowingCutoff(parameters.debt, maturity)
+}
+
 const sideOffers = (
   side: 'lower' | 'higher',
   entries: readonly MergedTickRungs[],
@@ -142,14 +153,14 @@ const sideOffers = (
     buy,
     maker: parameters.maker,
     start: parameters.now,
-    expiry: parameters.market.params.maturity,
+    expiry: buy ? parameters.market.params.maturity : sellExpiry(parameters),
     ratifier: parameters.ratifier,
     tickSpacing: parameters.market.tickSpacing,
     continuousFeeCap: BigInt(parameters.market.continuousFee),
     ...(buy
       ? {}
       : {
-          reduceOnly: true,
+          reduceOnly: parameters.quote.debtCapable !== true,
           receiverIfMakerIsSeller: parameters.maker
         })
   }
@@ -189,8 +200,8 @@ export const minimumOfferUnits = (parameters: {
 
 type LadderTreeBounds = Pick<
   BuildLadderTreeParameters,
-  'market' | 'now' | 'minimumRateBps' | 'maximumRateBps'
->
+  'now' | 'minimumRateBps' | 'maximumRateBps'
+> & { market: Pick<IMarket, 'tickSpacing'> & { params: Pick<IMarket['params'], 'maturity'> } }
 
 const ladderTickRanges = (parameters: LadderTreeBounds) => {
   const timeToMaturity = BigInt(parameters.market.params.maturity) - parameters.now
@@ -279,14 +290,17 @@ export const buildPublishableLadderTree = (
  * Converts one domain quote set into the exact mixed-side Midnight offer tree.
  * @param parameters - Quote, fresh market, maker, ratifier, block timestamp, optional minimum and
  * maximum APR bounds in basis points, an optional highest own bootstrap-buy tick that every sell
- * must clear, and the optional opposing retained book ticks both sides must clear.
+ * must clear, the optional opposing retained book ticks both sides must clear, and the market's
+ * debt config.
  * @returns Tree, protocol-group-to-rung mapping, and prospective book ticks.
  * @throws `LadderAdapterError` when the market has matured, the ladder is empty, the hard rate
- * range contains no aligned tick, or a rung's rate is outside it (`rate-out-of-range`, which
- * generation already omits); SDK validation errors pass through.
- * @remarks Midnight prices are inverse to rates, so lower rates map to reduce-only sells and higher
- * rates map to lend buys. Each rung is encoded by {@link admissibleRateTick}, so tick rounding never
- * carries a published APR past a bound, and sells quote strictly above `ownBootstrapBuyTickCeiling`
+ * range contains no aligned tick, a rung's rate is outside it (`rate-out-of-range`, which
+ * generation already omits), or a `debtCapable` quote has no debt config (`configuration`); SDK
+ * validation errors pass through.
+ * @remarks Midnight prices are inverse to rates, so lower rates map to sells and higher rates map to
+ * lend buys; sells are reduce-only unless the quote is `debtCapable`, whose borrowing sells expire
+ * at {@link borrowingCutoff} while every other offer expires at maturity. Each rung is encoded by
+ * {@link admissibleRateTick}, so tick rounding never carries a published APR past a bound, and sells quote strictly above `ownBootstrapBuyTickCeiling`
  * (capped at the minimum-rate tick, where an exact own-offer tie remains possible). Rungs crossing
  * `opposingBookTicks` reprice to the nearest tick just clear of it, saturating at the same hard
  * bound: a book that crosses the whole configured range is left to the publication spread guard

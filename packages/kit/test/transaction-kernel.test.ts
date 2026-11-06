@@ -14,13 +14,18 @@ import {
   parseTransaction
 } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
-import { base, mainnet } from 'viem/chains'
+import { base, mainnet, optimism } from 'viem/chains'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { BotLogger, LogLevel } from '../src/logger'
 import type { TransactionKernelLimits } from '../src/transaction-kernel'
 
-import { FeeLimitError, FinalityBeyondWindowError, PolicyViolationError } from '../src/errors'
+import {
+  FeeLimitError,
+  FinalityBeyondWindowError,
+  MissingBlockTimeError,
+  PolicyViolationError
+} from '../src/errors'
 import { EXECUTOR_SELECTOR, NONCE_FILL_MAX_GAS } from '../src/policy'
 import { transactionKernelConfig, transactionKernelSpec } from '../src/transaction-kernel'
 
@@ -141,32 +146,33 @@ describe('transactionKernelConfig', () => {
     expect(config.policy).toStrictEqual({ targets: [EXECUTOR], recoveryTargets: [] })
     expect(config.caps).toStrictEqual({ native: 4n * LIMITS.maxSpendWei })
     expect(config.feeReserve).toBe(LIMITS.maxSpendWei)
-    expect(config.stuckBlocks).toBe(5)
+    expect(config.stuckBlocks).toBe(50)
   })
 
   it('converts the latch bound per chain, so a fast chain gives recovery as long as Base', () => {
-    const robinhood = { id: 4663, blockTime: 100 }
-    const config = (chain: { id: number; blockTime: number }) =>
+    const robinhood = { id: 4663 }
+    const config = (chain: { id: number }) =>
       transactionKernelConfig({ ...LIMITS, stuckMs: 8_000 }, chain, account.address, validator)
     expect([config(base), config(mainnet), config(robinhood)].map(c => c.latchBoundBlocks)).toEqual(
-      [100, 17, 2000]
+      [1_000, 17, 2_000]
     )
+    expect(config(base).stuckBlocks).toBe(40)
     expect(config(robinhood).stuckBlocks).toBe(80)
   })
 
-  it('converts the simulation lag per chain, never under the three blocks Base and mainnet keep', () => {
-    const robinhood = { id: 4663, blockTime: 100 }
-    const config = (chain: { id: number; blockTime: number }) =>
+  it('converts the simulation lag per chain, never under the three blocks mainnet keeps', () => {
+    const robinhood = { id: 4663 }
+    const config = (chain: { id: number }) =>
       transactionKernelConfig(LIMITS, chain, account.address, validator)
     expect([config(base), config(mainnet), config(robinhood)].map(c => c.maxSimLagBlocks)).toEqual([
-      3, 3, 60
+      30, 3, 60
     ])
   })
 
-  it('refuses a chain with no block time to convert its stuck time with', () => {
-    expect(() =>
-      transactionKernelConfig(LIMITS, { id: base.id }, account.address, validator)
-    ).toThrow('declares no block time')
+  it('refuses a chain kit has no block time for, whatever viem declares', () => {
+    expect(() => transactionKernelConfig(LIMITS, optimism, account.address, validator)).toThrow(
+      MissingBlockTimeError
+    )
   })
 })
 
@@ -187,8 +193,8 @@ describe('transactionKernelSpec construction', () => {
         finality: 'safe',
         logger
       }).live.reorgDepth
-    const robinhood = defineChain({ ...base, id: 4663, blockTime: 100 })
-    expect([base, mainnet, robinhood].map(reorgDepth)).toEqual([150, 128, 3_000])
+    const robinhood = defineChain({ ...base, id: 4663 })
+    expect([base, mainnet, robinhood].map(reorgDepth)).toEqual([3_000, 128, 6_000])
   })
 
   it('refuses a finality depth its reorg window cannot reach, with the window to stay under', () => {
@@ -207,9 +213,9 @@ describe('transactionKernelSpec construction', () => {
         finality: { depth },
         logger
       })
-    expect(() => build(150)).toThrow(FinalityBeyondWindowError)
-    expect(() => build(150)).toThrow('choose a depth below 150')
-    expect(build(149).live.reorgDepth).toBe(150)
+    expect(() => build(3_000)).toThrow(FinalityBeyondWindowError)
+    expect(() => build(3_000)).toThrow('choose a depth below 3000')
+    expect(build(2_999).live.reorgDepth).toBe(3_000)
   })
 
   it('refuses an invalid required finality rule at construction', () => {

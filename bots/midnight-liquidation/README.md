@@ -160,17 +160,18 @@ LOG_LEVEL=info
 
 Several defaults are **chain-dependent**, resolved from the `CHAIN_ID` row before any env override is
 applied. Block counts come from one shared wall-clock intent divided by the chain's block time, so the
-same behaviour keeps the same timing on a ~2s and a ~12s chain.
+same behaviour keeps the same timing on a 200ms and a 12s chain. Kit's `blockTimeMs` holds each
+chain's block time; viem's is not used.
 
 **Code-only** — no env var; retuned by editing the chain's row in `src/config.ts`:
 
 | Default              | Base (8453) | Mainnet (1) | Why it differs                              |
 | -------------------- | ----------- | ----------- | ------------------------------------------- |
-| `balanceEveryBlocks` | `30n`       | `5n`        | Same wall-clock intent, ~6x the block time. |
+| `balanceEveryBlocks` | `300n`      | `5n`        | Same wall-clock intent, 60x the block time. |
 
-The kernel re-bids a transaction that waits 8s for inclusion, converted to each chain's blocks: 4
+The kernel re-bids a transaction that waits 8s for inclusion, converted to each chain's blocks: 40
 on Base and 1 on mainnet. A prepared liquidation's quote authorizes its send for the chain's **send
-life**, `(stuck blocks + 1) x block time x (re-bids + 1)`: 40s on Base and 168s on mainnet, so a
+life**, `(stuck blocks + 1) x block time x (re-bids + 1)`: 32.8s on Base and 168s on mainnet, so a
 stuck send is re-bid rather than cancelled, and a quote never rides past it. `rebids` (3 on Base, 6
 on mainnet) is only the minimum that sizes the send life. The kernel re-bids every stuck-block
 interval until the fee step cap or the send life ends: about 4 times on Base and 13 on mainnet. So a
@@ -179,16 +180,16 @@ stuck mainnet tip can rise to about 1.125^13, or 4.6 times, its first bid, under
 
 **Env-overridable** — the chain's row supplies the default, the env var wins:
 
-| Default                                      | Base (8453)  | Mainnet (1)  | Why it differs                                      |
-| -------------------------------------------- | ------------ | ------------ | --------------------------------------------------- |
-| `SEIZE_CAP_MARGIN_BPS`                       | `30`         | `60`         | One block of oracle drift is ~6x longer on mainnet. |
-| `BACKOFF_BASE_BLOCKS` / `BACKOFF_MAX_BLOCKS` | `2n` / `64n` | `1n` / `11n` | Same wall-clock intent, ~6x the block time.         |
+| Default                                      | Base (8453)    | Mainnet (1)  | Why it differs                                      |
+| -------------------------------------------- | -------------- | ------------ | --------------------------------------------------- |
+| `SEIZE_CAP_MARGIN_BPS`                       | `30`           | `60`         | One block of oracle drift is 60x longer on mainnet. |
+| `BACKOFF_BASE_BLOCKS` / `BACKOFF_MAX_BLOCKS` | `20n` / `640n` | `1n` / `11n` | Same wall-clock intent, 60x the block time.         |
 
 `MAX_FEE_GWEI`, `MAX_SPEND_ETH` and `MAX_GAS_LIMIT` are required, with no default; the release
 values below set them per chain. `MAX_FEE_GWEI` bounds the price of a gas unit, and caps the first
 tip: kit tips the median of the last 20 blocks' 90th-percentile tips, about 0.010 gwei on Base in
 October 2026, but never more than a quarter of the step cap (one bump below the ceiling) or 1 gwei.
-So 0.5 gwei on Base tips at most about 0.11 gwei and re-bids a whole send life up to about a 0.067
+So 0.5 gwei on Base tips at most about 0.11 gwei and re-bids a whole send life up to about a 0.083
 gwei base fee, and 50 gwei on mainnet tips at most 1 gwei and re-bids up to about a 3.77 gwei base
 fee ([test/config.test.ts](./test/config.test.ts) pins both at those caps). When the node serves no
 fee history within 2 s, kit logs `fees.no_market_tip` once and tips the cap's quarter. `MAX_SPEND_ETH` is what bounds cost: it
@@ -529,7 +530,7 @@ To start an account on the kernel:
   crash-equivalent: the ledger is durable and a restart adopts it, but the journal ends unclean. Flip
   enrollment and roll images only when `tick.end.oldestPendingMs` is 0 and no send is within
   finality. A requested stop raises no `kernel.alarm`; `kernel.stopped` names what it left open.
-- **Finality stall.** Finality must lag the head by less than the kernel's reorg window: 150 blocks
+- **Finality stall.** Finality must lag the head by less than the kernel's reorg window: 3,000 blocks
   on Base and 128 on mainnet. A restart during an L1 finality stall of about 26 minutes or more is
   refused; wait for finality to resume before restarting mainnet.
 - **Seeding.** Seed positions only with lender and borrower keys distinct from the liquidation key.
@@ -888,7 +889,7 @@ events carry none: they describe the position's one liquidation, whose candidate
 Everything else is scoped to something other than a position and carries **no** `id`, by design —
 don't group it by one:
 
-- **per world read** — `discover.*`, `lens.read`, `probe.warmed`, `tick.end`, `tick.error`,
+- **per world read** — `discover.*`, `lens.read`, `probe.warmed`, `source.read`, `tick.end`, `tick.error`,
   `markets.whitelist_expired`
 - **per venue pair** — `probe.warm_failed`, `probe.venue_error`, `probe.refreshed` (several positions
   in one market share a probe)
@@ -905,7 +906,7 @@ For queries and dashboards written against the bot before it ran on the kernel (
 - **`tick.end`** is logged per world read, and every counter but `liquidatable`, `inflightSkipped`,
   `planSkipped`, `planned` and `backoffSkipped` covers what finished since the previous one, so the
   burst analysis reads `tick.end` spacing, not `durationMs`. `submitted` is now `broadcast`;
-  `siblingSkipped`, `sendRefused`, `sendReverted`, `sendRejected` and `durationMs` are gone;
+  `siblingSkipped`, `sendRefused`, `sendReverted` and `sendRejected` are gone, and `durationMs`, which timed the whole tick, is gone: the framework's `source.read` `durationMs` times the world read alone, so the two series don't compare;
   `cooledDown` is always 0; `complete` means the read covered its scope. It adds `oldestPendingMs`,
   `pendingAtCeiling` and `waitingMaxFeePerGasWei`.
 - **`tx.*`** come from the kernel's activity. Each adds `intentId` but `tx.included` and

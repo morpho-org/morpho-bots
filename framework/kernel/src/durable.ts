@@ -68,9 +68,13 @@ const INTEGER = /^-?\d+$/
 export const isObject = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null && !Array.isArray(v)
 
-/** A stored key starting with `$` gains another, so a key with exactly one `$` is always a codec tag. */
-const replacer = (_key: string, value: unknown): unknown => {
-  if (typeof value === 'bigint') return { [BIGINT_TAG]: value.toString() }
+/**
+ * A stored key starting with `$` gains another, so a key with exactly one `$` is always a codec tag.
+ * A bigint is read from its holder, since a global `BigInt.prototype.toJSON` would convert it first.
+ */
+const replacer = function (this: Record<string, unknown>, key: string, value: unknown): unknown {
+  const bigint = typeof this[key] === 'bigint' ? this[key] : value
+  if (typeof bigint === 'bigint') return { [BIGINT_TAG]: bigint.toString() }
   if (!isObject(value) || !Object.keys(value).some(key => key.startsWith('$'))) return value
   return Object.fromEntries(
     Object.entries(value).map(([key, field]) => [key.startsWith('$') ? `$${key}` : key, field])
@@ -112,8 +116,10 @@ export const asStored = (value: unknown): { value: unknown } | undefined => {
 }
 
 /** Tells a bigint apart from the tagged object the ledger codec writes for one. */
-const plain = (_key: string, value: unknown) =>
-  typeof value === 'bigint' ? `bigint ${value.toString()}` : value
+const plain = function (this: Record<string, unknown>, key: string, value: unknown) {
+  const bigint = typeof this[key] === 'bigint' ? this[key] : value
+  return typeof bigint === 'bigint' ? `bigint ${bigint.toString()}` : value
+}
 
 /** The encoding of `value` if it reads back through the ledger codec as itself, else undefined. */
 export const storedText = (value: unknown) => {

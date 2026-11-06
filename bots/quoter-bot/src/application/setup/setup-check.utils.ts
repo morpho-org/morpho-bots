@@ -2,9 +2,11 @@ import type { Address, Hex } from 'viem'
 
 import { isAddress, isAddressEqual } from 'viem'
 
+import type { LadderDebtConfig } from '../../domain/debt-ceiling'
 import type { SafeProviderFailure } from '../../errors'
 import type {
   BookSetup,
+  LoanCollateralSetup,
   SetupCheck,
   SetupCheckConfig,
   SetupCheckReport,
@@ -12,7 +14,7 @@ import type {
 } from './setup-check.service'
 
 import { isSupportedChainId } from '../../config/supported-chains.utils'
-import { acceptedLossFactorOf, lendHalt } from '../../domain/loss-factor'
+import { debtCeilingUnits } from '../../domain/debt-ceiling'
 import { SafeProviderError } from '../../errors'
 
 const SAFE_ERROR_NAMES = new Set([
@@ -334,6 +336,30 @@ const isTransientFailedCheck = (check: SetupCheck) => {
 export const hasOnlyTransientProviderFailures = (report: SetupCheckReport) =>
   !report.ready && report.checks.every(isTransientFailedCheck)
 
+/**
+ * Consecutive transient-only unready cycles tolerated before the monitor halts.
+ * @remarks Halting runs shutdown cleanup, which cancels every live offer, so a provider outage must
+ * not cost the whole book. Ten cycles is ten minutes at the default interval. Invariant failures
+ * ignore this budget and halt on the first cycle.
+ */
+const SETUP_CHECK_TRANSIENT_CYCLES = 10
+
+/**
+ * Whether a monitoring cycle's report halts the quoter, given how many transient-only cycles came
+ * just before it.
+ * @param transientCycles - Consecutive transient-only unready cycles before this one.
+ * @param report - This cycle's report.
+ * @returns The count including this cycle, and whether this report halts.
+ */
+export const readinessVerdict = (transientCycles: number, report: SetupCheckReport) => {
+  const transientOnly = hasOnlyTransientProviderFailures(report)
+  const counted = transientOnly ? transientCycles + 1 : 0
+  return {
+    transientCycles: counted,
+    halting: !report.ready && (!transientOnly || counted >= SETUP_CHECK_TRANSIENT_CYCLES)
+  }
+}
+
 const bookProblems = (requestedId: Hex, book: BookSetup, config: SetupCheckConfig) => {
   const reasons: unknown[] = []
   if (book.id !== requestedId) reasons.push(`provider returned ${book.id}`)
@@ -421,35 +447,127 @@ export const booksCheck = (
 }
 
 /**
- * Grades every configured market's loss factor against its accepted value.
- * @param config - Markets and their operator-accepted loss factors.
- * @param reads - Captured per-market loss-factor reads.
- * @returns `passed` when every market equals its accepted value, otherwise `warning` listing each
- * market that differs or could not be read.
- * @remarks Never `failed`: a failed readiness exits before any writer starts, which would leave live
- * buys uncancelled. Each listed market is lend-halted by the workflows themselves.
+ * Runtime hash of the only oracle a loan-asset collateral may borrow against: a Morpho Chainlink
+ * oracle whose feeds and vaults are all unset and whose `SCALE_FACTOR` is `1e36`, so `price()` is a
+ * constant `1e36` held in immutables. Read from `0x4429…DC1d` on Base and `0x8d1A…f6ca` on Ethereum,
+ * the oracle of every listed loan-asset slot as of 2026-10-07; both chains deploy identical code.
  */
-export const lossFactorCheck = (
-  config: SetupCheckConfig,
-  reads: readonly { requestedId: Hex; response: Captured<bigint> }[]
+const CONSTANT_LOAN_COLLATERAL_ORACLE_RUNTIME_HASH =
+  '0x6c5b423bbd32a1bc423d3992fe58a905f055fd2173a97b69f0468bc3ce51e2df'
+
+type DebtPositionRead = {
+  requestedId: Hex
+  debt: Captured<bigint>
+  loanCollateral?: Captured<LoanCollateralSetup | undefined>
+}
+
+type DebtPositionFinding =
+  | 'debt-not-configured'
+  | 'loan-collateral-missing'
+  | 'loan-collateral-oracle'
+  | 'enter-gate-closed'
+  | 'debt-over-maximum'
+  | 'matured-with-debt'
+
+const BLOCKING_DEBT_FINDINGS: ReadonlySet<DebtPositionFinding> = new Set([
+  'debt-not-configured',
+  'loan-collateral-missing',
+  'loan-collateral-oracle',
+  'enter-gate-closed'
+])
+
+const debtPositionFindings = (
+  debt: bigint,
+  limits: LadderDebtConfig | undefined,
+  loanCollateral: DebtPositionRead['loanCollateral']
+): DebtPositionFinding[] => {
+  if (limits === undefined) return debt > 0n ? ['debt-not-configured'] : []
+  if (!loanCollateral?.ok) return []
+  const slot = loanCollateral.value
+  if (slot === undefined) return ['loan-collateral-missing']
+  return [
+    ...(slot.oracleRuntimeHash === CONSTANT_LOAN_COLLATERAL_ORACLE_RUNTIME_HASH
+      ? []
+      : ['loan-collateral-oracle' as const]),
+    ...(slot.enterGateOpen ? [] : ['enter-gate-closed' as const]),
+    ...(debt > limits.maximumDebtUnits ? ['debt-over-maximum' as const] : []),
+    ...(slot.matured && debt > 0n ? ['matured-with-debt' as const] : [])
+  ]
+}
+
+/**
+ * Grades the maker's debt across every allowlisted market against its ladder `debt` configuration.
+ * @param config - Allowlisted markets and the ladder markets configured to borrow.
+ * @param reads - Each market's debt and, for configured markets, its loan-asset collateral slot.
+ * @returns `failed` when a market carries debt the configuration does not cover, or a configured
+ * market cannot borrow safely (no loan-asset collateral, an oracle other than the pinned constant
+ * one, or a closed enter gate); `warning` for debt above `maximumDebtUnits` or past maturity; `not-required` with no
+ * configured market and no debt.
+ * @remarks Proven findings outrank provider failures, so a lost read cannot mask one; without a
+ * finding, the first provider failure is reported in the shape transient retries recognize.
+ */
+export const positionHealthCheck = (
+  config: Pick<SetupCheckConfig, 'debt'>,
+  reads: readonly DebtPositionRead[]
 ): SetupCheck => {
-  const halted = reads.flatMap(({ requestedId, response }): Record<string, unknown>[] => {
-    const accepted = acceptedLossFactorOf(config.acceptedLossFactor, requestedId)
-    if (!response.ok) return [{ id: requestedId, ...accepted, providerError: response.error }]
-    const halt = lendHalt({ lossFactor: response.value, ...accepted })
-    return halt ? [{ id: requestedId, ...halt }] : []
+  const required =
+    'debt only in markets configuring ladder debt, each listing its loan asset as collateral behind the pinned constant 1e36 oracle with an open enter gate'
+  const observed = reads.flatMap(read => {
+    if (!read.debt.ok) return []
+    const limits = config.debt?.get(read.requestedId)
+    const findings = debtPositionFindings(read.debt.value, limits, read.loanCollateral)
+    const slot = read.loanCollateral?.ok ? read.loanCollateral.value : undefined
+    if (findings.length === 0 && limits === undefined) return []
+    return [
+      {
+        id: read.requestedId,
+        debt: read.debt.value,
+        ...(limits === undefined
+          ? {}
+          : {
+              maximumDebtUnits: limits.maximumDebtUnits,
+              debtCeilingUnits: debtCeilingUnits(limits, slot)
+            }),
+        ...(slot === undefined ? {} : { loanCollateral: slot }),
+        findings
+      }
+    ]
   })
+  const findings = new Set(observed.flatMap(item => item.findings))
+  if ([...findings].some(finding => BLOCKING_DEBT_FINDINGS.has(finding))) {
+    return {
+      name: 'position-health',
+      status: 'failed',
+      observed,
+      required,
+      remediation: findings.has('debt-not-configured')
+        ? 'configure ladder debt for every market carrying debt, or repay that debt before removing it'
+        : 'borrow only on markets listing the loan asset as collateral behind the pinned constant 1e36 oracle whose enter gate admits the maker'
+    }
+  }
+  const failure = reads.flatMap(read => [
+    ...(read.debt.ok ? [] : [read.debt.error]),
+    ...(read.loanCollateral === undefined || read.loanCollateral.ok
+      ? []
+      : [read.loanCollateral.error])
+  ])[0]
+  if (failure) return providerFailure('position-health', failure, required)
+  if (findings.size > 0) {
+    return {
+      name: 'position-health',
+      status: 'warning',
+      observed,
+      required,
+      remediation: findings.has('matured-with-debt')
+        ? 'after maturity, repay the debt and withdraw the loan-asset collateral; nothing settles it otherwise'
+        : 'debt above maximumDebtUnits: sells stop borrowing until buys repay it below the cap'
+    }
+  }
   return {
-    name: 'loss-factor',
-    status: halted.length === 0 ? 'passed' : 'warning',
-    observed: halted,
-    required: 'every market loss factor equals markets.acceptedLossFactor (default 0)',
-    ...(halted.length === 0
-      ? {}
-      : {
-          remediation:
-            'listed markets stop lending; after reviewing the realized loss, set markets.acceptedLossFactor to the observed lossFactor and redeploy'
-        })
+    name: 'position-health',
+    status: observed.length === 0 ? 'not-required' : 'passed',
+    observed,
+    required
   }
 }
 

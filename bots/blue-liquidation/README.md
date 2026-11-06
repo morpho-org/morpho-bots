@@ -54,7 +54,7 @@ Env vars (fail-loud on a missing required var, an unknown chain, or a malformed 
 | `KERNEL_STATE_DIR`                                                  | yes      | —               | Directory holding the signing kernel's ledger (`kernel-<chainId>-<account>.json`). Must survive restarts; the chart mounts a volume there.                                        |
 | `JOURNAL_RUN_CAP_BYTES`                                             | yes      | —               | The size, in bytes and at least 64 MiB, at which a run's journal file stops the bot cleanly; the next start begins a new file. The chart sets it from `state.journalRunCapBytes`. |
 | `KERNEL_ENROLLMENT`                                                 | yes      | —               | `enrolling` for the first start of a fresh account, `enrolled` for every later one; a missing ledger under `enrolled` refuses to start.                                           |
-| `FINALITY_<CHAIN_ID>`                                               | yes      | —               | `safe`, `finalized`, or a positive block depth: the block the kernel treats as final, under its 5-minute window: `FINALITY_8453=safe`, `FINALITY_4663=50`                         |
+| `FINALITY_<CHAIN_ID>`                                               | yes      | —               | `safe`, `finalized`, or a positive block depth: the block the kernel treats as final, under its 10-minute window: `FINALITY_8453=safe`, `FINALITY_4663=50`                        |
 | `BUILD_REVISION` / `BUILD_IMAGE_TAG`                                | yes      | —               | The source revision and image the journal names and every log line carries as `revision` and `imageTag`; the Dockerfile bakes them in from build args                             |
 | `EXECUTOOOR_ADDRESS`                                                | no       | derived         | Override; default is the derived CREATE2 address                                                                                                                                  |
 | `MORPHO_API_KEY`                                                    | yes      | —               | Morpho partner API key, sent as `x-api-key` on borrower discovery. Request one from Morpho                                                                                        |
@@ -255,8 +255,8 @@ the chain's `safe` block matches its latest one, whatever `FINALITY_<chainId>` s
 minutes after the account's last transaction on Robinhood, with no operator step, and then logs
 `kernel.running`. A chain that serves no `safe` tag refuses a fresh enrollment.
 
-Finality must lag the head by less than the kernel's 5-minute reorg window, at least 128 blocks
-(150 on Base, 3,000 on Robinhood, 128 on mainnet). A depth at or past it fails at construction, and a tag that lags past it at
+Finality must lag the head by less than the kernel's 10-minute reorg window, at least 128 blocks
+(3,000 on Base, 6,000 on Robinhood, 128 on mainnet). A depth at or past it fails at construction, and a tag that lags past it at
 startup stops the kernel as refused, both naming the window. Robinhood's `safe` lags about 14
 minutes, so it runs on `FINALITY_4663=50`, about 5 seconds. If finality falls behind the window
 while running, the kernel holds it where it was and raises one `kernel.alarm`; nothing settles until
@@ -450,7 +450,7 @@ one candidate: unlike `bots/midnight-liquidation`, `id` alone identifies a row a
 discriminator is emitted.
 
 Everything else is scoped to something other than a position and carries **no** `id`, by design —
-per world reading (`discover.*`, `lens.read`, `tick.end`, `tick.error`), per venue pair
+per world reading (`discover.*`, `lens.read`, `source.read`, `tick.end`, `tick.error`), per venue pair
 (`probe.venue_error`, `probe.refreshed`), kernel-wide (`kernel.running`, `kernel.error`,
 `kernel.stopped`, `runner.failed`), or process/config (`startup`, `shutdown`, `quoting.*`,
 `discovery.*`, `signer.*`, `heartbeat.*`, `pendle.*`).

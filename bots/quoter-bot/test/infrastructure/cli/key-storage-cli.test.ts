@@ -1,18 +1,22 @@
-import { execa } from 'execa'
-import { dirname } from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { describe, expect, test } from 'vitest'
 
 import { VersionService } from '../../../src/application/quoter-bot/version.service'
+import { createApplication } from '../../../src/bootstrap'
 import { CliUsageError } from '../../../src/errors'
 import { Cli } from '../../../src/infrastructure/cli/cli'
+import { runQuoterBotEntrypoint } from '../../../src/infrastructure/cli/quoter-bot-entrypoint'
+
+const runs = () => ({
+  runOnce: async () => [],
+  runContinuously: async () => ({ status: 'stopped' as const, reason: 'signal' as const })
+})
 
 const createCli = () =>
   new Cli(
     new VersionService(),
     () => ({ assertReady: async () => ({ ready: true, checks: [] }) }),
-    () => ({ runOnce: async () => [] }),
-    () => ({ runOnce: async () => [] })
+    () => runs(),
+    () => runs()
   )
 
 describe('signer key storage CLI options', () => {
@@ -24,8 +28,8 @@ describe('signer key storage CLI options', () => {
         options = value
         return { assertReady: async () => ({ ready: true, checks: [] }) }
       },
-      () => ({ runOnce: async () => [] }),
-      () => ({ runOnce: async () => [] })
+      () => runs(),
+      () => runs()
     )
     await cli.run(argv)
     return options
@@ -116,15 +120,15 @@ describe('signer key storage CLI options', () => {
 
   test('entrypoint --help emits both argv warnings without exposing an ambient secret', async () => {
     const secret = 'must-not-appear-in-help-output'
-    const repoRoot = dirname(fileURLToPath(new URL('../../../../../package.json', import.meta.url)))
-    const process = await execa('tsx', ['bots/quoter-bot/src/index.ts', '--help'], {
-      cwd: repoRoot,
-      env: { MAKER_PRIVATE_KEY: secret, KEYSTORE_PASSWORD: secret },
-      reject: false
-    })
-    const output = process.stdout + process.stderr
+    const lines: string[] = []
+    const exitCode = await runQuoterBotEntrypoint(
+      createApplication({ MAKER_PRIVATE_KEY: secret, KEYSTORE_PASSWORD: secret }),
+      ['--help'],
+      { writeOut: value => lines.push(value), writeError: value => lines.push(value) }
+    )
+    const output = lines.join('\n')
 
-    expect(process.exitCode).toBe(0)
+    expect(exitCode).toBe(0)
     expect(output).toContain('--private-key <key>')
     expect(output).toContain('MAKER_PRIVATE_KEY')
     expect(output).toContain('--password <password>')

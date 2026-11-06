@@ -2,7 +2,7 @@
 Renaming the singleton is rejected: on an installed release a changed nameOverride or
 fullnameOverride would make Helm create the newly named StatefulSet before deleting the old
 one, briefly running two writers against the same maker (and, with existingClaim, the same
-ownership state). The installed name is pinned by the release-fullname ConfigMap (keyed by the
+kernel ledger). The installed name is pinned by the release-fullname ConfigMap (keyed by the
 immutable release name), so this is a name-scoped get — no StatefulSet list permission is
 required, and lookup returns nothing under `helm template`, keeping the guard inert outside a
 real install/upgrade.
@@ -11,7 +11,7 @@ real install/upgrade.
 {{- $identity := lookup "v1" "ConfigMap" .Release.Namespace (include "quoter-bot.releaseFullnameConfigMapName" .) }}
 {{- $installedFullname := dig "fullname" $fullname (($identity | default dict).data | default dict) }}
 {{- if ne $installedFullname $fullname }}
-{{- fail (printf "quoter-bot: this release was installed as StatefulSet %q; renaming it to %q via nameOverride/fullnameOverride would start a second writer. To rename: run `helm uninstall --wait` with a timeout beyond terminationGracePeriodSeconds, confirm the old pod is fully deleted, then reinstall — keeping your persistence.existingClaim unchanged if you configured one, or setting it to the kept chart-created state claim (its name ends in -state; kubectl get pvc), so durable offer-group ownership is preserved." $installedFullname $fullname) }}
+{{- fail (printf "quoter-bot: this release was installed as StatefulSet %q; renaming it to %q via nameOverride/fullnameOverride would start a second writer. To rename: run `helm uninstall --wait` with a timeout beyond terminationGracePeriodSeconds, confirm the old pod is fully deleted, then reinstall — keeping your persistence.existingClaim unchanged if you configured one, or setting it to the kept chart-created state claim (its name ends in -state; kubectl get pvc), so the kernel ledger is preserved." $installedFullname $fullname) }}
 {{- end }}
 {{- $chainId := include "quoter-bot.chainId" . }}
 {{- $installedChainId := dig "chain-id" $chainId (($identity | default dict).data | default dict) }}
@@ -33,8 +33,8 @@ metadata:
     secret.reloader.stakater.com/reload: {{ include "quoter-bot.runtimeSecretName" . | quote }}
   {{- end }}
 spec:
-  # The bot is a singleton writer: its nonce cursor, serialized mutation queue, and durable
-  # offer-group ownership state are per-instance, so two replicas against one maker on the same
+  # The bot is a singleton writer: its nonce cursor, serialized mutation queue, and kernel
+  # ledger are per-instance, so two replicas against one maker on the same
   # chain would race nonces and fight over the offer book. A StatefulSet enforces at-most-one
   # across rollouts,
   # graceful pod deletion, and eviction, because it never creates the replacement pod until the
@@ -89,19 +89,18 @@ spec:
       # an in-flight cycle continues serially through every configured market: each bootstrap
       # market's replacement can await a cancellation, Setter ratification, and publication,
       # and each ladder market's replacement can await all of its old-group cancellations plus
-      # its own ratification and publication, before the two shutdown cleanup batches run. For
+      # its own ratification and publication, before the kernel stops: it sends every withdrawal at
+      # once, then waits for each to be final (budgeted as two waits). For
       # a chart-managed config the wait count is derived from the configured workload —
       # three per bootstrap market + two per ladder market (ratify + publish) + the total
       # ladder group count (in-flight cancellations; shared-rung markets contribute two groups
-      # per rung, per-book markets two groups) + two cleanup batches — and the grace period
+      # per rung, per-book markets two groups) + two for the kernel stop — and the grace period
       # is floored to that many receipt timeouts (the declared
       # setup.transactionReceiptTimeoutMs, or the bot's 180 s default when undeclared) plus a
       # two-minute drain buffer. Environment-supplied or existingConfigSecret timeouts and
       # market lists are invisible here — size terminationGracePeriodSeconds explicitly for
-      # those workloads — and so are groups persisted from a PREVIOUS configuration: startup
-      # cleanup cancels each removed-market group serially, so before removing markets or
-      # reducing rung counts, invalidate the affected groups first (morpho-quoter invalidate — a
-      # single maker-wide multicall) or temporarily raise this value for that upgrade.
+      # those workloads. A kill during the kernel's finality wait is safe: its withdrawals are
+      # already sent, and the next start withdraws whatever the ledger still holds.
       {{- $receiptMs := 0 }}
       {{- $bootstrapCount := 0 }}
       {{- $ladderCount := 0 }}
@@ -188,15 +187,20 @@ spec:
             - {{ . | quote }}
             {{- end }}
           env:
-            # Durable offer-group ownership state lives on the state volume. The variable name
+            # The kernel ledger lives on the state volume. The variable name
             # is reserved: custom `env` entries with this name are filtered out so state cannot
             # be silently detached from the retained PVC.
             - name: XDG_STATE_HOME
               value: {{ .Values.persistence.mountPath | quote }}
+            # The journal shares the state volume, so its run cap is sized with the volume.
+            - name: JOURNAL_RUN_CAP_BYTES
+              value: {{ required "persistence.journalRunCapBytes is required" .Values.persistence.journalRunCapBytes | quote }}
             {{- $extraEnv := list }}
             {{- range .Values.env }}
             {{- if ne .name "XDG_STATE_HOME" }}
+            {{- if ne .name "JOURNAL_RUN_CAP_BYTES" }}
             {{- $extraEnv = append $extraEnv . }}
+            {{- end }}
             {{- end }}
             {{- end }}
             {{- with $extraEnv }}

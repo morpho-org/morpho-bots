@@ -1,68 +1,24 @@
 import { describe, expect, test } from 'vitest'
 
-import { bootstrapMonitoringEvents } from '../../../src/application/monitoring/bootstrap-monitoring.utils'
+import { bootstrapFactEvents } from '../../../src/application/monitoring/bootstrap-monitoring.utils'
 
 const marketId = `0x${'11'.repeat(32)}` as const
+const bounds = { minimumRateBps: 200n, maximumRateBps: 800n }
 
-describe('cycle.completed snapshot failures', () => {
-  test('ships the allowlisted snapshot cause beside the snapshot-unavailable operation', () => {
-    const [cycle] = bootstrapMonitoringEvents([
-      {
-        marketId,
-        status: 'failed',
-        stage: 'make',
-        invalidated: true,
-        errorName: 'BootstrapAdapterError',
-        adapterOperation: 'snapshot-unavailable',
-        snapshotErrorOperation: 'missing-owned-group-intent'
+describe('bootstrapFactEvents', () => {
+  test('reports the out-of-range requested rate, the offer size it withheld, and the cap', () => {
+    const events = bootstrapFactEvents(marketId, {
+      bounds,
+      creditTargetAssets: 1_000n,
+      referenceRateBps: 900n,
+      diagnostics: {
+        requestedRateBps: 850n,
+        outOfRangeBound: 'maximum',
+        requestedAssets: 600n,
+        cappedAssets: 500n,
+        cap: 'offer-size'
       }
-    ])
-
-    expect(cycle).toMatchObject({
-      event: 'cycle.completed',
-      workflow: 'bootstrap',
-      adapterOperation: 'snapshot-unavailable',
-      snapshotErrorOperation: 'missing-owned-group-intent'
     })
-  })
-
-  test('omits the cause when the snapshot failure carried none', () => {
-    const [cycle] = bootstrapMonitoringEvents([
-      {
-        marketId,
-        status: 'failed',
-        stage: 'make',
-        invalidated: false,
-        errorName: 'HttpRequestError',
-        adapterOperation: 'snapshot-unavailable'
-      }
-    ])
-
-    expect(cycle).not.toHaveProperty('snapshotErrorOperation')
-  })
-})
-
-describe('guardrail.rate-omitted', () => {
-  test('reports the out-of-range requested rate and the offer size it withheld', () => {
-    const events = bootstrapMonitoringEvents([
-      {
-        marketId,
-        status: 'observed',
-        action: 'rate-out-of-range',
-        verbose: {
-          config: { marketId, creditTarget: 1_000n, minimumRateBps: 200n, maximumRateBps: 800n },
-          currentState: { status: 'unavailable' },
-          referenceRate: { mode: 'static', rateBps: 900n, observationId: 'static:900' },
-          diagnostics: {
-            requestedRateBps: 850n,
-            outOfRangeBound: 'maximum',
-            requestedAssets: 500n,
-            cappedAssets: 500n,
-            cap: 'offer-size'
-          }
-        }
-      } as unknown as Parameters<typeof bootstrapMonitoringEvents>[0][number]
-    ])
 
     expect(events.filter(event => event.event === 'guardrail.rate-omitted')).toEqual([
       {
@@ -78,5 +34,22 @@ describe('guardrail.rate-omitted', () => {
         maximumRateBps: 800n
       }
     ])
+    expect(events).toContainEqual({
+      event: 'guardrail.exposure-capped',
+      workflow: 'bootstrap',
+      marketId,
+      requestedAssets: 600n,
+      cappedAssets: 500n,
+      cap: 'offer-size'
+    })
+  })
+
+  test('reports progress toward the credit target only once the position was read', () => {
+    expect(
+      bootstrapFactEvents(marketId, { bounds, creditTargetAssets: 1_000n, creditAssets: 250n })
+    ).toEqual([
+      { event: 'bootstrap.progress', marketId, creditAssets: 250n, creditTargetAssets: 1_000n }
+    ])
+    expect(bootstrapFactEvents(marketId, { bounds, creditTargetAssets: 1_000n })).toEqual([])
   })
 })

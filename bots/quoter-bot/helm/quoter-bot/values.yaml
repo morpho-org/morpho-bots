@@ -59,9 +59,8 @@ command:
   - /repo/bots/quoter-bot/dist/src/index.js
 
 # Root flags and command passed to the bot after the chart-managed `--config <file>` pair.
-# Root flags precede the command, so for example a read-only rehearsal is
-# ["--readonly", "start", "--verbose"] and a monitored readiness-check deployment is
-# ["setup-check", "--monitor"].
+# Root flags precede the command, so for example a read-only rehearsal, which also monitors
+# readiness every minute without a key, is ["--readonly", "start", "--verbose"].
 args:
   - start
   - --verbose
@@ -107,7 +106,6 @@ config: {}
 #     nativeReserveWei: '10000000000000000'
 #     signerNativeReserveWei: ''
 #     maxFeeGwei: '100'
-#     priorityFeeGwei: '0.01'
 #     maxTransactionSpendWei: '100000000000000000'
 #     maxPublicationGas: '5000000'
 #     maxPublicationDataBytes: '65536'
@@ -115,6 +113,13 @@ config: {}
 #     maxBatchCancellationGas: '1000000'
 #     maxBatchCancellationDataBytes: '65536'
 #     maxRatificationGas: ''
+#     # Optional. Highest market continuous fee per second a signed offer may accept; defaults to
+#     # the protocol maximum, so every fee a market can charge is accepted.
+#     maxContinuousFeeCap: ''
+#     # Required in write mode: enrolling on a fresh signer's first start, enrolled on every later one.
+#     kernelEnrollment: enrolling
+#     # Optional: safe (the default), finalized, or a block depth.
+#     finality: safe
 #   bootstrap: []
 #   ladder:
 #     - marketId: '0x5555555555555555555555555555555555555555555555555555555555555555'
@@ -146,8 +151,8 @@ existingConfigSecret: ''
 # counterparts, so this is the place for the signer secret and for the environment-only Better
 # Stack settings (BETTERSTACK_SOURCE_TOKEN, BETTERSTACK_INGESTING_HOST) and OpenTelemetry export
 # settings (OTEL_EXPORTER_OTLP_ENDPOINT, OTEL_EXPORTER_OTLP_HEADERS). XDG_STATE_HOME is
-# chart-managed and reserved: entries with that name are ignored so durable ownership state cannot
-# be detached from the retained PVC.
+# chart-managed and reserved: entries with that name are ignored so the kernel ledger cannot be
+# detached from the retained PVC.
 # Rotating a referenced Secret in place does not reach the running process — environment
 # variables are captured at container start — so follow a signer rotation with
 # `kubectl rollout restart statefulset/<release-name>`, exactly like an edited
@@ -184,14 +189,17 @@ externalSecret:
   region: ''
   refreshInterval: 5m
 
-# Durable ownership state (bot-issued offer-group IDs) lives under this mount; the chart
-# always sets XDG_STATE_HOME to `mountPath`. Losing it makes previously bot-issued groups
-# unknown, which fails readiness until an operator invalidates or adopts them — keep
-# persistence enabled for write-mode deployments.
+# The kernel ledger and the journal live under this mount; the chart always sets XDG_STATE_HOME
+# to `mountPath`. Losing it makes an enrolled start refuse to start and orphans the offers the
+# ledger held — keep persistence enabled for write-mode deployments.
 persistence:
   enabled: true
   mountPath: /state
   size: 1Gi
+  # The size at which a run's journal file stops the bot cleanly, as a quoted byte count (at least
+  # 67108864). Earlier runs are kept up to three of these, and one run file may overshoot to two,
+  # so `size` must hold about five; raise both together. The chart sets JOURNAL_RUN_CAP_BYTES from it.
+  journalRunCapBytes: '134217728'
   accessModes:
     - ReadWriteOnce
   # Set to a storage class name, or "-" to disable dynamic provisioning. Empty uses the
@@ -200,7 +208,7 @@ persistence:
   # Reuse a pre-created PersistentVolumeClaim instead of creating one.
   existingClaim: ''
   annotations: {}
-  # Keep the claim (and the ownership state inside) when the release is uninstalled. A
+  # Keep the claim (and the kernel ledger inside) when the release is uninstalled. A
   # reinstall under the same release name and namespace re-adopts it.
   retain: true
 
@@ -211,7 +219,7 @@ volumePermissions:
   enabled: true
 
 # The runtime container runs as the bundled unprivileged `node` user (uid/gid 1000). Do not add
-# fsGroup here: kubelet may chmod restored ownership-state files beyond their required 0600 mode.
+# fsGroup here: kubelet may chmod restored state files beyond their required 0600 mode.
 podSecurityContext:
   runAsNonRoot: true
   runAsUser: 1000
@@ -236,23 +244,20 @@ resources: {}
 #   limits:
 #     memory: 512Mi
 
-# SIGTERM lets the in-flight cycle finish, then invalidates owned bootstrap and ladder offer
-# groups through the shared serialized operation queue; every wait is bounded by
+# SIGTERM lets the in-flight cycle finish, then stops the kernel, which sends a withdrawal for every
+# offer it holds and waits for each to be final; every cycle wait is bounded by
 # setup.transactionReceiptTimeoutMs, and an in-flight cycle continues serially through every
-# configured market before cleanup runs. Kubernetes' 30-second default would SIGKILL
-# mid-cleanup and leave owned offers on the book. For a chart-managed `config` the rendered
+# configured market before the kernel stops. Kubernetes' 30-second default would SIGKILL
+# mid-cycle and leave owned offers on the book until the next start withdraws them. For a chart-managed `config` the rendered
 # value is automatically floored to a wait count derived from the configured workload — three
 # per bootstrap market (cancellation, Setter ratification, publication) + two per ladder
 # market (ratification, publication) + the total ladder group count (in-flight cancellations;
-# shared-rung markets contribute two groups per rung, per-book markets two) + two cleanup
-# batches — times the receipt timeout rounded up to whole seconds (the declared value, or the
+# shared-rung markets contribute two groups per rung, per-book markets two) + two for the
+# kernel stop — times the receipt timeout rounded up to whole seconds (the declared value, or the
 # bot's 180 s default), plus a two-minute drain buffer. Apply the same formula yourself when
 # the market lists or timeout come from environment overrides or an existingConfigSecret,
-# which the template cannot see. Groups persisted from a PREVIOUS configuration are also
-# invisible: a shrinking upgrade (removed markets, reduced rung counts) triggers one serial
-# cleanup wait per removed group at startup, so invalidate those groups first
-# (`morpho-quoter invalidate` — a single maker-wide multicall) or temporarily raise this value
-# for that upgrade.
+# which the template cannot see. A kill during the kernel's finality wait is safe: its
+# withdrawals are already sent, and the next start withdraws whatever the ledger still holds.
 terminationGracePeriodSeconds: 1020
 
 podAnnotations: {}

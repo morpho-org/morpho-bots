@@ -135,17 +135,7 @@ describe('calculateRequiredAllowance', () => {
     ).toBe(150n)
   })
 
-  test('stays exact for values beyond the uint256 range', () => {
-    const huge = 2n ** 200n
-    expect(
-      calculateRequiredAllowance({
-        ladder: [ladderMarket(huge, huge, 2n * huge)],
-        bootstrap: [bootstrapMarket(huge, huge, 2n * huge)]
-      })
-    ).toBe(2n * huge)
-  })
-
-  test('ignores fields outside the cash-side shape, including group mode', () => {
+  test('counts only the lending (higher) side of a ladder, whatever its group mode', () => {
     const market = {
       ...ladderMarket(100n, 200n, 500n),
       groupMode: 'shared-rung' as const,

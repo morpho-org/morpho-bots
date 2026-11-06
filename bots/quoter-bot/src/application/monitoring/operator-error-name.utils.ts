@@ -1,29 +1,37 @@
 const KNOWN_NAMES = [
   'BootstrapAdapterError',
   'BootstrapMempoolValidationError',
-  'BootstrapHardHaltError',
-  'BootstrapOwnershipCleanupError',
   'BootstrapConfigurationError',
   'LadderConfigurationError',
   'LadderAdapterError',
-  'LadderHardHaltError',
-  'LadderOwnershipCleanupError',
   'SignerAccountError',
   'QuoterTransactionError',
+  'KernelPlanError',
+  'KernelStopError',
+  'KernelRefusedError',
+  'FeeLimitError',
+  'SignWithdrawnError',
+  'PolicyViolationError',
+  'PreparedTransactionError',
+  'MissingBlockTimeError',
+  'FinalityBeyondWindowError',
+  'NoCommitmentsError',
+  'KernelConfigError',
+  'LedgerRefusedError',
+  'ActFailedError',
+  'QuoterReadingUnavailableError',
   'OfferInvalidationAdapterError',
   'OfferInvalidationFailedError',
   'ReferenceAdapterError',
   'ConfigFileError',
   'ConfigValidationError',
-  'ProviderPaginationError',
   'ProviderReadError',
   'ProviderResponseError',
+  'OfferGroupsReadError',
   'SafeProviderError',
   'SetupFailedError',
   'StrategyStateVersionError',
-  'SetupMonitorConfigurationError',
-  'SetupMonitorHaltedError',
-  'QuoterBotMonitorHaltedError',
+  'QuoterRunFailedError',
   'StartupCleanupFailedError',
   'TypeError',
   'RangeError',
@@ -47,22 +55,21 @@ const KNOWN_NAMES = [
 ] as const
 
 const ADAPTER_OPERATIONS = [
-  'batch-transaction',
   'book-response',
   'book-timeout',
+  'borrowing-closed',
   'cash-capped-buy-group',
   'configuration',
   'cross-book-evidence-missing',
   'empty-ladder',
   'group-consumption-read',
   'group-ownership-state',
+  'head-behind-world',
   'latest-block',
   'loss-factor-read',
   'market-configuration-missing',
   'market-continuous-fee',
   'market-matured',
-  'market-not-configured',
-  'maturity-read',
   'mempool-validation',
   'mempool-validation-after-ratification',
   'missing-owned-group-intent',
@@ -76,41 +83,29 @@ const ADAPTER_OPERATIONS = [
   'offer-groups-repeated-cursor',
   'offer-groups-response',
   'offer-groups-timeout',
-  'ownership-cleanup',
   'position-unavailable',
   'preflight',
-  'prospective-offer-missing',
-  'publication-after-ratification',
-  'publication-reservation-cleanup',
   'publication-reservation-missing',
-  'publication-transaction-reverted-after-ratification',
   'rate-out-of-range',
   'rate-window-empty',
-  'ratifier-signature',
-  'ratifier-transaction-reverted',
-  'readonly-mutation',
   'reconciliation-required',
   'reference-checkpoint',
   'reference-history',
   'reference-rate',
   'reference-stale',
   'reference-uninitialized',
-  'removed-market-cleanup',
-  'requirement-signing-policy',
-  'retained-group-metadata-refresh',
   'shared-group-reconciliation',
   'signer-identity-mismatch',
   'simulation-reverted',
   'snapshot-unavailable',
   'submission-refused',
   'target-rate-strategy-missing',
-  'transaction',
   'transaction-dropped',
   'transaction-pending',
-  'transaction-policy',
   'transaction-reverted',
   'unexpected-requirement',
   'unknown-pending-nonce',
+  'unowned-group',
   'unsupported-ratifier'
 ] as const
 
@@ -169,31 +164,3 @@ const knownNames: ReadonlyMap<string, OperatorErrorName> = new Map(
  */
 export const operatorErrorName = (error: unknown): OperatorErrorName =>
   error instanceof Error ? (knownNames.get(error.name) ?? 'UnknownError') : 'UnknownError'
-
-/**
- * Projects a failure into fixed operator-safe fields and retains a sanitized Mempool asset floor.
- * @param error - Unknown failure from an injected application or provider port.
- * @returns An allowlisted error name, adapter operation, and optional decimal minimum-assets value.
- * @remarks Provider messages, response bodies, URLs, addresses, and credentials are never returned.
- */
-export const operatorErrorDetails = (error: unknown) => {
-  const errorName = operatorErrorName(error)
-  if (typeof error !== 'object' || error === null) return { errorName }
-
-  const details = error as Record<string, unknown>
-  const adapterOperation = operatorAdapterOperation(error)
-  const minimumAssets = details.minimumAssets
-  const cleanupName = details.reservationCleanupErrorName
-  const reservationCleanupErrorName =
-    typeof cleanupName === 'string' ? knownNames.get(cleanupName) : undefined
-  return {
-    errorName,
-    ...(adapterOperation ? { adapterOperation } : {}),
-    ...(errorName === 'BootstrapMempoolValidationError' &&
-    typeof minimumAssets === 'bigint' &&
-    minimumAssets >= 0n
-      ? { minimumAssets: String(minimumAssets) }
-      : {}),
-    ...(reservationCleanupErrorName ? { reservationCleanupErrorName } : {})
-  }
-}

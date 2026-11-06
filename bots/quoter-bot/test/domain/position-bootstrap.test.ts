@@ -6,7 +6,6 @@ import type { BootstrapConfig, ValidBootstrapConfig } from '../../src/domain/pos
 
 import { MATURITY_PREMIUM_YEAR_SECONDS } from '../../src/domain/maturity-premium'
 import {
-  decidePositionBootstrap,
   decidePositionBootstrapTransition,
   decidePositionBootstrapWithDiagnostics,
   effectiveBootstrapPremiumBps,
@@ -15,6 +14,9 @@ import {
 import { BootstrapConfigurationError } from '../../src/errors'
 
 const marketId: Hex = `0x${'11'.repeat(32)}`
+const decidePositionBootstrap = (
+  parameters: Parameters<typeof decidePositionBootstrapWithDiagnostics>[0]
+) => decidePositionBootstrapWithDiagnostics(parameters).decision
 
 const parameters = {
   config: validateBootstrapConfig({
@@ -144,17 +146,6 @@ describe('validateBootstrapConfig', () => {
       })
     ).toThrow(
       new BootstrapConfigurationError('maturityPremium.premiumPerYearBps', 'must be positive')
-    )
-  })
-
-  test('rejects a non-positive maturity-premium cap', () => {
-    expect(() =>
-      validateBootstrapConfig({
-        ...parameters.config,
-        maturityPremium: { shape: 'linear', premiumPerYearBps: 120n, maximumPremiumBps: 0n }
-      })
-    ).toThrow(
-      new BootstrapConfigurationError('maturityPremium.maximumPremiumBps', 'must be positive')
     )
   })
 

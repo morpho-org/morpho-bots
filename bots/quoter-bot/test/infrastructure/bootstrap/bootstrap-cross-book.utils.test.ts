@@ -31,7 +31,7 @@ type Projection = Omit<BootstrapCrossBookOffer, 'marketId' | 'buy'>
 
 const projector = (byCall: readonly Projection[]) => {
   let call = 0
-  return vi.fn(async (offer: BootstrapOffer): Promise<BootstrapCrossBookOffer> => {
+  return vi.fn((offer: BootstrapOffer): BootstrapCrossBookOffer => {
     const projection = byCall[call]
     call += 1
     if (!projection) throw new Error(`unexpected projection for ${offer.rateBps}`)
@@ -45,7 +45,7 @@ describe('resolveBootstrapProspectiveOffer', () => {
     const prospective = { marketId, buy: true, tick: 105n }
 
     expect(
-      await resolveBootstrapProspectiveOffer({
+      resolveBootstrapProspectiveOffer({
         desiredOffer,
         prospective,
         replacedGroupIds: new Set(),
@@ -64,7 +64,7 @@ describe('resolveBootstrapProspectiveOffer', () => {
       { tick: 99n, tickSpacing: 1n }
     ])
 
-    const resolved = await resolveBootstrapProspectiveOffer({
+    const resolved = resolveBootstrapProspectiveOffer({
       desiredOffer,
       prospective: { marketId, buy: true, tick: 105n },
       replacedGroupIds: new Set(),
@@ -88,7 +88,7 @@ describe('resolveBootstrapProspectiveOffer', () => {
       { tick: 99n, tickSpacing: 1n }
     ])
 
-    const resolved = await resolveBootstrapProspectiveOffer({
+    const resolved = resolveBootstrapProspectiveOffer({
       desiredOffer,
       prospective: { marketId, buy: true, tick: 105n },
       replacedGroupIds: new Set(),
@@ -109,7 +109,7 @@ describe('resolveBootstrapProspectiveOffer', () => {
       { tick: 99n, tickSpacing: 1n, effectiveRateWad: 455n * BPS_WAD }
     ])
 
-    const resolved = await resolveBootstrapProspectiveOffer({
+    const resolved = resolveBootstrapProspectiveOffer({
       desiredOffer,
       prospective: { marketId, buy: true, tick: 100n },
       replacedGroupIds: new Set(),
@@ -150,7 +150,7 @@ describe('resolveBootstrapProspectiveOffer', () => {
     ])
 
     expect(
-      await resolveBootstrapProspectiveOffer({
+      resolveBootstrapProspectiveOffer({
         desiredOffer,
         prospective: { marketId, buy: true, tick: 100n },
         replacedGroupIds: new Set(),
@@ -171,7 +171,7 @@ describe('resolveBootstrapProspectiveOffer', () => {
     ])
 
     expect(
-      await resolveBootstrapProspectiveOffer({
+      resolveBootstrapProspectiveOffer({
         desiredOffer,
         prospective: { marketId, buy: true, tick: 100n },
         replacedGroupIds: new Set(),
@@ -191,7 +191,7 @@ describe('resolveBootstrapProspectiveOffer', () => {
     ])
 
     expect(
-      await resolveBootstrapProspectiveOffer({
+      resolveBootstrapProspectiveOffer({
         desiredOffer,
         prospective: { marketId, buy: true, tick: 0n },
         replacedGroupIds: new Set(),
@@ -211,7 +211,7 @@ describe('resolveBootstrapProspectiveOffer', () => {
     ])
 
     expect(
-      await resolveBootstrapProspectiveOffer({
+      resolveBootstrapProspectiveOffer({
         desiredOffer,
         prospective: { marketId, buy: true, tick: 100n },
         replacedGroupIds: new Set(),
@@ -227,7 +227,7 @@ describe('resolveBootstrapProspectiveOffer', () => {
     const prospective = { marketId, buy: true, tick: 99n }
 
     expect(
-      await resolveBootstrapProspectiveOffer({
+      resolveBootstrapProspectiveOffer({
         desiredOffer,
         prospective,
         replacedGroupIds: new Set(),
@@ -239,8 +239,8 @@ describe('resolveBootstrapProspectiveOffer', () => {
     ).toEqual({ offer: desiredOffer, prospective })
   })
 
-  test('rejects a prospective projection that is not a selected-market buy', async () => {
-    await expect(
+  test('rejects a prospective projection that is not a selected-market buy', () => {
+    expect(() =>
       resolveBootstrapProspectiveOffer({
         desiredOffer,
         prospective: { marketId, buy: false, tick: 99n },
@@ -250,37 +250,41 @@ describe('resolveBootstrapProspectiveOffer', () => {
         minimumRateBps: 400n,
         maximumRateBps: 600n
       })
-    ).rejects.toMatchObject({ operation: 'negative-spread' })
+    ).toThrow(expect.objectContaining({ operation: 'negative-spread' }))
   })
 
-  test('rejects a crossing without effective-rate or spacing evidence', async () => {
-    const missingRate = resolveBootstrapProspectiveOffer({
-      desiredOffer,
-      prospective: { marketId, buy: true, tick: 105n },
-      replacedGroupIds: new Set(),
-      book: [sell(100n)],
-      toProspectiveBookOffer: projector([{ tick: 100n, tickSpacing: 1n }]),
-      minimumRateBps: 400n,
-      maximumRateBps: 600n
-    })
-    await expect(missingRate).rejects.toBeInstanceOf(BootstrapAdapterError)
-    await expect(missingRate).rejects.toMatchObject({ operation: 'cross-book-evidence-missing' })
+  test('rejects a crossing without effective-rate or spacing evidence', () => {
+    const missingRate = () =>
+      resolveBootstrapProspectiveOffer({
+        desiredOffer,
+        prospective: { marketId, buy: true, tick: 105n },
+        replacedGroupIds: new Set(),
+        book: [sell(100n)],
+        toProspectiveBookOffer: projector([{ tick: 100n, tickSpacing: 1n }]),
+        minimumRateBps: 400n,
+        maximumRateBps: 600n
+      })
+    expect(missingRate).toThrow(BootstrapAdapterError)
+    expect(missingRate).toThrow(
+      expect.objectContaining({ operation: 'cross-book-evidence-missing' })
+    )
 
-    const missingSpacing = resolveBootstrapProspectiveOffer({
-      desiredOffer,
-      prospective: { marketId, buy: true, tick: 105n },
-      replacedGroupIds: new Set(),
-      book: [sell(100n)],
-      toProspectiveBookOffer: projector([
-        { tick: 100n, effectiveRateWad: 450n * BPS_WAD },
-        { tick: 100n }
-      ]),
-      minimumRateBps: 400n,
-      maximumRateBps: 600n
-    })
-    await expect(missingSpacing).rejects.toMatchObject({
-      operation: 'cross-book-evidence-missing'
-    })
+    const missingSpacing = () =>
+      resolveBootstrapProspectiveOffer({
+        desiredOffer,
+        prospective: { marketId, buy: true, tick: 105n },
+        replacedGroupIds: new Set(),
+        book: [sell(100n)],
+        toProspectiveBookOffer: projector([
+          { tick: 100n, effectiveRateWad: 450n * BPS_WAD },
+          { tick: 100n }
+        ]),
+        minimumRateBps: 400n,
+        maximumRateBps: 600n
+      })
+    expect(missingSpacing).toThrow(
+      expect.objectContaining({ operation: 'cross-book-evidence-missing' })
+    )
   })
 
   test('ignores replaced groups and other markets when selecting the crossed sell', async () => {
@@ -288,7 +292,7 @@ describe('resolveBootstrapProspectiveOffer', () => {
     const prospective = { marketId, buy: true, tick: 105n }
 
     expect(
-      await resolveBootstrapProspectiveOffer({
+      resolveBootstrapProspectiveOffer({
         desiredOffer,
         prospective,
         replacedGroupIds: new Set([replacedGroupId]),

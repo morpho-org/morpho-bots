@@ -45,7 +45,7 @@ const temporaryDirectory = async prefix => {
   return directory
 }
 
-const writeResolvableDependencies = async (packageRoot, names = ['viem', '@repo/bot-kit']) => {
+const writeResolvableDependencies = async (packageRoot, names = ['viem', '@repo/kit']) => {
   await mkdir(packageRoot, { recursive: true })
   await writeFile(join(packageRoot, 'package.json'), '{"type":"module"}')
   for (const name of names) {
@@ -141,7 +141,7 @@ test('a frozen install runs unconditionally and resolves partial workspace depen
   await mkdir(bin)
   await writeFile(
     join(bin, 'pnpm'),
-    `#!/usr/bin/env node\nconst { mkdirSync, writeFileSync } = require('node:fs')\nconst { join } = require('node:path')\nwriteFileSync(process.env.INSTALL_LOG, JSON.stringify(process.argv.slice(2)))\nfor (const name of ['viem', '@repo/bot-kit']) { const root = join(process.env.PACKAGE_ROOT, 'node_modules', name); mkdirSync(root, { recursive: true }); writeFileSync(join(root, 'package.json'), JSON.stringify({ name, main: 'index.js' })); writeFileSync(join(root, 'index.js'), '') }\n`,
+    `#!/usr/bin/env node\nconst { mkdirSync, writeFileSync } = require('node:fs')\nconst { join } = require('node:path')\nwriteFileSync(process.env.INSTALL_LOG, JSON.stringify(process.argv.slice(2)))\nfor (const name of ['viem', '@repo/kit']) { const root = join(process.env.PACKAGE_ROOT, 'node_modules', name); mkdirSync(root, { recursive: true }); writeFileSync(join(root, 'package.json'), JSON.stringify({ name, main: 'index.js' })); writeFileSync(join(root, 'index.js'), '') }\n`,
     { mode: 0o755 }
   )
 
@@ -376,7 +376,7 @@ test('successful install clearly lists dependencies that remain unresolved', asy
   await assert.rejects(ensureFrozenDependencies({ repoRoot, packageRoot, executable }), error => {
     assert.match(error.message, /Frozen install completed/)
     assert.match(error.message, new RegExp(packageRoot.replaceAll('\\', '\\\\')))
-    assert.match(error.message, /viem, @repo\/bot-kit/)
+    assert.match(error.message, /viem, @repo\/kit/)
     return true
   })
 })

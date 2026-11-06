@@ -69,8 +69,9 @@ const environment = (rpcUrl: string, apiBaseUrl: string) => ({
   REFERENCE_LOOKBACK_SECONDS: '21600',
   NATIVE_RESERVE_WEI: String(NATIVE_RESERVE),
   MAX_FEE_GWEI: '100',
-  PRIORITY_FEE_GWEI: '1',
   MAX_TRANSACTION_SPEND_WEI: '100000000000000000',
+  MAX_CONTINUOUS_FEE_CAP: '0',
+  KERNEL_ENROLLMENT: 'enrolling',
   MAX_PUBLICATION_GAS: '5000000',
   MAX_PUBLICATION_DATA_BYTES: '65536',
   MAX_CANCELLATION_GAS: '100000',
@@ -124,26 +125,23 @@ describe('quoter-bot setup check on a pinned Base fork', () => {
       ['native-balance', 'passed'],
       ['signer-native-balance', 'not-required'],
       ['signer-authorization', 'not-required'],
-      ['signer-nonce', 'passed'],
       ['loan-allowance', 'passed'],
       ['ratifier', 'passed'],
       ['books', 'passed'],
       ['reference', 'passed'],
       ['offers', 'passed'],
-      ['position-health', 'not-required'],
-      ['loss-factor', 'passed']
+      ['position-health', 'not-required']
     ])
   }, 60_000)
 
   const failures: SetupFailure[] = [
     {
       name: 'chain',
-      additionallyFailed: ['ratifier', 'books'],
+      additionallyFailed: ['ratifier', 'books', 'position-health'],
       mutate: fork => fork.client.setCode({ address: MIDNIGHT, bytecode: '0x' })
     },
     {
       name: 'signer',
-      additionallyFailed: ['signer-nonce'],
       environment: { MAKER_PRIVATE_KEY: ANVIL_TAKER_PRIVATE_KEY }
     },
     {
@@ -214,14 +212,12 @@ describe('quoter-bot setup check on a pinned Base fork', () => {
           ['native-balance', failed.has('native-balance') ? 'failed' : 'passed'],
           ['signer-native-balance', 'not-required'],
           ['signer-authorization', 'not-required'],
-          ['signer-nonce', failed.has('signer-nonce') ? 'failed' : 'passed'],
           ['loan-allowance', failed.has('loan-allowance') ? 'failed' : 'passed'],
           ['ratifier', failed.has('ratifier') ? 'failed' : 'passed'],
           ['books', failed.has('books') ? 'failed' : 'passed'],
           ['reference', 'passed'],
           ['offers', failed.has('offers') ? 'failed' : 'passed'],
-          ['position-health', 'not-required'],
-          ['loss-factor', failed.has('chain') ? 'warning' : 'passed']
+          ['position-health', failed.has('position-health') ? 'failed' : 'not-required']
         ])
       } finally {
         api.setMode('ready')

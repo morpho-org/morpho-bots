@@ -1,8 +1,5 @@
-import type { Chain } from 'viem'
-
 import { bigintMin, mulDivUp } from '@repo/utils'
 
-import { MissingBlockTimeError } from './errors'
 import { NONCE_FILL_MAX_GAS } from './policy'
 
 // EIP-1559 mandates a ≥12.5% bump on both fees to replace a pending tx. We bump by 12.5% (1125/1000)
@@ -90,14 +87,4 @@ export const feeCeiling = (maxFeePerGasWei: bigint, recoveryFee: bigint): bigint
 export const stepCap = (ceiling: bigint): bigint => {
   const scaledFits = ((ceiling + 1n) * BUMP_DENOMINATOR - 1n) / BUMP_NUMERATOR
   return scaledFits < ceiling - 1n ? scaledFits : ceiling - 1n
-}
-
-/** How many of `chain`'s blocks span `ms`, and at least `atLeast`, so a time bound holds on every chain. */
-export const blocksFor = (
-  ms: number,
-  chain: Pick<Chain, 'id' | 'blockTime'>,
-  atLeast = 1
-): number => {
-  if (!chain.blockTime) throw new MissingBlockTimeError(chain.id)
-  return Math.max(atLeast, Math.ceil(ms / chain.blockTime))
 }

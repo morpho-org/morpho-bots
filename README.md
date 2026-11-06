@@ -32,17 +32,14 @@ repository's `quoter-bot-*` tags by the workflows under [`.github/workflows/`](.
 
 ## Packages
 
-| Package                                                  | Description                                                                  |
-| -------------------------------------------------------- | ---------------------------------------------------------------------------- |
-| [@repo/bot-kit](./packages/bot-kit/)                     | Shared bot runtime: clients, logger, watcher/runner, tx queue, state, policy |
-| [@repo/contracts](./packages/contracts/)                 | Shared contract ABIs and Executor sources                                    |
-| [@repo/logging](./packages/logging/)                     | CLI presenter: stdout results, stderr errors, bigint-safe JSON Lines         |
-| [@repo/monitoring](./packages/monitoring/)               | Monitor interval waits, serial operation queue, cycle-failure predicate      |
-| [@repo/observability](./packages/observability/)         | Bot lifecycle/record shipping, process observers, verbose argv gating        |
-| [@repo/offers](./packages/offers/)                       | Maker offer-book model: prospective batching and negative-spread checks      |
-| [@repo/swaps](./packages/swaps/)                         | Multi-venue DEX quoting, routing, unwrap seam, and venue selection           |
-| [@repo/typescript-config](./packages/typescript-config/) | Shared TypeScript configuration                                              |
-| [@repo/utils](./packages/utils/)                         | Shared server-safe utilities                                                 |
+| Package                                                  | Description                                                                      |
+| -------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| [@repo/contracts](./packages/contracts/)                 | Shared contract ABIs and Executor sources                                        |
+| [@repo/kit](./packages/kit/)                             | Shared bot runtime: clients, logger, chain reads, signing effects, kernel signer |
+| [@repo/offers](./packages/offers/)                       | Maker offer-book model: prospective batching and negative-spread checks          |
+| [@repo/swaps](./packages/swaps/)                         | Multi-venue DEX quoting, routing, unwrap seam, and venue selection               |
+| [@repo/typescript-config](./packages/typescript-config/) | Shared TypeScript configuration                                                  |
+| [@repo/utils](./packages/utils/)                         | Shared server-safe utilities                                                     |
 
 ## Getting started
 

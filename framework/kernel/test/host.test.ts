@@ -246,7 +246,14 @@ describe('the kernel hosted on the engine', () => {
     chain.receipts.set('0xexec', { block: 2, branch: 'A' })
     chain.height = 4
     await until(() => seen.includes('notice settled'), 'the settlement')
-    expect(seen).toEqual(['running', 'notice admitted', 'sent', 'included', 'notice settled'])
+    expect(seen).toEqual([
+      'running',
+      'notice admitted',
+      'sent',
+      'included',
+      'resolved',
+      'notice settled'
+    ])
     await driver.abandon()
   })
 

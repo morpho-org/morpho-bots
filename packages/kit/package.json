@@ -19,12 +19,16 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@aws-sdk/client-kms": "catalog:",
+    "@ethereumjs/wallet": "^10.0.0",
     "@loglayer/transport-betterstack": "catalog:",
     "@morpho-org/viem-dlc": "catalog:",
+    "@noble/curves": "catalog:",
     "@repo/controller": "workspace:*",
     "@repo/engine": "workspace:*",
     "@repo/kernel": "workspace:*",
     "@repo/utils": "workspace:*",
+    "asn1js": "3.0.10",
     "loglayer": "catalog:",
     "viem": "catalog:"
   },
